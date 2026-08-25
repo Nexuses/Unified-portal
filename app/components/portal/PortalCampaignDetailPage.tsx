@@ -6,21 +6,20 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import type { SmtpSender } from "@/lib/smtp-senders";
 import type { Contact, CrmList } from "@/lib/crm";
 import {
-  getDripCampaign,
+  fetchDripCampaign,
+  fetchDripCampaigns,
   getRemainingEmailCredits,
-  loadDripCampaigns,
   MAX_INDIVIDUAL_CONTACTS,
   mergeBlastReport,
-  updateDripCampaign,
+  patchDripCampaign,
   zonedDateTimeToIso,
-  LAUNCH_NOTICE_KEY,
   type CampaignIndividualContact,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
-import { getEmailTemplate, loadEmailTemplates, upsertEmailTemplate } from "@/lib/email-templates";
+import { getEmailTemplate, loadEmailTemplates } from "@/lib/email-templates";
 import {
   addSavedTestEmail,
   isValidEmail,
@@ -1617,11 +1616,13 @@ function DesignSavedCard({
   fileName,
   onEdit,
   onReset,
+  onPreview,
 }: {
   html: string;
   fileName: string;
   onEdit: () => void;
   onReset: () => void;
+  onPreview: () => void;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [viewHtmlOpen, setViewHtmlOpen] = useState(false);
@@ -1724,6 +1725,9 @@ function DesignSavedCard({
         {html.trim() ? (
           <div className="drip-design-saved-thumb">
             <iframe title="Saved email design" sandbox="" srcDoc={html} />
+            <button type="button" className="drip-design-preview-hover-btn" onClick={onPreview}>
+              Preview &amp; Test
+            </button>
           </div>
         ) : (
           <div className="drip-design-saved-empty">No design preview yet.</div>
@@ -2441,51 +2445,70 @@ function DesignEmailModal({
       return;
     }
 
-    const fromTemplates = loadEmailTemplates().map((item) => ({
-      id: item.id,
-      name: item.name,
-      subject: item.subject,
-      html: item.html,
-    }));
-
-    const fromCampaigns = loadDripCampaigns()
-      .filter((item) => item.hasDesign && item.designHtml?.trim())
-      .map((item) => ({
-        id: `campaign-${item.id}`,
+    let cancelled = false;
+    async function loadCampaignEmails() {
+      const fromTemplates = loadEmailTemplates().map((item) => ({
+        id: item.id,
         name: item.name,
-        subject: item.subject ?? "",
-        html: item.designHtml ?? "",
+        subject: item.subject,
+        html: item.html,
       }));
 
-    const current =
-      campaign.designHtml?.trim()
-        ? [
-            {
-              id: `campaign-${campaign.id}`,
-              name: campaign.name,
-              subject: campaign.subject ?? "",
-              html: campaign.designHtml,
-            },
-          ]
-        : [];
-
-    const merged: { id: string; name: string; subject: string; html: string }[] = [];
-    const seenIds = new Set<string>();
-    const seenHtml = new Set<string>();
-
-    for (const item of [...current, ...fromTemplates, ...fromCampaigns]) {
-      const htmlKey = item.html.trim();
-      if (seenIds.has(item.id) || (htmlKey && seenHtml.has(htmlKey))) {
-        continue;
+      let fromCampaigns: { id: string; name: string; subject: string; html: string }[] =
+        [];
+      try {
+        const campaigns = await fetchDripCampaigns();
+        fromCampaigns = campaigns
+          .filter((item) => item.hasDesign && item.designHtml?.trim())
+          .map((item) => ({
+            id: `campaign-${item.id}`,
+            name: item.name,
+            subject: item.subject ?? "",
+            html: item.designHtml ?? "",
+          }));
+      } catch {
+        fromCampaigns = [];
       }
-      seenIds.add(item.id);
-      if (htmlKey) {
-        seenHtml.add(htmlKey);
+
+      if (cancelled) {
+        return;
       }
-      merged.push(item);
+
+      const current =
+        campaign.designHtml?.trim()
+          ? [
+              {
+                id: `campaign-${campaign.id}`,
+                name: campaign.name,
+                subject: campaign.subject ?? "",
+                html: campaign.designHtml,
+              },
+            ]
+          : [];
+
+      const merged: { id: string; name: string; subject: string; html: string }[] = [];
+      const seenIds = new Set<string>();
+      const seenHtml = new Set<string>();
+
+      for (const item of [...current, ...fromTemplates, ...fromCampaigns]) {
+        const htmlKey = item.html.trim();
+        if (seenIds.has(item.id) || (htmlKey && seenHtml.has(htmlKey))) {
+          continue;
+        }
+        seenIds.add(item.id);
+        if (htmlKey) {
+          seenHtml.add(htmlKey);
+        }
+        merged.push(item);
+      }
+
+      setCampaignEmails(merged);
     }
 
-    setCampaignEmails(merged);
+    void loadCampaignEmails();
+    return () => {
+      cancelled = true;
+    };
   }, [
     htmlEditorOpen,
     campaign.id,
@@ -2509,17 +2532,6 @@ function DesignEmailModal({
 
   function handleSaveCustomHtml(html: string) {
     const trimmed = html.trim();
-    if (trimmed) {
-      upsertEmailTemplate({
-        id: `campaign-${campaign.id}`,
-        name: campaign.name,
-        subject: campaign.subject ?? "",
-        html,
-        sourceCampaignId: campaign.id,
-        savedAt: new Date().toISOString(),
-      });
-    }
-
     onSaveDesign({
       hasDesign: Boolean(trimmed),
       designHtml: html,
@@ -2529,17 +2541,12 @@ function DesignEmailModal({
 
   function handleUseTemplate(templateId: string) {
     const fromList = campaignEmails.find((item) => item.id === templateId);
-    const template =
-      fromList ??
-      getEmailTemplate(templateId) ??
-      getDripCampaign(templateId.replace(/^campaign-/, ""));
+    const template = fromList ?? getEmailTemplate(templateId);
 
     const html =
       template && "html" in template
         ? template.html
-        : template && "designHtml" in template
-          ? template.designHtml
-          : "";
+        : "";
 
     if (!html?.trim()) {
       return;
@@ -3210,6 +3217,7 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleSuccessMessage, setScheduleSuccessMessage] = useState("");
   const [setupErrorToast, setSetupErrorToast] = useState(0);
+  const [persistError, setPersistError] = useState("");
   const [senders, setSenders] = useState<SmtpSender[]>([]);
   const [lists, setLists] = useState<CrmList[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -3228,6 +3236,7 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
   const [draftAttachmentName, setDraftAttachmentName] = useState("");
   const [draftTimezoneEnabled, setDraftTimezoneEnabled] = useState(false);
   const [draftTimezone, setDraftTimezone] = useState("Asia/Kolkata");
+  const campaignRef = useRef<DripCampaign | null>(null);
 
   useEffect(() => {
     if (!designModalOpen) {
@@ -3262,15 +3271,51 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     void loadContacts();
   }, [campaignId]);
 
+  const [projectCampaigns, setProjectCampaigns] = useState<DripCampaign[]>([]);
+  campaignRef.current = campaign;
   const emailPlanLimit = contacts.length;
   const remainingEmails = useMemo(
-    () => getRemainingEmailCredits(loadDripCampaigns(), emailPlanLimit),
-    [campaign, emailPlanLimit],
+    () => getRemainingEmailCredits(projectCampaigns, emailPlanLimit),
+    [projectCampaigns, emailPlanLimit],
   );
 
   useEffect(() => {
-    setCampaign(getDripCampaign(campaignId));
-    setLoading(false);
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      try {
+        const [next, all] = await Promise.all([
+          fetchDripCampaign(campaignId),
+          fetchDripCampaigns().catch(() => [] as DripCampaign[]),
+        ]);
+        if (!cancelled) {
+          setCampaign(next);
+          setProjectCampaigns(all);
+        }
+      } catch {
+        if (!cancelled) {
+          setCampaign(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [campaignId]);
+
+  useEffect(() => {
+    return () => {
+      const current = campaignRef.current;
+      if (!current || current.status === "sent" || current.status === "sending") {
+        return;
+      }
+      void patchDripCampaign(campaignId, current).catch(() => undefined);
+    };
   }, [campaignId]);
 
   useEffect(() => {
@@ -3357,11 +3402,97 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
   );
   const requiredStepsComplete = steps.filter((step) => !step.noIcon).every((step) => step.done);
 
-  function persistCampaign(patch: Partial<DripCampaign>) {
-    const updated = updateDripCampaign(campaignId, patch);
-    if (updated) {
+  async function persistCampaign(patch: Partial<DripCampaign>) {
+    const previous = campaignRef.current;
+    setCampaign((current) => {
+      if (!current) {
+        return current;
+      }
+      const next = { ...current, ...patch };
+      campaignRef.current = next;
+      return next;
+    });
+    try {
+      const updated = await patchDripCampaign(campaignId, patch);
+      campaignRef.current = updated;
       setCampaign(updated);
+      setProjectCampaigns((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      return updated;
+    } catch (error) {
+      if (previous) {
+        campaignRef.current = previous;
+        setCampaign(previous);
+      }
+      throw error;
     }
+  }
+
+  function pendingDraftPatch(): Partial<DripCampaign> {
+    const patch: Partial<DripCampaign> = {};
+
+    if (senderPanelOpen && draftSenderId) {
+      const selected = senders.find((sender) => sender.id === draftSenderId);
+      if (selected) {
+        patch.senderId = selected.id;
+        patch.senderName = draftSenderName.trim() || senderDisplayName(selected);
+        patch.senderEmail = selected.fromEmail;
+      }
+    }
+
+    if (recipientsPanelOpen) {
+      if (draftIndividualContacts.length > 0) {
+        patch.recipientMode = "individual";
+        patch.individualContacts = draftIndividualContacts;
+        patch.recipients = draftIndividualContacts.length;
+        patch.listId = "";
+        patch.listName = "";
+      } else {
+        const selected = lists.find((list) => list.id === draftListId);
+        if (selected) {
+          patch.recipientMode = "list";
+          patch.individualContacts = [];
+          patch.listId = selected.id;
+          patch.listName = selected.name;
+          patch.recipients = selected.contactCount;
+        }
+      }
+    }
+
+    if (subjectPanelOpen && draftSubject.trim()) {
+      patch.subject = draftSubject.trim();
+      patch.previewText = draftPreviewText.trim();
+    }
+
+    if (settingsPanelOpen) {
+      patch.replyToEnabled = draftReplyToEnabled;
+      patch.replyToEmail = draftReplyToEnabled ? draftReplyToEmail.trim() : "";
+      patch.attachmentEnabled = draftAttachmentEnabled;
+      patch.attachmentName = draftAttachmentEnabled ? draftAttachmentName : "";
+      patch.timezoneEnabled = draftTimezoneEnabled;
+      patch.timezone = draftTimezoneEnabled ? draftTimezone : "Asia/Kolkata";
+    }
+
+    return patch;
+  }
+
+  async function goBackToList(event?: { preventDefault: () => void }) {
+    event?.preventDefault();
+    const current = campaignRef.current;
+    const draftPatch = pendingDraftPatch();
+    if (current && current.status !== "sent" && current.status !== "sending") {
+      try {
+        await persistCampaign(
+          Object.keys(draftPatch).length > 0
+            ? draftPatch
+            : current,
+        );
+      } catch {
+        // Navigate anyway; latest successful save is already in MongoDB.
+      }
+    }
+    router.push(PORTAL_ROUTES.drip);
   }
 
   function closeAllPanels() {
@@ -3372,18 +3503,24 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     setDesignModalOpen(false);
   }
 
-  function handleSaveSender() {
+  async function handleSaveSender() {
     const selected = senders.find((sender) => sender.id === draftSenderId);
     if (!selected) {
       return;
     }
 
-    persistCampaign({
-      senderId: selected.id,
-      senderName: draftSenderName.trim() || senderDisplayName(selected),
-      senderEmail: selected.fromEmail,
-    });
-    setSenderPanelOpen(false);
+    try {
+      await persistCampaign({
+        senderId: selected.id,
+        senderName: draftSenderName.trim() || senderDisplayName(selected),
+        senderEmail: selected.fromEmail,
+      });
+      setSenderPanelOpen(false);
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to save campaign",
+      );
+    }
   }
 
   function handleSenderEmailChange(senderId: string) {
@@ -3440,16 +3577,22 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     setSettingsPanelOpen(false);
   }
 
-  function handleSaveSettings() {
-    persistCampaign({
-      replyToEnabled: draftReplyToEnabled,
-      replyToEmail: draftReplyToEnabled ? draftReplyToEmail.trim() : "",
-      attachmentEnabled: draftAttachmentEnabled,
-      attachmentName: draftAttachmentEnabled ? draftAttachmentName : "",
-      timezoneEnabled: draftTimezoneEnabled,
-      timezone: draftTimezoneEnabled ? draftTimezone : "Asia/Kolkata",
-    });
-    setSettingsPanelOpen(false);
+  async function handleSaveSettings() {
+    try {
+      await persistCampaign({
+        replyToEnabled: draftReplyToEnabled,
+        replyToEmail: draftReplyToEnabled ? draftReplyToEmail.trim() : "",
+        attachmentEnabled: draftAttachmentEnabled,
+        attachmentName: draftAttachmentEnabled ? draftAttachmentName : "",
+        timezoneEnabled: draftTimezoneEnabled,
+        timezone: draftTimezoneEnabled ? draftTimezone : "Asia/Kolkata",
+      });
+      setSettingsPanelOpen(false);
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to save campaign",
+      );
+    }
   }
 
   function closeDesignModal() {
@@ -3461,24 +3604,36 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     setDesignModalOpen(true);
   }
 
-  function handleSaveDesign(
+  async function handleSaveDesign(
     patch: Pick<DripCampaign, "hasDesign" | "designHtml" | "designSourceCampaignId">,
   ) {
-    persistCampaign(patch);
-    setDesignModalOpen(false);
+    try {
+      await persistCampaign(patch);
+      setDesignModalOpen(false);
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to save campaign",
+      );
+    }
   }
 
-  function handleSaveSubject() {
+  async function handleSaveSubject() {
     const subject = draftSubject.trim();
     if (!subject) {
       return;
     }
 
-    persistCampaign({
-      subject,
-      previewText: draftPreviewText.trim(),
-    });
-    setSubjectPanelOpen(false);
+    try {
+      await persistCampaign({
+        subject,
+        previewText: draftPreviewText.trim(),
+      });
+      setSubjectPanelOpen(false);
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to save campaign",
+      );
+    }
   }
 
   function getStepWrapperClass(stepId: string) {
@@ -3516,32 +3671,38 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     return undefined;
   }
 
-  function handleSaveRecipients() {
-    if (draftIndividualContacts.length > 0) {
-      persistCampaign({
-        recipientMode: "individual",
-        individualContacts: draftIndividualContacts,
-        recipients: draftIndividualContacts.length,
-        listId: "",
-        listName: "",
+  async function handleSaveRecipients() {
+    try {
+      if (draftIndividualContacts.length > 0) {
+        await persistCampaign({
+          recipientMode: "individual",
+          individualContacts: draftIndividualContacts,
+          recipients: draftIndividualContacts.length,
+          listId: "",
+          listName: "",
+        });
+        setRecipientsPanelOpen(false);
+        return;
+      }
+
+      const selected = lists.find((list) => list.id === draftListId);
+      if (!selected) {
+        return;
+      }
+
+      await persistCampaign({
+        recipientMode: "list",
+        individualContacts: [],
+        listId: selected.id,
+        listName: selected.name,
+        recipients: selected.contactCount,
       });
       setRecipientsPanelOpen(false);
-      return;
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to save campaign",
+      );
     }
-
-    const selected = lists.find((list) => list.id === draftListId);
-    if (!selected) {
-      return;
-    }
-
-    persistCampaign({
-      recipientMode: "list",
-      individualContacts: [],
-      listId: selected.id,
-      listName: selected.name,
-      recipients: selected.contactCount,
-    });
-    setRecipientsPanelOpen(false);
   }
 
   function handleStepAction(stepId: string) {
@@ -3609,7 +3770,6 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
       <PortalCampaignReport
         campaign={campaign}
         onCampaignChange={(next) => {
-          updateDripCampaign(campaignId, next);
           setCampaign(next);
         }}
       />
@@ -3619,14 +3779,21 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
   return (
     <div className="drip-detail-page">
       <div className="drip-detail-breadcrumb">
-        <Link href={PORTAL_ROUTES.drip}>Email campaigns</Link>
+        <Link href={PORTAL_ROUTES.drip} onClick={(event) => void goBackToList(event)}>
+          Email campaigns
+        </Link>
         <span>/</span>
         <span>Create an email campaign</span>
       </div>
 
       <div className="drip-detail-head">
         <div className="drip-detail-title-wrap">
-          <Link href={PORTAL_ROUTES.drip} className="drip-back" aria-label="Back to campaigns">
+          <Link
+            href={PORTAL_ROUTES.drip}
+            className="drip-back"
+            aria-label="Back to campaigns"
+            onClick={(event) => void goBackToList(event)}
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="m15 18-6-6 6-6" />
             </svg>
@@ -3724,13 +3891,19 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
                   html={campaign.designHtml ?? ""}
                   fileName={campaign.name}
                   onEdit={openDesignModal}
-                  onReset={() =>
-                    persistCampaign({
+                  onPreview={() => {
+                    if (!requiredStepsComplete) {
+                      setSetupErrorToast((value) => value + 1);
+                      return;
+                    }
+                    setCampaignPreviewOpen(true);
+                  }}
+                  onReset={() => {
+                    void persistCampaign({
                       hasDesign: false,
                       designHtml: "",
-                      designSourceCampaignId: undefined,
-                    })
-                  }
+                    });
+                  }}
                 />
               ) : step.id === "settings" && settingsPanelOpen ? (
                 <SettingsPanel
@@ -3796,6 +3969,13 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
         </div>
       </div>
 
+      {persistError ? (
+        <SetupErrorToast
+          message={persistError}
+          onDone={() => setPersistError("")}
+        />
+      ) : null}
+
       {setupErrorToast > 0 ? (
         <SetupErrorToast
           key={setupErrorToast}
@@ -3839,14 +4019,9 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
             }
 
             const updated = mergeBlastReport(campaign, data);
-            updateDripCampaign(campaignId, updated);
             setCampaign(updated);
             setScheduleOpen(false);
-            window.sessionStorage.setItem(
-              LAUNCH_NOTICE_KEY,
-              "Campaign is scheduled",
-            );
-            router.push(PORTAL_ROUTES.drip);
+            router.push(`${PORTAL_ROUTES.drip}?notice=scheduled`);
           }}
         />
       ) : null}

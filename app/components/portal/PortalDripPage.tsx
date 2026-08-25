@@ -1,16 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  createCampaignId,
+  createDripCampaign,
+  deleteDripCampaign,
+  fetchDripCampaigns,
   formatCampaignStatus,
   formatMetric,
-  LAUNCH_NOTICE_KEY,
-  loadDripCampaigns,
-  mergeBlastReports,
-  saveDripCampaigns,
   type CampaignStatus,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
@@ -44,6 +42,17 @@ function PauseIcon() {
   );
 }
 
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M4 7h16" />
+      <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+      <path d="M6.5 7 7.4 19a2 2 0 0 0 2 1.8h5.2a2 2 0 0 0 2-1.8L17.5 7" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
 function MetricColumn({ label, value, pct }: { label: string; value: number; pct: string }) {
   return (
     <div className="drip-metric">
@@ -65,17 +74,40 @@ export default function PortalDripPage() {
   const [newName, setNewName] = useState("");
   const [page, setPage] = useState(1);
   const [launchNotice, setLaunchNotice] = useState("");
+  const [createError, setCreateError] = useState("");
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    setCampaigns(loadDripCampaigns());
-    setLoaded(true);
+    let cancelled = false;
+    async function load() {
+      try {
+        const next = await fetchDripCampaigns();
+        if (!cancelled) {
+          setCampaigns(next);
+        }
+      } catch {
+        if (!cancelled) {
+          setCampaigns([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoaded(true);
+        }
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    const notice = window.sessionStorage.getItem(LAUNCH_NOTICE_KEY);
-    if (notice) {
-      setLaunchNotice(notice);
-      window.sessionStorage.removeItem(LAUNCH_NOTICE_KEY);
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("notice") === "scheduled") {
+      setLaunchNotice("Campaign is scheduled");
+      window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
 
@@ -88,18 +120,12 @@ export default function PortalDripPage() {
     async function syncStats() {
       try {
         await fetch("/api/campaigns/process-due", { method: "POST" });
-        const response = await fetch("/api/campaigns/stats");
-        const data = await response.json();
-        if (cancelled || !response.ok) {
-          return;
+        const next = await fetchDripCampaigns();
+        if (!cancelled) {
+          setCampaigns(next);
         }
-        setCampaigns((current) => {
-          const next = mergeBlastReports(current, data.reports ?? []);
-          saveDripCampaigns(next);
-          return next;
-        });
       } catch {
-        // Keep local campaign rows if stats cannot refresh.
+        // Keep current campaign rows if stats cannot refresh.
       }
     }
 
@@ -114,11 +140,29 @@ export default function PortalDripPage() {
   }, [loaded]);
 
   useEffect(() => {
-    if (!loaded) {
+    if (!openMenuId) {
       return;
     }
-    saveDripCampaigns(campaigns);
-  }, [campaigns, loaded]);
+
+    function handlePointerDown(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpenMenuId(null);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpenMenuId(null);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openMenuId]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -165,38 +209,60 @@ export default function PortalDripPage() {
 
   function openCreateForm() {
     setNewName("");
+    setCreateError("");
     setShowCreate(true);
   }
 
   function closeCreateForm() {
     setShowCreate(false);
     setNewName("");
+    setCreateError("");
   }
 
-  function handleCreate(event: React.FormEvent) {
+  async function handleDelete(campaign: DripCampaign) {
+    if (!window.confirm(`Delete campaign "${campaign.name}"?`)) {
+      setOpenMenuId(null);
+      return;
+    }
+
+    setDeletingId(campaign.id);
+    setOpenMenuId(null);
+    try {
+      await deleteDripCampaign(campaign.id);
+      setCampaigns((current) => current.filter((item) => item.id !== campaign.id));
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        next.delete(campaign.id);
+        return next;
+      });
+    } catch (error) {
+      window.alert(
+        error instanceof Error ? error.message : "Failed to delete campaign",
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
     const name = newName.trim();
     if (!name) {
       return;
     }
 
-    const id = createCampaignId(campaigns);
-    const campaign: DripCampaign = {
-      id,
-      name,
-      status: "draft",
-      tags: [],
-      recipients: 0,
-      opens: 0,
-      clicks: 0,
-      unsubscribed: 0,
-      conversions: 0,
-    };
-
-    setCampaigns((current) => [campaign, ...current]);
-    setShowCreate(false);
-    setNewName("");
-    router.push(portalCampaignRoute(id));
+    setCreateError("");
+    try {
+      const campaign = await createDripCampaign(name);
+      setCampaigns((current) => [campaign, ...current]);
+      setShowCreate(false);
+      setNewName("");
+      router.push(portalCampaignRoute(campaign.id));
+    } catch (error) {
+      setCreateError(
+        error instanceof Error ? error.message : "Failed to create campaign",
+      );
+    }
   }
 
   return (
@@ -267,6 +333,7 @@ export default function PortalDripPage() {
                 <span>{newName.length}/128</span>
               </div>
             </div>
+            {createError ? <p className="crm-error">{createError}</p> : null}
             <div className="drip-create-actions">
               <button type="button" className="btn-link-purple" onClick={closeCreateForm}>
                 Cancel
@@ -429,19 +496,47 @@ export default function PortalDripPage() {
                       ) : campaign.status === "scheduled" ? (
                         <span className="drip-row-status drip-row-status-scheduled">Scheduled</span>
                       ) : (
-                        <>
-                          <button type="button" className="drip-pause" aria-label="Pause campaign">
-                            <PauseIcon />
-                          </button>
-                          <button type="button" className="drip-more" aria-label="More actions">
-                            <svg viewBox="0 0 24 24" fill="currentColor">
-                              <circle cx="12" cy="5" r="1.6" />
-                              <circle cx="12" cy="12" r="1.6" />
-                              <circle cx="12" cy="19" r="1.6" />
-                            </svg>
-                          </button>
-                        </>
+                        <button type="button" className="drip-pause" aria-label="Pause campaign">
+                          <PauseIcon />
+                        </button>
                       )}
+                      <div
+                        className="drip-more-wrap"
+                        ref={openMenuId === campaign.id ? menuRef : undefined}
+                      >
+                        <button
+                          type="button"
+                          className={`drip-more${openMenuId === campaign.id ? " active" : ""}`}
+                          aria-label="More actions"
+                          aria-expanded={openMenuId === campaign.id}
+                          disabled={deletingId === campaign.id}
+                          onClick={() =>
+                            setOpenMenuId((current) =>
+                              current === campaign.id ? null : campaign.id,
+                            )
+                          }
+                        >
+                          <svg viewBox="0 0 24 24" fill="currentColor">
+                            <circle cx="12" cy="5" r="1.6" />
+                            <circle cx="12" cy="12" r="1.6" />
+                            <circle cx="12" cy="19" r="1.6" />
+                          </svg>
+                        </button>
+                        {openMenuId === campaign.id ? (
+                          <div className="drip-more-menu" role="menu">
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="danger"
+                              disabled={deletingId === campaign.id}
+                              onClick={() => void handleDelete(campaign)}
+                            >
+                              <TrashIcon />
+                              {deletingId === campaign.id ? "Deleting..." : "Delete campaign"}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                 </div>

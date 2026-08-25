@@ -4,7 +4,8 @@ import {
   launchCampaignBlast,
   requestOrigin,
 } from "@/lib/campaign-blasts-server";
-import type { DripCampaign } from "@/lib/drip-campaigns";
+import { mergeBlastReport, type DripCampaign } from "@/lib/drip-campaigns";
+import { updateProjectDripCampaign } from "@/lib/drip-campaigns-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -30,13 +31,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Choose send now or schedule." }, { status: 400 });
     }
 
+    const projectId = new ObjectId(session.projectId);
     const report = await launchCampaignBlast({
-      projectId: new ObjectId(session.projectId),
+      projectId,
       campaign: body.campaign,
       mode: body.mode,
       scheduledFor: body.scheduledFor,
       origin: requestOrigin(request.url, request.headers),
     });
+
+    const launched = mergeBlastReport(body.campaign, report);
+    await updateProjectDripCampaign(projectId, body.campaign.id, launched);
 
     return NextResponse.json(report);
   } catch (error) {

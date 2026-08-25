@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import {
   formatCampaignClock,
   formatMetric,
-  getDripCampaign,
   mergeBlastReport,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
@@ -84,9 +83,8 @@ export default function PortalCampaignReport({
         const report = (
           data.reports as Array<Parameters<typeof mergeBlastReport>[1]>
         ).find((item) => item.campaignId === campaign.id);
-        const current = getDripCampaign(campaign.id);
-        if (report && current && onCampaignChange) {
-          onCampaignChange(mergeBlastReport(current, report));
+        if (report && onCampaignChange) {
+          onCampaignChange(mergeBlastReport(campaign, report));
         }
       } catch {
         // Keep showing the last known stats.

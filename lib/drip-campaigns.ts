@@ -162,13 +162,13 @@ export function formatMetric(value: number, total: number) {
   return { value, pct: label };
 }
 
-const STORAGE_KEY = "portal_drip_campaigns_v2";
-export const LAUNCH_NOTICE_KEY = "portal_campaign_launch_notice";
 export const EMAIL_PLAN_LIMIT = 50000;
 export const MAX_INDIVIDUAL_CONTACTS = 10;
 
+const NO_STORE: RequestInit = { cache: "no-store" };
+
 export function getRemainingEmailCredits(
-  campaigns = loadDripCampaigns(),
+  campaigns: DripCampaign[],
   planLimit = EMAIL_PLAN_LIMIT,
 ) {
   const used = campaigns.reduce(
@@ -178,57 +178,80 @@ export function getRemainingEmailCredits(
   return Math.max(0, planLimit - used);
 }
 
-export function loadDripCampaigns(): DripCampaign[] {
-  if (typeof window === "undefined") {
-    return [];
+export async function fetchDripCampaigns(): Promise<DripCampaign[]> {
+  const response = await fetch("/api/campaigns", NO_STORE);
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(
+      typeof data?.error === "string" ? data.error : "Failed to load campaigns",
+    );
   }
-
-  try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw) as DripCampaign[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return Array.isArray(data) ? (data as DripCampaign[]) : [];
 }
 
-export function saveDripCampaigns(campaigns: DripCampaign[]) {
-  if (typeof window === "undefined") {
-    return;
+export async function fetchDripCampaign(
+  id: string,
+): Promise<DripCampaign | null> {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(id)}`,
+    NO_STORE,
+  );
+  if (response.status === 404) {
+    return null;
   }
-  window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(campaigns));
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(
+      typeof data?.error === "string" ? data.error : "Failed to load campaign",
+    );
+  }
+  return data as DripCampaign;
 }
 
-export function getDripCampaign(id: string, campaigns = loadDripCampaigns()) {
-  return campaigns.find((campaign) => campaign.id === id) ?? null;
+export async function createDripCampaign(name: string): Promise<DripCampaign> {
+  const response = await fetch("/api/campaigns", {
+    ...NO_STORE,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(
+      typeof data?.error === "string" ? data.error : "Failed to create campaign",
+    );
+  }
+  return data as DripCampaign;
 }
 
-export function updateDripCampaign(
+export async function patchDripCampaign(
   id: string,
   patch: Partial<DripCampaign>,
-): DripCampaign | null {
-  const campaigns = loadDripCampaigns();
-  let updated: DripCampaign | null = null;
-
-  const next = campaigns.map((campaign) => {
-    if (campaign.id !== id) {
-      return campaign;
-    }
-    updated = { ...campaign, ...patch };
-    return updated;
+): Promise<DripCampaign> {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(id)}`, {
+    ...NO_STORE,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
   });
-
-  saveDripCampaigns(next);
-  return updated;
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(
+      typeof data?.error === "string" ? data.error : "Failed to update campaign",
+    );
+  }
+  return data as DripCampaign;
 }
 
-export function createCampaignId(existing: DripCampaign[]) {
-  const maxId = existing.reduce(
-    (max, campaign) => Math.max(max, Number(campaign.id) || 0),
-    0,
-  );
-  return String(maxId + 1);
+export async function deleteDripCampaign(id: string): Promise<void> {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(id)}`, {
+    ...NO_STORE,
+    method: "DELETE",
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      typeof data?.error === "string" ? data.error : "Failed to delete campaign",
+    );
+  }
 }
