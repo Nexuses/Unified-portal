@@ -1,4 +1,4 @@
-export const DEFAULT_TRACKING_HOST = "unifiedhub.nexuses.xyz";
+export const DEFAULT_TRACKING_HOST = "unified.nexuses.xyz";
 export const DEFAULT_TRACKING_ORIGIN = `https://${DEFAULT_TRACKING_HOST}`;
 
 export function normalizeTrackingDomain(value: string | undefined | null) {
