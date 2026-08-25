@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import { slugify } from "@/lib/projects";
+import { deleteProjectCrmData } from "@/lib/crm-import";
+import { deleteProjectSenders } from "@/lib/smtp-senders-server";
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -92,13 +94,20 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     }
 
     const db = await getDb();
-    const result = await db.collection("projects").deleteOne({
-      _id: new ObjectId(id),
+    const projectObjectId = new ObjectId(id);
+
+    const project = await db.collection("projects").findOne({
+      _id: projectObjectId,
     });
 
-    if (result.deletedCount === 0) {
+    if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
+
+    await db.collection("users").deleteMany({ projectId: projectObjectId });
+    await deleteProjectCrmData(projectObjectId);
+    await deleteProjectSenders(projectObjectId);
+    await db.collection("projects").deleteOne({ _id: projectObjectId });
 
     return NextResponse.json({ success: true });
   } catch (error) {

@@ -143,61 +143,73 @@ export default function AdminUsersPanel() {
           </p>
 
           <form className="admin-form" onSubmit={handleSubmit}>
-            <input
-              className="admin-input"
-              placeholder="Full Name"
-              value={form.fullName}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  fullName: event.target.value,
-                }))
-              }
-              required
-            />
-            <input
-              className="admin-input"
-              type="email"
-              placeholder="Email"
-              value={form.email}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, email: event.target.value }))
-              }
-              required
-            />
-            <input
-              className="admin-input"
-              type="password"
-              placeholder={
-                editingId ? "Password (leave blank to keep current)" : "Password"
-              }
-              value={form.password}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  password: event.target.value,
-                }))
-              }
-              required={!editingId}
-            />
-            <select
-              className="admin-input admin-select"
-              value={form.projectId}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  projectId: event.target.value,
-                }))
-              }
-              required
-            >
-              <option value="">Select project</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
+            <label className="admin-field">
+              <span className="admin-field-label">Full name</span>
+              <input
+                className="admin-input"
+                placeholder="John Doe"
+                value={form.fullName}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    fullName: event.target.value,
+                  }))
+                }
+                required
+              />
+            </label>
+            <label className="admin-field">
+              <span className="admin-field-label">Email</span>
+              <input
+                className="admin-input"
+                type="email"
+                placeholder="john@company.com"
+                value={form.email}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, email: event.target.value }))
+                }
+                required
+              />
+            </label>
+            <label className="admin-field">
+              <span className="admin-field-label">Password</span>
+              <input
+                className="admin-input"
+                type="password"
+                placeholder={
+                  editingId ? "Leave blank to keep current password" : "Create a password"
+                }
+                value={form.password}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    password: event.target.value,
+                  }))
+                }
+                required={!editingId}
+              />
+            </label>
+            <label className="admin-field">
+              <span className="admin-field-label">Project</span>
+              <select
+                className="admin-input admin-select"
+                value={form.projectId}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    projectId: event.target.value,
+                  }))
+                }
+                required
+              >
+                <option value="">Select project</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
             {error ? <p className="admin-error">{error}</p> : null}
 
@@ -223,6 +235,12 @@ export default function AdminUsersPanel() {
         </section>
 
         <section className="admin-card admin-list-card">
+          <div className="admin-list-card-header">
+            <h2 className="admin-list-card-title">All users</h2>
+            <span className="admin-list-card-count">
+              {loading ? "..." : `${users.length} total`}
+            </span>
+          </div>
           <div className="admin-table-wrap">
             <table className="admin-table">
               <thead>
@@ -259,22 +277,26 @@ export default function AdminUsersPanel() {
                         </button>
                       </td>
                       <td>{user.email}</td>
-                      <td>{user.projectName}</td>
+                      <td>
+                        <span className="admin-project-badge">{user.projectName}</span>
+                      </td>
                       <td className="admin-actions">
-                        <button
-                          type="button"
-                          className="admin-edit-link"
-                          onClick={() => startEdit(user)}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="admin-delete-link"
-                          onClick={() => void handleDelete(user.id)}
-                        >
-                          Delete
-                        </button>
+                        <div className="admin-action-group">
+                          <button
+                            type="button"
+                            className="admin-action-btn admin-action-btn--edit"
+                            onClick={() => startEdit(user)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="admin-action-btn admin-action-btn--delete"
+                            onClick={() => void handleDelete(user.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))

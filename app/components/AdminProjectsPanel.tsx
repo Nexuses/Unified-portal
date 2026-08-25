@@ -99,7 +99,9 @@ export default function AdminProjectsPanel() {
   }
 
   async function handleDelete(id: string) {
-    const confirmed = window.confirm("Delete this project?");
+    const confirmed = window.confirm(
+      "Delete this project and all users assigned to it?",
+    );
     if (!confirmed) return;
 
     setError("");
@@ -132,34 +134,43 @@ export default function AdminProjectsPanel() {
           </p>
 
           <form className="admin-form" onSubmit={handleSubmit}>
-            <input
-              className="admin-input"
-              placeholder="Project name"
-              value={form.name}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, name: event.target.value }))
-              }
-              required
-            />
-            <input
-              className="admin-input"
-              placeholder="Slug (optional, e.g. acme-corp)"
-              value={form.slug}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, slug: event.target.value }))
-              }
-            />
-            <input
-              className="admin-input"
-              placeholder="Logo URL (shown at bottom of user sidebar)"
-              value={form.logoUrl}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  logoUrl: event.target.value,
-                }))
-              }
-            />
+            <label className="admin-field">
+              <span className="admin-field-label">Project name</span>
+              <input
+                className="admin-input"
+                placeholder="e.g. PurpleSynapz"
+                value={form.name}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, name: event.target.value }))
+                }
+                required
+              />
+            </label>
+            <label className="admin-field">
+              <span className="admin-field-label">Slug</span>
+              <input
+                className="admin-input"
+                placeholder="Optional, e.g. acme-corp"
+                value={form.slug}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, slug: event.target.value }))
+                }
+              />
+            </label>
+            <label className="admin-field">
+              <span className="admin-field-label">Logo URL</span>
+              <input
+                className="admin-input"
+                placeholder="Shown at bottom of user sidebar"
+                value={form.logoUrl}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    logoUrl: event.target.value,
+                  }))
+                }
+              />
+            </label>
 
             {error ? <p className="admin-error">{error}</p> : null}
 
@@ -185,6 +196,12 @@ export default function AdminProjectsPanel() {
         </section>
 
         <section className="admin-card admin-list-card">
+          <div className="admin-list-card-header">
+            <h2 className="admin-list-card-title">All projects</h2>
+            <span className="admin-list-card-count">
+              {loading ? "..." : `${projects.length} total`}
+            </span>
+          </div>
           <div className="admin-table-wrap">
             <table className="admin-table">
               <thead>
@@ -221,8 +238,12 @@ export default function AdminProjectsPanel() {
                           {project.name}
                         </button>
                       </td>
-                      <td>{project.slug}</td>
-                      <td>{project.users}</td>
+                      <td>
+                        <span className="admin-slug">{project.slug}</span>
+                      </td>
+                      <td>
+                        <span className="admin-user-count">{project.users}</span>
+                      </td>
                       <td className="admin-logo-cell">
                         {project.logoUrl ? (
                           // eslint-disable-next-line @next/next/no-img-element
@@ -236,20 +257,22 @@ export default function AdminProjectsPanel() {
                         )}
                       </td>
                       <td className="admin-actions">
-                        <button
-                          type="button"
-                          className="admin-edit-link"
-                          onClick={() => startEdit(project)}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="admin-delete-link"
-                          onClick={() => void handleDelete(project.id)}
-                        >
-                          Delete
-                        </button>
+                        <div className="admin-action-group">
+                          <button
+                            type="button"
+                            className="admin-action-btn admin-action-btn--edit"
+                            onClick={() => startEdit(project)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="admin-action-btn admin-action-btn--delete"
+                            onClick={() => void handleDelete(project.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
