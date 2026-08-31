@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import type {
@@ -46,6 +47,7 @@ export type DripCampaignDoc = {
   timezoneEnabled?: boolean;
   timezone?: string;
   listDisplayId?: number;
+  shareToken?: string;
   timeline?: DripCampaign["timeline"];
   createdBy: ObjectId | null;
   createdAt: Date;
@@ -85,7 +87,32 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     timezoneEnabled: doc.timezoneEnabled,
     timezone: doc.timezone,
     listDisplayId: doc.listDisplayId,
+    shareToken: doc.shareToken,
     timeline: doc.timeline,
+  };
+}
+
+async function withBlastReport(doc: DripCampaignDoc): Promise<DripCampaign> {
+  const campaign = mapCampaign(doc);
+  if (campaign.status === "draft" || campaign.status === "paused") {
+    return campaign;
+  }
+
+  try {
+    const reports = await getProjectCampaignReports(doc.projectId);
+    const report = reports.find((item) => item.campaignId === doc.campaignId);
+    return report ? mergeBlastReport(campaign, report) : campaign;
+  } catch {
+    return campaign;
+  }
+}
+
+export function toPublicCampaign(campaign: DripCampaign): DripCampaign {
+  return {
+    ...campaign,
+    senderId: undefined,
+    individualContacts: undefined,
+    designSourceCampaignId: undefined,
   };
 }
 
@@ -142,18 +169,67 @@ export async function getProjectDripCampaign(
     return null;
   }
 
-  const campaign = mapCampaign(doc);
-  if (campaign.status === "draft" || campaign.status === "paused") {
-    return campaign;
+  return withBlastReport(doc);
+}
+
+export async function getDripCampaignByShareToken(shareToken: string) {
+  const token = shareToken.trim();
+  if (!token) {
+    return null;
   }
 
-  try {
-    const reports = await getProjectCampaignReports(projectId);
-    const report = reports.find((item) => item.campaignId === campaignId);
-    return report ? mergeBlastReport(campaign, report) : campaign;
-  } catch {
-    return campaign;
+  const db = await getDb();
+  const doc = await db.collection<DripCampaignDoc>("drip_campaigns").findOne({
+    shareToken: token,
+  });
+  if (!doc) {
+    return null;
   }
+
+  return {
+    projectId: doc.projectId,
+    campaign: toPublicCampaign(await withBlastReport(doc)),
+  };
+}
+
+export async function ensureCampaignShareToken(
+  projectId: ObjectId,
+  campaignId: string,
+) {
+  const db = await getDb();
+  const existing = await db.collection<DripCampaignDoc>("drip_campaigns").findOne({
+    projectId,
+    campaignId,
+  });
+  if (!existing) {
+    return null;
+  }
+  if (existing.shareToken) {
+    return existing.shareToken;
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const shareToken = randomBytes(18).toString("base64url");
+    const taken = await db.collection<DripCampaignDoc>("drip_campaigns").findOne({
+      shareToken,
+    }, { projection: { _id: 1 } });
+    if (taken) {
+      continue;
+    }
+
+    const result = await db.collection<DripCampaignDoc>("drip_campaigns").updateOne(
+      { _id: existing._id, shareToken: { $exists: false } },
+      { $set: { shareToken, updatedAt: new Date() } },
+    );
+    if (result.modifiedCount > 0 || result.matchedCount === 0) {
+      const fresh = await db.collection<DripCampaignDoc>("drip_campaigns").findOne({
+        _id: existing._id,
+      });
+      return fresh?.shareToken ?? shareToken;
+    }
+  }
+
+  throw new Error("Could not create a share link");
 }
 
 function escapeRegex(value: string) {

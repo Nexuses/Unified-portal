@@ -40,6 +40,7 @@ export type DripCampaign = {
   timezoneEnabled?: boolean;
   timezone?: string;
   listDisplayId?: number;
+  shareToken?: string;
   timeline?: Array<{
     id: string;
     type: "draft" | "scheduled" | "sent";

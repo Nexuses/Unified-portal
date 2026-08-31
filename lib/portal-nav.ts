@@ -52,6 +52,10 @@ export function portalCampaignRoute(id: string) {
   return `/portal/marketing/campaigns/${id}`;
 }
 
+export function publicCampaignReportPath(token: string) {
+  return `/r/${token}`;
+}
+
 export function portalListRoute(id: string) {
   return `/portal/crm/lists/${id}`;
 }

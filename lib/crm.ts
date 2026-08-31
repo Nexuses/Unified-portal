@@ -116,7 +116,10 @@ export type ContactHistoryEvent = {
     | "list_added"
     | "company_associated"
     | "campaign_sent"
-    | "campaign_delivered";
+    | "campaign_delivered"
+    | "campaign_opened"
+    | "campaign_clicked"
+    | "campaign_unsubscribed";
   title: string;
   description: string;
   at: string;
@@ -127,6 +130,9 @@ export type ContactHistoryEvent = {
   companyId?: string;
   companyName?: string;
   importFileName?: string;
+  campaignId?: string;
+  campaignName?: string;
+  clickedUrl?: string;
 };
 
 export type ContactDetail = Contact & {

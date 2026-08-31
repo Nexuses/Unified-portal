@@ -4,12 +4,18 @@ import {
   buildContactHistory,
   mapContact,
   type CompanyDoc,
+  type ContactCampaignStats,
   type ContactDetail,
   type ContactDoc,
+  type ContactHistoryEvent,
   type ContactListMembership,
   type ListDoc,
   type ListMembershipDoc,
 } from "@/lib/crm";
+import type {
+  CampaignBlastDoc,
+  CampaignSendDoc,
+} from "@/lib/campaign-blasts-server";
 
 export async function getProjectContacts(projectId: ObjectId) {
   const db = await getDb();
@@ -91,11 +97,15 @@ export async function getProjectContactDetail(
     }
   }
 
+  const { events: campaignEvents, stats: campaignStats } =
+    await getContactCampaignActivity(projectId, contact.email);
+
   const history = buildContactHistory({
     contact,
     lists: contactLists,
     company,
     owner,
+    campaignEvents,
   });
 
   return {
@@ -104,12 +114,7 @@ export async function getProjectContactDetail(
     company,
     lists: contactLists,
     history,
-    campaignStats: {
-      sent: 0,
-      delivered: 0,
-      opens: 0,
-      clicks: 0,
-    },
+    campaignStats,
     navigation: {
       index,
       total: contacts.length,
@@ -120,4 +125,143 @@ export async function getProjectContactDetail(
           : null,
     },
   };
+}
+
+function toIso(value: Date | string | undefined) {
+  if (!value) {
+    return new Date().toISOString();
+  }
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+async function getContactCampaignActivity(projectId: ObjectId, email: string) {
+  const db = await getDb();
+  const normalized = email.trim().toLowerCase();
+  const emptyStats: ContactCampaignStats = {
+    sent: 0,
+    delivered: 0,
+    opens: 0,
+    clicks: 0,
+  };
+
+  if (!normalized) {
+    return { events: [] as ContactHistoryEvent[], stats: emptyStats };
+  }
+
+  const sends = await db
+    .collection<CampaignSendDoc>("campaign_sends")
+    .find({
+      projectId,
+      email: normalized,
+    })
+    .toArray();
+
+  if (sends.length === 0) {
+    return { events: [] as ContactHistoryEvent[], stats: emptyStats };
+  }
+
+  const campaignIds = [...new Set(sends.map((send) => send.campaignId))];
+  const blasts = await db
+    .collection<CampaignBlastDoc>("campaign_blasts")
+    .find({
+      projectId,
+      campaignId: { $in: campaignIds },
+    })
+    .toArray();
+  const blastMap = new Map(blasts.map((blast) => [blast.campaignId, blast]));
+
+  const events: ContactHistoryEvent[] = [];
+  const stats: ContactCampaignStats = { ...emptyStats };
+
+  for (const send of sends) {
+    const blast = blastMap.get(send.campaignId);
+    const campaignName = blast?.name || `Campaign #${send.campaignId}`;
+    const actor = blast?.senderName || blast?.senderEmail || "Email campaign";
+    const label = `[${send.campaignId}] ${campaignName}`;
+
+    if (send.status === "sent" || send.status === "failed") {
+      stats.sent += 1;
+      events.push({
+        id: `campaign-sent-${send._id.toString()}`,
+        type: "campaign_sent",
+        title: "Email campaign sent",
+        description: `Campaign ${label} was sent to this contact.`,
+        at: toIso(send.sentAt),
+        actor,
+        campaignId: send.campaignId,
+        campaignName,
+      });
+    }
+
+    if (send.status === "sent") {
+      stats.delivered += 1;
+      events.push({
+        id: `campaign-delivered-${send._id.toString()}`,
+        type: "campaign_delivered",
+        title: "Email campaign delivered",
+        description: `Campaign ${label} was delivered.`,
+        at: toIso(send.sentAt),
+        actor,
+        campaignId: send.campaignId,
+        campaignName,
+      });
+    }
+
+    if (send.openedAt || send.openCount > 0) {
+      stats.opens += 1;
+      events.push({
+        id: `campaign-opened-${send._id.toString()}`,
+        type: "campaign_opened",
+        title: "Email campaign opened",
+        description: `Opened campaign ${label}.`,
+        at: toIso(send.openedAt),
+        actor,
+        campaignId: send.campaignId,
+        campaignName,
+      });
+    }
+
+    const clickEvents =
+      send.clickEvents && send.clickEvents.length > 0
+        ? send.clickEvents
+        : send.clickedAt
+          ? [{ url: send.clickedUrl || "", at: send.clickedAt }]
+          : [];
+
+    if (clickEvents.length > 0 || send.clickCount > 0) {
+      stats.clicks += 1;
+    }
+
+    for (const [index, click] of clickEvents.entries()) {
+      const url = click.url?.trim();
+      events.push({
+        id: `campaign-clicked-${send._id.toString()}-${index}`,
+        type: "campaign_clicked",
+        title: "Email campaign link clicked",
+        description: url
+          ? `Clicked ${url} in campaign ${label}.`
+          : `Clicked a link in campaign ${label}.`,
+        at: toIso(click.at),
+        actor,
+        campaignId: send.campaignId,
+        campaignName,
+        clickedUrl: url,
+      });
+    }
+
+    if (send.unsubscribedAt) {
+      events.push({
+        id: `campaign-unsubscribed-${send._id.toString()}`,
+        type: "campaign_unsubscribed",
+        title: "Unsubscribed from email campaigns",
+        description: `Unsubscribed from campaign ${label}.`,
+        at: toIso(send.unsubscribedAt),
+        actor,
+        campaignId: send.campaignId,
+        campaignName,
+      });
+    }
+  }
+
+  return { events, stats };
 }

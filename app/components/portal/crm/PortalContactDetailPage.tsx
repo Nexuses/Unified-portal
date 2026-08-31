@@ -18,6 +18,7 @@ import {
   portalContactRoute,
   portalListRoute,
   PORTAL_ROUTES,
+  portalCampaignRoute,
 } from "@/lib/portal-nav";
 
 type PortalContactDetailPageProps = {
@@ -65,7 +66,72 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
   }
 
   if (event.type === "campaign_sent" || event.type === "campaign_delivered") {
-    return <div className="company-history-copy">{event.description}</div>;
+    return (
+      <div className="company-history-copy">
+        {event.description}{" "}
+        {event.campaignId ? (
+          <Link href={portalCampaignRoute(event.campaignId)} className="contact-history-link">
+            View campaign
+          </Link>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (event.type === "campaign_opened") {
+    return (
+      <div className="company-history-copy">
+        Opened campaign{" "}
+        {event.campaignId ? (
+          <Link href={portalCampaignRoute(event.campaignId)} className="contact-history-link">
+            {event.campaignName || event.campaignId}
+          </Link>
+        ) : (
+          event.campaignName
+        )}
+        .
+      </div>
+    );
+  }
+
+  if (event.type === "campaign_clicked") {
+    return (
+      <div className="company-history-copy">
+        Clicked{" "}
+        {event.clickedUrl ? (
+          <a href={event.clickedUrl} target="_blank" rel="noreferrer" className="contact-history-link">
+            {event.clickedUrl}
+          </a>
+        ) : (
+          "a link"
+        )}{" "}
+        in campaign{" "}
+        {event.campaignId ? (
+          <Link href={portalCampaignRoute(event.campaignId)} className="contact-history-link">
+            {event.campaignName || event.campaignId}
+          </Link>
+        ) : (
+          event.campaignName
+        )}
+        .
+      </div>
+    );
+  }
+
+  if (event.type === "campaign_unsubscribed") {
+    return (
+      <div className="company-history-copy">
+        Unsubscribed from campaign{" "}
+        {event.campaignId ? (
+          <Link href={portalCampaignRoute(event.campaignId)} className="contact-history-link">
+            {event.campaignName || event.campaignId}
+          </Link>
+        ) : (
+          event.campaignName
+        )}
+        .
+      </div>
+    );
   }
 
   return <div className="company-history-copy">{event.description}</div>;
@@ -283,9 +349,11 @@ export default function PortalContactDetailPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<DetailTab>("overview");
+  const [historyFilter, setHistoryFilter] = useState<"all" | "campaigns">("all");
 
   useEffect(() => {
     setTab("overview");
+    setHistoryFilter("all");
   }, [contactId]);
 
   useEffect(() => {
@@ -323,13 +391,17 @@ export default function PortalContactDetailPage({
     return `${navigation.index + 1} of ${navigation.total}`;
   }, [navigation]);
 
-  const nonCampaignHistory = useMemo(
-    () =>
-      (contact?.history ?? []).filter(
-        (event) =>
-          event.type !== "campaign_sent" && event.type !== "campaign_delivered",
-      ),
+  const campaignHistory = useMemo(
+    () => (contact?.history ?? []).filter((event) => event.type.startsWith("campaign_")),
     [contact?.history],
+  );
+
+  const visibleHistory = useMemo(
+    () =>
+      historyFilter === "campaigns"
+        ? campaignHistory
+        : (contact?.history ?? []),
+    [campaignHistory, contact?.history, historyFilter],
   );
 
   if (loading) {
@@ -492,10 +564,18 @@ export default function PortalContactDetailPage({
       {tab === "history" ? (
         <div className="company-history-panel">
           <div className="company-history-filters">
-            <button type="button" className="company-filter-pill active">
+            <button
+              type="button"
+              className={`company-filter-pill${historyFilter === "all" ? " active" : ""}`}
+              onClick={() => setHistoryFilter("all")}
+            >
               All activities
             </button>
-            <button type="button" className="company-filter-pill" disabled>
+            <button
+              type="button"
+              className={`company-filter-pill${historyFilter === "campaigns" ? " active" : ""}`}
+              onClick={() => setHistoryFilter("campaigns")}
+            >
               Email campaigns
             </button>
             <button type="button" className="company-filter-pill" disabled>
@@ -507,7 +587,7 @@ export default function PortalContactDetailPage({
           </div>
 
           <div className="cd-card">
-            <ContactHistoryTimeline events={contact.history} contact={contact} />
+            <ContactHistoryTimeline events={visibleHistory} contact={contact} />
           </div>
         </div>
       ) : null}
@@ -643,7 +723,7 @@ export default function PortalContactDetailPage({
                 <h3>Recent history</h3>
               </div>
               <ContactHistoryTimeline
-                events={nonCampaignHistory.slice(0, 8)}
+                events={contact.history.slice(0, 8)}
                 contact={contact}
               />
             </div>

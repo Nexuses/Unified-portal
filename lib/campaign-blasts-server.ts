@@ -65,6 +65,8 @@ export type CampaignSendDoc = {
   openedAt?: Date;
   openCount: number;
   clickedAt?: Date;
+  clickedUrl?: string;
+  clickEvents?: Array<{ url: string; at: Date }>;
   clickCount: number;
   unsubscribedAt?: Date;
 };
@@ -535,25 +537,33 @@ export async function getCampaignSendByToken(token: string) {
   return db.collection<CampaignSendDoc>("campaign_sends").findOne({ token });
 }
 
-export async function recordCampaignClick(token: string) {
+export async function recordCampaignClick(token: string, url?: string) {
   const db = await getDb();
   const send = await db.collection<CampaignSendDoc>("campaign_sends").findOne({ token });
   if (!send) {
     return;
   }
 
+  const now = new Date();
+  const clickedUrl = String(url ?? "").trim();
   const firstClick = !send.clickedAt;
   await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
     { _id: send._id },
     {
       $inc: { clickCount: 1 },
-      $set: { clickedAt: send.clickedAt ?? new Date() },
+      $set: {
+        clickedAt: send.clickedAt ?? now,
+        ...(clickedUrl && !send.clickedUrl ? { clickedUrl } : {}),
+      },
+      ...(clickedUrl
+        ? { $push: { clickEvents: { url: clickedUrl, at: now } } }
+        : {}),
     },
   );
   if (firstClick) {
     await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
       { _id: send.blastId },
-      { $inc: { clicks: 1 }, $set: { updatedAt: new Date() } },
+      { $inc: { clicks: 1 }, $set: { updatedAt: now } },
     );
   }
 }
@@ -565,4 +575,145 @@ export function requestOrigin(requestUrl: string, headers: Headers) {
     return `${proto}://${host}`;
   }
   return new URL(requestUrl).origin;
+}
+
+export type CampaignRecipientFilter =
+  | "delivered"
+  | "opens"
+  | "clicks"
+  | "unsubscribes"
+  | "audience";
+
+export type CampaignSendRecipient = {
+  id: string;
+  email: string;
+  fullName: string;
+  companyName: string;
+  contactId?: string;
+  status: CampaignSendDoc["status"];
+  sentAt?: string;
+  openedAt?: string;
+  clickedAt?: string;
+  clickedUrl?: string;
+  unsubscribedAt?: string;
+};
+
+const RECIPIENT_FILTERS: CampaignRecipientFilter[] = [
+  "delivered",
+  "opens",
+  "clicks",
+  "unsubscribes",
+  "audience",
+];
+
+export function isCampaignRecipientFilter(
+  value: string,
+): value is CampaignRecipientFilter {
+  return RECIPIENT_FILTERS.includes(value as CampaignRecipientFilter);
+}
+
+export async function listCampaignSendRecipients(
+  projectId: ObjectId,
+  campaignId: string,
+  filter: CampaignRecipientFilter,
+) {
+  const db = await getDb();
+  const query: Record<string, unknown> = { projectId, campaignId };
+
+  if (filter === "delivered") {
+    query.status = "sent";
+  } else if (filter === "opens") {
+    query.openCount = { $gt: 0 };
+  } else if (filter === "clicks") {
+    query.clickCount = { $gt: 0 };
+  } else if (filter === "unsubscribes") {
+    query.unsubscribedAt = { $exists: true, $ne: null };
+  }
+
+  const docs = await db
+    .collection<CampaignSendDoc>("campaign_sends")
+    .find(query)
+    .sort({ fullName: 1, email: 1 })
+    .toArray();
+
+  const emails = [...new Set(docs.map((doc) => doc.email.trim().toLowerCase()).filter(Boolean))];
+  const contacts =
+    emails.length === 0
+      ? []
+      : await db
+          .collection<ContactDoc>("contacts")
+          .find({
+            projectId,
+            $expr: { $in: [{ $toLower: "$email" }, emails] },
+          })
+          .project({ _id: 1, email: 1 })
+          .toArray();
+
+  const contactIdsByEmail = new Map(
+    contacts.map((contact) => [contact.email.trim().toLowerCase(), contact._id.toString()]),
+  );
+
+  function mapRecipient(
+    doc: CampaignSendDoc,
+    extra?: Partial<CampaignSendRecipient>,
+  ): CampaignSendRecipient {
+    const email = doc.email.trim().toLowerCase();
+    return {
+      id: extra?.id ?? doc._id.toString(),
+      email: doc.email,
+      fullName: doc.fullName || doc.email,
+      companyName: doc.companyName || "",
+      contactId: contactIdsByEmail.get(email),
+      status: doc.status,
+      sentAt: doc.sentAt?.toISOString(),
+      openedAt: doc.openedAt?.toISOString(),
+      clickedAt: doc.clickedAt?.toISOString(),
+      clickedUrl: doc.clickedUrl || "",
+      unsubscribedAt: doc.unsubscribedAt?.toISOString(),
+      ...extra,
+    };
+  }
+
+  if (filter === "clicks") {
+    return docs.flatMap((doc) => {
+      const events =
+        doc.clickEvents && doc.clickEvents.length > 0
+          ? doc.clickEvents
+          : doc.clickedAt
+            ? [{ url: doc.clickedUrl || "", at: doc.clickedAt }]
+            : [];
+
+      return events
+        .slice()
+        .sort((left, right) => {
+          const leftAt = left.at instanceof Date ? left.at.getTime() : new Date(left.at).getTime();
+          const rightAt = right.at instanceof Date ? right.at.getTime() : new Date(right.at).getTime();
+          return rightAt - leftAt;
+        })
+        .map((event, index) =>
+          mapRecipient(doc, {
+            id: `${doc._id.toString()}-${index}`,
+            clickedAt: (event.at instanceof Date
+              ? event.at
+              : new Date(event.at)
+            ).toISOString(),
+            clickedUrl: event.url || doc.clickedUrl || "",
+          }),
+        );
+    });
+  }
+
+  return docs.map((doc) => mapRecipient(doc));
+}
+
+export async function listCampaignSendsForExport(
+  projectId: ObjectId,
+  campaignId: string,
+) {
+  const db = await getDb();
+  return db
+    .collection<CampaignSendDoc>("campaign_sends")
+    .find({ projectId, campaignId })
+    .sort({ fullName: 1, email: 1 })
+    .toArray();
 }

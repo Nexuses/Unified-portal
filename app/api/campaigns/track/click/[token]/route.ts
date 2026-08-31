@@ -8,9 +8,6 @@ type RouteContext = {
 export async function GET(request: NextRequest, context: RouteContext) {
   const { token } = await context.params;
   const target = request.nextUrl.searchParams.get("u") || "/";
-  if (token && !token.startsWith("test-")) {
-    await recordCampaignClick(token).catch(() => undefined);
-  }
 
   let redirectTo = "/";
   try {
@@ -20,6 +17,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
     }
   } catch {
     redirectTo = "/";
+  }
+
+  if (token && !token.startsWith("test-")) {
+    await recordCampaignClick(token, redirectTo).catch(() => undefined);
   }
 
   return NextResponse.redirect(redirectTo, { status: 302 });
