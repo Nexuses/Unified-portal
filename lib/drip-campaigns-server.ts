@@ -3,10 +3,13 @@ import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import type {
   CampaignIndividualContact,
+  CampaignKind,
+  CampaignSequence,
   CampaignStatus,
   DripCampaign,
   RecipientMode,
 } from "@/lib/drip-campaigns";
+import { createEmptySequence } from "@/lib/drip-campaigns";
 import {
   getProjectCampaignReports,
   type CampaignReport,
@@ -18,6 +21,7 @@ export type DripCampaignDoc = {
   projectId: ObjectId;
   campaignId: string;
   name: string;
+  kind?: CampaignKind;
   status: CampaignStatus;
   scheduledAt?: string;
   sentAt?: string;
@@ -48,6 +52,10 @@ export type DripCampaignDoc = {
   timezone?: string;
   listDisplayId?: number;
   shareToken?: string;
+  sequences?: CampaignSequence[];
+  windowStart?: string;
+  windowEnd?: string;
+  emailGapMinutes?: number;
   timeline?: DripCampaign["timeline"];
   createdBy: ObjectId | null;
   createdAt: Date;
@@ -58,6 +66,7 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
   return {
     id: doc.campaignId,
     name: doc.name,
+    kind: doc.kind === "oneone" ? "oneone" : "drip",
     status: doc.status,
     scheduledAt: doc.scheduledAt,
     sentAt: doc.sentAt,
@@ -88,6 +97,10 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     timezone: doc.timezone,
     listDisplayId: doc.listDisplayId,
     shareToken: doc.shareToken,
+    sequences: doc.sequences,
+    windowStart: doc.windowStart,
+    windowEnd: doc.windowEnd,
+    emailGapMinutes: doc.emailGapMinutes,
     timeline: doc.timeline,
   };
 }
@@ -100,7 +113,11 @@ async function withBlastReport(doc: DripCampaignDoc): Promise<DripCampaign> {
 
   try {
     const reports = await getProjectCampaignReports(doc.projectId);
-    const report = reports.find((item) => item.campaignId === doc.campaignId);
+    const report = reports.find(
+      (item) =>
+        item.campaignId === doc.campaignId &&
+        (item.kind || "drip") === (campaign.kind || "drip"),
+    );
     return report ? mergeBlastReport(campaign, report) : campaign;
   } catch {
     return campaign;
@@ -116,11 +133,89 @@ export function toPublicCampaign(campaign: DripCampaign): DripCampaign {
   };
 }
 
-async function nextCampaignId(projectId: ObjectId) {
+function campaignKindFilter(kind?: CampaignKind): Record<string, unknown> {
+  if (kind === "oneone") {
+    return { kind: "oneone" };
+  }
+  if (kind === "drip") {
+    return { kind: { $ne: "oneone" } };
+  }
+  return {};
+}
+
+async function updateCampaignIdRefs(
+  projectId: ObjectId,
+  fromId: string,
+  toId: string,
+  kind: CampaignKind,
+) {
+  const db = await getDb();
+  const kindFilter = campaignKindFilter(kind);
+  await db.collection<DripCampaignDoc>("drip_campaigns").updateMany(
+    { projectId, campaignId: fromId, ...kindFilter },
+    { $set: { campaignId: toId, updatedAt: new Date() } },
+  );
+
+  const blasts = await db
+    .collection("campaign_blasts")
+    .find({ projectId, campaignId: fromId, ...kindFilter })
+    .project({ _id: 1 })
+    .toArray();
+  if (blasts.length === 0) {
+    return;
+  }
+
+  await db.collection("campaign_blasts").updateMany(
+    { _id: { $in: blasts.map((blast) => blast._id) } },
+    { $set: { campaignId: toId, updatedAt: new Date() } },
+  );
+  await db.collection("campaign_sends").updateMany(
+    { blastId: { $in: blasts.map((blast) => blast._id) } },
+    { $set: { campaignId: toId } },
+  );
+}
+
+async function resequenceCampaignIds(projectId: ObjectId, kind: CampaignKind) {
+  const db = await getDb();
+  const docs = await db
+    .collection<DripCampaignDoc>("drip_campaigns")
+    .find({ projectId, ...campaignKindFilter(kind) })
+    .sort({ createdAt: 1, _id: 1 })
+    .toArray();
+
+  if (
+    docs.length === 0 ||
+    docs.every((doc, index) => doc.campaignId === String(index + 1))
+  ) {
+    return;
+  }
+
+  for (const doc of docs) {
+    const tempId = `tmp-${doc._id.toString()}`;
+    if (doc.campaignId !== tempId) {
+      await updateCampaignIdRefs(projectId, doc.campaignId, tempId, kind);
+    }
+  }
+
+  for (const [index, doc] of docs.entries()) {
+    await updateCampaignIdRefs(
+      projectId,
+      `tmp-${doc._id.toString()}`,
+      String(index + 1),
+      kind,
+    );
+  }
+}
+
+async function nextCampaignId(projectId: ObjectId, kind: CampaignKind = "drip") {
+  if (kind === "oneone") {
+    await resequenceCampaignIds(projectId, "oneone");
+  }
+
   const db = await getDb();
   const latest = await db
     .collection<DripCampaignDoc>("drip_campaigns")
-    .find({ projectId })
+    .find({ projectId, ...campaignKindFilter(kind) })
     .project({ campaignId: 1 })
     .toArray();
 
@@ -131,11 +226,19 @@ async function nextCampaignId(projectId: ObjectId) {
   return String(maxId + 1);
 }
 
-export async function listProjectDripCampaigns(projectId: ObjectId) {
+export async function listProjectDripCampaigns(
+  projectId: ObjectId,
+  kind?: CampaignKind,
+) {
+  if (kind === "oneone") {
+    await resequenceCampaignIds(projectId, "oneone");
+  }
+
   const db = await getDb();
+  const query: Record<string, unknown> = { projectId, ...campaignKindFilter(kind) };
   const docs = await db
     .collection<DripCampaignDoc>("drip_campaigns")
-    .find({ projectId })
+    .find(query)
     .sort({ createdAt: -1 })
     .toArray();
 
@@ -148,7 +251,11 @@ export async function listProjectDripCampaigns(projectId: ObjectId) {
   }
 
   return campaigns.map((campaign) => {
-    const report = reports.find((item) => item.campaignId === campaign.id);
+    const report = reports.find(
+      (item) =>
+        item.campaignId === campaign.id &&
+        (item.kind || "drip") === (campaign.kind || "drip"),
+    );
     if (!report || campaign.status === "draft" || campaign.status === "paused") {
       return campaign;
     }
@@ -159,11 +266,13 @@ export async function listProjectDripCampaigns(projectId: ObjectId) {
 export async function getProjectDripCampaign(
   projectId: ObjectId,
   campaignId: string,
+  kind?: CampaignKind,
 ) {
   const db = await getDb();
   const doc = await db.collection<DripCampaignDoc>("drip_campaigns").findOne({
     projectId,
     campaignId,
+    ...campaignKindFilter(kind),
   });
   if (!doc) {
     return null;
@@ -195,11 +304,13 @@ export async function getDripCampaignByShareToken(shareToken: string) {
 export async function ensureCampaignShareToken(
   projectId: ObjectId,
   campaignId: string,
+  kind?: CampaignKind,
 ) {
   const db = await getDb();
   const existing = await db.collection<DripCampaignDoc>("drip_campaigns").findOne({
     projectId,
     campaignId,
+    ...campaignKindFilter(kind),
   });
   if (!existing) {
     return null;
@@ -239,15 +350,16 @@ function escapeRegex(value: string) {
 async function assertUniqueCampaignName(
   projectId: ObjectId,
   name: string,
-  excludeCampaignId?: string,
+  options?: { excludeCampaignId?: string; kind?: CampaignKind },
 ) {
   const db = await getDb();
   const query: Record<string, unknown> = {
     projectId,
     name: { $regex: `^${escapeRegex(name)}$`, $options: "i" },
+    ...campaignKindFilter(options?.kind),
   };
-  if (excludeCampaignId) {
-    query.campaignId = { $ne: excludeCampaignId };
+  if (options?.excludeCampaignId) {
+    query.campaignId = { $ne: options.excludeCampaignId };
   }
 
   const conflict = await db
@@ -263,23 +375,26 @@ export async function createProjectDripCampaign(
   projectId: ObjectId,
   userId: ObjectId | null,
   name: string,
+  kind: CampaignKind = "drip",
 ) {
   const trimmed = name.trim();
   if (!trimmed) {
     throw new Error("Campaign name is required");
   }
 
-  await assertUniqueCampaignName(projectId, trimmed);
+  await assertUniqueCampaignName(projectId, trimmed, { kind });
 
   const db = await getDb();
   const now = new Date();
-  const campaignId = await nextCampaignId(projectId);
+  const campaignId = await nextCampaignId(projectId, kind);
+  const isOneOne = kind === "oneone";
 
   const doc: DripCampaignDoc = {
     _id: new ObjectId(),
     projectId,
     campaignId,
     name: trimmed,
+    kind: isOneOne ? "oneone" : "drip",
     status: "draft",
     tags: [],
     recipients: 0,
@@ -287,6 +402,14 @@ export async function createProjectDripCampaign(
     clicks: 0,
     unsubscribed: 0,
     conversions: 0,
+    ...(isOneOne
+      ? {
+          sequences: [createEmptySequence(0)],
+          windowStart: "09:00",
+          windowEnd: "18:00",
+          emailGapMinutes: 5,
+        }
+      : {}),
     createdBy: userId,
     createdAt: now,
     updatedAt: now,
@@ -327,6 +450,10 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "timezoneEnabled",
   "timezone",
   "listDisplayId",
+  "sequences",
+  "windowStart",
+  "windowEnd",
+  "emailGapMinutes",
   "timeline",
 ];
 
@@ -334,11 +461,13 @@ export async function updateProjectDripCampaign(
   projectId: ObjectId,
   campaignId: string,
   patch: Partial<DripCampaign>,
+  kind?: CampaignKind,
 ) {
   const db = await getDb();
   const existing = await db.collection<DripCampaignDoc>("drip_campaigns").findOne({
     projectId,
     campaignId,
+    ...campaignKindFilter(kind),
   });
   if (!existing) {
     return null;
@@ -362,36 +491,52 @@ export async function updateProjectDripCampaign(
     }
     updates.name = trimmed;
     if (trimmed.toLowerCase() !== existing.name.trim().toLowerCase()) {
-      await assertUniqueCampaignName(projectId, trimmed, campaignId);
+      await assertUniqueCampaignName(projectId, trimmed, {
+        excludeCampaignId: campaignId,
+        kind: kind ?? (existing.kind === "oneone" ? "oneone" : "drip"),
+      });
     }
   }
 
   await db.collection<DripCampaignDoc>("drip_campaigns").updateOne(
-    { projectId, campaignId },
+    { _id: existing._id },
     { $set: updates },
   );
 
-  return getProjectDripCampaign(projectId, campaignId);
+  return getProjectDripCampaign(projectId, campaignId, kind ?? (existing.kind === "oneone" ? "oneone" : "drip"));
 }
 
 export async function deleteProjectDripCampaign(
   projectId: ObjectId,
   campaignId: string,
+  kind?: CampaignKind,
 ) {
   const db = await getDb();
   const existing = await db.collection<DripCampaignDoc>("drip_campaigns").findOne({
     projectId,
     campaignId,
+    ...campaignKindFilter(kind),
   });
   if (!existing) {
     return false;
   }
 
-  await db.collection("campaign_sends").deleteMany({ projectId, campaignId });
-  await db.collection("campaign_blasts").deleteMany({ projectId, campaignId });
+  const blasts = await db
+    .collection("campaign_blasts")
+    .find({
+      projectId,
+      campaignId,
+      ...campaignKindFilter(existing.kind === "oneone" ? "oneone" : "drip"),
+    })
+    .project({ _id: 1 })
+    .toArray();
+  const blastIds = blasts.map((blast) => blast._id);
+  if (blastIds.length > 0) {
+    await db.collection("campaign_sends").deleteMany({ blastId: { $in: blastIds } });
+    await db.collection("campaign_blasts").deleteMany({ _id: { $in: blastIds } });
+  }
   await db.collection<DripCampaignDoc>("drip_campaigns").deleteOne({
-    projectId,
-    campaignId,
+    _id: existing._id,
   });
 
   return true;

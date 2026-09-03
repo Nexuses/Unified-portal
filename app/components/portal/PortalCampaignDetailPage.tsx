@@ -2,24 +2,33 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import type { SmtpSender } from "@/lib/smtp-senders";
 import type { Contact, CrmList } from "@/lib/crm";
 import {
+  campaignSequences,
+  createEmptySequence,
   fetchDripCampaign,
   fetchDripCampaigns,
   getRemainingEmailCredits,
+  isOneOneCampaign,
   MAX_INDIVIDUAL_CONTACTS,
   mergeBlastReport,
+  overlaySequenceOnCampaign,
   patchDripCampaign,
+  sequenceCampaignPatch,
+  sequencesReady,
   zonedDateTimeToIso,
   type CampaignIndividualContact,
+  type CampaignKind,
+  type CampaignSequence,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
-import { PORTAL_ROUTES } from "@/lib/portal-nav";
+import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
 import { getEmailTemplate, loadEmailTemplates } from "@/lib/email-templates";
+import { normalizeEmailMergeTags, replaceUnsubscribeVariables } from "@/lib/email-variables";
 import {
   addSavedTestEmail,
   isValidEmail,
@@ -351,10 +360,8 @@ function applyContactVariables(text: string, contact: Contact | null, forHtml = 
     return "";
   }
 
-  const withUnsubscribe = text.replace(
-    /\{\{\s*unsubscribe\s*\}\}/gi,
-    "#unsubscribe",
-  );
+  const normalized = normalizeEmailMergeTags(text);
+  const withUnsubscribe = replaceUnsubscribeVariables(normalized, "#unsubscribe");
 
   if (!contact) {
     return withUnsubscribe;
@@ -1614,12 +1621,14 @@ function HorizontalDotsIcon() {
 function DesignSavedCard({
   html,
   fileName,
+  compact = false,
   onEdit,
   onReset,
   onPreview,
 }: {
   html: string;
   fileName: string;
+  compact?: boolean;
   onEdit: () => void;
   onReset: () => void;
   onPreview: () => void;
@@ -1657,14 +1666,16 @@ function DesignSavedCard({
   }
 
   return (
-    <div className="drip-design-saved">
+    <div className={`drip-design-saved${compact ? " drip-design-saved-compact" : ""}`}>
       <div className="drip-design-saved-head">
         <div className="drip-design-saved-title">
-          <span className="drip-step-icon done" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
-          </span>
+          {compact ? null : (
+            <span className="drip-step-icon done" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            </span>
+          )}
           <div className="title">Design</div>
         </div>
         <div className="drip-design-saved-actions">
@@ -2320,10 +2331,11 @@ function CustomHtmlEditor({
   onQuit: () => void;
   onSaveAndQuit: (html: string) => void;
 }) {
-  const [htmlDraft, setHtmlDraft] = useState(initialHtml);
+  const [htmlDraft, setHtmlDraft] = useState(() => normalizeEmailMergeTags(initialHtml));
   const [previewOpen, setPreviewOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  const htmlInputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (!moreOpen) {
@@ -2340,8 +2352,41 @@ function CustomHtmlEditor({
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [moreOpen]);
 
+  function applyNormalizedHtml(next: string, cursor?: number) {
+    setHtmlDraft(next);
+    if (cursor === undefined) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      const input = htmlInputRef.current;
+      if (!input) {
+        return;
+      }
+      input.setSelectionRange(cursor, cursor);
+    });
+  }
+
+  function handleHtmlPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const pasted = event.clipboardData.getData("text");
+    if (!pasted) {
+      return;
+    }
+
+    const start = event.currentTarget.selectionStart;
+    const end = event.currentTarget.selectionEnd;
+    const merged = htmlDraft.slice(0, start) + pasted + htmlDraft.slice(end);
+    const normalized = normalizeEmailMergeTags(merged);
+    if (normalized === merged) {
+      return;
+    }
+
+    event.preventDefault();
+    const prefix = normalizeEmailMergeTags(htmlDraft.slice(0, start) + pasted);
+    applyNormalizedHtml(normalized, prefix.length);
+  }
+
   function handleSaveAndQuit() {
-    onSaveAndQuit(htmlDraft);
+    onSaveAndQuit(normalizeEmailMergeTags(htmlDraft));
   }
 
   return (
@@ -2354,7 +2399,14 @@ function CustomHtmlEditor({
           <span className="drip-html-editor-name">{campaign.name}</span>
         </div>
         <div className="drip-html-editor-actions">
-          <button type="button" className="drip-html-btn-outline" onClick={() => setPreviewOpen(true)}>
+          <button
+            type="button"
+            className="drip-html-btn-outline"
+            onClick={() => {
+              setHtmlDraft((current) => normalizeEmailMergeTags(current));
+              setPreviewOpen(true);
+            }}
+          >
             Preview &amp; Test
           </button>
           <button type="button" className="drip-html-btn-dark" onClick={handleSaveAndQuit}>
@@ -2391,13 +2443,21 @@ function CustomHtmlEditor({
 
       <div className="drip-html-editor-canvas">
         <div className="drip-html-variable-hint">
-          Use <code>{"{{ unsubscribe }}"}</code> in a link, for example{" "}
-          <code>{`<a href="{{ unsubscribe }}">Unsubscribe</a>`}</code>
+          Unsubscribe tags already in your HTML, such as{" "}
+          <code>{"{{ unsubscribe }}"}</code> or{" "}
+          <code>{"{{Unsubscribe}}"}</code>, are updated in place. Other merge
+          tags become <code>{"{{ contact.FIRSTNAME }}"}</code>,{" "}
+          <code>{"{{ contact.LASTNAME }}"}</code>,{" "}
+          <code>{"{{ contact.EMAIL }}"}</code>, and{" "}
+          <code>{"{{ contact.COMPANY }}"}</code>.
         </div>
         <textarea
+          ref={htmlInputRef}
           className="drip-html-editor-input"
           value={htmlDraft}
           onChange={(event) => setHtmlDraft(event.target.value)}
+          onPaste={handleHtmlPaste}
+          onBlur={() => setHtmlDraft((current) => normalizeEmailMergeTags(current))}
           placeholder="Paste or write your custom HTML email here."
           spellCheck={false}
         />
@@ -2531,10 +2591,11 @@ function DesignEmailModal({
   }, [campaignEmails, search]);
 
   function handleSaveCustomHtml(html: string) {
-    const trimmed = html.trim();
+    const normalized = normalizeEmailMergeTags(html);
+    const trimmed = normalized.trim();
     onSaveDesign({
       hasDesign: Boolean(trimmed),
-      designHtml: html,
+      designHtml: normalized,
       designSourceCampaignId: undefined,
     });
   }
@@ -2554,7 +2615,7 @@ function DesignEmailModal({
 
     onSaveDesign({
       hasDesign: true,
-      designHtml: html,
+      designHtml: normalizeEmailMergeTags(html),
       designSourceCampaignId: templateId,
     });
   }
@@ -3001,11 +3062,274 @@ function SettingsPanel({
   );
 }
 
+function SequencesPanel({
+  campaign,
+  sequences,
+  windowStart,
+  windowEnd,
+  emailGapMinutes,
+  onClose,
+  onSave,
+  onChange,
+  onDesign,
+  onPreview,
+  onResetDesign,
+}: {
+  campaign: DripCampaign;
+  sequences: CampaignSequence[];
+  windowStart: string;
+  windowEnd: string;
+  emailGapMinutes: number;
+  onClose: () => void;
+  onSave: () => void;
+  onChange: (patch: {
+    sequences: CampaignSequence[];
+    windowStart: string;
+    windowEnd: string;
+    emailGapMinutes: number;
+  }) => void;
+  onDesign: (sequenceId: string) => void;
+  onPreview: (sequenceId: string) => void;
+  onResetDesign: (sequenceId: string) => void;
+}) {
+  function updateSequence(id: string, patch: Partial<CampaignSequence>) {
+    onChange({
+      sequences: sequences.map((sequence) =>
+        sequence.id === id ? { ...sequence, ...patch } : sequence,
+      ),
+      windowStart,
+      windowEnd,
+      emailGapMinutes,
+    });
+  }
+
+  return (
+    <div className="drip-settings-panel drip-sequences-panel">
+      <div className="drip-sender-panel-head">
+        <div className="drip-sender-panel-title">
+          <div>
+            <h3>Email sequences</h3>
+            <p>Each contact gets the next email after the wait you set.</p>
+          </div>
+        </div>
+        <button type="button" className="crm-modal-close" onClick={onClose} aria-label="Close">
+          ×
+        </button>
+      </div>
+
+      <div className="drip-sequences-timing">
+        <div className="crm-field">
+          <label htmlFor="seq-window-start">Start sending</label>
+          <input
+            id="seq-window-start"
+            type="time"
+            value={windowStart}
+            onChange={(event) =>
+              onChange({
+                sequences,
+                windowStart: event.target.value,
+                windowEnd,
+                emailGapMinutes,
+              })
+            }
+          />
+        </div>
+        <div className="crm-field">
+          <label htmlFor="seq-window-end">Stop sending</label>
+          <input
+            id="seq-window-end"
+            type="time"
+            value={windowEnd}
+            onChange={(event) =>
+              onChange({
+                sequences,
+                windowStart,
+                windowEnd: event.target.value,
+                emailGapMinutes,
+              })
+            }
+          />
+        </div>
+        <div className="crm-field">
+          <label htmlFor="seq-gap">Gap between emails (minutes)</label>
+          <input
+            id="seq-gap"
+            type="number"
+            min={0}
+            max={1440}
+            value={emailGapMinutes}
+            onChange={(event) =>
+              onChange({
+                sequences,
+                windowStart,
+                windowEnd,
+                emailGapMinutes: Math.max(0, Number(event.target.value) || 0),
+              })
+            }
+          />
+        </div>
+      </div>
+      <p className="drip-sequences-hint">
+        Emails for {campaign.name} only go out between the start and stop times, with the gap
+        between each send.
+      </p>
+
+      <div className="drip-sequence-list">
+        {sequences.map((sequence, index) => (
+          <div key={sequence.id} className="drip-sequence-card">
+            <div className="drip-sequence-card-head">
+              <strong>Sequence {index + 1}</strong>
+              {sequences.length > 1 ? (
+                <button
+                  type="button"
+                  className="btn-link-purple"
+                  onClick={() =>
+                    onChange({
+                      sequences: sequences.filter((item) => item.id !== sequence.id),
+                      windowStart,
+                      windowEnd,
+                      emailGapMinutes,
+                    })
+                  }
+                >
+                  Remove
+                </button>
+              ) : null}
+            </div>
+            {index > 0 ? (
+              <div className="crm-field">
+                <label htmlFor={`seq-delay-${sequence.id}`}>Days after previous sequence</label>
+                <input
+                  id={`seq-delay-${sequence.id}`}
+                  type="number"
+                  min={0}
+                  max={365}
+                  value={sequence.delayDays}
+                  onChange={(event) =>
+                    updateSequence(sequence.id, {
+                      delayDays: Math.max(0, Number(event.target.value) || 0),
+                    })
+                  }
+                />
+                <p className="drip-sequences-hint">
+                  Use 0 to send this sequence the same day, after the previous email.
+                </p>
+              </div>
+            ) : (
+              <p className="drip-sequences-hint">Sends first when the campaign starts.</p>
+            )}
+            <div className="crm-field">
+              <label htmlFor={`seq-subject-${sequence.id}`}>Subject</label>
+              <input
+                id={`seq-subject-${sequence.id}`}
+                type="text"
+                value={sequence.subject ?? ""}
+                placeholder="Add a subject line"
+                onChange={(event) => updateSequence(sequence.id, { subject: event.target.value })}
+              />
+            </div>
+            <div className="crm-field">
+              <label htmlFor={`seq-preview-${sequence.id}`}>Preview text</label>
+              <input
+                id={`seq-preview-${sequence.id}`}
+                type="text"
+                value={sequence.previewText ?? ""}
+                placeholder="Optional preview text"
+                onChange={(event) =>
+                  updateSequence(sequence.id, { previewText: event.target.value })
+                }
+              />
+            </div>
+            {sequence.hasDesign && sequence.designHtml?.trim() ? (
+              <DesignSavedCard
+                compact
+                html={sequence.designHtml}
+                fileName={`${campaign.name}-sequence-${index + 1}`}
+                onEdit={() => onDesign(sequence.id)}
+                onPreview={() => onPreview(sequence.id)}
+                onReset={() => onResetDesign(sequence.id)}
+              />
+            ) : (
+              <div className="drip-sequence-design">
+                <span>No design yet.</span>
+                <button type="button" className="btn-soft" onClick={() => onDesign(sequence.id)}>
+                  Start designing
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        className="btn-soft drip-sequence-add"
+        onClick={() =>
+          onChange({
+            sequences: [...sequences, createEmptySequence(sequences.length)],
+            windowStart,
+            windowEnd,
+            emailGapMinutes,
+          })
+        }
+      >
+        Add sequence
+      </button>
+
+      <div className="drip-sender-panel-foot">
+        <button type="button" className="btn-link-purple" onClick={onClose}>
+          Cancel
+        </button>
+        <button type="button" className="btn-dark" onClick={onSave}>
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function buildSteps(campaign: DripCampaign, remainingEmails?: number): SetupStep[] {
   const senderDone = Boolean(campaign.senderId && campaign.senderEmail);
   const recipientsDone =
     Boolean(campaign.listId && campaign.listName) ||
     (campaign.individualContacts?.length ?? 0) > 0;
+  const oneOne = isOneOneCampaign(campaign);
+  const sequenceCount = campaignSequences(campaign).length;
+
+  const contentSteps: SetupStep[] = oneOne
+    ? [
+        {
+          id: "sequences",
+          title: "Sequences",
+          subtitle: sequencesReady(campaign)
+            ? `${sequenceCount} sequence${sequenceCount === 1 ? "" : "s"} ready · ${campaign.windowStart || "09:00"}–${campaign.windowEnd || "18:00"}`
+            : "Add emails, a sending window, and days between each sequence.",
+          action: "Manage sequences",
+          done: sequencesReady(campaign),
+        },
+      ]
+    : [
+        {
+          id: "subject",
+          title: "Subject",
+          subtitle: campaign.subject
+            ? campaign.subject
+            : "Add a subject line for this campaign.",
+          action: "Add subject",
+          done: Boolean(campaign.subject),
+        },
+        {
+          id: "design",
+          title: "Design",
+          subtitle: campaign.hasDesign
+            ? campaign.designSourceCampaignId
+              ? `Based on campaign #${campaign.designSourceCampaignId}`
+              : "Custom HTML email saved."
+            : "Create your email content.",
+          action: "Start designing",
+          done: Boolean(campaign.hasDesign),
+        },
+      ];
 
   return [
     {
@@ -3033,26 +3357,7 @@ function buildSteps(campaign: DripCampaign, remainingEmails?: number): SetupStep
       action: recipientsDone ? "Manage recipients" : "Add recipients",
       done: recipientsDone,
     },
-    {
-      id: "subject",
-      title: "Subject",
-      subtitle: campaign.subject
-        ? campaign.subject
-        : "Add a subject line for this campaign.",
-      action: "Add subject",
-      done: Boolean(campaign.subject),
-    },
-    {
-      id: "design",
-      title: "Design",
-      subtitle: campaign.hasDesign
-        ? campaign.designSourceCampaignId
-          ? `Based on campaign #${campaign.designSourceCampaignId}`
-          : "Custom HTML email saved."
-        : "Create your email content.",
-      action: "Start designing",
-      done: Boolean(campaign.hasDesign),
-    },
+    ...contentSteps,
     {
       id: "settings",
       title: "Additional settings",
@@ -3204,7 +3509,13 @@ function ScheduleModal({
   );
 }
 
-export default function PortalCampaignDetailPage({ campaignId }: { campaignId: string }) {
+export default function PortalCampaignDetailPage({
+  campaignId,
+  kind = "drip",
+}: {
+  campaignId: string;
+  kind?: CampaignKind;
+}) {
   const router = useRouter();
   const [campaign, setCampaign] = useState<DripCampaign | null>(null);
   const [loading, setLoading] = useState(true);
@@ -3212,8 +3523,15 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
   const [recipientsPanelOpen, setRecipientsPanelOpen] = useState(false);
   const [subjectPanelOpen, setSubjectPanelOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [sequencesPanelOpen, setSequencesPanelOpen] = useState(false);
   const [designModalOpen, setDesignModalOpen] = useState(false);
+  const [designSequenceId, setDesignSequenceId] = useState<string | null>(null);
+  const [previewSequenceId, setPreviewSequenceId] = useState<string | null>(null);
   const [campaignPreviewOpen, setCampaignPreviewOpen] = useState(false);
+  const [nameEditing, setNameEditing] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const skipNameSaveRef = useRef(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleSuccessMessage, setScheduleSuccessMessage] = useState("");
   const [setupErrorToast, setSetupErrorToast] = useState(0);
@@ -3236,6 +3554,10 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
   const [draftAttachmentName, setDraftAttachmentName] = useState("");
   const [draftTimezoneEnabled, setDraftTimezoneEnabled] = useState(false);
   const [draftTimezone, setDraftTimezone] = useState("Asia/Kolkata");
+  const [draftSequences, setDraftSequences] = useState<CampaignSequence[]>([]);
+  const [draftWindowStart, setDraftWindowStart] = useState("09:00");
+  const [draftWindowEnd, setDraftWindowEnd] = useState("18:00");
+  const [draftEmailGapMinutes, setDraftEmailGapMinutes] = useState(5);
   const campaignRef = useRef<DripCampaign | null>(null);
 
   useEffect(() => {
@@ -3285,13 +3607,24 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
       setLoading(true);
       try {
         const [next, all] = await Promise.all([
-          fetchDripCampaign(campaignId),
+          fetchDripCampaign(campaignId, kind),
           fetchDripCampaigns().catch(() => [] as DripCampaign[]),
         ]);
-        if (!cancelled) {
-          setCampaign(next);
-          setProjectCampaigns(all);
+        if (cancelled) {
+          return;
         }
+        if (!next && kind === "drip") {
+          const fallback = await fetchDripCampaign(campaignId);
+          if (cancelled) {
+            return;
+          }
+          if (fallback && isOneOneCampaign(fallback)) {
+            router.replace(portalCampaignRoute(fallback.id, "oneone"));
+            return;
+          }
+        }
+        setCampaign(next);
+        setProjectCampaigns(all);
       } catch {
         if (!cancelled) {
           setCampaign(null);
@@ -3306,7 +3639,7 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     return () => {
       cancelled = true;
     };
-  }, [campaignId]);
+  }, [campaignId, kind, router]);
 
   useEffect(() => {
     return () => {
@@ -3314,9 +3647,9 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
       if (!current || current.status === "sent" || current.status === "sending") {
         return;
       }
-      void patchDripCampaign(campaignId, current).catch(() => undefined);
+      void patchDripCampaign(campaignId, current, kind).catch(() => undefined);
     };
-  }, [campaignId]);
+  }, [campaignId, kind]);
 
   useEffect(() => {
     if (!senderPanelOpen && !recipientsPanelOpen) {
@@ -3396,6 +3729,14 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     setDraftListId(campaign?.listId ?? "");
   }, [recipientsPanelOpen, campaign?.listId, campaign?.individualContacts]);
 
+  useEffect(() => {
+    if (!nameEditing) {
+      return;
+    }
+    nameInputRef.current?.focus();
+    nameInputRef.current?.select();
+  }, [nameEditing]);
+
   const steps = useMemo(
     () => (campaign ? buildSteps(campaign, remainingEmails) : []),
     [campaign, remainingEmails],
@@ -3413,7 +3754,7 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
       return next;
     });
     try {
-      const updated = await patchDripCampaign(campaignId, patch);
+      const updated = await patchDripCampaign(campaignId, patch, kind);
       campaignRef.current = updated;
       setCampaign(updated);
       setProjectCampaigns((current) =>
@@ -3429,8 +3770,48 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     }
   }
 
+  function startRename() {
+    skipNameSaveRef.current = false;
+    setDraftName(campaignRef.current?.name ?? "");
+    setNameEditing(true);
+  }
+
+  function cancelRename() {
+    skipNameSaveRef.current = true;
+    setNameEditing(false);
+    setDraftName("");
+  }
+
+  async function saveRename() {
+    if (skipNameSaveRef.current) {
+      skipNameSaveRef.current = false;
+      return;
+    }
+    const name = draftName.trim();
+    if (!name) {
+      cancelRename();
+      return;
+    }
+    if (name === campaignRef.current?.name) {
+      setNameEditing(false);
+      return;
+    }
+    try {
+      await persistCampaign({ name });
+      setNameEditing(false);
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to save campaign name",
+      );
+    }
+  }
+
   function pendingDraftPatch(): Partial<DripCampaign> {
     const patch: Partial<DripCampaign> = {};
+
+    if (nameEditing && draftName.trim()) {
+      patch.name = draftName.trim();
+    }
 
     if (senderPanelOpen && draftSenderId) {
       const selected = senders.find((sender) => sender.id === draftSenderId);
@@ -3465,6 +3846,18 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
       patch.previewText = draftPreviewText.trim();
     }
 
+    if (sequencesPanelOpen) {
+      Object.assign(
+        patch,
+        sequenceCampaignPatch(
+          draftSequences,
+          draftWindowStart,
+          draftWindowEnd,
+          draftEmailGapMinutes,
+        ),
+      );
+    }
+
     if (settingsPanelOpen) {
       patch.replyToEnabled = draftReplyToEnabled;
       patch.replyToEmail = draftReplyToEnabled ? draftReplyToEmail.trim() : "";
@@ -3492,7 +3885,11 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
         // Navigate anyway; latest successful save is already in MongoDB.
       }
     }
-    router.push(PORTAL_ROUTES.drip);
+    router.push(
+      current?.kind === "oneone" || kind === "oneone"
+        ? PORTAL_ROUTES.oneone
+        : PORTAL_ROUTES.drip,
+    );
   }
 
   function closeAllPanels() {
@@ -3500,7 +3897,9 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     setRecipientsPanelOpen(false);
     setSubjectPanelOpen(false);
     setSettingsPanelOpen(false);
+    setSequencesPanelOpen(false);
     setDesignModalOpen(false);
+    setDesignSequenceId(null);
   }
 
   async function handleSaveSender() {
@@ -3577,6 +3976,62 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     setSettingsPanelOpen(false);
   }
 
+  function loadSequenceDrafts(source: DripCampaign) {
+    setDraftSequences(campaignSequences(source));
+    setDraftWindowStart(source.windowStart || "09:00");
+    setDraftWindowEnd(source.windowEnd || "18:00");
+    setDraftEmailGapMinutes(Math.max(0, Number(source.emailGapMinutes) || 0));
+  }
+
+  function openSequencesPanel() {
+    if (!campaign) {
+      return;
+    }
+    closeAllPanels();
+    loadSequenceDrafts(campaign);
+    setSequencesPanelOpen(true);
+  }
+
+  function closeSequencesPanel() {
+    setSequencesPanelOpen(false);
+  }
+
+  function handleSequencesDraftChange(patch: {
+    sequences: CampaignSequence[];
+    windowStart: string;
+    windowEnd: string;
+    emailGapMinutes: number;
+  }) {
+    setDraftSequences(patch.sequences);
+    setDraftWindowStart(patch.windowStart);
+    setDraftWindowEnd(patch.windowEnd);
+    setDraftEmailGapMinutes(patch.emailGapMinutes);
+  }
+
+  async function persistSequences(options?: { closePanel?: boolean }) {
+    await persistCampaign(
+      sequenceCampaignPatch(
+        draftSequences,
+        draftWindowStart,
+        draftWindowEnd,
+        draftEmailGapMinutes,
+      ),
+    );
+    if (options?.closePanel) {
+      setSequencesPanelOpen(false);
+    }
+  }
+
+  async function handleSaveSequences() {
+    try {
+      await persistSequences({ closePanel: true });
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to save campaign",
+      );
+    }
+  }
+
   async function handleSaveSettings() {
     try {
       await persistCampaign({
@@ -3597,17 +4052,90 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
 
   function closeDesignModal() {
     setDesignModalOpen(false);
+    setDesignSequenceId(null);
   }
 
-  function openDesignModal() {
+  function openDesignModal(sequenceId?: string) {
     closeAllPanels();
+    setDesignSequenceId(sequenceId ?? null);
     setDesignModalOpen(true);
+  }
+
+  async function openSequenceDesign(sequenceId: string) {
+    try {
+      await persistSequences();
+      setDesignSequenceId(sequenceId);
+      setDesignModalOpen(true);
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to save campaign",
+      );
+    }
+  }
+
+  function handlePreviewSequence(sequenceId: string) {
+    setPreviewSequenceId(sequenceId);
+    setCampaignPreviewOpen(true);
+  }
+
+  async function handleResetSequenceDesign(sequenceId: string) {
+    const sequences = draftSequences.map((sequence) =>
+      sequence.id === sequenceId
+        ? {
+            ...sequence,
+            hasDesign: false,
+            designHtml: "",
+            designSourceCampaignId: undefined,
+          }
+        : sequence,
+    );
+    setDraftSequences(sequences);
+    try {
+      await persistCampaign(
+        sequenceCampaignPatch(
+          sequences,
+          draftWindowStart,
+          draftWindowEnd,
+          draftEmailGapMinutes,
+        ),
+      );
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to save campaign",
+      );
+    }
   }
 
   async function handleSaveDesign(
     patch: Pick<DripCampaign, "hasDesign" | "designHtml" | "designSourceCampaignId">,
   ) {
     try {
+      if (designSequenceId) {
+        const sequences = (draftSequences.length > 0
+          ? draftSequences
+          : campaign
+            ? campaignSequences(campaign)
+            : []
+        ).map((sequence) =>
+          sequence.id === designSequenceId ? { ...sequence, ...patch } : sequence,
+        );
+        await persistCampaign(
+          sequenceCampaignPatch(
+            sequences,
+            draftWindowStart || campaign?.windowStart || "09:00",
+            draftWindowEnd || campaign?.windowEnd || "18:00",
+            Number.isFinite(draftEmailGapMinutes)
+              ? draftEmailGapMinutes
+              : Math.max(0, Number(campaign?.emailGapMinutes) || 0),
+          ),
+        );
+        setDraftSequences(sequences);
+        setDesignModalOpen(false);
+        setDesignSequenceId(null);
+        setSequencesPanelOpen(true);
+        return;
+      }
+
       await persistCampaign(patch);
       setDesignModalOpen(false);
     } catch (error) {
@@ -3637,6 +4165,15 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
   }
 
   function getStepWrapperClass(stepId: string) {
+    if (sequencesPanelOpen) {
+      if (stepId === "sequences") {
+        return "drip-setup-step-expanded drip-setup-step-sequences-expanded";
+      }
+      if (stepId === "recipients") {
+        return "drip-setup-step-behind";
+      }
+    }
+
     if (subjectPanelOpen) {
       if (stepId === "subject") {
         return "drip-setup-step-expanded drip-setup-step-subject-expanded";
@@ -3650,7 +4187,7 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
       if (stepId === "settings") {
         return "drip-setup-step-expanded drip-setup-step-settings-expanded";
       }
-      if (stepId === "design") {
+      if (stepId === "design" || stepId === "sequences") {
         return "drip-setup-step-behind";
       }
     }
@@ -3738,6 +4275,15 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
       return;
     }
 
+    if (stepId === "sequences") {
+      if (sequencesPanelOpen) {
+        closeSequencesPanel();
+      } else {
+        openSequencesPanel();
+      }
+      return;
+    }
+
     if (stepId === "settings") {
       if (settingsPanelOpen) {
         closeSettingsPanel();
@@ -3755,7 +4301,10 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
     return (
       <div className="crm-empty">
         Campaign not found.{" "}
-        <Link href={PORTAL_ROUTES.drip} className="link-blue">
+        <Link
+          href={kind === "oneone" ? PORTAL_ROUTES.oneone : PORTAL_ROUTES.drip}
+          className="link-blue"
+        >
           Back to campaigns
         </Link>
       </div>
@@ -3764,6 +4313,27 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
 
   const statusLabel =
     campaign.status.charAt(0).toUpperCase() + campaign.status.slice(1);
+  const listHref =
+    campaign.kind === "oneone" || kind === "oneone"
+      ? PORTAL_ROUTES.oneone
+      : PORTAL_ROUTES.drip;
+  const listLabel = isOneOneCampaign(campaign) ? "1-1 campaigns" : "Email campaigns";
+  const sequenceSource =
+    draftSequences.length > 0 ? draftSequences : campaignSequences(campaign);
+  const previewSequence = previewSequenceId
+    ? sequenceSource.find((sequence) => sequence.id === previewSequenceId)
+    : sequenceSource[0];
+  const previewCampaign = isOneOneCampaign(campaign)
+    ? overlaySequenceOnCampaign(campaign, previewSequence)
+    : campaign;
+  const designCampaign = designSequenceId
+    ? overlaySequenceOnCampaign(
+        campaign,
+        (draftSequences.length > 0 ? draftSequences : campaignSequences(campaign)).find(
+          (sequence) => sequence.id === designSequenceId,
+        ),
+      )
+    : campaign;
 
   if (campaign.status === "sent" || campaign.status === "scheduled" || campaign.status === "sending") {
     return (
@@ -3779,8 +4349,8 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
   return (
     <div className="drip-detail-page">
       <div className="drip-detail-breadcrumb">
-        <Link href={PORTAL_ROUTES.drip} onClick={(event) => void goBackToList(event)}>
-          Email campaigns
+        <Link href={listHref} onClick={(event) => void goBackToList(event)}>
+          {listLabel}
         </Link>
         <span>/</span>
         <span>Create an email campaign</span>
@@ -3789,7 +4359,7 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
       <div className="drip-detail-head">
         <div className="drip-detail-title-wrap">
           <Link
-            href={PORTAL_ROUTES.drip}
+            href={listHref}
             className="drip-back"
             aria-label="Back to campaigns"
             onClick={(event) => void goBackToList(event)}
@@ -3798,13 +4368,41 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
               <path d="m15 18-6-6 6-6" />
             </svg>
           </Link>
-          <h2>{campaign.name}</h2>
-          <button type="button" className="drip-edit-name" aria-label="Edit campaign name">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-            </svg>
-          </button>
+          {nameEditing ? (
+            <input
+              ref={nameInputRef}
+              className="drip-edit-name-input"
+              value={draftName}
+              aria-label="Campaign name"
+              onChange={(event) => setDraftName(event.target.value)}
+              onBlur={() => void saveRename()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.currentTarget.blur();
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelRename();
+                }
+              }}
+            />
+          ) : (
+            <>
+              <h2>{campaign.name}</h2>
+              <button
+                type="button"
+                className="drip-edit-name"
+                aria-label="Edit campaign name"
+                onClick={startRename}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                </svg>
+              </button>
+            </>
+          )}
           <span className="drip-status-pill">{statusLabel}</span>
         </div>
         <div className="drip-detail-actions">
@@ -3838,7 +4436,7 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
       </div>
 
       <div
-        className={`drip-setup-card${senderPanelOpen || recipientsPanelOpen || subjectPanelOpen || settingsPanelOpen ? " drip-setup-card-active" : ""}`}
+        className={`drip-setup-card${senderPanelOpen || recipientsPanelOpen || subjectPanelOpen || settingsPanelOpen || sequencesPanelOpen ? " drip-setup-card-active" : ""}`}
       >
         <button type="button" className="drip-lang-link">
           <CrownIcon />
@@ -3904,6 +4502,20 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
                       designHtml: "",
                     });
                   }}
+                />
+              ) : step.id === "sequences" && sequencesPanelOpen ? (
+                <SequencesPanel
+                  campaign={campaign}
+                  sequences={draftSequences}
+                  windowStart={draftWindowStart}
+                  windowEnd={draftWindowEnd}
+                  emailGapMinutes={draftEmailGapMinutes}
+                  onClose={closeSequencesPanel}
+                  onSave={() => void handleSaveSequences()}
+                  onChange={handleSequencesDraftChange}
+                  onDesign={(sequenceId) => void openSequenceDesign(sequenceId)}
+                  onPreview={handlePreviewSequence}
+                  onResetDesign={(sequenceId) => void handleResetSequenceDesign(sequenceId)}
                 />
               ) : step.id === "settings" && settingsPanelOpen ? (
                 <SettingsPanel
@@ -3986,7 +4598,7 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
 
       {designModalOpen ? (
         <DesignEmailModal
-          campaign={campaign}
+          campaign={designCampaign}
           contacts={contacts}
           startInEditor={false}
           onClose={closeDesignModal}
@@ -3994,12 +4606,16 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
         />
       ) : null}
 
-      {campaignPreviewOpen && requiredStepsComplete ? (
+      {campaignPreviewOpen &&
+      (requiredStepsComplete || Boolean(previewSequenceId && previewCampaign.designHtml)) ? (
         <PreviewTestModal
-          campaign={campaign}
-          html={campaign.designHtml ?? ""}
+          campaign={previewCampaign}
+          html={previewCampaign.designHtml ?? ""}
           contacts={contacts}
-          onClose={() => setCampaignPreviewOpen(false)}
+          onClose={() => {
+            setCampaignPreviewOpen(false);
+            setPreviewSequenceId(null);
+          }}
         />
       ) : null}
 
@@ -4021,7 +4637,7 @@ export default function PortalCampaignDetailPage({ campaignId }: { campaignId: s
             const updated = mergeBlastReport(campaign, data);
             setCampaign(updated);
             setScheduleOpen(false);
-            router.push(`${PORTAL_ROUTES.drip}?notice=scheduled`);
+            router.push(`${listHref}?notice=scheduled`);
           }}
         />
       ) : null}

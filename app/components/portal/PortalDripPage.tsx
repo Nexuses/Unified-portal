@@ -9,6 +9,8 @@ import {
   fetchDripCampaigns,
   formatCampaignStatus,
   formatMetric,
+  formatSequenceProgress,
+  type CampaignKind,
   type CampaignStatus,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
@@ -63,8 +65,14 @@ function MetricColumn({ label, value, pct }: { label: string; value: number; pct
   );
 }
 
-export default function PortalDripPage() {
+export default function PortalDripPage({
+  kind = "drip",
+}: {
+  kind?: CampaignKind;
+}) {
   const router = useRouter();
+  const isOneOne = kind === "oneone";
+  const listTitle = isOneOne ? "1-1 Campaign" : "Drip Campaign";
   const [campaigns, setCampaigns] = useState<DripCampaign[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [search, setSearch] = useState("");
@@ -83,7 +91,7 @@ export default function PortalDripPage() {
     let cancelled = false;
     async function load() {
       try {
-        const next = await fetchDripCampaigns();
+        const next = await fetchDripCampaigns(kind);
         if (!cancelled) {
           setCampaigns(next);
         }
@@ -101,7 +109,7 @@ export default function PortalDripPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [kind]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -120,7 +128,7 @@ export default function PortalDripPage() {
     async function syncStats() {
       try {
         await fetch("/api/campaigns/process-due", { method: "POST" });
-        const next = await fetchDripCampaigns();
+        const next = await fetchDripCampaigns(kind);
         if (!cancelled) {
           setCampaigns(next);
         }
@@ -137,7 +145,7 @@ export default function PortalDripPage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [loaded]);
+  }, [loaded, kind]);
 
   useEffect(() => {
     if (!openMenuId) {
@@ -228,7 +236,7 @@ export default function PortalDripPage() {
     setDeletingId(campaign.id);
     setOpenMenuId(null);
     try {
-      await deleteDripCampaign(campaign.id);
+      await deleteDripCampaign(campaign.id, kind);
       setCampaigns((current) => current.filter((item) => item.id !== campaign.id));
       setSelectedIds((current) => {
         const next = new Set(current);
@@ -253,11 +261,11 @@ export default function PortalDripPage() {
 
     setCreateError("");
     try {
-      const campaign = await createDripCampaign(name);
+      const campaign = await createDripCampaign(name, kind);
       setCampaigns((current) => [campaign, ...current]);
       setShowCreate(false);
       setNewName("");
-      router.push(portalCampaignRoute(campaign.id));
+      router.push(portalCampaignRoute(campaign.id, kind));
     } catch (error) {
       setCreateError(
         error instanceof Error ? error.message : "Failed to create campaign",
@@ -289,7 +297,7 @@ export default function PortalDripPage() {
       {!showCreate ? (
         <div className="crm-page-head drip-page-head">
           <div>
-            <h2>Drip Campaign</h2>
+            <h2>{listTitle}</h2>
           </div>
           <div className="crm-actions">
             <button type="button" className="btn-dark" onClick={openCreateForm}>
@@ -300,7 +308,7 @@ export default function PortalDripPage() {
       ) : (
         <div className="crm-page-head">
           <div>
-            <h2>Drip Campaign</h2>
+            <h2>{listTitle}</h2>
           </div>
           <div className="crm-actions">
             <button type="button" className="btn-soft" onClick={closeCreateForm}>
@@ -315,8 +323,9 @@ export default function PortalDripPage() {
           <div className="drip-create-panel">
           <h3>Create an email campaign</h3>
           <p className="drip-create-copy">
-            Keep subscribers engaged by sharing your latest news, promoting your
-            bestselling products, or announcing an upcoming event.
+            {isOneOne
+              ? "Send a sequence of emails to the same contacts, with a wait between each step and a daily sending window."
+              : "Keep subscribers engaged by sharing your latest news, promoting your bestselling products, or announcing an upcoming event."}
           </p>
           <form onSubmit={handleCreate} className="drip-create-form">
             <div className="crm-field">
@@ -448,6 +457,7 @@ export default function PortalDripPage() {
           ) : (
             pageItems.map((campaign) => {
               const status = formatCampaignStatus(campaign);
+              const progress = formatSequenceProgress(campaign.sequenceProgress);
               const recipients = formatMetric(campaign.recipients, campaign.recipients);
               const opens = formatMetric(campaign.opens, campaign.recipients);
               const clicks = formatMetric(campaign.clicks, campaign.recipients);
@@ -466,7 +476,7 @@ export default function PortalDripPage() {
                     aria-label={`Select ${campaign.name}`}
                   />
                   <div className="drip-card-inner">
-                    <Link href={portalCampaignRoute(campaign.id)} className="drip-main">
+                    <Link href={portalCampaignRoute(campaign.id, kind)} className="drip-main">
                       <div className="drip-title">{campaign.name}</div>
                       <div className="drip-status">
                         <span className={`dot ${campaign.status}`} />
@@ -475,7 +485,19 @@ export default function PortalDripPage() {
                       </div>
                       <div className="drip-id">#{campaign.id}</div>
                     </Link>
-                    <div className="drip-metrics">
+                    <div className={`drip-metrics${isOneOne ? " drip-metrics-oneone" : ""}`}>
+                      {isOneOne ? (
+                        <div className="drip-metric">
+                          <div className="k">Progress</div>
+                          <div className="v">
+                            {progress?.sequence ?? "—"}
+                          </div>
+                          <div className="p">
+                            {progress?.sent ??
+                              (campaign.status === "draft" ? "Not started" : "—")}
+                          </div>
+                        </div>
+                      ) : null}
                       <MetricColumn label="Recipients" value={recipients.value} pct={recipients.pct} />
                       <MetricColumn label="Opens" value={opens.value} pct={opens.pct} />
                       <MetricColumn label="Clicks" value={clicks.value} pct={clicks.pct} />
@@ -489,7 +511,9 @@ export default function PortalDripPage() {
                       {campaign.status === "sending" ? (
                         <span className="drip-row-status drip-row-status-running">
                           <RowStatusSpinner />
-                          Running
+                          {isOneOne && campaign.sequenceProgress
+                            ? `Running · Seq ${campaign.sequenceProgress.current} of ${campaign.sequenceProgress.total}`
+                            : "Running"}
                         </span>
                       ) : campaign.status === "sent" ? (
                         <span className="drip-row-status drip-row-status-complete">Complete</span>

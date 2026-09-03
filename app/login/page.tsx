@@ -3,7 +3,7 @@ import BrevoAuthCard from "../components/BrevoAuthCard";
 export default function UserLoginPage() {
   return (
     <BrevoAuthCard
-      heading="Log In"
+      heading="Welcome back"
       submitLabel="Log In"
       authMode="user"
       redirectTo="/portal"

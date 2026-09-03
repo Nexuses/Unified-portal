@@ -1,6 +1,18 @@
 export type CampaignStatus = "draft" | "scheduled" | "sending" | "sent" | "paused";
 
+export type CampaignKind = "drip" | "oneone";
+
 export type RecipientMode = "list" | "individual";
+
+export type CampaignSequence = {
+  id: string;
+  delayDays: number;
+  subject?: string;
+  previewText?: string;
+  hasDesign?: boolean;
+  designHtml?: string;
+  designSourceCampaignId?: string;
+};
 
 export type CampaignIndividualContact = {
   id: string;
@@ -8,9 +20,17 @@ export type CampaignIndividualContact = {
   fullName: string;
 };
 
+export type CampaignSequenceProgress = {
+  current: number;
+  total: number;
+  sent: number;
+  contacts: number;
+};
+
 export type DripCampaign = {
   id: string;
   name: string;
+  kind?: CampaignKind;
   status: CampaignStatus;
   scheduledAt?: string;
   sentAt?: string;
@@ -41,6 +61,11 @@ export type DripCampaign = {
   timezone?: string;
   listDisplayId?: number;
   shareToken?: string;
+  sequences?: CampaignSequence[];
+  windowStart?: string;
+  windowEnd?: string;
+  emailGapMinutes?: number;
+  sequenceProgress?: CampaignSequenceProgress;
   timeline?: Array<{
     id: string;
     type: "draft" | "scheduled" | "sent";
@@ -50,12 +75,99 @@ export type DripCampaign = {
   }>;
 };
 
+export function createEmptySequence(index = 0): CampaignSequence {
+  return {
+    id: `seq-${Date.now().toString(36)}-${index}-${Math.random().toString(36).slice(2, 6)}`,
+    delayDays: index === 0 ? 0 : 1,
+  };
+}
+
+export function isOneOneCampaign(campaign: Pick<DripCampaign, "kind">) {
+  return campaign.kind === "oneone";
+}
+
+export function campaignSequences(campaign: DripCampaign) {
+  if (campaign.sequences && campaign.sequences.length > 0) {
+    return campaign.sequences;
+  }
+  if (!isOneOneCampaign(campaign)) {
+    return [];
+  }
+  return [
+    {
+      ...createEmptySequence(0),
+      subject: campaign.subject,
+      previewText: campaign.previewText,
+      hasDesign: campaign.hasDesign,
+      designHtml: campaign.designHtml,
+      designSourceCampaignId: campaign.designSourceCampaignId,
+    },
+  ];
+}
+
+export function sequencesReady(campaign: DripCampaign) {
+  const sequences = campaignSequences(campaign);
+  if (sequences.length === 0) {
+    return false;
+  }
+  if (!campaign.windowStart?.trim() || !campaign.windowEnd?.trim()) {
+    return false;
+  }
+  return sequences.every(
+    (sequence, index) =>
+      Boolean(sequence.subject?.trim()) &&
+      Boolean(sequence.hasDesign && sequence.designHtml?.trim()) &&
+      (index === 0 || Number(sequence.delayDays) >= 0),
+  );
+}
+
+export function overlaySequenceOnCampaign(
+  campaign: DripCampaign,
+  sequence?: CampaignSequence,
+): DripCampaign {
+  if (!sequence) {
+    return campaign;
+  }
+  return {
+    ...campaign,
+    subject: sequence.subject,
+    previewText: sequence.previewText,
+    hasDesign: sequence.hasDesign,
+    designHtml: sequence.designHtml,
+    designSourceCampaignId: sequence.designSourceCampaignId,
+  };
+}
+
+export function sequenceCampaignPatch(
+  sequences: CampaignSequence[],
+  windowStart: string,
+  windowEnd: string,
+  emailGapMinutes: number,
+): Partial<DripCampaign> {
+  const first = sequences[0];
+  return {
+    sequences,
+    windowStart,
+    windowEnd,
+    emailGapMinutes,
+    subject: first?.subject,
+    previewText: first?.previewText,
+    hasDesign: first?.hasDesign,
+    designHtml: first?.designHtml,
+    designSourceCampaignId: first?.designSourceCampaignId,
+  };
+}
+
 export function formatCampaignStatus(campaign: DripCampaign) {
   if (campaign.status === "scheduled" && campaign.scheduledAt) {
     return { label: "Scheduled", detail: `Scheduled for ${campaign.scheduledAt}` };
   }
   if (campaign.status === "sending") {
-    return { label: "Sending", detail: "Campaign is running" };
+    const progress = formatSequenceProgress(campaign.sequenceProgress);
+    return {
+      label: "Sending",
+      detail: progress ? `${progress.sequence} · ${progress.sent}` : "Campaign is running",
+    };
   }
   if (campaign.status === "sent" && campaign.sentAt) {
     const sent = formatCampaignClock(campaign.sentAt, campaign.timezone);
@@ -119,6 +231,7 @@ export function mergeBlastReport(
     listName?: string;
     subject?: string;
     timeline?: DripCampaign["timeline"];
+    sequenceProgress?: CampaignSequenceProgress;
   },
 ): DripCampaign {
   const timezone = campaign.timezone || "Asia/Kolkata";
@@ -144,6 +257,7 @@ export function mergeBlastReport(
     listName: report.listName ?? campaign.listName,
     subject: report.subject ?? campaign.subject,
     timeline: report.timeline ?? campaign.timeline,
+    sequenceProgress: report.sequenceProgress ?? campaign.sequenceProgress,
   };
 }
 
@@ -163,10 +277,28 @@ export function formatMetric(value: number, total: number) {
   return { value, pct: label };
 }
 
+export function formatSequenceProgress(progress?: CampaignSequenceProgress) {
+  if (!progress) {
+    return null;
+  }
+  return {
+    sequence: `Sequence ${progress.current} of ${progress.total}`,
+    sent: `${progress.sent} of ${progress.contacts} sent`,
+  };
+}
+
 export const EMAIL_PLAN_LIMIT = 50000;
 export const MAX_INDIVIDUAL_CONTACTS = 10;
 
 const NO_STORE: RequestInit = { cache: "no-store" };
+
+export function parseCampaignKind(value?: string | null): CampaignKind | undefined {
+  return value === "oneone" || value === "drip" ? value : undefined;
+}
+
+function campaignKindSearch(kind?: CampaignKind) {
+  return kind ? `?kind=${encodeURIComponent(kind)}` : "";
+}
 
 export function getRemainingEmailCredits(
   campaigns: DripCampaign[],
@@ -179,8 +311,9 @@ export function getRemainingEmailCredits(
   return Math.max(0, planLimit - used);
 }
 
-export async function fetchDripCampaigns(): Promise<DripCampaign[]> {
-  const response = await fetch("/api/campaigns", NO_STORE);
+export async function fetchDripCampaigns(kind?: CampaignKind): Promise<DripCampaign[]> {
+  const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  const response = await fetch(`/api/campaigns${query}`, NO_STORE);
   const data = await response.json();
   if (!response.ok) {
     throw new Error(
@@ -192,9 +325,10 @@ export async function fetchDripCampaigns(): Promise<DripCampaign[]> {
 
 export async function fetchDripCampaign(
   id: string,
+  kind?: CampaignKind,
 ): Promise<DripCampaign | null> {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(id)}`,
+    `/api/campaigns/${encodeURIComponent(id)}${campaignKindSearch(kind)}`,
     NO_STORE,
   );
   if (response.status === 404) {
@@ -209,12 +343,15 @@ export async function fetchDripCampaign(
   return data as DripCampaign;
 }
 
-export async function createDripCampaign(name: string): Promise<DripCampaign> {
+export async function createDripCampaign(
+  name: string,
+  kind: CampaignKind = "drip",
+): Promise<DripCampaign> {
   const response = await fetch("/api/campaigns", {
     ...NO_STORE,
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, kind }),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -228,8 +365,9 @@ export async function createDripCampaign(name: string): Promise<DripCampaign> {
 export async function patchDripCampaign(
   id: string,
   patch: Partial<DripCampaign>,
+  kind?: CampaignKind,
 ): Promise<DripCampaign> {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(id)}`, {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(id)}${campaignKindSearch(kind)}`, {
     ...NO_STORE,
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -244,8 +382,11 @@ export async function patchDripCampaign(
   return data as DripCampaign;
 }
 
-export async function deleteDripCampaign(id: string): Promise<void> {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(id)}`, {
+export async function deleteDripCampaign(
+  id: string,
+  kind?: CampaignKind,
+): Promise<void> {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(id)}${campaignKindSearch(kind)}`, {
     ...NO_STORE,
     method: "DELETE",
   });

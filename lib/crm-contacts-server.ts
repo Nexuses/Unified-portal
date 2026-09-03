@@ -1,4 +1,4 @@
-import type { ObjectId } from "mongodb";
+import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import {
   buildContactHistory,
@@ -160,24 +160,26 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
     return { events: [] as ContactHistoryEvent[], stats: emptyStats };
   }
 
-  const campaignIds = [...new Set(sends.map((send) => send.campaignId))];
+  const blastIds = [
+    ...new Set(sends.map((send) => send.blastId.toString()).filter(Boolean)),
+  ];
   const blasts = await db
     .collection<CampaignBlastDoc>("campaign_blasts")
     .find({
-      projectId,
-      campaignId: { $in: campaignIds },
+      _id: { $in: blastIds.map((id) => new ObjectId(id)) },
     })
     .toArray();
-  const blastMap = new Map(blasts.map((blast) => [blast.campaignId, blast]));
+  const blastMap = new Map(blasts.map((blast) => [blast._id.toString(), blast]));
 
   const events: ContactHistoryEvent[] = [];
   const stats: ContactCampaignStats = { ...emptyStats };
 
   for (const send of sends) {
-    const blast = blastMap.get(send.campaignId);
+    const blast = blastMap.get(send.blastId.toString());
     const campaignName = blast?.name || `Campaign #${send.campaignId}`;
     const actor = blast?.senderName || blast?.senderEmail || "Email campaign";
     const label = `[${send.campaignId}] ${campaignName}`;
+    const campaignKind = blast?.kind === "oneone" ? "oneone" : "drip";
 
     if (send.status === "sent" || send.status === "failed") {
       stats.sent += 1;
@@ -189,6 +191,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         at: toIso(send.sentAt),
         actor,
         campaignId: send.campaignId,
+        campaignKind,
         campaignName,
       });
     }
@@ -203,6 +206,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         at: toIso(send.sentAt),
         actor,
         campaignId: send.campaignId,
+        campaignKind,
         campaignName,
       });
     }
@@ -217,6 +221,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         at: toIso(send.openedAt),
         actor,
         campaignId: send.campaignId,
+        campaignKind,
         campaignName,
       });
     }
@@ -244,6 +249,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         at: toIso(click.at),
         actor,
         campaignId: send.campaignId,
+        campaignKind,
         campaignName,
         clickedUrl: url,
       });
@@ -258,6 +264,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         at: toIso(send.unsubscribedAt),
         actor,
         campaignId: send.campaignId,
+        campaignKind,
         campaignName,
       });
     }

@@ -131,6 +131,7 @@ export type ContactHistoryEvent = {
   companyName?: string;
   importFileName?: string;
   campaignId?: string;
+  campaignKind?: "drip" | "oneone";
   campaignName?: string;
   clickedUrl?: string;
 };

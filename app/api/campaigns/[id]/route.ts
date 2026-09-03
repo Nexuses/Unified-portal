@@ -6,6 +6,7 @@ import {
   updateProjectDripCampaign,
 } from "@/lib/drip-campaigns-server";
 import type { DripCampaign } from "@/lib/drip-campaigns";
+import { parseCampaignKind } from "@/lib/drip-campaigns";
 import {
   isSessionError,
   requirePortalSession,
@@ -17,7 +18,7 @@ type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
-export async function GET(_request: NextRequest, context: RouteContext) {
+export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) {
@@ -25,9 +26,11 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
+    const kind = parseCampaignKind(request.nextUrl.searchParams.get("kind"));
     const campaign = await getProjectDripCampaign(
       new ObjectId(session.projectId),
       id,
+      kind,
     );
 
     if (!campaign) {
@@ -52,11 +55,13 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
+    const kind = parseCampaignKind(request.nextUrl.searchParams.get("kind"));
     const body = (await request.json()) as Partial<DripCampaign>;
     const campaign = await updateProjectDripCampaign(
       new ObjectId(session.projectId),
       id,
       body,
+      kind,
     );
 
     if (!campaign) {
@@ -77,7 +82,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   }
 }
 
-export async function DELETE(_request: NextRequest, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) {
@@ -85,9 +90,11 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
+    const kind = parseCampaignKind(request.nextUrl.searchParams.get("kind"));
     const deleted = await deleteProjectDripCampaign(
       new ObjectId(session.projectId),
       id,
+      kind,
     );
 
     if (!deleted) {

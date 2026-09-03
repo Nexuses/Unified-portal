@@ -26,6 +26,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       found.projectId,
       found.campaign.id,
       filter,
+      found.campaign.kind,
     );
 
     return NextResponse.json(

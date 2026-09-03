@@ -48,8 +48,15 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
 
 export const PORTAL_CAMPAIGN_EDIT_ROUTE = "/portal/marketing/campaigns/edit";
 
-export function portalCampaignRoute(id: string) {
-  return `/portal/marketing/campaigns/${id}`;
+export function portalCampaignRoute(id: string, kind?: string) {
+  if (kind === "oneone") {
+    return `/portal/marketing/one-one/${encodeURIComponent(id)}`;
+  }
+  return `/portal/marketing/campaigns/${encodeURIComponent(id)}`;
+}
+
+export function campaignListRoute(kind?: string) {
+  return kind === "oneone" ? PORTAL_ROUTES.oneone : PORTAL_ROUTES.drip;
 }
 
 export function publicCampaignReportPath(token: string) {
@@ -149,6 +156,7 @@ export function getPageTitleFromPathname(pathname: string): string {
   if (pathname.startsWith("/portal/crm/lists/")) return DETAIL_TITLES.list;
   if (pathname.startsWith("/portal/crm/companies/")) return DETAIL_TITLES.company;
   if (pathname.startsWith("/portal/crm/contacts/")) return DETAIL_TITLES.contact;
+  if (pathname.startsWith("/portal/marketing/one-one/")) return DETAIL_TITLES.campaign;
   if (pathname.startsWith("/portal/marketing/campaigns/")) {
     return DETAIL_TITLES.campaign;
   }

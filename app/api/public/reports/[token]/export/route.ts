@@ -21,6 +21,7 @@ export async function GET(_request: Request, context: RouteContext) {
     const sends = await listCampaignSendsForExport(
       found.projectId,
       found.campaign.id,
+      found.campaign.kind,
     );
     const buffer = await buildCampaignReportWorkbook({
       campaignName: found.campaign.name,

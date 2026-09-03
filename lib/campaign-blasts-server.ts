@@ -2,11 +2,19 @@ import { randomBytes } from "crypto";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import type { ContactDoc, ListDoc, ListMembershipDoc } from "@/lib/crm";
-import type { DripCampaign } from "@/lib/drip-campaigns";
-import { formatCampaignClock } from "@/lib/drip-campaigns";
+import {
+  campaignSequences,
+  formatCampaignClock,
+  isOneOneCampaign,
+  sequencesReady,
+  type CampaignSequence,
+  type CampaignSequenceProgress,
+  type DripCampaign,
+} from "@/lib/drip-campaigns";
 import { getSuppressedEmails } from "@/lib/unsubscribe-server";
 import { injectCampaignTracking, trackingOrigin } from "@/lib/campaign-tracking";
 import { sendProjectMail } from "@/lib/smtp-senders-server";
+import { normalizeEmailMergeTags } from "@/lib/email-variables";
 
 export type BlastStatus = "scheduled" | "sending" | "sent";
 
@@ -46,6 +54,12 @@ export type CampaignBlastDoc = {
   timeline: BlastTimelineEvent[];
   createdAt: Date;
   updatedAt: Date;
+  kind?: "drip" | "oneone";
+  sequences?: CampaignSequence[];
+  windowStart?: string;
+  windowEnd?: string;
+  emailGapMinutes?: number;
+  sendLockUntil?: Date;
 };
 
 export type CampaignSendDoc = {
@@ -59,8 +73,9 @@ export type CampaignSendDoc = {
   lastName: string;
   companyName: string;
   token: string;
-  status: "pending" | "sent" | "failed";
+  status: "pending" | "sending" | "sent" | "failed";
   error?: string;
+  claimedAt?: Date;
   sentAt?: Date;
   openedAt?: Date;
   openCount: number;
@@ -69,10 +84,14 @@ export type CampaignSendDoc = {
   clickEvents?: Array<{ url: string; at: Date }>;
   clickCount: number;
   unsubscribedAt?: Date;
+  sequenceId?: string;
+  sequenceIndex?: number;
+  availableAt?: Date;
 };
 
 export type CampaignReport = {
   campaignId: string;
+  kind?: "drip" | "oneone";
   name: string;
   subject: string;
   senderName?: string;
@@ -93,9 +112,93 @@ export type CampaignReport = {
   listName?: string;
   listDisplayId?: number;
   timeline: BlastTimelineEvent[];
+  sequenceProgress?: CampaignSequenceProgress;
 };
 
 const SEND_BATCH = 25;
+const LOCKED_SEQUENCE_AT = new Date("2099-01-01T00:00:00.000Z");
+
+function blastKindFilter(kind?: string): Record<string, unknown> {
+  if (kind === "oneone") {
+    return { kind: "oneone" };
+  }
+  if (kind === "drip") {
+    return { kind: { $ne: "oneone" as const } };
+  }
+  return {};
+}
+
+function parseHmToMinutes(value: string) {
+  const [hours, minutes] = String(value || "").split(":").map((part) => Number(part));
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
+function minutesInTimeZone(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? "0");
+  return hour * 60 + minute;
+}
+
+function isWithinSendWindow(
+  date: Date,
+  timeZone: string,
+  windowStart?: string,
+  windowEnd?: string,
+) {
+  const start = parseHmToMinutes(windowStart ?? "");
+  const end = parseHmToMinutes(windowEnd ?? "");
+  if (start === null || end === null) {
+    return true;
+  }
+  if (start === end) {
+    return true;
+  }
+  const current = minutesInTimeZone(date, timeZone);
+  if (start < end) {
+    return current >= start && current < end;
+  }
+  return current >= start || current < end;
+}
+
+function sequenceContent(blast: CampaignBlastDoc, send: CampaignSendDoc) {
+  const sequence =
+    blast.sequences?.find((item) => item.id === send.sequenceId) ??
+    (typeof send.sequenceIndex === "number" ? blast.sequences?.[send.sequenceIndex] : undefined);
+  return {
+    subject: sequence?.subject?.trim() || blast.subject,
+    html: sequence?.designHtml?.trim() || blast.html,
+  };
+}
+
+async function failLaterSequences(
+  blastId: ObjectId,
+  email: string,
+  sequenceIndex: number | undefined,
+  error: string,
+) {
+  if (typeof sequenceIndex !== "number") {
+    return;
+  }
+  const db = await getDb();
+  await db.collection<CampaignSendDoc>("campaign_sends").updateMany(
+    {
+      blastId,
+      email,
+      sequenceIndex: { $gt: sequenceIndex },
+      status: "pending",
+    },
+    { $set: { status: "failed", error } },
+  );
+}
 
 function escapeHtml(value: string) {
   return value
@@ -122,10 +225,13 @@ function applyContactVariables(
     COMPANY: contact.companyName || "",
   };
 
-  return text.replace(/\{\{\s*contact\.([A-Za-z]+)\s*\}\}/g, (_, key: string) => {
-    const value = values[key.toUpperCase()] ?? "";
-    return forHtml ? escapeHtml(value) : value;
-  });
+  return normalizeEmailMergeTags(text).replace(
+    /\{\{\s*contact\.([A-Za-z]+)\s*\}\}/g,
+    (_, key: string) => {
+      const value = values[key.toUpperCase()] ?? "";
+      return forHtml ? escapeHtml(value) : value;
+    },
+  );
 }
 
 async function resolveTrackingOrigin(projectId: ObjectId, senderId: string) {
@@ -139,9 +245,13 @@ async function resolveTrackingOrigin(projectId: ObjectId, senderId: string) {
   );
 }
 
-function mapReport(doc: CampaignBlastDoc): CampaignReport {
+function mapReport(
+  doc: CampaignBlastDoc,
+  sequenceProgress?: CampaignSequenceProgress,
+): CampaignReport {
   return {
     campaignId: doc.campaignId,
+    kind: doc.kind === "oneone" ? "oneone" : "drip",
     name: doc.name,
     subject: doc.subject,
     senderName: doc.senderName,
@@ -162,7 +272,85 @@ function mapReport(doc: CampaignBlastDoc): CampaignReport {
     listName: doc.listName,
     listDisplayId: doc.listDisplayId,
     timeline: doc.timeline,
+    sequenceProgress,
   };
+}
+
+type SequenceSendGroup = {
+  _id: { blastId: ObjectId; sequenceIndex?: number };
+  pending: number;
+  sent: number;
+};
+
+async function loadSequenceProgress(blasts: CampaignBlastDoc[]) {
+  const oneOne = blasts.filter((blast) => blast.kind === "oneone");
+  const progress = new Map<string, CampaignSequenceProgress>();
+  if (oneOne.length === 0) {
+    return progress;
+  }
+
+  const db = await getDb();
+  const grouped = (await db
+    .collection<CampaignSendDoc>("campaign_sends")
+    .aggregate<SequenceSendGroup>([
+      { $match: { blastId: { $in: oneOne.map((blast) => blast._id) } } },
+      {
+        $group: {
+          _id: { blastId: "$blastId", sequenceIndex: "$sequenceIndex" },
+          pending: {
+            $sum: {
+              $cond: [{ $in: ["$status", ["pending", "sending"]] }, 1, 0],
+            },
+          },
+          sent: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "sent"] }, 1, 0],
+            },
+          },
+        },
+      },
+    ])
+    .toArray()) as SequenceSendGroup[];
+
+  const rowsByBlast = new Map<
+    string,
+    Array<{ sequenceIndex: number; pending: number; sent: number }>
+  >();
+  for (const row of grouped) {
+    const blastId = String(row._id.blastId);
+    const list = rowsByBlast.get(blastId) ?? [];
+    list.push({
+      sequenceIndex: Number(row._id.sequenceIndex) || 0,
+      pending: row.pending,
+      sent: row.sent,
+    });
+    rowsByBlast.set(blastId, list);
+  }
+
+  for (const blast of oneOne) {
+    const total = Math.max(1, blast.sequences?.length || 1);
+    const rows = rowsByBlast.get(blast._id.toString()) ?? [];
+    const currentIndex =
+      [...Array(total).keys()].find((index) => {
+        const row = rows.find((item) => item.sequenceIndex === index);
+        return (row?.pending ?? 0) > 0;
+      }) ??
+      Math.max(0, total - 1);
+    const currentRow = rows.find((item) => item.sequenceIndex === currentIndex);
+    progress.set(blast._id.toString(), {
+      current: currentIndex + 1,
+      total,
+      sent: currentRow?.sent ?? 0,
+      contacts: blast.recipients || 0,
+    });
+  }
+
+  return progress;
+}
+
+async function reportsFromBlasts(docs: CampaignBlastDoc[]) {
+  const progress = await loadSequenceProgress(docs);
+  return docs.map((doc) => mapReport(doc, progress.get(doc._id.toString())));
 }
 
 async function resolveRecipients(
@@ -228,7 +416,10 @@ async function refreshBlastCounts(blastId: ObjectId) {
     sends.countDocuments({ blastId, clickCount: { $gt: 0 } }),
   ]);
 
-  const pending = await sends.countDocuments({ blastId, status: "pending" });
+  const pending = await sends.countDocuments({
+    blastId,
+    status: { $in: ["pending", "sending"] },
+  });
   const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
     _id: blastId,
   });
@@ -273,47 +464,157 @@ async function sendPendingBatch(
   limit = SEND_BATCH,
 ) {
   const db = await getDb();
+  const now = new Date();
+  const oneOne = blast.kind === "oneone";
+  if (
+    oneOne &&
+    !isWithinSendWindow(now, blast.timezone || "Asia/Kolkata", blast.windowStart, blast.windowEnd)
+  ) {
+    return blast;
+  }
+
+  const gapMinutes = oneOne ? Math.max(0, Number(blast.emailGapMinutes) || 0) : 0;
+  if (oneOne) {
+    const locked = await db.collection<CampaignBlastDoc>("campaign_blasts").findOneAndUpdate(
+      {
+        _id: blast._id,
+        $or: [{ sendLockUntil: { $exists: false } }, { sendLockUntil: { $lte: now } }],
+      },
+      { $set: { sendLockUntil: new Date(now.getTime() + 60_000), updatedAt: now } },
+      { returnDocument: "after" },
+    );
+    if (!locked) {
+      return blast;
+    }
+
+    if (gapMinutes > 0) {
+      const lastSent = await db.collection<CampaignSendDoc>("campaign_sends").findOne(
+        { blastId: blast._id, status: "sent", sentAt: { $exists: true } },
+        { sort: { sentAt: -1 } },
+      );
+      if (lastSent?.sentAt) {
+        const nextAllowed = new Date(lastSent.sentAt.getTime() + gapMinutes * 60 * 1000);
+        if (nextAllowed.getTime() > now.getTime()) {
+          await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+            { _id: blast._id },
+            { $set: { sendLockUntil: nextAllowed, updatedAt: now } },
+          );
+          return blast;
+        }
+      }
+    }
+    limit = gapMinutes > 0 ? 1 : limit;
+  }
+
+  await db.collection<CampaignSendDoc>("campaign_sends").updateMany(
+    {
+      blastId: blast._id,
+      status: "sending",
+      claimedAt: { $lte: new Date(now.getTime() - 2 * 60 * 1000) },
+    },
+    { $set: { status: "pending" }, $unset: { claimedAt: "" } },
+  );
+
   const trackingBase = await resolveTrackingOrigin(blast.projectId, blast.senderId);
-  const pending = await db
-    .collection<CampaignSendDoc>("campaign_sends")
-    .find({ blastId: blast._id, status: "pending" })
-    .limit(limit)
-    .toArray();
+  const pending: CampaignSendDoc[] = [];
+  for (let index = 0; index < limit; index += 1) {
+    const claimed = await db.collection<CampaignSendDoc>("campaign_sends").findOneAndUpdate(
+      {
+        blastId: blast._id,
+        status: "pending",
+        $or: [{ availableAt: { $exists: false } }, { availableAt: { $lte: now } }],
+      },
+      { $set: { status: "sending", claimedAt: now } },
+      { sort: { sequenceIndex: 1, _id: 1 }, returnDocument: "after" },
+    );
+    if (!claimed) {
+      break;
+    }
+    pending.push(claimed);
+  }
+
+  if (pending.length === 0 && oneOne) {
+    await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+      { _id: blast._id },
+      { $set: { sendLockUntil: now, updatedAt: now } },
+    );
+    return refreshBlastCounts(blast._id);
+  }
+
   const suppressed = await getSuppressedEmails(blast.projectId);
+  let lastSuccessAt: Date | null = null;
 
   for (const send of pending) {
     if (suppressed.has(send.email.trim().toLowerCase())) {
       await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
         { _id: send._id },
-        { $set: { status: "failed", error: "Unsubscribed" } },
+        { $set: { status: "failed", error: "Unsubscribed" }, $unset: { claimedAt: "" } },
       );
+      await failLaterSequences(blast._id, send.email, send.sequenceIndex, "Unsubscribed");
       continue;
     }
     try {
-      const personalized = applyContactVariables(blast.html, send, true);
+      const content = sequenceContent(blast, send);
+      const personalized = applyContactVariables(content.html, send, true);
       const html = injectCampaignTracking(personalized, trackingBase, send.token);
       await sendProjectMail(blast.projectId, blast.senderId, {
         to: send.email,
-        subject: applyContactVariables(blast.subject, send, false),
+        subject: applyContactVariables(content.subject, send, false),
         html,
         fromName: blast.senderName,
         replyTo: blast.replyTo,
       });
+      const sentAt = new Date();
+      lastSuccessAt = sentAt;
       await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
         { _id: send._id },
-        { $set: { status: "sent", sentAt: new Date(), error: undefined } },
+        { $set: { status: "sent", sentAt, error: undefined }, $unset: { claimedAt: "" } },
       );
+
+      if (typeof send.sequenceIndex === "number" && blast.sequences) {
+        const nextSequence = blast.sequences[send.sequenceIndex + 1];
+        if (nextSequence) {
+          const delayDays = Math.max(0, Number(nextSequence.delayDays) || 0);
+          await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
+            {
+              blastId: blast._id,
+              email: send.email,
+              sequenceIndex: send.sequenceIndex + 1,
+              status: "pending",
+            },
+            {
+              $set: {
+                availableAt: new Date(sentAt.getTime() + delayDays * 24 * 60 * 60 * 1000),
+              },
+            },
+          );
+        }
+      }
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Send failed";
       await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
         { _id: send._id },
         {
           $set: {
             status: "failed",
-            error: error instanceof Error ? error.message : "Send failed",
+            error: message,
           },
+          $unset: { claimedAt: "" },
         },
       );
+      await failLaterSequences(blast._id, send.email, send.sequenceIndex, message);
     }
+  }
+
+  if (oneOne) {
+    const lockUntil =
+      lastSuccessAt && gapMinutes > 0
+        ? new Date(lastSuccessAt.getTime() + gapMinutes * 60 * 1000)
+        : new Date();
+    await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+      { _id: blast._id },
+      { $set: { sendLockUntil: lockUntil, updatedAt: now } },
+    );
   }
 
   return refreshBlastCounts(blast._id);
@@ -330,12 +631,24 @@ export async function launchCampaignBlast(input: {
   if (!campaign.senderId || !campaign.senderEmail) {
     throw new Error("Select a sender first.");
   }
-  if (!campaign.subject?.trim()) {
-    throw new Error("Add a subject line first.");
+  const oneOne = isOneOneCampaign(campaign);
+  const sequences = oneOne ? campaignSequences(campaign) : [];
+  if (oneOne) {
+    if (!sequencesReady(campaign)) {
+      throw new Error("Add a subject and design for every sequence first.");
+    }
+  } else {
+    if (!campaign.subject?.trim()) {
+      throw new Error("Add a subject line first.");
+    }
+    if (!campaign.designHtml?.trim()) {
+      throw new Error("Save an email design first.");
+    }
   }
-  if (!campaign.designHtml?.trim()) {
-    throw new Error("Save an email design first.");
-  }
+
+  const firstSequence = sequences[0];
+  const blastSubject = firstSequence?.subject?.trim() || campaign.subject || "";
+  const blastHtml = firstSequence?.designHtml?.trim() || campaign.designHtml || "";
 
   const recipients = await resolveRecipients(projectId, campaign);
   const unique = new Map(recipients.map((item) => [item.email, item]));
@@ -389,9 +702,9 @@ export async function launchCampaignBlast(input: {
     projectId,
     campaignId: campaign.id,
     name: campaign.name,
-    subject: campaign.subject,
-    previewText: campaign.previewText,
-    html: campaign.designHtml,
+    subject: blastSubject,
+    previewText: firstSequence?.previewText || campaign.previewText,
+    html: blastHtml,
     senderId: campaign.senderId,
     senderName: campaign.senderName,
     senderEmail: campaign.senderEmail,
@@ -411,43 +724,84 @@ export async function launchCampaignBlast(input: {
     timeline,
     createdAt: now,
     updatedAt: now,
+    ...(oneOne
+      ? {
+          kind: "oneone" as const,
+          sequences,
+          windowStart: campaign.windowStart || "09:00",
+          windowEnd: campaign.windowEnd || "18:00",
+          emailGapMinutes: Math.max(0, Number(campaign.emailGapMinutes) || 0),
+        }
+      : { kind: "drip" as const }),
   };
 
-  await db.collection<CampaignBlastDoc>("campaign_blasts").deleteMany({
-    projectId,
-    campaignId: campaign.id,
-  });
+  const kindFilter = oneOne
+    ? { kind: "oneone" as const }
+    : { kind: { $ne: "oneone" as const } };
+  const previousBlasts = await db
+    .collection<CampaignBlastDoc>("campaign_blasts")
+    .find({ projectId, campaignId: campaign.id, ...kindFilter })
+    .project({ _id: 1 })
+    .toArray();
+  const previousIds = previousBlasts.map((item) => item._id);
+  if (previousIds.length > 0) {
+    await db.collection<CampaignSendDoc>("campaign_sends").deleteMany({
+      blastId: { $in: previousIds },
+    });
+    await db.collection<CampaignBlastDoc>("campaign_blasts").deleteMany({
+      _id: { $in: previousIds },
+    });
+  }
   await db.collection<CampaignBlastDoc>("campaign_blasts").insertOne(blast);
   const saved = blast;
 
-  await db.collection<CampaignSendDoc>("campaign_sends").deleteMany({
-    projectId,
-    campaignId: campaign.id,
-  });
   await db.collection<CampaignSendDoc>("campaign_sends").insertMany(
-    list.map((contact) => ({
-      _id: new ObjectId(),
-      projectId,
-      blastId: saved._id,
-      campaignId: campaign.id,
-      email: contact.email,
-      fullName: contact.fullName,
-      firstName: contact.firstName,
-      lastName: contact.lastName,
-      companyName: contact.companyName,
-      token: randomBytes(18).toString("hex"),
-      status: "pending" as const,
-      openCount: 0,
-      clickCount: 0,
-    })),
+    oneOne
+      ? list.flatMap((contact) =>
+          sequences.map((sequence, sequenceIndex) => ({
+            _id: new ObjectId(),
+            projectId,
+            blastId: saved._id,
+            campaignId: campaign.id,
+            email: contact.email,
+            fullName: contact.fullName,
+            firstName: contact.firstName,
+            lastName: contact.lastName,
+            companyName: contact.companyName,
+            token: randomBytes(18).toString("hex"),
+            status: "pending" as const,
+            openCount: 0,
+            clickCount: 0,
+            sequenceId: sequence.id,
+            sequenceIndex,
+            availableAt:
+              sequenceIndex === 0 ? scheduledFor ?? now : LOCKED_SEQUENCE_AT,
+          })),
+        )
+      : list.map((contact) => ({
+          _id: new ObjectId(),
+          projectId,
+          blastId: saved._id,
+          campaignId: campaign.id,
+          email: contact.email,
+          fullName: contact.fullName,
+          firstName: contact.firstName,
+          lastName: contact.lastName,
+          companyName: contact.companyName,
+          token: randomBytes(18).toString("hex"),
+          status: "pending" as const,
+          openCount: 0,
+          clickCount: 0,
+        })),
   );
 
   let latest = saved;
   if (mode === "now") {
-    latest = { ...saved, status: "sending" };
+    latest = (await sendPendingBatch(saved)) ?? { ...saved, status: "sending" as const };
   }
 
-  return mapReport(latest);
+  const [report] = await reportsFromBlasts([latest]);
+  return report;
 }
 
 export async function processDueCampaignBlasts(
@@ -477,18 +831,18 @@ export async function processDueCampaignBlasts(
       blast.status = "sending";
     }
     const latest = (await sendPendingBatch(blast)) ?? blast;
-    reports.push(mapReport(latest));
+    reports.push(...(await reportsFromBlasts([latest])));
   }
 
   const rest = await db
     .collection<CampaignBlastDoc>("campaign_blasts")
     .find({
       projectId,
-      campaignId: { $nin: reports.map((item) => item.campaignId) },
+      _id: { $nin: due.map((blast) => blast._id) },
     })
     .toArray();
 
-  return [...reports, ...rest.map(mapReport)];
+  return [...reports, ...(await reportsFromBlasts(rest))];
 }
 
 export async function getProjectCampaignReports(projectId: ObjectId) {
@@ -497,16 +851,25 @@ export async function getProjectCampaignReports(projectId: ObjectId) {
     .collection<CampaignBlastDoc>("campaign_blasts")
     .find({ projectId })
     .toArray();
-  return docs.map(mapReport);
+  return reportsFromBlasts(docs);
 }
 
-export async function getCampaignReport(projectId: ObjectId, campaignId: string) {
+export async function getCampaignReport(
+  projectId: ObjectId,
+  campaignId: string,
+  kind?: "drip" | "oneone",
+) {
   const db = await getDb();
   const doc = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
     projectId,
     campaignId,
+    ...blastKindFilter(kind),
   });
-  return doc ? mapReport(doc) : null;
+  if (!doc) {
+    return null;
+  }
+  const [report] = await reportsFromBlasts([doc]);
+  return report;
 }
 
 export async function recordCampaignOpen(token: string) {
@@ -616,9 +979,17 @@ export async function listCampaignSendRecipients(
   projectId: ObjectId,
   campaignId: string,
   filter: CampaignRecipientFilter,
+  kind?: "drip" | "oneone",
 ) {
   const db = await getDb();
-  const query: Record<string, unknown> = { projectId, campaignId };
+  const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+    projectId,
+    campaignId,
+    ...blastKindFilter(kind),
+  });
+  const query: Record<string, unknown> = blast
+    ? { projectId, blastId: blast._id }
+    : { projectId, campaignId };
 
   if (filter === "delivered") {
     query.status = "sent";
@@ -709,11 +1080,17 @@ export async function listCampaignSendRecipients(
 export async function listCampaignSendsForExport(
   projectId: ObjectId,
   campaignId: string,
+  kind?: "drip" | "oneone",
 ) {
   const db = await getDb();
+  const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+    projectId,
+    campaignId,
+    ...blastKindFilter(kind),
+  });
   return db
     .collection<CampaignSendDoc>("campaign_sends")
-    .find({ projectId, campaignId })
+    .find(blast ? { projectId, blastId: blast._id } : { projectId, campaignId })
     .sort({ fullName: 1, email: 1 })
     .toArray();
 }

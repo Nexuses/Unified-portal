@@ -4,6 +4,7 @@ import {
   isCampaignRecipientFilter,
   listCampaignSendRecipients,
 } from "@/lib/campaign-blasts-server";
+import { parseCampaignKind } from "@/lib/drip-campaigns";
 import {
   isSessionError,
   requirePortalSession,
@@ -21,6 +22,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
+    const kind = parseCampaignKind(request.nextUrl.searchParams.get("kind"));
     const filter = String(request.nextUrl.searchParams.get("filter") ?? "audience");
     if (!isCampaignRecipientFilter(filter)) {
       return NextResponse.json({ error: "Invalid recipient filter" }, { status: 400 });
@@ -30,6 +32,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       new ObjectId(session.projectId),
       id,
       filter,
+      kind,
     );
 
     return NextResponse.json(recipients, {

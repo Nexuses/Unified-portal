@@ -3,6 +3,7 @@ import { ObjectId } from "mongodb";
 import { ensureCampaignShareToken } from "@/lib/drip-campaigns-server";
 import { requestOrigin } from "@/lib/campaign-blasts-server";
 import { publicCampaignReportPath } from "@/lib/portal-nav";
+import { parseCampaignKind } from "@/lib/drip-campaigns";
 import {
   isSessionError,
   requirePortalSession,
@@ -20,9 +21,11 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
+    const kind = parseCampaignKind(request.nextUrl.searchParams.get("kind"));
     const token = await ensureCampaignShareToken(
       new ObjectId(session.projectId),
       id,
+      kind,
     );
     if (!token) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });

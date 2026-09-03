@@ -1477,6 +1477,9 @@ select.filter{
 .drip-metrics{
   display:grid;grid-template-columns:repeat(4,minmax(64px,1fr));gap:10px;
 }
+.drip-metrics-oneone{
+  grid-template-columns:repeat(5,minmax(56px,1fr));
+}
 .drip-metric{text-align:left;}
 .drip-metric .k{font-size:12px;color:#9ca3af;font-weight:500;}
 .drip-metric .v{font-size:18px;font-weight:700;color:#1a1a1a;margin-top:4px;line-height:1;}
@@ -1612,7 +1615,14 @@ select.filter{
   width:30px;height:30px;border:none;background:transparent;border-radius:8px;
   color:var(--purple);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
 }
+.drip-edit-name:hover{background:var(--purple-soft);}
 .drip-edit-name svg{width:16px;height:16px;}
+.drip-edit-name-input{
+  min-width:min(420px,70vw);max-width:100%;height:42px;border:1px solid #d1d5db;border-radius:10px;
+  padding:0 12px;font-size:22px;font-weight:700;letter-spacing:-0.2px;color:#1a1a1a;
+  font-family:inherit;outline:none;background:#fff;
+}
+.drip-edit-name-input:focus{border-color:var(--purple);box-shadow:0 0 0 1px var(--purple);}
 .drip-status-pill{
   display:inline-flex;align-items:center;border:1px solid #e5e7eb;border-radius:999px;
   padding:4px 12px;font-size:15px;font-weight:600;color:#6b7280;background:#fff;
@@ -1697,6 +1707,7 @@ select.filter{
 .drip-setup-step-recipients-expanded{margin-top:-56px;padding-bottom:8px;}
 .drip-setup-step-subject-expanded{margin-top:-52px;padding-bottom:12px;}
 .drip-setup-step-settings-expanded{margin-top:-24px;padding-bottom:12px;}
+.drip-setup-step-sequences-expanded{margin-top:-52px;padding-bottom:12px;}
 .drip-setup-row{
   display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:16px;align-items:center;
   padding:32px 40px;min-height:128px;
@@ -1801,6 +1812,15 @@ select.filter{
 }
 .drip-design-saved-empty{
   color:#6b7280;font-size:14px;align-self:center;
+}
+.drip-design-saved-compact{
+  padding:8px 0 0;
+}
+.drip-design-saved-compact .drip-design-saved-title .title{
+  margin-top:0;font-size:16px;
+}
+.drip-design-saved-compact .drip-design-saved-preview{
+  margin-top:12px;min-height:340px;padding:20px 12px;
 }
 .drip-picker-panel{
   padding:0 40px 28px 92px;
@@ -2754,6 +2774,40 @@ select.filter{
   width:100%;height:46px;border:1px solid #d1d5db;border-radius:12px;background:#fff;
   padding:0 36px 0 14px;font-size:15px;color:#1a1a1a;font-family:inherit;appearance:none;outline:none;
 }
+.drip-sequences-panel{
+  padding-bottom:8px;
+}
+.drip-sequences-timing{
+  display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;
+  padding:8px 40px 4px;
+}
+.drip-sequences-hint{
+  margin:4px 40px 16px;font-size:14px;line-height:1.4;color:#6b7280;
+}
+.drip-sequence-list{
+  display:flex;flex-direction:column;gap:16px;padding:0 40px 8px;
+}
+.drip-sequence-card{
+  border:1px solid #e5e7eb;border-radius:12px;padding:18px 20px;background:#fafbfc;
+}
+.drip-sequence-card-head{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;
+}
+.drip-sequence-card-head strong{
+  font-family:var(--font-tomato);font-size:16px;font-weight:600;color:#1a1a1a;
+}
+.drip-sequence-card .crm-field{margin-bottom:12px;}
+.drip-sequence-card .drip-sequences-hint{
+  margin:0;
+  font-size:13px;
+}
+.drip-sequence-design{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding-top:4px;font-size:14px;color:#374151;
+}
+.drip-sequence-add{
+  margin:4px 40px 12px;
+}
 .drip-settings-saved{
   padding:32px 40px 36px;
   font-family:var(--font-tomato);
@@ -3027,6 +3081,7 @@ select.filter{
   .content:has(.drip-detail-page){padding:12px 32px 48px;}
   .drip-card-inner{grid-template-columns:1fr;gap:14px;}
   .drip-metrics{grid-template-columns:repeat(3,minmax(64px,1fr));}
+  .drip-metrics-oneone{grid-template-columns:repeat(3,minmax(64px,1fr));}
   .drip-row-actions{justify-content:flex-end;}
 }
 @media (max-width:700px){
@@ -3042,6 +3097,7 @@ select.filter{
   .drip-setup-step-sender-expanded{margin-top:-12px;}
   .drip-setup-step-recipients-expanded{margin-top:-40px;}
   .drip-setup-step-subject-expanded{margin-top:-40px;}
+  .drip-setup-step-sequences-expanded{margin-top:-40px;}
   .drip-setup-step-behind .drip-setup-row{padding-bottom:24px;}
   .drip-step-action{grid-column:2;justify-self:start;}
   .drip-picker-panel{padding:0 20px 20px 20px;}
@@ -3062,6 +3118,11 @@ select.filter{
   .drip-sender-panel-head{padding:22px 20px 8px;}
   .drip-sender-panel-foot{padding:8px 20px 24px;}
   .drip-recipients-panel-body{padding:8px 20px 16px;}
+  .drip-sequences-timing,
+  .drip-sequence-list{padding-left:20px;padding-right:20px;}
+  .drip-sequences-hint,
+  .drip-sequence-add{margin-left:20px;margin-right:20px;}
+  .drip-sequences-timing{grid-template-columns:1fr;}
   .drip-recipients-summary-top strong{font-size:24px;}
   .drip-metrics{grid-template-columns:repeat(2,minmax(64px,1fr));}
 }
@@ -3199,6 +3260,18 @@ select.filter{
 .drip-report-export-error{
   margin:0 0 12px;font-size:13px;color:#b42318;
 }
+.drip-report-running{
+  display:flex;align-items:flex-start;gap:12px;
+  margin:0 0 20px;padding:14px 16px;border-radius:12px;
+  background:#efe9fc;border:1px solid #ddd6fe;color:#3b1d8f;
+}
+.drip-report-running strong{
+  display:block;font-size:15px;font-weight:700;margin-bottom:2px;
+}
+.drip-report-running span{
+  display:block;font-size:13px;font-weight:500;color:#5b3cc4;
+}
+.drip-report-running .drip-row-spinner{margin-top:2px;}
 .drip-report-tabs{
   display:flex;gap:22px;border-bottom:1px solid #e5e7eb;margin:8px 0 22px;
 }

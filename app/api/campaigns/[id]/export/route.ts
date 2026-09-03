@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { listCampaignSendsForExport } from "@/lib/campaign-blasts-server";
 import { getProjectDripCampaign } from "@/lib/drip-campaigns-server";
+import { parseCampaignKind } from "@/lib/drip-campaigns";
 import {
   buildCampaignReportWorkbook,
   campaignReportFilename,
@@ -15,7 +16,7 @@ type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
-export async function GET(_request: NextRequest, context: RouteContext) {
+export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) {
@@ -23,13 +24,14 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
+    const kind = parseCampaignKind(request.nextUrl.searchParams.get("kind"));
     const projectId = new ObjectId(session.projectId);
-    const campaign = await getProjectDripCampaign(projectId, id);
+    const campaign = await getProjectDripCampaign(projectId, id, kind);
     if (!campaign) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
 
-    const sends = await listCampaignSendsForExport(projectId, id);
+    const sends = await listCampaignSendsForExport(projectId, id, kind);
     const buffer = await buildCampaignReportWorkbook({
       campaignName: campaign.name,
       timezone: campaign.timezone || "Asia/Kolkata",

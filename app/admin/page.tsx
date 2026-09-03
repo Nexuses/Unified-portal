@@ -3,7 +3,7 @@ import BrevoAuthCard from "../components/BrevoAuthCard";
 export default function AdminLoginPage() {
   return (
     <BrevoAuthCard
-      heading="Log In"
+      heading="Admin sign in"
       submitLabel="Log In"
       authMode="admin"
       redirectTo="/admin/dashboard"

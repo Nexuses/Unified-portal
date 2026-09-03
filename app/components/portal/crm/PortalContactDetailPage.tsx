@@ -70,7 +70,7 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
       <div className="company-history-copy">
         {event.description}{" "}
         {event.campaignId ? (
-          <Link href={portalCampaignRoute(event.campaignId)} className="contact-history-link">
+          <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
             View campaign
           </Link>
         ) : null}
@@ -83,7 +83,7 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
       <div className="company-history-copy">
         Opened campaign{" "}
         {event.campaignId ? (
-          <Link href={portalCampaignRoute(event.campaignId)} className="contact-history-link">
+          <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
             {event.campaignName || event.campaignId}
           </Link>
         ) : (
@@ -107,7 +107,7 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
         )}{" "}
         in campaign{" "}
         {event.campaignId ? (
-          <Link href={portalCampaignRoute(event.campaignId)} className="contact-history-link">
+          <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
             {event.campaignName || event.campaignId}
           </Link>
         ) : (
@@ -123,7 +123,7 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
       <div className="company-history-copy">
         Unsubscribed from campaign{" "}
         {event.campaignId ? (
-          <Link href={portalCampaignRoute(event.campaignId)} className="contact-history-link">
+          <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
             {event.campaignName || event.campaignId}
           </Link>
         ) : (

@@ -1,3 +1,5 @@
+import { replaceUnsubscribeVariables } from "@/lib/email-variables";
+
 export const DEFAULT_TRACKING_HOST = "unified.nexuses.xyz";
 export const DEFAULT_TRACKING_ORIGIN = `https://${DEFAULT_TRACKING_HOST}`;
 
@@ -199,19 +201,7 @@ function injectUnsubscribe(
   html: string,
   unsubscribeUrl: string,
 ) {
-  const withVariable = html.replace(/\{\{\s*unsubscribe\s*\}\}/gi, unsubscribeUrl);
-  if (/\/t\/u\//i.test(withVariable) || /\/unsubscribe\//i.test(withVariable)) {
-    return withVariable;
-  }
-
-  const footer = `<div style="padding:24px 0 8px;font-family:Arial,sans-serif;font-size:12px;line-height:1.5;color:#6b7280;text-align:center;">
-  <a href="${unsubscribeUrl}" style="color:#6b7280;text-decoration:underline;">Unsubscribe</a>
-</div>`;
-
-  if (/<\/body>/i.test(withVariable)) {
-    return withVariable.replace(/<\/body>/i, `${footer}</body>`);
-  }
-  return `${withVariable}${footer}`;
+  return replaceUnsubscribeVariables(html, unsubscribeUrl);
 }
 
 export function injectCampaignTracking(

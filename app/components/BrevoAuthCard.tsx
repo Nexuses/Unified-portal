@@ -84,6 +84,11 @@ export default function BrevoAuthCard({
 
         <section className="auth-card">
           <h2 className="auth-title">{heading}</h2>
+          <p className="auth-subtitle">
+            {authMode === "admin"
+              ? "Sign in to manage projects and users."
+              : "Sign in to continue to your workspace."}
+          </p>
 
           <form className="auth-form" onSubmit={handleSubmit}>
             {formFields.map((field) => (
@@ -113,6 +118,11 @@ export default function BrevoAuthCard({
             </button>
           </form>
         </section>
+        <p className="auth-footnote">
+          {authMode === "admin"
+            ? "Admin access only. Keep these credentials private."
+            : "Use the email and password provided for your workspace."}
+        </p>
       </main>
     </div>
   );

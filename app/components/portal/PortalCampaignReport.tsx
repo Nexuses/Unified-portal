@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   formatCampaignClock,
   formatMetric,
+  formatSequenceProgress,
   mergeBlastReport,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
@@ -60,6 +61,16 @@ function HelpIcon() {
       <path d="M9.6 9.4a2.4 2.4 0 1 1 3.3 2.2c-.7.4-1.1.8-1.1 1.6" />
       <circle cx="12" cy="16.6" r="0.85" fill="currentColor" stroke="none" />
     </svg>
+  );
+}
+
+function RunningSpinner() {
+  return (
+    <span className="drip-row-spinner" aria-hidden="true">
+      {Array.from({ length: 12 }, (_, index) => (
+        <span key={index} style={{ transform: `rotate(${index * 30}deg)` }} />
+      ))}
+    </span>
   );
 }
 
@@ -199,8 +210,12 @@ export default function PortalCampaignReport({
           return;
         }
         const report = (
-          data.reports as Array<Parameters<typeof mergeBlastReport>[1]>
-        ).find((item) => item.campaignId === campaign.id);
+          data.reports as Array<Parameters<typeof mergeBlastReport>[1] & { kind?: string }>
+        ).find(
+          (item) =>
+            item.campaignId === campaign.id &&
+            (item.kind || "drip") === (campaign.kind || "drip"),
+        );
         if (report && onCampaignChange) {
           onCampaignChange(mergeBlastReport(campaign, report));
         }
@@ -212,12 +227,12 @@ export default function PortalCampaignReport({
     void refresh();
     const timer = window.setInterval(() => {
       void refresh();
-    }, 8000);
+    }, campaign.status === "sending" ? 3000 : 8000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [campaign.id, publicToken]);
+  }, [campaign.id, campaign.status, publicToken]);
 
   useEffect(() => {
     if (!peopleView) {
@@ -235,7 +250,11 @@ export default function PortalCampaignReport({
         const response = await fetch(
           publicToken
             ? `/api/public/reports/${encodeURIComponent(publicToken)}/recipients?filter=${peopleView}`
-            : `/api/campaigns/${encodeURIComponent(campaign.id)}/recipients?filter=${peopleView}`,
+            : `/api/campaigns/${encodeURIComponent(campaign.id)}/recipients?filter=${peopleView}${
+                campaign.kind === "oneone" || campaign.kind === "drip"
+                  ? `&kind=${campaign.kind}`
+                  : ""
+              }`,
           { cache: "no-store" },
         );
         const data = await response.json();
@@ -306,7 +325,11 @@ export default function PortalCampaignReport({
       const response = await fetch(
         publicToken
           ? `/api/public/reports/${encodeURIComponent(publicToken)}/export`
-          : `/api/campaigns/${encodeURIComponent(campaign.id)}/export`,
+          : `/api/campaigns/${encodeURIComponent(campaign.id)}/export${
+              campaign.kind === "oneone" || campaign.kind === "drip"
+                ? `?kind=${campaign.kind}`
+                : ""
+            }`,
         { cache: "no-store" },
       );
       if (!response.ok) {
@@ -360,7 +383,11 @@ export default function PortalCampaignReport({
       let path = publicToken ? publicCampaignReportPath(publicToken) : "";
       if (!publicToken) {
         const response = await fetch(
-          `/api/campaigns/${encodeURIComponent(campaign.id)}/share`,
+          `/api/campaigns/${encodeURIComponent(campaign.id)}/share${
+            campaign.kind === "oneone" || campaign.kind === "drip"
+              ? `?kind=${campaign.kind}`
+              : ""
+          }`,
           { method: "POST", cache: "no-store" },
         );
         const data = await response.json();
@@ -393,6 +420,8 @@ export default function PortalCampaignReport({
   }
 
   const timezone = campaign.timezone || "Asia/Kolkata";
+  const progress = formatSequenceProgress(campaign.sequenceProgress);
+  const isRunning = campaign.status === "sending";
   const sentLabel = campaign.sentAt
     ? formatCampaignClock(campaign.sentAt, timezone)
     : campaign.scheduledAt
@@ -451,7 +480,11 @@ export default function PortalCampaignReport({
     <div className="drip-report-page">
       <div className="drip-report-head">
         {isPublic ? null : (
-          <Link href={PORTAL_ROUTES.drip} className="drip-back" aria-label="Back to campaigns">
+          <Link
+            href={campaign.kind === "oneone" ? PORTAL_ROUTES.oneone : PORTAL_ROUTES.drip}
+            className="drip-back"
+            aria-label="Back to campaigns"
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="m15 18-6-6 6-6" />
             </svg>
@@ -466,7 +499,13 @@ export default function PortalCampaignReport({
           <h2>{campaign.name}</h2>
           <div className="drip-report-meta">
             #{campaign.id}
-            {sentLabel ? ` • Sent on ${sentLabel}` : campaign.status === "scheduled" ? " • Scheduled" : ""}
+            {isRunning
+              ? " • Running"
+              : sentLabel
+                ? ` • Sent on ${sentLabel}`
+                : campaign.status === "scheduled"
+                  ? " • Scheduled"
+                  : ""}
           </div>
           <div className="drip-report-fields">
             <div>
@@ -516,6 +555,20 @@ export default function PortalCampaignReport({
           message={shareToast.message}
           onDone={() => setShareToast(null)}
         />
+      ) : null}
+
+      {isRunning ? (
+        <div className="drip-report-running" role="status">
+          <RunningSpinner />
+          <div>
+            <strong>Campaign is running</strong>
+            <span>
+              {progress
+                ? `${progress.sequence} · ${progress.sent}`
+                : "Sending emails until this campaign finishes."}
+            </span>
+          </div>
+        </div>
       ) : null}
 
       <div className="drip-report-tabs">

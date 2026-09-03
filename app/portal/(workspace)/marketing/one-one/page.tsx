@@ -1,5 +1,5 @@
-import { PortalOneOnePage } from "@/app/components/portal/PortalMarketingPages";
+import PortalDripPage from "@/app/components/portal/PortalDripPage";
 
 export default function OneOneCampaignPage() {
-  return <PortalOneOnePage />;
+  return <PortalDripPage kind="oneone" />;
 }
