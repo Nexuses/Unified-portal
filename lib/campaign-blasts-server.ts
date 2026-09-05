@@ -16,7 +16,7 @@ import { injectCampaignTracking, trackingOrigin } from "@/lib/campaign-tracking"
 import { sendProjectMail } from "@/lib/smtp-senders-server";
 import { normalizeEmailMergeTags } from "@/lib/email-variables";
 
-export type BlastStatus = "scheduled" | "sending" | "sent";
+export type BlastStatus = "scheduled" | "sending" | "sent" | "paused";
 
 export type BlastTimelineEvent = {
   id: string;
@@ -845,6 +845,54 @@ export async function processDueCampaignBlasts(
   return [...reports, ...(await reportsFromBlasts(rest))];
 }
 
+export async function pauseCampaignBlast(
+  projectId: ObjectId,
+  campaignId: string,
+  kind?: "drip" | "oneone",
+) {
+  const db = await getDb();
+  const result = await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+    {
+      projectId,
+      campaignId,
+      ...blastKindFilter(kind),
+      status: { $in: ["sending", "scheduled"] },
+    },
+    { $set: { status: "paused", updatedAt: new Date() } },
+  );
+  return result.matchedCount > 0;
+}
+
+export async function resumeCampaignBlast(
+  projectId: ObjectId,
+  campaignId: string,
+  kind?: "drip" | "oneone",
+) {
+  const db = await getDb();
+  const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+    projectId,
+    campaignId,
+    ...blastKindFilter(kind),
+    status: "paused",
+  });
+  if (!blast) {
+    return null;
+  }
+
+  const now = new Date();
+  const nextStatus: BlastStatus =
+    blast.scheduledFor && blast.scheduledFor.getTime() > now.getTime()
+      ? "scheduled"
+      : "sending";
+
+  await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+    { _id: blast._id },
+    { $set: { status: nextStatus, updatedAt: now } },
+  );
+
+  return nextStatus;
+}
+
 export async function getProjectCampaignReports(projectId: ObjectId) {
   const db = await getDb();
   const docs = await db
@@ -959,6 +1007,8 @@ export type CampaignSendRecipient = {
   clickedAt?: string;
   clickedUrl?: string;
   unsubscribedAt?: string;
+  sequenceIndex?: number;
+  sequenceNumber?: number;
 };
 
 const RECIPIENT_FILTERS: CampaignRecipientFilter[] = [
@@ -1029,6 +1079,8 @@ export async function listCampaignSendRecipients(
     extra?: Partial<CampaignSendRecipient>,
   ): CampaignSendRecipient {
     const email = doc.email.trim().toLowerCase();
+    const sequenceIndex =
+      typeof doc.sequenceIndex === "number" ? doc.sequenceIndex : undefined;
     return {
       id: extra?.id ?? doc._id.toString(),
       email: doc.email,
@@ -1041,6 +1093,9 @@ export async function listCampaignSendRecipients(
       clickedAt: doc.clickedAt?.toISOString(),
       clickedUrl: doc.clickedUrl || "",
       unsubscribedAt: doc.unsubscribedAt?.toISOString(),
+      sequenceIndex,
+      sequenceNumber:
+        typeof sequenceIndex === "number" ? sequenceIndex + 1 : undefined,
       ...extra,
     };
   }

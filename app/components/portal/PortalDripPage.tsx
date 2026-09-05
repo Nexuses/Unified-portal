@@ -10,6 +10,7 @@ import {
   formatCampaignStatus,
   formatMetric,
   formatSequenceProgress,
+  patchDripCampaign,
   type CampaignKind,
   type CampaignStatus,
   type DripCampaign,
@@ -27,10 +28,8 @@ const STATUS_OPTIONS: Array<CampaignStatus | "all"> = [
 
 function RowStatusSpinner() {
   return (
-    <span className="drip-row-spinner" aria-label="Campaign is running">
-      {Array.from({ length: 12 }, (_, index) => (
-        <span key={index} style={{ transform: `rotate(${index * 30}deg)` }} />
-      ))}
+    <span className="drip-row-spinner" aria-hidden="true">
+      <span className="drip-row-spinner-ring" />
     </span>
   );
 }
@@ -40,6 +39,14 @@ function PauseIcon() {
     <svg viewBox="0 0 24 24" fill="currentColor">
       <rect x="7" y="5" width="3.5" height="14" rx="1" />
       <rect x="13.5" y="5" width="3.5" height="14" rx="1" />
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M8 5.5v13l11-6.5L8 5.5Z" />
     </svg>
   );
 }
@@ -55,12 +62,31 @@ function TrashIcon() {
   );
 }
 
-function MetricColumn({ label, value, pct }: { label: string; value: number; pct: string }) {
+function MetricColumn({
+  label,
+  value,
+  pct,
+  stacked = false,
+}: {
+  label: string;
+  value: number | string;
+  pct?: string;
+  stacked?: boolean;
+}) {
   return (
-    <div className="drip-metric">
+    <div className={`drip-metric${stacked ? " drip-metric-stacked" : ""}`}>
       <div className="k">{label}</div>
-      <div className="v">{value}</div>
-      <div className="p">{pct}</div>
+      {stacked ? (
+        <>
+          <div className="v">{value}</div>
+          {pct ? <div className="p">{pct}</div> : null}
+        </>
+      ) : (
+        <div className="drip-metric-main">
+          <span className="v">{value}</span>
+          {pct ? <span className="p">{pct}</span> : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -85,6 +111,7 @@ export default function PortalDripPage({
   const [createError, setCreateError] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [statusUpdatingId, setStatusUpdatingId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -249,6 +276,48 @@ export default function PortalDripPage({
       );
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handlePause(campaign: DripCampaign) {
+    if (campaign.status !== "sending" && campaign.status !== "scheduled") {
+      return;
+    }
+
+    setStatusUpdatingId(campaign.id);
+    setOpenMenuId(null);
+    try {
+      const updated = await patchDripCampaign(campaign.id, { status: "paused" }, kind);
+      setCampaigns((current) =>
+        current.map((item) => (item.id === campaign.id ? updated : item)),
+      );
+    } catch (error) {
+      window.alert(
+        error instanceof Error ? error.message : "Failed to pause campaign",
+      );
+    } finally {
+      setStatusUpdatingId(null);
+    }
+  }
+
+  async function handleResume(campaign: DripCampaign) {
+    if (campaign.status !== "paused") {
+      return;
+    }
+
+    setStatusUpdatingId(campaign.id);
+    setOpenMenuId(null);
+    try {
+      const updated = await patchDripCampaign(campaign.id, { status: "sending" }, kind);
+      setCampaigns((current) =>
+        current.map((item) => (item.id === campaign.id ? updated : item)),
+      );
+    } catch (error) {
+      window.alert(
+        error instanceof Error ? error.message : "Failed to resume campaign",
+      );
+    } finally {
+      setStatusUpdatingId(null);
     }
   }
 
@@ -477,50 +546,61 @@ export default function PortalDripPage({
                   />
                   <div className="drip-card-inner">
                     <Link href={portalCampaignRoute(campaign.id, kind)} className="drip-main">
+                      <div className="drip-id">#{campaign.id}</div>
                       <div className="drip-title">{campaign.name}</div>
                       <div className="drip-status">
                         <span className={`dot ${campaign.status}`} />
                         <strong>{status.label}</strong>
                         <span>{status.detail}</span>
                       </div>
-                      <div className="drip-id">#{campaign.id}</div>
                     </Link>
                     <div className={`drip-metrics${isOneOne ? " drip-metrics-oneone" : ""}`}>
                       {isOneOne ? (
-                        <div className="drip-metric">
-                          <div className="k">Progress</div>
-                          <div className="v">
-                            {progress?.sequence ?? "—"}
-                          </div>
-                          <div className="p">
-                            {progress?.sent ??
-                              (campaign.status === "draft" ? "Not started" : "—")}
-                          </div>
-                        </div>
+                        <MetricColumn
+                          label="Sequence"
+                          value={progress?.sequence ?? "—"}
+                          pct={
+                            progress
+                              ? `${progress.sent} sent`
+                              : campaign.status === "draft"
+                                ? "Not started"
+                                : undefined
+                          }
+                          stacked
+                        />
                       ) : null}
                       <MetricColumn label="Recipients" value={recipients.value} pct={recipients.pct} />
                       <MetricColumn label="Opens" value={opens.value} pct={opens.pct} />
                       <MetricColumn label="Clicks" value={clicks.value} pct={clicks.pct} />
-                    <MetricColumn
-                      label="Unsubscribed"
-                      value={unsubscribed.value}
-                      pct={unsubscribed.pct}
-                    />
-                  </div>
+                      <MetricColumn
+                        label="Unsub"
+                        value={unsubscribed.value}
+                        pct={unsubscribed.pct}
+                      />
+                    </div>
                     <div className="drip-row-actions">
                       {campaign.status === "sending" ? (
-                        <span className="drip-row-status drip-row-status-running">
+                        <span
+                          className="drip-row-status drip-row-status-running"
+                          aria-label="Campaign is running"
+                        >
                           <RowStatusSpinner />
-                          {isOneOne && campaign.sequenceProgress
-                            ? `Running · Seq ${campaign.sequenceProgress.current} of ${campaign.sequenceProgress.total}`
-                            : "Running"}
+                          Running
                         </span>
                       ) : campaign.status === "sent" ? (
                         <span className="drip-row-status drip-row-status-complete">Complete</span>
                       ) : campaign.status === "scheduled" ? (
                         <span className="drip-row-status drip-row-status-scheduled">Scheduled</span>
+                      ) : campaign.status === "paused" ? (
+                        <span className="drip-row-status drip-row-status-paused">Paused</span>
                       ) : (
-                        <button type="button" className="drip-pause" aria-label="Pause campaign">
+                        <button
+                          type="button"
+                          className="drip-pause"
+                          aria-label="Pause campaign"
+                          disabled
+                          title="Pause is available after the campaign is scheduled or running"
+                        >
                           <PauseIcon />
                         </button>
                       )}
@@ -533,7 +613,9 @@ export default function PortalDripPage({
                           className={`drip-more${openMenuId === campaign.id ? " active" : ""}`}
                           aria-label="More actions"
                           aria-expanded={openMenuId === campaign.id}
-                          disabled={deletingId === campaign.id}
+                          disabled={
+                            deletingId === campaign.id || statusUpdatingId === campaign.id
+                          }
                           onClick={() =>
                             setOpenMenuId((current) =>
                               current === campaign.id ? null : campaign.id,
@@ -548,6 +630,33 @@ export default function PortalDripPage({
                         </button>
                         {openMenuId === campaign.id ? (
                           <div className="drip-more-menu" role="menu">
+                            {campaign.status === "sending" ||
+                            campaign.status === "scheduled" ? (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={statusUpdatingId === campaign.id}
+                                onClick={() => void handlePause(campaign)}
+                              >
+                                <PauseIcon />
+                                {statusUpdatingId === campaign.id
+                                  ? "Pausing..."
+                                  : "Pause campaign"}
+                              </button>
+                            ) : null}
+                            {campaign.status === "paused" ? (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={statusUpdatingId === campaign.id}
+                                onClick={() => void handleResume(campaign)}
+                              >
+                                <PlayIcon />
+                                {statusUpdatingId === campaign.id
+                                  ? "Resuming..."
+                                  : "Resume campaign"}
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               role="menuitem"

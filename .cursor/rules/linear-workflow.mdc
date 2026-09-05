@@ -1,0 +1,33 @@
+---
+description: Keep Linear (Nexuses Unified Portal) in sync — In Progress while building, Done after push
+alwaysApply: true
+---
+
+# Linear workflow (automatic)
+
+Project: **Nexuses Unified Portal** · Team: **Nexuses** · MCP: `plugin-linear-linear`
+
+## When starting a feature / non-trivial change
+
+1. Create a Linear issue with `save_issue`:
+   - `team`: `Nexuses`
+   - `project`: `Nexuses Unified Portal`
+   - `state`: `In Progress`
+   - `milestone`: `Local — not pushed` (create milestone if missing)
+   - Clear title + short description of scope/files
+2. Do the work. Prefer mentioning the issue id (e.g. `NEX-270`) in commit messages when committing.
+
+## After a successful `git push` to remote
+
+1. Move related In Progress issues for this work to **Done** (`state: Done`).
+2. Set `milestone` to **Shipped on master** (create/update if needed).
+3. Append a short note to the issue description: commit hash + that it was pushed to `master`.
+4. Update the **Shipped on master** and **Local — not pushed** milestone descriptions so Done vs WIP stay accurate.
+5. Lightly refresh the project description/summary if the shipped feature set changed.
+
+## Rules of thumb
+
+- Small typo-only fixes: skip new issues.
+- Already-tracked work: update the existing issue instead of duplicating.
+- Never invent Linear status — use real statuses: Todo / In Progress / Done.
+- If Linear MCP is unavailable, say so once and continue coding; retry Linear when auth is back.

@@ -10,22 +10,37 @@ This is a Next.js App Router app. Portal data is scoped to the logged-in user’
 
 ## Auth model
 
-Two cookie-based sessions:
+Two cookie-based sessions, plus optional project API keys:
 
-| Cookie | Used by | How it is set |
-|--------|---------|---------------|
-| `portal_user_session` | Portal APIs (campaigns, CRM, SMTP, `/api/auth/me`) | `POST /api/auth/login` |
-| `portal_admin_session` | Admin UI session (`/api/auth/admin-me`) | `POST /api/auth/admin-login` |
+| Auth | Used by | How it is set |
+|------|---------|---------------|
+| Cookie `portal_user_session` | Portal APIs (campaigns, CRM, SMTP, `/api/auth/me`) | `POST /api/auth/login` |
+| Cookie `portal_admin_session` | Admin UI session (`/api/auth/admin-me`) | `POST /api/auth/admin-login` |
+| Header `Authorization: Bearer up_live_…` | Same portal APIs as the user cookie (full **read + write** for that project) | Create key in portal **Integrations** (`POST /api/integrations/keys`) |
 
-Both cookies are httpOnly, `sameSite=lax`, 7-day lifetime.
+Cookies are httpOnly, `sameSite=lax`, 7-day lifetime.
 
-Portal-protected routes return **401** `{ "error": "Not authenticated" }` if the cookie is missing/invalid.
+Portal-protected routes return **401** `{ "error": "Not authenticated" }` if neither a valid cookie nor a valid API key is present.
 
-Public (no cookie): tracking pixels, unsubscribe, public report links.
+Public (no cookie / no key): tracking pixels, unsubscribe, public report links.
 
 `/api/users` and `/api/projects` currently do **not** check a session in the route handler. They are meant for the admin UI.
 
 Error shape (most routes): `{ "error": "message" }`.
+
+### API keys
+
+- Managed in the portal under **Integrations** (`/portal/integrations`).
+- Stored hashed in Mongo (`api_keys`). The raw key is returned **once** on create.
+- Scope is always full project access: **read + write** on portal routes that use `requirePortalSession`.
+- Revoke with `DELETE /api/integrations/keys/{id}`.
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer up_live_…" \
+  https://unified.nexuses.xyz/api/crm/contacts
+```
 
 ---
 
@@ -346,7 +361,7 @@ Sends due pending emails for this project.
 ```
 
 ### GET `/api/campaigns/{id}/export?kind=`
-200 Excel file (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`).
+200 Excel workbook (`.xlsx`) matching the engagement report layout: sheets `Sent, Open, Click`, `Bounces & Unsubscribes`, and `Summary` (includes Step / Sequence Steps for 1-1).
 
 ### POST `/api/campaigns/{id}/share?kind=`
 No body. 200 `{ "token": "string", "url": "https://host/r/{token}" }`
@@ -375,7 +390,7 @@ Public campaign report. Strips `senderId`, `individualContacts`, `designSourceCa
 Same filters as portal recipients; `contactId` omitted.
 
 ### GET `/api/public/reports/{token}/export`
-Excel download.
+Excel (`.xlsx`) download — same workbook as the portal export.
 
 ### GET `/api/campaigns/track/open/{token}`
 Returns a 1×1 GIF. Increments open (ignored if token starts with `test-`).
@@ -428,6 +443,33 @@ Add more contacts: `{ "contacts": [ { "firstName", "lastName", "email", "company
 
 ### GET `/api/crm/suppression`
 Unsubscribe list + entries `{ id, email, fullName, addedAt }`. Creates the Unsubscribe list if missing.
+
+---
+
+## Integrations / API keys (portal session or Bearer key)
+
+Full project **read + write** access for external integrations.
+
+### GET `/api/integrations/keys`
+`{ "keys": [ { id, name, keyPrefix, keyLast4, hint, scopes, lastUsedAt?, createdAt } ] }`
+
+### POST `/api/integrations/keys`
+Body: `{ "name": "Zapier" }`  
+201:
+```json
+{
+  "key": { "id": "…", "name": "Zapier", "hint": "up_live_••••abcd", "scopes": ["read", "write"], "createdAt": "…" },
+  "rawKey": "up_live_…",
+  "warning": "Copy this API key now. You will not be able to see it again."
+}
+```
+
+### DELETE `/api/integrations/keys/{id}`
+`{ "ok": true }` — revokes the key immediately.
+
+Use the raw key as:
+`Authorization: Bearer up_live_…`
+on any portal-authenticated route (CRM, campaigns, SMTP, reports export, etc.).
 
 ---
 
@@ -515,6 +557,8 @@ Deletes the project, its users, CRM data, and SMTP senders.
 | GET, POST | `/api/crm/lists` | portal |
 | GET, POST | `/api/crm/lists/[id]` | portal |
 | GET | `/api/crm/suppression` | portal |
+| GET, POST | `/api/integrations/keys` | portal (cookie or API key) |
+| DELETE | `/api/integrations/keys/[id]` | portal (cookie or API key) |
 | GET, POST | `/api/smtp/senders` | portal |
 | PATCH, DELETE | `/api/smtp/senders/[id]` | portal |
 | POST | `/api/smtp/senders/[id]/verify` | portal |
@@ -529,6 +573,6 @@ Deletes the project, its users, CRM data, and SMTP senders.
 
 ## Mongo collections (for context)
 
-`users`, `projects`, `admins`, `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `contacts`, `companies`, `lists`, `list_memberships`, `smtp_senders`
+`users`, `projects`, `admins`, `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `contacts`, `companies`, `lists`, `list_memberships`, `smtp_senders`, `api_keys`
 
-Portal queries always filter by `projectId` from the session.
+Portal queries always filter by `projectId` from the session (cookie or API key).

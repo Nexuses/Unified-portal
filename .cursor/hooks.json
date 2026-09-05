@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterShellExecution": [
+      {
+        "command": "bash .cursor/hooks/linear-after-push.sh",
+        "matcher": "git\\s+push",
+        "timeout": 15
+      }
+    ],
+    "stop": [
+      {
+        "command": "bash .cursor/hooks/linear-stop-followup.sh",
+        "timeout": 10,
+        "loop_limit": 2
+      }
+    ]
+  }
+}

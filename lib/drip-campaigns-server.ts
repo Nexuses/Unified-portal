@@ -12,6 +12,8 @@ import type {
 import { createEmptySequence } from "@/lib/drip-campaigns";
 import {
   getProjectCampaignReports,
+  pauseCampaignBlast,
+  resumeCampaignBlast,
   type CampaignReport,
 } from "@/lib/campaign-blasts-server";
 import { mergeBlastReport } from "@/lib/drip-campaigns";
@@ -498,12 +500,38 @@ export async function updateProjectDripCampaign(
     }
   }
 
+  const resolvedKind =
+    kind ?? (existing.kind === "oneone" ? "oneone" : "drip");
+
+  if (updates.status === "paused") {
+    if (
+      existing.status !== "sending" &&
+      existing.status !== "scheduled" &&
+      existing.status !== "paused"
+    ) {
+      throw new Error("Only running or scheduled campaigns can be paused");
+    }
+    await pauseCampaignBlast(projectId, campaignId, resolvedKind);
+  }
+
+  if (
+    updates.status === "sending" &&
+    existing.status === "paused"
+  ) {
+    const resumed = await resumeCampaignBlast(projectId, campaignId, resolvedKind);
+    if (resumed === "scheduled") {
+      updates.status = "scheduled";
+    } else if (!resumed) {
+      throw new Error("No paused send found to resume");
+    }
+  }
+
   await db.collection<DripCampaignDoc>("drip_campaigns").updateOne(
     { _id: existing._id },
     { $set: updates },
   );
 
-  return getProjectDripCampaign(projectId, campaignId, kind ?? (existing.kind === "oneone" ? "oneone" : "drip"));
+  return getProjectDripCampaign(projectId, campaignId, resolvedKind);
 }
 
 export async function deleteProjectDripCampaign(

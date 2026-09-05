@@ -8,7 +8,8 @@ export type PortalPageId =
   | "oneone"
   | "analytics"
   | "smtp"
-  | "unsub";
+  | "unsub"
+  | "integrations";
 
 export type PortalNavGroupId = "crm" | "marketing";
 
@@ -44,6 +45,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   analytics: "/portal/analytics",
   smtp: "/portal/smtp",
   unsub: "/portal/unsub",
+  integrations: "/portal/integrations",
 };
 
 export const PORTAL_CAMPAIGN_EDIT_ROUTE = "/portal/marketing/campaigns/edit";
@@ -102,6 +104,12 @@ export const PORTAL_NAV: PortalNavItem[] = [
   { type: "item", id: "analytics", label: "Analytics", href: PORTAL_ROUTES.analytics },
   { type: "item", id: "smtp", label: "SMTP & Senders", href: PORTAL_ROUTES.smtp },
   { type: "item", id: "unsub", label: "Suppression List", href: PORTAL_ROUTES.unsub },
+  {
+    type: "item",
+    id: "integrations",
+    label: "Integrations",
+    href: PORTAL_ROUTES.integrations,
+  },
 ];
 
 export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
@@ -115,6 +123,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   analytics: "Analytics",
   smtp: "SMTP & Senders",
   unsub: "Suppression List",
+  integrations: "Integrations",
 };
 
 export const PORTAL_GROUP_DEFAULTS: Record<PortalNavGroupId, string> = {
@@ -140,6 +149,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/analytics")) return "analytics";
   if (pathname.startsWith("/portal/smtp")) return "smtp";
   if (pathname.startsWith("/portal/unsub")) return "unsub";
+  if (pathname.startsWith("/portal/integrations")) return "integrations";
   return "dashboard";
 }
 

@@ -3644,7 +3644,7 @@ export default function PortalCampaignDetailPage({
   useEffect(() => {
     return () => {
       const current = campaignRef.current;
-      if (!current || current.status === "sent" || current.status === "sending") {
+      if (!current || current.status === "sent" || current.status === "sending" || current.status === "paused") {
         return;
       }
       void patchDripCampaign(campaignId, current, kind).catch(() => undefined);
@@ -3874,7 +3874,7 @@ export default function PortalCampaignDetailPage({
     event?.preventDefault();
     const current = campaignRef.current;
     const draftPatch = pendingDraftPatch();
-    if (current && current.status !== "sent" && current.status !== "sending") {
+    if (current && current.status !== "sent" && current.status !== "sending" && current.status !== "paused") {
       try {
         await persistCampaign(
           Object.keys(draftPatch).length > 0
@@ -4335,7 +4335,7 @@ export default function PortalCampaignDetailPage({
       )
     : campaign;
 
-  if (campaign.status === "sent" || campaign.status === "scheduled" || campaign.status === "sending") {
+  if (campaign.status === "sent" || campaign.status === "scheduled" || campaign.status === "sending" || campaign.status === "paused") {
     return (
       <PortalCampaignReport
         campaign={campaign}

@@ -24,6 +24,8 @@ type SendRecipient = {
   clickedAt?: string;
   clickedUrl?: string;
   unsubscribedAt?: string;
+  sequenceIndex?: number;
+  sequenceNumber?: number;
 };
 
 const PEOPLE_TITLES: Record<PeopleView, string> = {
@@ -67,9 +69,7 @@ function HelpIcon() {
 function RunningSpinner() {
   return (
     <span className="drip-row-spinner" aria-hidden="true">
-      {Array.from({ length: 12 }, (_, index) => (
-        <span key={index} style={{ transform: `rotate(${index * 30}deg)` }} />
-      ))}
+      <span className="drip-row-spinner-ring" />
     </span>
   );
 }
@@ -475,6 +475,17 @@ export default function PortalCampaignReport({
   const timeline = [...(campaign.timeline ?? [])].sort(
     (a, b) => new Date(b.at).getTime() - new Date(a.at).getTime(),
   );
+  const showSequence =
+    campaign.kind === "oneone" &&
+    (peopleView === "opens" || peopleView === "clicks");
+  const peopleColSpan =
+    peopleView === "clicks"
+      ? showSequence
+        ? 7
+        : 6
+      : showSequence
+        ? 6
+        : 5;
 
   return (
     <div className="drip-report-page">
@@ -510,15 +521,15 @@ export default function PortalCampaignReport({
           <div className="drip-report-fields">
             <div>
               <span>Subject</span>
-              <strong>{campaign.subject}</strong>
+              <strong>{campaign.subject || "—"}</strong>
             </div>
             <div>
               <span>From</span>
-              <strong title={from}>{from}</strong>
+              <strong title={from}>{from || "—"}</strong>
             </div>
             <div>
               <span>Reply to</span>
-              <strong title={replyTo}>{replyTo}</strong>
+              <strong title={replyTo}>{replyTo || "—"}</strong>
             </div>
           </div>
         </div>
@@ -564,7 +575,7 @@ export default function PortalCampaignReport({
             <strong>Campaign is running</strong>
             <span>
               {progress
-                ? `${progress.sequence} · ${progress.sent}`
+                ? `Seq ${progress.sequence} · ${progress.sent} contacts sent`
                 : "Sending emails until this campaign finishes."}
             </span>
           </div>
@@ -626,9 +637,13 @@ export default function PortalCampaignReport({
               <h3 className="drip-report-audience-title">{PEOPLE_TITLES[peopleView]}</h3>
               <p className="desc">
                 {peopleView === "opens"
-                  ? "Contacts who opened this campaign, with date and time."
+                  ? campaign.kind === "oneone"
+                    ? "Contacts who opened this campaign, with sequence, date, and time."
+                    : "Contacts who opened this campaign, with date and time."
                   : peopleView === "clicks"
-                    ? "Links clicked in this campaign, with date and time."
+                    ? campaign.kind === "oneone"
+                      ? "Links clicked in this campaign, with sequence, date, and time."
+                      : "Links clicked in this campaign, with date and time."
                     : "Contacts in this campaign metric."}
               </p>
             </div>
@@ -668,6 +683,7 @@ export default function PortalCampaignReport({
                   </th>
                   <th>Contact</th>
                   <th>Email</th>
+                  {showSequence ? <th>Sequence</th> : null}
                   {peopleView === "delivered" ? <th>Delivered</th> : null}
                   {peopleView === "opens" ? <th>Opened</th> : null}
                   {peopleView === "clicks" ? (
@@ -683,13 +699,13 @@ export default function PortalCampaignReport({
               <tbody>
                 {peopleLoading ? (
                   <tr>
-                    <td colSpan={peopleView === "clicks" ? 6 : 5} className="crm-empty">
+                    <td colSpan={peopleColSpan} className="crm-empty">
                       Loading contacts...
                     </td>
                   </tr>
                 ) : visiblePeople.length === 0 ? (
                   <tr>
-                    <td colSpan={peopleView === "clicks" ? 6 : 5} className="crm-empty">
+                    <td colSpan={peopleColSpan} className="crm-empty">
                       No contacts in this view yet.
                     </td>
                   </tr>
@@ -709,6 +725,13 @@ export default function PortalCampaignReport({
                         )}
                       </td>
                       <td className="email-cell">{person.email}</td>
+                      {showSequence ? (
+                        <td>
+                          {typeof person.sequenceNumber === "number"
+                            ? `Sequence ${person.sequenceNumber}`
+                            : "—"}
+                        </td>
+                      ) : null}
                       {peopleView === "delivered" ? (
                         <td>
                           {person.sentAt

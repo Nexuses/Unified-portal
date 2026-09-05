@@ -163,11 +163,7 @@ export function formatCampaignStatus(campaign: DripCampaign) {
     return { label: "Scheduled", detail: `Scheduled for ${campaign.scheduledAt}` };
   }
   if (campaign.status === "sending") {
-    const progress = formatSequenceProgress(campaign.sequenceProgress);
-    return {
-      label: "Sending",
-      detail: progress ? `${progress.sequence} · ${progress.sent}` : "Campaign is running",
-    };
+    return { label: "Sending", detail: "Campaign is running" };
   }
   if (campaign.status === "sent" && campaign.sentAt) {
     const sent = formatCampaignClock(campaign.sentAt, campaign.timezone);
@@ -218,7 +214,7 @@ export function mergeBlastReport(
   campaign: DripCampaign,
   report: {
     campaignId: string;
-    status: "scheduled" | "sending" | "sent";
+    status: "scheduled" | "sending" | "sent" | "paused";
     recipients: number;
     opens: number;
     clicks: number;
@@ -242,7 +238,9 @@ export function mergeBlastReport(
         ? "scheduled"
         : report.status === "sending"
           ? "sending"
-          : "sent",
+          : report.status === "paused"
+            ? "paused"
+            : "sent",
     recipients: report.recipients,
     opens: report.opens,
     clicks: report.clicks,
@@ -282,8 +280,8 @@ export function formatSequenceProgress(progress?: CampaignSequenceProgress) {
     return null;
   }
   return {
-    sequence: `Sequence ${progress.current} of ${progress.total}`,
-    sent: `${progress.sent} of ${progress.contacts} sent`,
+    sequence: `${progress.current}/${progress.total}`,
+    sent: `${progress.sent}/${progress.contacts}`,
   };
 }
 

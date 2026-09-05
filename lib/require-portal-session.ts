@@ -1,14 +1,25 @@
 import { NextResponse } from "next/server";
+import { headers } from "next/headers";
 import { getSessionUser, type SessionUser } from "@/lib/auth";
+import { getSessionUserFromApiKey } from "@/lib/api-keys-server";
 
 export async function requirePortalSession(): Promise<
   SessionUser | NextResponse
 > {
-  const user = await getSessionUser();
-  if (!user) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  const cookieUser = await getSessionUser();
+  if (cookieUser) {
+    return cookieUser;
   }
-  return user;
+
+  const headerStore = await headers();
+  const apiUser = await getSessionUserFromApiKey(
+    headerStore.get("authorization"),
+  );
+  if (apiUser) {
+    return apiUser;
+  }
+
+  return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 }
 
 export function isSessionError(
