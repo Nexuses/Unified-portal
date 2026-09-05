@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import type { SmtpSender } from "@/lib/smtp-senders";
 import type { Contact, CrmList } from "@/lib/crm";
@@ -26,6 +26,11 @@ import {
 } from "@/lib/drip-campaigns";
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
 import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
+import {
+  AUTOMATION_FOLLOW_UP_TAG,
+  campaignHasAutomationTag,
+  ensureAutomationCampaignTags,
+} from "@/lib/automations";
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
 import { getEmailTemplate, loadEmailTemplates } from "@/lib/email-templates";
 import { normalizeEmailMergeTags, replaceUnsubscribeVariables } from "@/lib/email-variables";
@@ -43,7 +48,22 @@ type SetupStep = {
   action: string;
   done: boolean;
   noIcon?: boolean;
+  locked?: boolean;
 };
+
+function isAutomationCampaign(campaign: DripCampaign | null | undefined) {
+  return campaignHasAutomationTag(campaign);
+}
+
+function isAutomationFollowUpCampaign(
+  campaign: DripCampaign | null | undefined,
+  queryFollowUp: boolean,
+) {
+  if (queryFollowUp) {
+    return true;
+  }
+  return Boolean(campaign?.tags?.includes(AUTOMATION_FOLLOW_UP_TAG));
+}
 
 function ChevronDownIcon() {
   return (
@@ -3288,11 +3308,23 @@ function SequencesPanel({
   );
 }
 
-function buildSteps(campaign: DripCampaign, remainingEmails?: number): SetupStep[] {
+function buildSteps(
+  campaign: DripCampaign,
+  remainingEmails?: number,
+  options?: { automationFollowUp?: boolean },
+): SetupStep[] {
+  const followUp = Boolean(options?.automationFollowUp);
   const senderDone = Boolean(campaign.senderId && campaign.senderEmail);
-  const recipientsDone =
-    Boolean(campaign.listId && campaign.listName) ||
-    (campaign.individualContacts?.length ?? 0) > 0;
+  const recipientsCount =
+    campaign.recipientMode === "individual"
+      ? campaign.individualContacts?.length ?? 0
+      : campaign.listId
+        ? campaign.recipients
+        : 0;
+  const recipientsDone = followUp
+    ? true
+    : Boolean(campaign.listId && campaign.listName) ||
+      (campaign.individualContacts?.length ?? 0) > 0;
   const oneOne = isOneOneCampaign(campaign);
   const sequenceCount = campaignSequences(campaign).length;
 
@@ -3339,23 +3371,36 @@ function buildSteps(campaign: DripCampaign, remainingEmails?: number): SetupStep
         <>
           <strong>{campaign.senderName ?? "Sender"}</strong>
           {` · ${campaign.senderEmail}`}
+          {followUp ? " · same as step 1" : ""}
         </>
       ) : (
         "Select a verified sender for this campaign."
       ),
-      action: "Manage sender",
+      action: followUp ? "Locked" : "Manage sender",
       done: senderDone,
+      locked: followUp,
     },
     {
       id: "recipients",
       title: "Recipients",
-      subtitle: recipientsDone
-        ? remainingEmails !== undefined
-          ? `${campaign.recipients.toLocaleString()} recipients • ${remainingEmails.toLocaleString()} remaining emails`
-          : `${campaign.recipients.toLocaleString()} recipients`
-        : "The people who receive your campaign",
-      action: recipientsDone ? "Manage recipients" : "Add recipients",
+      subtitle: followUp
+        ? recipientsCount > 0
+          ? `${recipientsCount.toLocaleString()} engagers so far · auto-filled from opens & clicks`
+          : "Filled later automatically from opens & clicks (after the wait)"
+        : recipientsDone
+          ? remainingEmails !== undefined
+            ? `${campaign.recipients.toLocaleString()} recipients • ${remainingEmails.toLocaleString()} remaining emails`
+            : `${campaign.recipients.toLocaleString()} recipients`
+          : "The people who receive your campaign",
+      action: followUp
+        ? recipientsCount > 0
+          ? "Auto audience"
+          : "Pending engagers"
+        : recipientsDone
+          ? "Manage recipients"
+          : "Add recipients",
       done: recipientsDone,
+      locked: followUp,
     },
     ...contentSteps,
     {
@@ -3517,6 +3562,11 @@ export default function PortalCampaignDetailPage({
   kind?: CampaignKind;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const fromAutomation = searchParams.get("fromAutomation") === "1";
+  const automationStepId = searchParams.get("stepId");
+  const queryFollowUp = searchParams.get("automationFollowUp") === "1";
+  const automationRecordId = searchParams.get("automationId");
   const [campaign, setCampaign] = useState<DripCampaign | null>(null);
   const [loading, setLoading] = useState(true);
   const [senderPanelOpen, setSenderPanelOpen] = useState(false);
@@ -3625,6 +3675,13 @@ export default function PortalCampaignDetailPage({
         }
         setCampaign(next);
         setProjectCampaigns(all);
+        if (next) {
+          void ensureAutomationCampaignTags([next], kind).then((tagged) => {
+            if (!cancelled && tagged[0]) {
+              setCampaign(tagged[0]);
+            }
+          });
+        }
       } catch {
         if (!cancelled) {
           setCampaign(null);
@@ -3737,9 +3794,16 @@ export default function PortalCampaignDetailPage({
     nameInputRef.current?.select();
   }, [nameEditing]);
 
+  const automationFollowUp = isAutomationFollowUpCampaign(campaign, queryFollowUp);
+
   const steps = useMemo(
-    () => (campaign ? buildSteps(campaign, remainingEmails) : []),
-    [campaign, remainingEmails],
+    () =>
+      campaign
+        ? buildSteps(campaign, remainingEmails, {
+            automationFollowUp,
+          })
+        : [],
+    [campaign, remainingEmails, automationFollowUp],
   );
   const requiredStepsComplete = steps.filter((step) => !step.noIcon).every((step) => step.done);
 
@@ -3931,6 +3995,9 @@ export default function PortalCampaignDetailPage({
   }
 
   function openSenderPanel() {
+    if (automationFollowUp) {
+      return;
+    }
     closeAllPanels();
     setSenderPanelOpen(true);
   }
@@ -3940,6 +4007,9 @@ export default function PortalCampaignDetailPage({
   }
 
   function openRecipientsPanel() {
+    if (automationFollowUp) {
+      return;
+    }
     closeAllPanels();
     setRecipientsPanelOpen(true);
     setDraftListId(campaign?.listId ?? "");
@@ -4243,6 +4313,9 @@ export default function PortalCampaignDetailPage({
   }
 
   function handleStepAction(stepId: string) {
+    if (automationFollowUp && (stepId === "sender" || stepId === "recipients")) {
+      return;
+    }
     if (stepId === "sender") {
       if (senderPanelOpen) {
         closeSenderPanel();
@@ -4403,7 +4476,14 @@ export default function PortalCampaignDetailPage({
               </button>
             </>
           )}
-          <span className="drip-status-pill">{statusLabel}</span>
+          <div className="drip-detail-badges">
+            <span className="drip-status-pill">{statusLabel}</span>
+            {isAutomationCampaign(campaign) ? (
+              <span className="drip-automation-badge" title="Created from Automation">
+                Automation
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className="drip-detail-actions">
           <button
@@ -4419,19 +4499,60 @@ export default function PortalCampaignDetailPage({
           >
             Preview &amp; Test
           </button>
-          <button
-            type="button"
-            className="btn-dark"
-            onClick={() => {
-              if (!requiredStepsComplete) {
-                setSetupErrorToast((value) => value + 1);
-                return;
-              }
-              setScheduleOpen(true);
-            }}
-          >
-            Schedule
-          </button>
+          {fromAutomation ? (
+            <button
+              type="button"
+              className="btn-dark"
+              onClick={() => {
+                if (campaign) {
+                  try {
+                    sessionStorage.setItem(
+                      "unified_automation_linked_campaign",
+                      JSON.stringify({
+                        campaignId: campaign.id,
+                        kind: campaign.kind === "oneone" ? "oneone" : "drip",
+                        stepId: automationStepId || undefined,
+                        automationId: automationRecordId || undefined,
+                        followUp: automationFollowUp || undefined,
+                      }),
+                    );
+                  } catch {
+                    /* ignore */
+                  }
+                }
+                const stepQuery = automationStepId
+                  ? `&stepId=${encodeURIComponent(automationStepId)}`
+                  : "";
+                const followUpQuery = automationFollowUp
+                  ? "&automationFollowUp=1"
+                  : "";
+                const base = automationRecordId
+                  ? `/portal/marketing/automation/${encodeURIComponent(automationRecordId)}`
+                  : PORTAL_ROUTES.automation;
+                router.push(
+                  `${base}?campaignId=${encodeURIComponent(campaignId)}&kind=${encodeURIComponent(kind)}${stepQuery}${followUpQuery}`,
+                );
+              }}
+            >
+              {requiredStepsComplete
+                ? "Return to Automation ✓"
+                : "Return to Automation"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn-dark"
+              onClick={() => {
+                if (!requiredStepsComplete) {
+                  setSetupErrorToast((value) => value + 1);
+                  return;
+                }
+                setScheduleOpen(true);
+              }}
+            >
+              Schedule
+            </button>
+          )}
         </div>
       </div>
 
@@ -4568,7 +4689,8 @@ export default function PortalCampaignDetailPage({
                   </div>
                   <button
                     type="button"
-                    className="drip-step-action"
+                    className={`drip-step-action${step.locked ? " drip-step-action-locked" : ""}`}
+                    disabled={step.locked}
                     onClick={() => handleStepAction(step.id)}
                   >
                     {step.action}

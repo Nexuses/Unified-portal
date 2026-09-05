@@ -16,6 +16,10 @@ import {
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { portalCampaignRoute } from "@/lib/portal-nav";
+import {
+  campaignHasAutomationTag,
+  ensureAutomationCampaignTags,
+} from "@/lib/automations";
 
 const STATUS_OPTIONS: Array<CampaignStatus | "all"> = [
   "all",
@@ -31,23 +35,6 @@ function RowStatusSpinner() {
     <span className="drip-row-spinner" aria-hidden="true">
       <span className="drip-row-spinner-ring" />
     </span>
-  );
-}
-
-function PauseIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor">
-      <rect x="7" y="5" width="3.5" height="14" rx="1" />
-      <rect x="13.5" y="5" width="3.5" height="14" rx="1" />
-    </svg>
-  );
-}
-
-function PlayIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor">
-      <path d="M8 5.5v13l11-6.5L8 5.5Z" />
-    </svg>
   );
 }
 
@@ -111,7 +98,6 @@ export default function PortalDripPage({
   const [createError, setCreateError] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [statusUpdatingId, setStatusUpdatingId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -119,8 +105,9 @@ export default function PortalDripPage({
     async function load() {
       try {
         const next = await fetchDripCampaigns(kind);
+        const tagged = await ensureAutomationCampaignTags(next, kind);
         if (!cancelled) {
-          setCampaigns(next);
+          setCampaigns(tagged);
         }
       } catch {
         if (!cancelled) {
@@ -279,47 +266,6 @@ export default function PortalDripPage({
     }
   }
 
-  async function handlePause(campaign: DripCampaign) {
-    if (campaign.status !== "sending" && campaign.status !== "scheduled") {
-      return;
-    }
-
-    setStatusUpdatingId(campaign.id);
-    setOpenMenuId(null);
-    try {
-      const updated = await patchDripCampaign(campaign.id, { status: "paused" }, kind);
-      setCampaigns((current) =>
-        current.map((item) => (item.id === campaign.id ? updated : item)),
-      );
-    } catch (error) {
-      window.alert(
-        error instanceof Error ? error.message : "Failed to pause campaign",
-      );
-    } finally {
-      setStatusUpdatingId(null);
-    }
-  }
-
-  async function handleResume(campaign: DripCampaign) {
-    if (campaign.status !== "paused") {
-      return;
-    }
-
-    setStatusUpdatingId(campaign.id);
-    setOpenMenuId(null);
-    try {
-      const updated = await patchDripCampaign(campaign.id, { status: "sending" }, kind);
-      setCampaigns((current) =>
-        current.map((item) => (item.id === campaign.id ? updated : item)),
-      );
-    } catch (error) {
-      window.alert(
-        error instanceof Error ? error.message : "Failed to resume campaign",
-      );
-    } finally {
-      setStatusUpdatingId(null);
-    }
-  }
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
@@ -579,31 +525,29 @@ export default function PortalDripPage({
                       />
                     </div>
                     <div className="drip-row-actions">
-                      {campaign.status === "sending" ? (
-                        <span
-                          className="drip-row-status drip-row-status-running"
-                          aria-label="Campaign is running"
-                        >
-                          <RowStatusSpinner />
-                          Running
-                        </span>
-                      ) : campaign.status === "sent" ? (
-                        <span className="drip-row-status drip-row-status-complete">Complete</span>
-                      ) : campaign.status === "scheduled" ? (
-                        <span className="drip-row-status drip-row-status-scheduled">Scheduled</span>
-                      ) : campaign.status === "paused" ? (
-                        <span className="drip-row-status drip-row-status-paused">Paused</span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="drip-pause"
-                          aria-label="Pause campaign"
-                          disabled
-                          title="Pause is available after the campaign is scheduled or running"
-                        >
-                          <PauseIcon />
-                        </button>
-                      )}
+                      <div className="drip-row-badges">
+                        {campaign.status === "sending" ? (
+                          <span
+                            className="drip-row-status drip-row-status-running"
+                            aria-label="Campaign is running"
+                          >
+                            <RowStatusSpinner />
+                            Running
+                          </span>
+                        ) : campaign.status === "sent" ? (
+                          <span className="drip-row-status drip-row-status-complete">
+                            Complete
+                          </span>
+                        ) : null}
+                        {campaignHasAutomationTag(campaign) ? (
+                          <span
+                            className="drip-automation-badge"
+                            title="Created from Automation"
+                          >
+                            Automation
+                          </span>
+                        ) : null}
+                      </div>
                       <div
                         className="drip-more-wrap"
                         ref={openMenuId === campaign.id ? menuRef : undefined}
@@ -613,9 +557,7 @@ export default function PortalDripPage({
                           className={`drip-more${openMenuId === campaign.id ? " active" : ""}`}
                           aria-label="More actions"
                           aria-expanded={openMenuId === campaign.id}
-                          disabled={
-                            deletingId === campaign.id || statusUpdatingId === campaign.id
-                          }
+                          disabled={deletingId === campaign.id}
                           onClick={() =>
                             setOpenMenuId((current) =>
                               current === campaign.id ? null : campaign.id,
@@ -630,33 +572,6 @@ export default function PortalDripPage({
                         </button>
                         {openMenuId === campaign.id ? (
                           <div className="drip-more-menu" role="menu">
-                            {campaign.status === "sending" ||
-                            campaign.status === "scheduled" ? (
-                              <button
-                                type="button"
-                                role="menuitem"
-                                disabled={statusUpdatingId === campaign.id}
-                                onClick={() => void handlePause(campaign)}
-                              >
-                                <PauseIcon />
-                                {statusUpdatingId === campaign.id
-                                  ? "Pausing..."
-                                  : "Pause campaign"}
-                              </button>
-                            ) : null}
-                            {campaign.status === "paused" ? (
-                              <button
-                                type="button"
-                                role="menuitem"
-                                disabled={statusUpdatingId === campaign.id}
-                                onClick={() => void handleResume(campaign)}
-                              >
-                                <PlayIcon />
-                                {statusUpdatingId === campaign.id
-                                  ? "Resuming..."
-                                  : "Resume campaign"}
-                              </button>
-                            ) : null}
                             <button
                               type="button"
                               role="menuitem"

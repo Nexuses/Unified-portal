@@ -68,7 +68,12 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
         />
 
         <div
-          className={`content${pathname.startsWith("/portal/crm") ? " crm-content" : ""}`}
+          className={`content${pathname.startsWith("/portal/crm") ? " crm-content" : ""}${
+            pathname === "/portal/marketing/automation" ||
+            /^\/portal\/marketing\/automation\/[^/]+$/.test(pathname)
+              ? " auto-content"
+              : ""
+          }`}
         >
           {children}
         </div>

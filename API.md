@@ -381,6 +381,24 @@ No body. 200 `{ "token": "string", "url": "https://host/r/{token}" }`
 
 ---
 
+## Automation (portal session)
+
+UI: `/portal/marketing/automation` — collapsible DeepSeek AI sidebar + sequence canvas. Launch creates a real drip or 1-1 campaign.
+
+### POST `/api/automation/chat`
+Body:
+```json
+{
+  "message": "Build a 3-step follow-up sequence",
+  "history": [{ "role": "user", "content": "…" }],
+  "context": { "kind": "drip", "campaignName": "Untitled", "stepCount": 1 }
+}
+```
+200 `{ "reply": "…" }`  
+Requires `DEEPSEEK_API_KEY` in the server environment (503 if missing).
+
+---
+
 ## Public / tracking (no auth)
 
 ### GET `/api/public/reports/{token}`
@@ -541,6 +559,7 @@ Deletes the project, its users, CRM data, and SMTP senders.
 | POST | `/api/campaigns/process-due` | portal |
 | GET | `/api/campaigns/stats` | portal |
 | POST | `/api/campaigns/test-email` | portal |
+| POST | `/api/automation/chat` | portal |
 | GET | `/api/campaigns/[id]/recipients` | portal |
 | GET | `/api/campaigns/[id]/export` | portal |
 | POST | `/api/campaigns/[id]/share` | portal |

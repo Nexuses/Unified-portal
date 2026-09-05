@@ -73,6 +73,17 @@ export function IconIntegrations({ className }: IconProps) {
   );
 }
 
+export function IconAutomation({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" {...stroke}>
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="18" cy="6" r="2.5" />
+      <circle cx="12" cy="18" r="2.5" />
+      <path d="M8.2 7.2 10.8 16M15.8 7.2 13.2 16" />
+    </svg>
+  );
+}
+
 export function IconHelp({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
@@ -163,6 +174,10 @@ export function getNavIcon(pageId: string) {
       return IconCrm;
     case "marketing":
       return IconMarketing;
+    case "automation":
+      return IconAutomation;
+    case "automation-history":
+      return IconAutomation;
     case "analytics":
       return IconAnalytics;
     case "smtp":

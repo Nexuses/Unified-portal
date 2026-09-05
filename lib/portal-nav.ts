@@ -6,6 +6,8 @@ export type PortalPageId =
   | "companies"
   | "drip"
   | "oneone"
+  | "automation"
+  | "automation-history"
   | "analytics"
   | "smtp"
   | "unsub"
@@ -42,6 +44,8 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   companies: "/portal/crm/companies",
   drip: "/portal/marketing/drip",
   oneone: "/portal/marketing/one-one",
+  automation: "/portal/marketing/automation",
+  "automation-history": "/portal/marketing/automation-history",
   analytics: "/portal/analytics",
   smtp: "/portal/smtp",
   unsub: "/portal/unsub",
@@ -99,6 +103,12 @@ export const PORTAL_NAV: PortalNavItem[] = [
     children: [
       { id: "drip", label: "Drip Campaign", href: PORTAL_ROUTES.drip },
       { id: "oneone", label: "1-1 Campaign", href: PORTAL_ROUTES.oneone },
+      { id: "automation", label: "Automation", href: PORTAL_ROUTES.automation },
+      {
+        id: "automation-history",
+        label: "Automation history",
+        href: PORTAL_ROUTES["automation-history"],
+      },
     ],
   },
   { type: "item", id: "analytics", label: "Analytics", href: PORTAL_ROUTES.analytics },
@@ -120,6 +130,8 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   companies: "Companies",
   drip: "Drip Campaign",
   oneone: "1-1 Campaign",
+  automation: "Automation",
+  "automation-history": "Automation history",
   analytics: "Analytics",
   smtp: "SMTP & Senders",
   unsub: "Suppression List",
@@ -145,6 +157,10 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/crm/companies")) return "companies";
   if (pathname.startsWith("/portal/marketing/drip")) return "drip";
   if (pathname.startsWith("/portal/marketing/one-one")) return "oneone";
+  if (pathname.startsWith("/portal/marketing/automation-history")) {
+    return "automation-history";
+  }
+  if (pathname.startsWith("/portal/marketing/automation")) return "automation";
   if (pathname.startsWith("/portal/marketing/campaigns/")) return "drip";
   if (pathname.startsWith("/portal/analytics")) return "analytics";
   if (pathname.startsWith("/portal/smtp")) return "smtp";
