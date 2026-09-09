@@ -166,19 +166,24 @@ function SenderExpandedDetails({
       <div className="vs-field">
         <div className="lbl">Tracking domain</div>
         <div className="val">
-          {trackingOrigin(sender.trackingDomain).replace(/^https?:\/\//, "")}
+          {sender.trackingVerification?.verified
+            ? trackingOrigin(sender.trackingDomain).replace(/^https?:\/\//, "")
+            : DEFAULT_TRACKING_HOST}
           {sender.trackingVerification?.verified ? (
             <VerificationMark ok />
-          ) : sender.pendingTrackingDomain ? (
+          ) : sender.pendingTrackingDomain || sender.trackingDomain ? (
             <VerificationMark ok={false} />
           ) : null}
         </div>
         <div className="vs-field-note">
           {sender.pendingTrackingDomain && !sender.trackingVerification?.verified
-            ? `Waiting for DNS on ${sender.pendingTrackingDomain}.`
-            : sender.trackingDomain
+            ? `Waiting for DNS/HTTPS on ${sender.pendingTrackingDomain}.`
+            : sender.trackingDomain && sender.trackingVerification?.verified
               ? sender.trackingVerification?.detail || "Verified custom tracking domain."
-              : `Using default ${DEFAULT_TRACKING_HOST}.`}
+              : sender.trackingDomain
+                ? sender.trackingVerification?.detail ||
+                  `Custom domain set but not usable yet — emails use ${DEFAULT_TRACKING_HOST}.`
+                : `Using default ${DEFAULT_TRACKING_HOST}.`}
         </div>
       </div>
     </div>
@@ -866,8 +871,10 @@ export default function PortalSmtpPage() {
               <div>
                 <h3>Set custom tracking domain</h3>
                 <p>
-                  Point a CNAME at {DEFAULT_TRACKING_HOST}, then verify. Until it
-                  verifies, this sender uses the default tracking domain.
+                  Point a CNAME at {DEFAULT_TRACKING_HOST}, then verify. We also
+                  check HTTPS — if Cloudflare returns Error 1014 (CNAME
+                  Cross-User Banned), keep using {DEFAULT_TRACKING_HOST} for
+                  opens, clicks, and unsubscribe.
                 </p>
               </div>
               <button

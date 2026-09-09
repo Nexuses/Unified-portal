@@ -12,7 +12,7 @@ import {
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { getSuppressedEmails } from "@/lib/unsubscribe-server";
-import { injectCampaignTracking, trackingOrigin, DEFAULT_TRACKING_HOST } from "@/lib/campaign-tracking";
+import { injectCampaignTracking, resolveUsableTrackingOrigin } from "@/lib/campaign-tracking";
 import { sendProjectMail } from "@/lib/smtp-senders-server";
 import { normalizeEmailMergeTags } from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
@@ -243,15 +243,9 @@ async function resolveTrackingOrigin(projectId: ObjectId, senderId: string) {
   });
   const typed = sender as {
     trackingDomain?: string;
-    trackingVerification?: { verified?: boolean; domain?: string };
   } | null;
-  const domain = typed?.trackingDomain;
-  const verified =
-    typed?.trackingVerification?.verified === true ||
-    (domain &&
-      domain.toLowerCase() === DEFAULT_TRACKING_HOST.toLowerCase());
-  // Unverified custom CNAMEs would break open/click/unsubscribe in the email.
-  return trackingOrigin(verified ? domain : null);
+  // Live HTTPS probe — DNS-only "verified" is not enough (Cloudflare 1014).
+  return resolveUsableTrackingOrigin(typed?.trackingDomain);
 }
 
 function mapReport(

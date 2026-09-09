@@ -32,6 +32,7 @@ curl -H "Authorization: Bearer up_live_…" \
 4. **Auto-detect new campaigns (Attio / CRM sync):**
    - Preferred: register a webhook (`POST /api/integrations/webhooks`) for `campaign.created`, `campaign.launched`, `send.opened`, `send.clicked`
    - Fallback poll: `GET /api/campaigns?updatedSince=ISO` (both kinds), then `GET /api/campaigns/{id}/recipients?filter=audience|opens|clicks&kind=`
+   - Tracking links use `https://unified.nexuses.xyz` by default. Custom CNAMEs are only used after DNS **and** HTTPS checks pass (Cloudflare Error 1014 blocks many cross-account CNAMEs).
 
 `GET /api/auth/me` is **cookie-only** — Bearer keys do **not** work there. Use CRM/campaigns/SMTP/automations/webhooks routes with the key instead.
 

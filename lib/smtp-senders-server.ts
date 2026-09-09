@@ -297,9 +297,12 @@ export async function verifySenderTrackingDomain(
         }
       : {
           $set: {
+            pendingTrackingDomain: verification.domain || domain,
             trackingVerification: verification,
             updatedAt: now,
           },
+          // Do not keep a broken custom host as the active trackingDomain.
+          $unset: { trackingDomain: "" },
         },
   );
 
