@@ -12,7 +12,7 @@ import {
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { getSuppressedEmails } from "@/lib/unsubscribe-server";
-import { injectCampaignTracking, trackingOrigin } from "@/lib/campaign-tracking";
+import { injectCampaignTracking, trackingOrigin, DEFAULT_TRACKING_HOST } from "@/lib/campaign-tracking";
 import { sendProjectMail } from "@/lib/smtp-senders-server";
 import { normalizeEmailMergeTags } from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
@@ -241,9 +241,17 @@ async function resolveTrackingOrigin(projectId: ObjectId, senderId: string) {
     _id: new ObjectId(senderId),
     projectId,
   });
-  return trackingOrigin(
-    (sender as { trackingDomain?: string } | null)?.trackingDomain,
-  );
+  const typed = sender as {
+    trackingDomain?: string;
+    trackingVerification?: { verified?: boolean; domain?: string };
+  } | null;
+  const domain = typed?.trackingDomain;
+  const verified =
+    typed?.trackingVerification?.verified === true ||
+    (domain &&
+      domain.toLowerCase() === DEFAULT_TRACKING_HOST.toLowerCase());
+  // Unverified custom CNAMEs would break open/click/unsubscribe in the email.
+  return trackingOrigin(verified ? domain : null);
 }
 
 function mapReport(
@@ -564,6 +572,7 @@ async function sendPendingBatch(
         html,
         fromName: blast.senderName,
         replyTo: blast.replyTo,
+        listUnsubscribeUrl: `${trackingBase.replace(/\/$/, "")}/api/unsubscribe/${send.token}`,
       });
       const sentAt = new Date();
       lastSuccessAt = sentAt;

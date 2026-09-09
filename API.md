@@ -247,7 +247,7 @@ HTML/subject supports:
 - `{{ contact.COMPANY }}`
 - `{{ unsubscribe }}`
 
-Aliases (`*|FNAME|*`, `{{first_name}}`, etc.) are normalized at send time. Unsubscribe is **not** auto-injected; only existing unsubscribe placeholders are replaced.
+Aliases (`*|FNAME|*`, `{{first_name}}`, etc.) are normalized at send time. Unsubscribe placeholders are replaced with a real link; if none exist, an unsubscribe footer is appended automatically.
 
 Max **10** individual contacts per campaign (`MAX_INDIVIDUAL_CONTACTS`). Plan email cap is 50_000 (`EMAIL_PLAN_LIMIT`).
 

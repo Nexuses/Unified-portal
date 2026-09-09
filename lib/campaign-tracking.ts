@@ -190,18 +190,57 @@ function injectOpenPixel(html: string, openUrl: string) {
     return html;
   }
 
-  const pixel = `<img src="${openUrl}" width="1" height="1" alt="" style="display:none !important;width:1px;height:1px;border:0;overflow:hidden;" />`;
+  // Do not use display:none — many clients skip loading those images,
+  // so opens never fire. Keep a 1×1 img that clients still fetch.
+  const pixel = `<img src="${openUrl}" width="1" height="1" alt="" border="0" style="width:1px;height:1px;border:0;line-height:1px;" />`;
   if (/<\/body>/i.test(html)) {
     return html.replace(/<\/body>/i, `${pixel}</body>`);
   }
   return `${html}${pixel}`;
 }
 
-function injectUnsubscribe(
-  html: string,
-  unsubscribeUrl: string,
-) {
-  return replaceUnsubscribeVariables(html, unsubscribeUrl);
+function hasUnsubscribeHref(html: string, unsubscribeUrl: string) {
+  return (
+    html.includes(unsubscribeUrl) ||
+    /href\s*=\s*(["'])[^"']*\/t\/u\/[^"']+\1/i.test(html) ||
+    /href\s*=\s*(["'])[^"']*\/unsubscribe\/[^"']+\1/i.test(html)
+  );
+}
+
+/**
+ * Replace merge tags with a real unsubscribe link.
+ * Tags already inside href="…" become the raw URL; standalone tags become an <a>.
+ * If the email has no unsubscribe href at all, append a footer link.
+ */
+function injectUnsubscribe(html: string, unsubscribeUrl: string) {
+  let next = html;
+
+  // href="{{ unsubscribe }}" (and aliases) → href="https://…/t/u/…"
+  next = next.replace(
+    /href\s*=\s*(["'])\s*(?:\{\{\{\s*([^}]+?)\s*\}\}\}|\{\{\s*([^}]+?)\s*\}\})\s*\1/gi,
+    (full, quote: string, tripleInner?: string, doubleInner?: string) => {
+      const inner = String(tripleInner ?? doubleInner ?? "");
+      if (!/unsubscribe|unsub|optout|listunsub/i.test(inner.replace(/\s+/g, ""))) {
+        return full;
+      }
+      return `href=${quote}${unsubscribeUrl}${quote}`;
+    },
+  );
+
+  // Remaining bare tags → clickable link (not plain text URL)
+  const link = `<a href="${unsubscribeUrl}" target="_blank" rel="noopener noreferrer">Unsubscribe</a>`;
+  next = replaceUnsubscribeVariables(next, link);
+
+  if (!hasUnsubscribeHref(next, unsubscribeUrl)) {
+    const footer = `<p style="margin:24px 0 0;font-size:12px;line-height:1.4;color:#666;">${link}</p>`;
+    if (/<\/body>/i.test(next)) {
+      next = next.replace(/<\/body>/i, `${footer}</body>`);
+    } else {
+      next = `${next}${footer}`;
+    }
+  }
+
+  return next;
 }
 
 export function injectCampaignTracking(

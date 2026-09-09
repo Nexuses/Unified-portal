@@ -2465,8 +2465,10 @@ function CustomHtmlEditor({
         <div className="drip-html-variable-hint">
           Unsubscribe tags already in your HTML, such as{" "}
           <code>{"{{ unsubscribe }}"}</code> or{" "}
-          <code>{"{{Unsubscribe}}"}</code>, are updated in place. Other merge
-          tags become <code>{"{{ contact.FIRSTNAME }}"}</code>,{" "}
+          <code>{'<a href="{{ unsubscribe }}">Unsubscribe</a>'}</code>, are
+          turned into real unsubscribe links on send. If you omit them, a
+          footer unsubscribe link is added automatically. Other merge tags
+          become <code>{"{{ contact.FIRSTNAME }}"}</code>,{" "}
           <code>{"{{ contact.LASTNAME }}"}</code>,{" "}
           <code>{"{{ contact.EMAIL }}"}</code>, and{" "}
           <code>{"{{ contact.COMPANY }}"}</code>.

@@ -6,6 +6,12 @@ type RouteContext = {
   params: Promise<{ token: string }>;
 };
 
+export async function GET(request: NextRequest, context: RouteContext) {
+  const { token } = await context.params;
+  const url = new URL(`/unsubscribe/${token}`, request.url);
+  return NextResponse.redirect(url, { status: 302 });
+}
+
 export async function POST(_request: NextRequest, context: RouteContext) {
   try {
     const { token } = await context.params;

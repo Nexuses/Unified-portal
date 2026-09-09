@@ -355,6 +355,7 @@ export type ProjectMailInput = {
   html: string;
   fromName?: string;
   replyTo?: string;
+  listUnsubscribeUrl?: string;
 };
 
 export async function sendProjectTestEmail(
@@ -395,6 +396,7 @@ export async function sendProjectMail(
     html: input.html,
     fromName: input.fromName,
     replyTo: input.replyTo,
+    listUnsubscribeUrl: input.listUnsubscribeUrl,
   });
 }
 
@@ -424,6 +426,7 @@ async function deliverWithSender(
     html: string;
     fromName?: string;
     replyTo?: string;
+    listUnsubscribeUrl?: string;
   },
 ) {
   const fromEmail = sender.fromEmail;
@@ -437,6 +440,7 @@ async function deliverWithSender(
   }
 
   const replyTo = input.replyTo?.trim() || undefined;
+  const listUnsubscribeUrl = input.listUnsubscribeUrl?.trim() || undefined;
 
   if (sender.provider === "sendgrid" && sender.apiKey) {
     await sendWithSendgrid(sender.apiKey, {
@@ -446,6 +450,7 @@ async function deliverWithSender(
       subject,
       html,
       replyTo,
+      listUnsubscribeUrl,
     });
     return;
   }
@@ -457,6 +462,7 @@ async function deliverWithSender(
       subject,
       html,
       replyTo,
+      listUnsubscribeUrl,
     });
     return;
   }
@@ -497,6 +503,14 @@ async function deliverWithSender(
     subject,
     html,
     replyTo,
+    ...(listUnsubscribeUrl
+      ? {
+          headers: {
+            "List-Unsubscribe": `<${listUnsubscribeUrl}>`,
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          },
+        }
+      : {}),
   });
 }
 
@@ -509,6 +523,7 @@ async function sendWithSendgrid(
     subject: string;
     html: string;
     replyTo?: string;
+    listUnsubscribeUrl?: string;
   },
 ) {
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
@@ -525,6 +540,12 @@ async function sendWithSendgrid(
       reply_to: mail.replyTo ? { email: mail.replyTo } : undefined,
       subject: mail.subject,
       content: [{ type: "text/html", value: mail.html }],
+      headers: mail.listUnsubscribeUrl
+        ? {
+            "List-Unsubscribe": `<${mail.listUnsubscribeUrl}>`,
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          }
+        : undefined,
     }),
   });
 
@@ -542,6 +563,7 @@ async function sendWithResend(
     subject: string;
     html: string;
     replyTo?: string;
+    listUnsubscribeUrl?: string;
   },
 ) {
   const response = await fetch("https://api.resend.com/emails", {
@@ -556,6 +578,18 @@ async function sendWithResend(
       subject: mail.subject,
       html: mail.html,
       reply_to: mail.replyTo,
+      headers: mail.listUnsubscribeUrl
+        ? [
+            {
+              name: "List-Unsubscribe",
+              value: `<${mail.listUnsubscribeUrl}>`,
+            },
+            {
+              name: "List-Unsubscribe-Post",
+              value: "List-Unsubscribe=One-Click",
+            },
+          ]
+        : undefined,
     }),
   });
 
