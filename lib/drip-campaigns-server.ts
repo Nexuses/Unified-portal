@@ -17,6 +17,7 @@ import {
   type CampaignReport,
 } from "@/lib/campaign-blasts-server";
 import { mergeBlastReport } from "@/lib/drip-campaigns";
+import { emitWebhookEventBackground } from "@/lib/webhooks-server";
 
 export type DripCampaignDoc = {
   _id: ObjectId;
@@ -104,6 +105,8 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     windowEnd: doc.windowEnd,
     emailGapMinutes: doc.emailGapMinutes,
     timeline: doc.timeline,
+    createdAt: doc.createdAt?.toISOString(),
+    updatedAt: doc.updatedAt?.toISOString(),
   };
 }
 
@@ -231,6 +234,7 @@ async function nextCampaignId(projectId: ObjectId, kind: CampaignKind = "drip") 
 export async function listProjectDripCampaigns(
   projectId: ObjectId,
   kind?: CampaignKind,
+  options?: { updatedSince?: Date },
 ) {
   if (kind === "oneone") {
     await resequenceCampaignIds(projectId, "oneone");
@@ -238,6 +242,9 @@ export async function listProjectDripCampaigns(
 
   const db = await getDb();
   const query: Record<string, unknown> = { projectId, ...campaignKindFilter(kind) };
+  if (options?.updatedSince && !Number.isNaN(options.updatedSince.getTime())) {
+    query.updatedAt = { $gte: options.updatedSince };
+  }
   const docs = await db
     .collection<DripCampaignDoc>("drip_campaigns")
     .find(query)
@@ -418,7 +425,19 @@ export async function createProjectDripCampaign(
   };
 
   await db.collection<DripCampaignDoc>("drip_campaigns").insertOne(doc);
-  return mapCampaign(doc);
+  const campaign = mapCampaign(doc);
+  emitWebhookEventBackground({
+    projectId,
+    type: "campaign.created",
+    data: {
+      campaignId: campaign.id,
+      kind: campaign.kind || "drip",
+      name: campaign.name,
+      status: campaign.status,
+      createdAt: campaign.createdAt,
+    },
+  });
+  return campaign;
 }
 
 const PATCHABLE_KEYS: Array<keyof DripCampaign> = [

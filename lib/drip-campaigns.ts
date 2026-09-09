@@ -73,6 +73,8 @@ export type DripCampaign = {
     description: string;
     at: string;
   }>;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export function createEmptySequence(index = 0): CampaignSequence {

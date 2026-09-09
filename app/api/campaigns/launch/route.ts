@@ -10,6 +10,7 @@ import {
   isSessionError,
   requirePortalSession,
 } from "@/lib/require-portal-session";
+import { emitWebhookEventBackground } from "@/lib/webhooks-server";
 
 export async function POST(request: NextRequest) {
   try {
@@ -42,6 +43,20 @@ export async function POST(request: NextRequest) {
 
     const launched = mergeBlastReport(body.campaign, report);
     await updateProjectDripCampaign(projectId, body.campaign.id, launched);
+
+    emitWebhookEventBackground({
+      projectId,
+      type: "campaign.launched",
+      data: {
+        campaignId: body.campaign.id,
+        kind: body.campaign.kind === "oneone" ? "oneone" : "drip",
+        name: body.campaign.name,
+        mode: body.mode,
+        status: report.status,
+        recipients: report.recipients,
+        scheduledFor: report.scheduledFor,
+      },
+    });
 
     return NextResponse.json(report);
   } catch (error) {

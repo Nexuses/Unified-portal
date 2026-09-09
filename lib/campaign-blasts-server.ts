@@ -15,6 +15,7 @@ import { getSuppressedEmails } from "@/lib/unsubscribe-server";
 import { injectCampaignTracking, trackingOrigin } from "@/lib/campaign-tracking";
 import { sendProjectMail } from "@/lib/smtp-senders-server";
 import { normalizeEmailMergeTags } from "@/lib/email-variables";
+import { emitWebhookEventBackground } from "@/lib/webhooks-server";
 
 export type BlastStatus = "scheduled" | "sending" | "sent" | "paused";
 
@@ -940,6 +941,22 @@ export async function recordCampaignOpen(token: string) {
       { _id: send.blastId },
       { $inc: { opens: 1 }, $set: { updatedAt: new Date() } },
     );
+    const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+      _id: send.blastId,
+    });
+    emitWebhookEventBackground({
+      projectId: send.projectId,
+      type: "send.opened",
+      data: {
+        campaignId: send.campaignId,
+        kind: blast?.kind === "oneone" ? "oneone" : "drip",
+        name: blast?.name,
+        email: send.email,
+        fullName: send.fullName,
+        sendId: send._id.toString(),
+        sequenceIndex: send.sequenceIndex,
+      },
+    });
   }
 }
 
@@ -976,6 +993,23 @@ export async function recordCampaignClick(token: string, url?: string) {
       { _id: send.blastId },
       { $inc: { clicks: 1 }, $set: { updatedAt: now } },
     );
+    const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+      _id: send.blastId,
+    });
+    emitWebhookEventBackground({
+      projectId: send.projectId,
+      type: "send.clicked",
+      data: {
+        campaignId: send.campaignId,
+        kind: blast?.kind === "oneone" ? "oneone" : "drip",
+        name: blast?.name,
+        email: send.email,
+        fullName: send.fullName,
+        sendId: send._id.toString(),
+        url: clickedUrl || send.clickedUrl || undefined,
+        sequenceIndex: send.sequenceIndex,
+      },
+    });
   }
 }
 

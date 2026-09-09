@@ -1,46 +1,66 @@
 # Unified Portal API
 
-Give this file to another AI as the source of truth for the app’s HTTP API.
+**Give this file to another AI as the source of truth for the app’s HTTP API.**
 
-Base URL (local): `http://localhost:3000`
+| Environment | Base URL |
+|-------------|----------|
+| Production | `https://unified.nexuses.xyz` |
+| Local | `http://localhost:3000` |
 
-This is a Next.js App Router app. Portal data is scoped to the logged-in user’s **project**. Drip campaigns and 1-1 campaigns are separate (`kind`: `"drip"` vs `"oneone"`). IDs for each kind start at `1` independently.
-
----
-
-## Auth model
-
-Two cookie-based sessions, plus optional project API keys:
-
-| Auth | Used by | How it is set |
-|------|---------|---------------|
-| Cookie `portal_user_session` | Portal APIs (campaigns, CRM, SMTP, `/api/auth/me`) | `POST /api/auth/login` |
-| Cookie `portal_admin_session` | Admin UI session (`/api/auth/admin-me`) | `POST /api/auth/admin-login` |
-| Header `Authorization: Bearer up_live_…` | Same portal APIs as the user cookie (full **read + write** for that project) | Create key in portal **Integrations** (`POST /api/integrations/keys`) |
-
-Cookies are httpOnly, `sameSite=lax`, 7-day lifetime.
-
-Portal-protected routes return **401** `{ "error": "Not authenticated" }` if neither a valid cookie nor a valid API key is present.
-
-Public (no cookie / no key): tracking pixels, unsubscribe, public report links.
-
-`/api/users` and `/api/projects` currently do **not** check a session in the route handler. They are meant for the admin UI.
+This is a Next.js App Router app. Portal data is scoped to the logged-in user’s **project**. Drip campaigns and 1-1 campaigns are separate (`kind`: `"drip"` vs `"oneone"`). Numeric IDs for each kind start at `1` independently — **always pass `?kind=`** on campaign id routes.
 
 Error shape (most routes): `{ "error": "message" }`.
 
-### API keys
+---
 
-- Managed in the portal under **Integrations** (`/portal/integrations`).
-- Stored hashed in Mongo (`api_keys`). The raw key is returned **once** on create.
-- Scope is always full project access: **read + write** on portal routes that use `requirePortalSession`.
-- Revoke with `DELETE /api/integrations/keys/{id}`.
+## Quick start for AI agents (API key)
 
-Example:
+1. Create a key in the portal **Integrations** UI, or via cookie session: `POST /api/integrations/keys` with `{ "name": "Bot" }`. Copy `rawKey` once (`up_live_…`).
+2. Call portal APIs with:
 
 ```bash
 curl -H "Authorization: Bearer up_live_…" \
   https://unified.nexuses.xyz/api/crm/contacts
 ```
+
+3. Typical drip send flow:
+   - `POST /api/campaigns` → `{ "name": "…", "kind": "drip" }`
+   - `PATCH /api/campaigns/{id}?kind=drip` → sender, list/individuals, subject, `designHtml`
+   - `POST /api/campaigns/launch` → `{ "campaign": {…full object…}, "mode": "now" }`
+   - Poll `POST /api/campaigns/process-due` until sends finish (no server-side cron; sending only advances while this is called)
+
+4. **Auto-detect new campaigns (Attio / CRM sync):**
+   - Preferred: register a webhook (`POST /api/integrations/webhooks`) for `campaign.created`, `campaign.launched`, `send.opened`, `send.clicked`
+   - Fallback poll: `GET /api/campaigns?updatedSince=ISO` (both kinds), then `GET /api/campaigns/{id}/recipients?filter=audience|opens|clicks&kind=`
+
+`GET /api/auth/me` is **cookie-only** — Bearer keys do **not** work there. Use CRM/campaigns/SMTP/automations/webhooks routes with the key instead.
+
+---
+
+## Auth model
+
+| Auth | Used by | How it is set |
+|------|---------|---------------|
+| Cookie `portal_user_session` | Portal APIs via `requirePortalSession` | `POST /api/auth/login` |
+| Cookie `portal_admin_session` | `GET /api/auth/admin-me` (+ `/admin/*` pages) | `POST /api/auth/admin-login` |
+| Header `Authorization: Bearer up_live_…` | Same portal APIs as the user cookie (full **read + write** for that project) | `POST /api/integrations/keys` |
+
+Cookies are httpOnly, `sameSite=lax`, 7-day lifetime (`secure` in production).
+
+Portal-protected routes return **401** `{ "error": "Not authenticated" }` if neither a valid cookie nor a valid API key is present.
+
+Public (no cookie / no key): tracking pixels, unsubscribe, public report links.
+
+`/api/users` and `/api/projects` currently do **not** check a session in the route handler (admin UI only). Middleware does **not** protect `/api/*`.
+
+There is **no** cron-secret auth. `process-due` requires a portal session or API key.
+
+### API keys
+
+- Managed under **Integrations** (`/portal/integrations`).
+- Stored hashed in Mongo (`api_keys`). Raw key returned **once** on create.
+- Scope is always full project access on routes that use `requirePortalSession`.
+- Revoke: `DELETE /api/integrations/keys/{id}`.
 
 ---
 
@@ -125,13 +145,17 @@ Sequence 1 always has `delayDays: 0`. Later sequences: `delayDays` is 0–365 (0
   "windowEnd": "18:00",
   "emailGapMinutes": 5,
   "sequenceProgress": { "current": 1, "total": 2, "sent": 0, "contacts": 5 },
-  "timeline": [{ "id": "string", "type": "draft|scheduled|sent", "title": "string", "description": "string", "at": "ISO" }]
+  "timeline": [{ "id": "string", "type": "draft|scheduled|sent", "title": "string", "description": "string", "at": "ISO" }],
+  "createdAt": "ISO",
+  "updatedAt": "ISO"
 }
 ```
 
 On **create oneone**, server sets: one empty sequence, `windowStart: "09:00"`, `windowEnd: "18:00"`, `emailGapMinutes: 5`.
 
 Campaign names are unique **per kind** inside a project.
+
+Common tags: `"automation"`, `"automation-follow-up"` (campaigns created from Marketing Automation).
 
 ### CampaignReport (launch / stats / process-due)
 ```json
@@ -161,6 +185,57 @@ Campaign names are unique **per kind** inside a project.
   "sequenceProgress": { "current": 1, "total": 2, "sent": 3, "contacts": 5 }
 }
 ```
+
+### CampaignSendRecipient
+```json
+{
+  "id": "sendId",
+  "email": "a@b.com",
+  "fullName": "Name",
+  "companyName": "",
+  "contactId": "optional",
+  "status": "pending|sending|sent|failed",
+  "sentAt": "ISO",
+  "openedAt": "ISO",
+  "clickedAt": "ISO",
+  "clickedUrl": "https://…",
+  "unsubscribedAt": "ISO",
+  "sequenceIndex": 0,
+  "sequenceNumber": 1
+}
+```
+
+### PortalAutomation
+```json
+{
+  "id": "mongoObjectId",
+  "name": "Untitled automation",
+  "kind": "drip",
+  "status": "draft",
+  "steps": [
+    {
+      "id": "step-…",
+      "type": "email",
+      "campaignId": "1",
+      "campaignKind": "drip",
+      "waitDays": 0,
+      "waitHours": 1,
+      "whoSource": "current",
+      "pastCampaignId": "optional",
+      "pastCampaignKind": "drip",
+      "pastCampaignName": "optional",
+      "engagement": "opens"
+    }
+  ],
+  "createdAt": "ISO",
+  "updatedAt": "ISO"
+}
+```
+
+`status`: `"draft"` | `"scheduled"` | `"running"` | `"completed"`  
+`whoSource`: `"current"` | `"past"`  
+`engagement`: `"opens"` | `"clicks"` | `"opens_or_clicks"`  
+Follow-up waits: **days may be 0**; **hours minimum 1**.
 
 ### Email merge tags
 
@@ -193,7 +268,7 @@ Max **10** individual contacts per campaign (`MAX_INDIVIDUAL_CONTACTS`). Plan em
 - Sequence 1 `availableAt` = now or `scheduledFor`. Later sequences stay locked until the previous send, then `sentAt + delayDays`.
 - Outside daily window → skip until next poll.
 - `emailGapMinutes > 0` → at most one email per poll.
-- Sending continues only while process-due is called (UI poll). If nobody has the page open, sends pause.
+- Sending continues only while process-due is called (UI poll or API client). If nobody calls it, sends pause.
 
 Always pass `?kind=oneone` or `?kind=drip` on campaign id routes so drip #1 and 1-1 #1 are not mixed up.
 
@@ -210,7 +285,7 @@ Body: `{ "email": "string", "password": "string" }`
 200 `{ "success": true }` — clears portal cookie.
 
 ### GET `/api/auth/me`
-Portal session. 200 same user object as login.
+**Cookie only** (not Bearer). 200 same user object as login. 401 `Not authenticated`.
 
 ### POST `/api/auth/admin-login`
 Body: `{ "email", "password" }`  
@@ -220,14 +295,16 @@ Body: `{ "email", "password" }`
 200 `{ "success": true }`
 
 ### GET `/api/auth/admin-me`
-Admin session. 200 `{ id, email, fullName }`
+Admin session cookie. 200 `{ id, email, fullName }`
 
 ---
 
-## Campaigns (portal session)
+## Campaigns (portal session or Bearer)
 
-### GET `/api/campaigns?kind=drip|oneone`
-`kind` optional. 200: `DripCampaign[]` (non-draft/paused merged with blast stats).
+### GET `/api/campaigns?kind=drip|oneone&updatedSince=2026-09-09T00:00:00.000Z`
+`kind` optional. `updatedSince` optional ISO timestamp — only campaigns with `updatedAt >= updatedSince`.  
+200: `DripCampaign[]` (includes `createdAt` / `updatedAt`; non-draft/paused merged with blast stats).  
+400 if `updatedSince` is not a valid date.
 
 ### POST `/api/campaigns`
 ```json
@@ -241,10 +318,12 @@ Admin session. 200 `{ id, email, fullName }`
 200 `DripCampaign` · 404 `Campaign not found`
 
 ### PATCH `/api/campaigns/{id}?kind=drip|oneone`
-Body: any subset of DripCampaign fields listed below.  
+Body: any subset of patchable keys.  
 200 updated campaign.
 
 Patchable keys: `name`, `status`, `scheduledAt`, `sentAt`, `tags`, `recipients`, `opens`, `clicks`, `unsubscribed`, `conversions`, `delivered`, `senderId`, `senderName`, `senderEmail`, `listId`, `listName`, `recipientMode`, `individualContacts`, `subject`, `previewText`, `hasDesign`, `designHtml`, `designSourceCampaignId`, `replyToEnabled`, `replyToEmail`, `attachmentEnabled`, `attachmentName`, `timezoneEnabled`, `timezone`, `listDisplayId`, `sequences`, `windowStart`, `windowEnd`, `emailGapMinutes`, `timeline`.
+
+Pause/resume via `status`: only `scheduled`/`sending` → `paused`; resume needs a paused send. Errors like `Only running or scheduled campaigns can be paused` / `No paused send found to resume`.
 
 ### DELETE `/api/campaigns/{id}?kind=drip|oneone`
 200 `{ "ok": true }` — also deletes blasts and sends.
@@ -335,7 +414,7 @@ Deletes previous blasts/sends for that campaign+kind, then creates new ones.
 
 ### POST `/api/campaigns/process-due`
 No body. 200 `{ "reports": CampaignReport[] }`  
-Sends due pending emails for this project.
+Sends due pending emails for this project. **Must be polled** — no background cron.
 
 ### GET `/api/campaigns/stats`
 200 `{ "reports": CampaignReport[] }`
@@ -343,25 +422,10 @@ Sends due pending emails for this project.
 ### GET `/api/campaigns/{id}/recipients?filter=audience&kind=oneone`
 `filter`: `audience` | `delivered` | `opens` | `clicks` | `unsubscribes` (default `audience`)
 
-200 array:
-```json
-{
-  "id": "sendId",
-  "email": "a@b.com",
-  "fullName": "Name",
-  "companyName": "",
-  "contactId": "optional",
-  "status": "pending|sending|sent|failed",
-  "sentAt": "ISO",
-  "openedAt": "ISO",
-  "clickedAt": "ISO",
-  "clickedUrl": "https://…",
-  "unsubscribedAt": "ISO"
-}
-```
+200: `CampaignSendRecipient[]` (includes `sequenceIndex` / `sequenceNumber` for 1-1).
 
 ### GET `/api/campaigns/{id}/export?kind=`
-200 Excel workbook (`.xlsx`) matching the engagement report layout: sheets `Sent, Open, Click`, `Bounces & Unsubscribes`, and `Summary` (includes Step / Sequence Steps for 1-1).
+200 Excel workbook (`.xlsx`): sheets `Sent, Open, Click`, `Bounces & Unsubscribes`, and `Summary`.
 
 ### POST `/api/campaigns/{id}/share?kind=`
 No body. 200 `{ "token": "string", "url": "https://host/r/{token}" }`
@@ -381,12 +445,38 @@ No body. 200 `{ "token": "string", "url": "https://host/r/{token}" }`
 
 ---
 
-## Automation (portal session)
+## Automations (portal session or Bearer)
 
-UI: `/portal/marketing/automation` — collapsible DeepSeek AI sidebar + sequence canvas. Launch creates a real drip or 1-1 campaign.
+UI: `/portal/marketing/automation` (new blank canvas; **no DB row until first email step**). Edit via `/portal/marketing/automation/{id}` or History.
+
+Email steps are set up in Drip/1-1 with `?fromAutomation=1`, then return to Automation. Launch/schedule happens on the Automation canvas (not in Drip while linked). After launch, builder is read-only.
+
+### GET `/api/automations`
+200: `PortalAutomation[]`
+
+### POST `/api/automations`
+```json
+{
+  "name": "Untitled automation",
+  "kind": "drip",
+  "status": "draft",
+  "steps": []
+}
+```
+Defaults: name `"Untitled automation"`, kind `drip`, status `draft`, steps `[]`.  
+201: `PortalAutomation`
+
+### GET `/api/automations/{id}`
+200 `PortalAutomation` · 404 `Not found`
+
+### PATCH `/api/automations/{id}`
+Body: `{ "name"?, "kind"?, "steps"?, "status"? }`  
+200 updated · 400 `Automation name is required` / `Invalid steps` · 404
+
+### DELETE `/api/automations/{id}`
+200 `{ "ok": true }` · 404 `Not found`
 
 ### POST `/api/automation/chat`
-Body:
 ```json
 {
   "message": "Build a 3-step follow-up sequence",
@@ -395,7 +485,7 @@ Body:
 }
 ```
 200 `{ "reply": "…" }`  
-Requires `DEEPSEEK_API_KEY` in the server environment (503 if missing).
+Requires `DEEPSEEK_API_KEY` (503 if missing). No DB writes.
 
 ---
 
@@ -408,7 +498,7 @@ Public campaign report. Strips `senderId`, `individualContacts`, `designSourceCa
 Same filters as portal recipients; `contactId` omitted.
 
 ### GET `/api/public/reports/{token}/export`
-Excel (`.xlsx`) download — same workbook as the portal export.
+Excel (`.xlsx`) — same workbook as portal export.
 
 ### GET `/api/campaigns/track/open/{token}`
 Returns a 1×1 GIF. Increments open (ignored if token starts with `test-`).
@@ -422,7 +512,7 @@ Marks contact unsubscribed/blocklisted, adds to Unsubscribe list, stamps the sen
 
 ---
 
-## CRM (portal session, project-scoped)
+## CRM (portal session or Bearer, project-scoped)
 
 ### GET `/api/crm/contacts`
 `Contact[]`: `{ id, firstName, lastName, fullName, email, companyId, companyName, subscribed, blocklisted, createdAt, updatedAt }`
@@ -464,7 +554,7 @@ Unsubscribe list + entries `{ id, email, fullName, addedAt }`. Creates the Unsub
 
 ---
 
-## Integrations / API keys (portal session or Bearer key)
+## Integrations / API keys (portal session or Bearer)
 
 Full project **read + write** access for external integrations.
 
@@ -472,7 +562,7 @@ Full project **read + write** access for external integrations.
 `{ "keys": [ { id, name, keyPrefix, keyLast4, hint, scopes, lastUsedAt?, createdAt } ] }`
 
 ### POST `/api/integrations/keys`
-Body: `{ "name": "Zapier" }`  
+Body: `{ "name": "Zapier" }` (≤80 chars)  
 201:
 ```json
 {
@@ -483,15 +573,81 @@ Body: `{ "name": "Zapier" }`
 ```
 
 ### DELETE `/api/integrations/keys/{id}`
-`{ "ok": true }` — revokes the key immediately.
+`{ "ok": true }` — revokes immediately.
 
-Use the raw key as:
-`Authorization: Bearer up_live_…`
-on any portal-authenticated route (CRM, campaigns, SMTP, reports export, etc.).
+Use: `Authorization: Bearer up_live_…` on any `requirePortalSession` route.
 
 ---
 
-## SMTP senders (portal session)
+## Webhooks (portal session or Bearer)
+
+Push events to your HTTPS endpoint so external tools (e.g. Attio sync) can react without polling a single campaign name.
+
+### Events
+
+| Event | When |
+|-------|------|
+| `campaign.created` | `POST /api/campaigns` succeeds |
+| `campaign.launched` | `POST /api/campaigns/launch` succeeds |
+| `send.opened` | First open recorded for a send (tracking pixel) |
+| `send.clicked` | First click recorded for a send |
+
+### Delivery
+
+- Method: `POST` to your `url`
+- Headers:
+  - `Content-Type: application/json`
+  - `X-Unified-Event: campaign.created`
+  - `X-Unified-Signature: sha256=<hmac-sha256-hex of raw body using the webhook secret>`
+  - `User-Agent: Unified-Portal-Webhooks/1.0`
+- Body:
+```json
+{
+  "id": "evt_…",
+  "type": "campaign.created",
+  "createdAt": "ISO",
+  "projectId": "mongoObjectId",
+  "data": {
+    "campaignId": "1",
+    "kind": "drip",
+    "name": "Welcome",
+    "status": "draft",
+    "createdAt": "ISO"
+  }
+}
+```
+
+`campaign.launched` `data` includes `mode`, `status`, `recipients`, `scheduledFor?`.  
+`send.opened` / `send.clicked` `data` includes `email`, `fullName`, `sendId`, `sequenceIndex?`, and `url?` on click.
+
+Verify signature: HMAC-SHA256(secret, rawBody) hex, compare to the value after `sha256=`.
+
+### GET `/api/integrations/webhooks`
+`{ "webhooks": [ { id, url, events, secretHint, enabled, createdAt, updatedAt, lastDeliveredAt?, lastStatus? } ], "events": ["campaign.created", …] }`
+
+### POST `/api/integrations/webhooks`
+```json
+{
+  "url": "https://your-app.example/hooks/unified",
+  "events": ["campaign.created", "campaign.launched", "send.opened", "send.clicked"]
+}
+```
+`events` optional — defaults to all.  
+201:
+```json
+{
+  "webhook": { "id": "…", "url": "…", "events": ["…"], "secretHint": "whsec_••••abcd", "enabled": true, "createdAt": "…" },
+  "secret": "whsec_…",
+  "warning": "Copy this webhook signing secret now. You will not be able to see it again."
+}
+```
+
+### DELETE `/api/integrations/webhooks/{id}`
+`{ "ok": true }` — revokes immediately.
+
+---
+
+## SMTP senders (portal session or Bearer)
 
 Providers: `aws_ses` | `gmail` | `outlook` | `sendgrid` | `cloudflare` | `resend`
 
@@ -500,7 +656,7 @@ Create/update fields:
 - sendgrid / resend: `apiKey`, `fromEmail`
 - cloudflare: `cloudflareAccountId`, `cloudflareEmailApiToken`, `fromEmail`
 
-Secrets are masked in responses.
+Secrets are masked in responses. Default tracking host: `unified.nexuses.xyz`.
 
 ### GET `/api/smtp/senders`
 ### POST `/api/smtp/senders` — 201 sender (runs DNS verification)
@@ -539,7 +695,8 @@ Required: `{ fullName, email, projectId }`. `password` optional.
 Same fields as create.
 
 ### DELETE `/api/projects/{id}`
-Deletes the project, its users, CRM data, and SMTP senders.
+Deletes the project, its users, CRM data, and SMTP senders.  
+Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_keys`, or `automations`.
 
 ---
 
@@ -549,22 +706,24 @@ Deletes the project, its users, CRM data, and SMTP senders.
 |--------|------|------|
 | POST | `/api/auth/login` | none |
 | POST | `/api/auth/logout` | none |
-| GET | `/api/auth/me` | portal |
+| GET | `/api/auth/me` | portal **cookie only** |
 | POST | `/api/auth/admin-login` | none |
 | POST | `/api/auth/admin-logout` | none |
-| GET | `/api/auth/admin-me` | admin |
-| GET, POST | `/api/campaigns` | portal |
+| GET | `/api/auth/admin-me` | admin cookie |
+| GET, POST | `/api/campaigns` | portal (cookie or Bearer) |
 | GET, PATCH, DELETE | `/api/campaigns/[id]` | portal |
 | POST | `/api/campaigns/launch` | portal |
 | POST | `/api/campaigns/process-due` | portal |
 | GET | `/api/campaigns/stats` | portal |
 | POST | `/api/campaigns/test-email` | portal |
-| POST | `/api/automation/chat` | portal |
 | GET | `/api/campaigns/[id]/recipients` | portal |
 | GET | `/api/campaigns/[id]/export` | portal |
 | POST | `/api/campaigns/[id]/share` | portal |
 | GET | `/api/campaigns/track/open/[token]` | public |
 | GET | `/api/campaigns/track/click/[token]` | public |
+| GET, POST | `/api/automations` | portal |
+| GET, PATCH, DELETE | `/api/automations/[id]` | portal |
+| POST | `/api/automation/chat` | portal |
 | GET | `/api/public/reports/[token]` | public |
 | GET | `/api/public/reports/[token]/recipients` | public |
 | GET | `/api/public/reports/[token]/export` | public |
@@ -576,8 +735,10 @@ Deletes the project, its users, CRM data, and SMTP senders.
 | GET, POST | `/api/crm/lists` | portal |
 | GET, POST | `/api/crm/lists/[id]` | portal |
 | GET | `/api/crm/suppression` | portal |
-| GET, POST | `/api/integrations/keys` | portal (cookie or API key) |
-| DELETE | `/api/integrations/keys/[id]` | portal (cookie or API key) |
+| GET, POST | `/api/integrations/keys` | portal |
+| DELETE | `/api/integrations/keys/[id]` | portal |
+| GET, POST | `/api/integrations/webhooks` | portal |
+| DELETE | `/api/integrations/webhooks/[id]` | portal |
 | GET, POST | `/api/smtp/senders` | portal |
 | PATCH, DELETE | `/api/smtp/senders/[id]` | portal |
 | POST | `/api/smtp/senders/[id]/verify` | portal |
@@ -592,6 +753,6 @@ Deletes the project, its users, CRM data, and SMTP senders.
 
 ## Mongo collections (for context)
 
-`users`, `projects`, `admins`, `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `contacts`, `companies`, `lists`, `list_memberships`, `smtp_senders`, `api_keys`
+`users`, `projects`, `admins`, `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `contacts`, `companies`, `lists`, `list_memberships`, `smtp_senders`, `api_keys`, `automations`, `webhooks`
 
 Portal queries always filter by `projectId` from the session (cookie or API key).

@@ -21,10 +21,24 @@ export async function GET(request: NextRequest) {
     const kindParam = request.nextUrl.searchParams.get("kind");
     const kind =
       kindParam === "oneone" ? "oneone" : kindParam === "drip" ? "drip" : undefined;
+    const updatedSinceParam = request.nextUrl.searchParams.get("updatedSince");
+    const updatedSince = updatedSinceParam
+      ? new Date(updatedSinceParam)
+      : undefined;
+    if (
+      updatedSinceParam &&
+      (!updatedSince || Number.isNaN(updatedSince.getTime()))
+    ) {
+      return NextResponse.json(
+        { error: "updatedSince must be a valid ISO date" },
+        { status: 400 },
+      );
+    }
 
     const campaigns = await listProjectDripCampaigns(
       new ObjectId(session.projectId),
       kind,
+      { updatedSince },
     );
     return NextResponse.json(campaigns, { headers: NO_STORE });
   } catch (error) {
