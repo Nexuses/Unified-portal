@@ -329,6 +329,10 @@ Pause/resume via `status`: only `scheduled`/`sending` → `paused`; resume needs
 ### DELETE `/api/campaigns/{id}?kind=drip|oneone`
 200 `{ "ok": true }` — also deletes blasts and sends.
 
+### POST `/api/campaigns/{id}/duplicate?kind=drip|oneone`
+Creates a new **draft** copy (name `Copy of …`), keeps sender/list/design/sequences, resets stats and launch state.  
+201: `DripCampaign`
+
 ---
 
 ### POST `/api/campaigns/launch`
@@ -502,10 +506,13 @@ Same filters as portal recipients; `contactId` omitted.
 Excel (`.xlsx`) — same workbook as portal export.
 
 ### GET `/api/campaigns/track/open/{token}`
-Returns a 1×1 GIF. Increments open (ignored if token starts with `test-`).
+Returns a 1×1 GIF. Increments open (ignored if token starts with `test-`, or if the email was sent less than **45 seconds** ago — bot filter).
 
 ### GET `/api/campaigns/track/click/{token}?u=https://example.com`
-302 redirect to `u` (http/https only). Records click.
+302 redirect to `u` (http/https only). Records click with bot filters (redirect still happens):
+- same **45s** post-send grace
+- clicks closer than **2s** are ignored
+- **2+ different URLs within 5s** (or 3+ clicks in 5s) = burst scan → click stats cleared for that recipient
 
 ### POST `/api/unsubscribe/{token}`
 200 `{ "email": "a@b.com", "alreadyUnsubscribed": false }`  
@@ -713,6 +720,7 @@ Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_
 | GET | `/api/auth/admin-me` | admin cookie |
 | GET, POST | `/api/campaigns` | portal (cookie or Bearer) |
 | GET, PATCH, DELETE | `/api/campaigns/[id]` | portal |
+| POST | `/api/campaigns/[id]/duplicate` | portal |
 | POST | `/api/campaigns/launch` | portal |
 | POST | `/api/campaigns/process-due` | portal |
 | GET | `/api/campaigns/stats` | portal |

@@ -16,6 +16,7 @@ export type PortalUser = {
   email: string;
   projectId: string;
   projectName: string;
+  projectLogoUrl?: string;
 };
 
 type PortalAppShellProps = {
@@ -58,6 +59,7 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
         openGroups={openGroups}
         pathname={pathname}
         projectName={user.projectName}
+        projectLogoUrl={user.projectLogoUrl ?? ""}
       />
 
       <div className="main">

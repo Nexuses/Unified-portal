@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   createDripCampaign,
   deleteDripCampaign,
+  duplicateDripCampaign,
   fetchDripCampaigns,
   formatCampaignStatus,
   formatMetric,
@@ -45,6 +46,15 @@ function TrashIcon() {
       <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
       <path d="M6.5 7 7.4 19a2 2 0 0 0 2 1.8h5.2a2 2 0 0 0 2-1.8L17.5 7" />
       <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
+function DuplicateIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="8" y="8" width="12" height="12" rx="2" />
+      <path d="M4 16V6a2 2 0 0 1 2-2h10" />
     </svg>
   );
 }
@@ -98,6 +108,7 @@ export default function PortalDripPage({
   const [createError, setCreateError] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -263,6 +274,22 @@ export default function PortalDripPage({
       );
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handleDuplicate(campaign: DripCampaign) {
+    setDuplicatingId(campaign.id);
+    setOpenMenuId(null);
+    try {
+      const copy = await duplicateDripCampaign(campaign.id, kind);
+      setCampaigns((current) => [copy, ...current]);
+      router.push(portalCampaignRoute(copy.id, kind));
+    } catch (error) {
+      window.alert(
+        error instanceof Error ? error.message : "Failed to duplicate campaign",
+      );
+    } finally {
+      setDuplicatingId(null);
     }
   }
 
@@ -557,7 +584,10 @@ export default function PortalDripPage({
                           className={`drip-more${openMenuId === campaign.id ? " active" : ""}`}
                           aria-label="More actions"
                           aria-expanded={openMenuId === campaign.id}
-                          disabled={deletingId === campaign.id}
+                          disabled={
+                            deletingId === campaign.id ||
+                            duplicatingId === campaign.id
+                          }
                           onClick={() =>
                             setOpenMenuId((current) =>
                               current === campaign.id ? null : campaign.id,
@@ -575,8 +605,25 @@ export default function PortalDripPage({
                             <button
                               type="button"
                               role="menuitem"
+                              disabled={
+                                deletingId === campaign.id ||
+                                duplicatingId === campaign.id
+                              }
+                              onClick={() => void handleDuplicate(campaign)}
+                            >
+                              <DuplicateIcon />
+                              {duplicatingId === campaign.id
+                                ? "Duplicating..."
+                                : "Duplicate campaign"}
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
                               className="danger"
-                              disabled={deletingId === campaign.id}
+                              disabled={
+                                deletingId === campaign.id ||
+                                duplicatingId === campaign.id
+                              }
                               onClick={() => void handleDelete(campaign)}
                             >
                               <TrashIcon />

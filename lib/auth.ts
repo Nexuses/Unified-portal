@@ -12,6 +12,7 @@ export type SessionUser = {
   email: string;
   projectId: string;
   projectName: string;
+  projectLogoUrl: string;
 };
 
 export type { SessionAdmin };
@@ -26,6 +27,7 @@ type UserDoc = {
 type ProjectDoc = {
   _id: ObjectId;
   name: string;
+  logoUrl?: string;
 };
 
 export async function getSessionUser(): Promise<SessionUser | null> {
@@ -55,6 +57,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     email: user.email,
     projectId: user.projectId.toString(),
     projectName: project?.name || "Unknown",
+    projectLogoUrl: project?.logoUrl?.trim() || "",
   };
 }
 

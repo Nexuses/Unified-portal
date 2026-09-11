@@ -15,6 +15,7 @@ type UserDoc = {
 type ProjectDoc = {
   _id: ObjectId;
   name: string;
+  logoUrl?: string;
 };
 
 export async function POST(request: NextRequest) {
@@ -58,6 +59,7 @@ export async function POST(request: NextRequest) {
       email: user.email,
       projectId: user.projectId.toString(),
       projectName: project?.name || "Unknown",
+      projectLogoUrl: project?.logoUrl?.trim() || "",
     });
 
     response.cookies.set(USER_SESSION_COOKIE, user._id.toString(), {

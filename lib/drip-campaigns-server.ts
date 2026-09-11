@@ -553,6 +553,141 @@ export async function updateProjectDripCampaign(
   return getProjectDripCampaign(projectId, campaignId, resolvedKind);
 }
 
+async function nextDuplicateCampaignName(
+  projectId: ObjectId,
+  sourceName: string,
+  kind: CampaignKind,
+) {
+  const base = `Copy of ${sourceName}`.trim() || "Copy of campaign";
+  const db = await getDb();
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const name = attempt === 0 ? base : `${base} (${attempt + 1})`;
+    const conflict = await db.collection<DripCampaignDoc>("drip_campaigns").findOne(
+      {
+        projectId,
+        name: { $regex: `^${escapeRegex(name)}$`, $options: "i" },
+        ...campaignKindFilter(kind),
+      },
+      { projection: { _id: 1 } },
+    );
+    if (!conflict) {
+      return name;
+    }
+  }
+  return `${base} (${Date.now().toString(36)})`;
+}
+
+export async function duplicateProjectDripCampaign(
+  projectId: ObjectId,
+  campaignId: string,
+  userId: ObjectId | null,
+  kind?: CampaignKind,
+) {
+  const db = await getDb();
+  const existing = await db.collection<DripCampaignDoc>("drip_campaigns").findOne({
+    projectId,
+    campaignId,
+    ...campaignKindFilter(kind),
+  });
+  if (!existing) {
+    return null;
+  }
+
+  const resolvedKind: CampaignKind =
+    kind ?? (existing.kind === "oneone" ? "oneone" : "drip");
+  const name = await nextDuplicateCampaignName(
+    projectId,
+    existing.name,
+    resolvedKind,
+  );
+  const now = new Date();
+  const newCampaignId = await nextCampaignId(projectId, resolvedKind);
+  const isOneOne = resolvedKind === "oneone";
+
+  const sequences =
+    isOneOne && existing.sequences && existing.sequences.length > 0
+      ? existing.sequences.map((sequence, index) => ({
+          ...sequence,
+          id: createEmptySequence(index).id,
+        }))
+      : isOneOne
+        ? [createEmptySequence(0)]
+        : existing.sequences;
+
+  const tags = (existing.tags ?? []).filter(
+    (tag) => tag !== "automation" && tag !== "automation-follow-up",
+  );
+
+  const doc: DripCampaignDoc = {
+    _id: new ObjectId(),
+    projectId,
+    campaignId: newCampaignId,
+    name,
+    kind: isOneOne ? "oneone" : "drip",
+    status: "draft",
+    tags,
+    recipients: 0,
+    opens: 0,
+    clicks: 0,
+    unsubscribed: 0,
+    conversions: 0,
+    delivered: 0,
+    senderId: existing.senderId,
+    senderName: existing.senderName,
+    senderEmail: existing.senderEmail,
+    listId: existing.listId,
+    listName: existing.listName,
+    recipientMode: existing.recipientMode,
+    individualContacts: existing.individualContacts
+      ? existing.individualContacts.map((contact) => ({ ...contact }))
+      : undefined,
+    subject: existing.subject,
+    previewText: existing.previewText,
+    hasDesign: existing.hasDesign,
+    designHtml: existing.designHtml,
+    designSourceCampaignId: existing.designSourceCampaignId || existing.campaignId,
+    replyToEnabled: existing.replyToEnabled,
+    replyToEmail: existing.replyToEmail,
+    attachmentEnabled: existing.attachmentEnabled,
+    attachmentName: existing.attachmentName,
+    timezoneEnabled: existing.timezoneEnabled,
+    timezone: existing.timezone,
+    listDisplayId: existing.listDisplayId,
+    sequences,
+    windowStart: existing.windowStart,
+    windowEnd: existing.windowEnd,
+    emailGapMinutes: existing.emailGapMinutes,
+    timeline: [
+      {
+        id: randomBytes(6).toString("hex"),
+        type: "draft",
+        title: "Draft",
+        description: `Duplicated from [${existing.campaignId}] ${existing.name}.`,
+        at: now.toISOString(),
+      },
+    ],
+    createdBy: userId,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await db.collection<DripCampaignDoc>("drip_campaigns").insertOne(doc);
+  const campaign = mapCampaign(doc);
+  emitWebhookEventBackground({
+    projectId,
+    type: "campaign.created",
+    data: {
+      campaignId: campaign.id,
+      kind: campaign.kind || "drip",
+      name: campaign.name,
+      status: campaign.status,
+      createdAt: campaign.createdAt,
+      duplicatedFrom: existing.campaignId,
+    },
+  });
+  return campaign;
+}
+
 export async function deleteProjectDripCampaign(
   projectId: ObjectId,
   campaignId: string,

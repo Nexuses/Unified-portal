@@ -1,14 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { PORTAL_ROUTES } from "@/lib/portal-nav";
+import { useEffect, useMemo, useState } from "react";
+import type { Contact } from "@/lib/crm";
+import type { CampaignStatus, DripCampaign } from "@/lib/drip-campaigns";
+import { EMAIL_PLAN_LIMIT } from "@/lib/drip-campaigns";
+import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
+
+const SENDER_SOFT_LIMIT = 10;
 
 type PortalDashboardProps = {
   firstName: string;
 };
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function buildCalendarDays(year: number, month: number) {
   const firstDay = new Date(year, month, 1);
@@ -36,11 +42,165 @@ function buildCalendarDays(year: number, month: number) {
   return days;
 }
 
+function formatCount(value: number) {
+  return value.toLocaleString("en-US");
+}
+
+function campaignTimestamp(campaign: DripCampaign) {
+  const raw =
+    campaign.sentAt ||
+    campaign.updatedAt ||
+    campaign.scheduledAt ||
+    campaign.createdAt;
+  const ms = raw ? new Date(raw).getTime() : 0;
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function formatCampaignDate(campaign: DripCampaign) {
+  const ms = campaignTimestamp(campaign);
+  if (!ms) {
+    return "No date";
+  }
+  return new Date(ms).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+const STATUS_LABELS: Record<CampaignStatus, string> = {
+  draft: "Draft",
+  scheduled: "Scheduled",
+  sending: "Sending",
+  sent: "Sent",
+  paused: "Paused",
+};
+function sentFromReport(report: { delivered?: number; recipients?: number }) {
+  const delivered = Number(report.delivered);
+  if (Number.isFinite(delivered) && delivered > 0) {
+    return delivered;
+  }
+  const recipients = Number(report.recipients);
+  return Number.isFinite(recipients) ? recipients : 0;
+}
+
 export default function PortalDashboard({ firstName }: PortalDashboardProps) {
   const today = new Date();
   const [viewDate, setViewDate] = useState(
     () => new Date(today.getFullYear(), today.getMonth(), 1),
   );
+  const [contactTotal, setContactTotal] = useState<number | null>(null);
+  const [contactsLast30Days, setContactsLast30Days] = useState<number | null>(
+    null,
+  );
+  const [emailsSent, setEmailsSent] = useState<number | null>(null);
+  const [dripEmailsSent, setDripEmailsSent] = useState<number | null>(null);
+  const [oneOneEmailsSent, setOneOneEmailsSent] = useState<number | null>(null);
+  const [senderCount, setSenderCount] = useState<number | null>(null);
+  const [lastCampaigns, setLastCampaigns] = useState<DripCampaign[] | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadContacts() {
+      try {
+        const response = await fetch("/api/crm/contacts");
+        const data = (await response.json()) as Contact[] | { error?: string };
+        if (!response.ok || !Array.isArray(data)) {
+          return;
+        }
+        if (cancelled) {
+          return;
+        }
+
+        const cutoff = Date.now() - 30 * DAY_MS;
+        const recent = data.filter((contact) => {
+          const created = new Date(contact.createdAt).getTime();
+          return Number.isFinite(created) && created >= cutoff;
+        }).length;
+
+        setContactTotal(data.length);
+        setContactsLast30Days(recent);
+      } catch {
+        // Keep placeholder zeros if the request fails.
+      }
+    }
+
+    async function loadUsage() {
+      try {
+        const [statsResponse, sendersResponse] = await Promise.all([
+          fetch("/api/campaigns/stats"),
+          fetch("/api/smtp/senders"),
+        ]);
+        const statsData = (await statsResponse.json()) as {
+          reports?: Array<{
+            kind?: "drip" | "oneone";
+            delivered?: number;
+            recipients?: number;
+          }>;
+        };
+        const sendersData = (await sendersResponse.json()) as unknown;
+
+        if (cancelled) {
+          return;
+        }
+
+        if (statsResponse.ok && Array.isArray(statsData.reports)) {
+          let dripTotal = 0;
+          let oneOneTotal = 0;
+          for (const report of statsData.reports) {
+            const count = sentFromReport(report);
+            if (report.kind === "oneone") {
+              oneOneTotal += count;
+            } else {
+              dripTotal += count;
+            }
+          }
+          setDripEmailsSent(dripTotal);
+          setOneOneEmailsSent(oneOneTotal);
+          setEmailsSent(dripTotal + oneOneTotal);
+        }
+
+        if (sendersResponse.ok && Array.isArray(sendersData)) {
+          setSenderCount(sendersData.length);
+        }
+      } catch {
+        // Keep placeholders if usage requests fail.
+      }
+    }
+
+    async function loadLastCampaigns() {
+      try {
+        const response = await fetch("/api/campaigns");
+        const data = (await response.json()) as
+          | DripCampaign[]
+          | { error?: string };
+        if (!response.ok || !Array.isArray(data)) {
+          return;
+        }
+        if (cancelled) {
+          return;
+        }
+
+        const latest = data
+          .filter((campaign) => campaign.status === "sent")
+          .sort((a, b) => campaignTimestamp(b) - campaignTimestamp(a))
+          .slice(0, 3);
+        setLastCampaigns(latest);
+      } catch {
+        // Keep the empty state if campaigns fail to load.
+      }
+    }
+
+    void loadContacts();
+    void loadUsage();
+    void loadLastCampaigns();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const calendarDays = useMemo(
     () => buildCalendarDays(viewDate.getFullYear(), viewDate.getMonth()),
@@ -65,24 +225,35 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
     viewDate.getMonth() === today.getMonth() &&
     viewDate.getFullYear() === today.getFullYear();
 
+  const totalLabel =
+    contactTotal === null ? "…" : formatCount(contactTotal);
+  const recentLabel =
+    contactsLast30Days === null ? "…" : formatCount(contactsLast30Days);
+  const emailsSentValue = emailsSent ?? 0;
+  const senderCountValue = senderCount ?? 0;
+  const emailsMeta =
+    emailsSent === null
+      ? "…"
+      : `${formatCount(emailsSentValue)} / ${formatCount(EMAIL_PLAN_LIMIT)}`;
+  const sendersMeta =
+    senderCount === null ? "…" : formatCount(senderCountValue);
+  const emailsBarWidth =
+    emailsSent === null
+      ? 0
+      : Math.min(100, (emailsSentValue / EMAIL_PLAN_LIMIT) * 100);
+  const sendersBarWidth =
+    senderCount === null
+      ? 0
+      : Math.min(100, (senderCountValue / SENDER_SOFT_LIMIT) * 100);
+  const dripSentLabel =
+    dripEmailsSent === null ? "…" : formatCount(dripEmailsSent);
+  const oneOneSentLabel =
+    oneOneEmailsSent === null ? "…" : formatCount(oneOneEmailsSent);
+
   return (
     <>
       <div className="home-head">
         <h2>Hello {firstName}</h2>
-        <button className="btn-customize" type="button">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-          >
-            <rect x="3" y="3" width="7" height="7" rx="1.2" />
-            <rect x="14" y="3" width="7" height="7" rx="1.2" />
-            <rect x="3" y="14" width="7" height="7" rx="1.2" />
-            <rect x="14" y="14" width="7" height="7" rx="1.2" />
-          </svg>
-          Customize page
-        </button>
       </div>
 
       <div className="planner">
@@ -210,7 +381,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
           </div>
           <div className="contact-stat">
             <div>
-              <div className="num">0</div>
+              <div className="num">{totalLabel}</div>
               <div className="lbl">Total contacts</div>
             </div>
             <div className="contact-stat-icon">
@@ -228,7 +399,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
           </div>
           <div className="contact-stat">
             <div>
-              <div className="num">0</div>
+              <div className="num">{recentLabel}</div>
               <div className="lbl">New contacts over the last 30 days</div>
             </div>
             <div className="contact-stat-icon">
@@ -258,24 +429,35 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
           <div className="usage-row">
             <div className="top">
               <span className="label">Emails</span>
-              <span className="meta">No usage data yet</span>
+              <span className="meta">{emailsMeta}</span>
             </div>
             <div className="usage-bar">
-              <div style={{ width: "0%" }} />
+              <div style={{ width: `${emailsBarWidth}%` }} />
             </div>
           </div>
-          <div className="usage-plain">
-            <span>Prepaid credits</span>
-            <span>0 credits left</span>
+          <div className="usage-row">
+            <div className="top">
+              <span className="label">Senders</span>
+              <span className="meta">{sendersMeta}</span>
+            </div>
+            <div className="usage-bar">
+              <div style={{ width: `${sendersBarWidth}%` }} />
+            </div>
           </div>
-          <div className="usage-plain">
-            <span>SMS</span>
-            <span>0 credits left</span>
+          <div className="usage-split">
+            <div>
+              <div className="num">{dripSentLabel}</div>
+              <div className="lbl">Drip emails sent</div>
+            </div>
+            <div>
+              <div className="num">{oneOneSentLabel}</div>
+              <div className="lbl">1-1 emails sent</div>
+            </div>
           </div>
           <div className="home-card-foot">
-            <button type="button" className="link-blue">
-              Manage your plan
-            </button>
+            <Link href={PORTAL_ROUTES.smtp} className="link-blue">
+              Go to SMTP
+            </Link>
           </div>
         </div>
 
@@ -286,7 +468,50 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
               Create a campaign
             </Link>
           </div>
-          <div className="planned-empty">No campaigns yet</div>
+          {lastCampaigns && lastCampaigns.length > 0 ? (
+            <div className="camp-list">
+              {lastCampaigns.map((campaign) => {
+                const recipients = campaign.delivered ?? campaign.recipients ?? 0;
+                return (
+                  <Link
+                    key={`${campaign.kind ?? "drip"}-${campaign.id}`}
+                    href={portalCampaignRoute(campaign.id, campaign.kind)}
+                    className="camp-row"
+                  >
+                    <div>
+                      <div className="camp-name">{campaign.name}</div>
+                      <div className="camp-meta">{formatCampaignDate(campaign)}</div>
+                    </div>
+                    <div className="camp-tags">
+                      <span className={`status-sent ${campaign.status}`}>
+                        <i />
+                        {STATUS_LABELS[campaign.status]}
+                      </span>
+                      <span className="type-pill">
+                        {campaign.kind === "oneone" ? "1-1" : "Drip"}
+                      </span>
+                    </div>
+                    <div className="camp-metrics">
+                      <div>
+                        <div className="k">Recipients</div>
+                        <div className="v">{formatCount(recipients)}</div>
+                      </div>
+                      <div>
+                        <div className="k">Opens</div>
+                        <div className="v">{formatCount(campaign.opens ?? 0)}</div>
+                      </div>
+                      <div>
+                        <div className="k">Clicks</div>
+                        <div className="v">{formatCount(campaign.clicks ?? 0)}</div>
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="planned-empty">No campaigns yet</div>
+          )}
           <div className="home-card-foot">
             <Link href={PORTAL_ROUTES.drip} className="link-blue">
               Go to Campaigns
@@ -305,7 +530,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
               personalized messages.
             </p>
           </div>
-          <Link href={PORTAL_ROUTES.oneone} className="btn">
+          <Link href={PORTAL_ROUTES.automation} className="btn">
             Create automation
           </Link>
         </div>

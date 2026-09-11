@@ -82,8 +82,10 @@ export type CampaignSendDoc = {
   openCount: number;
   clickedAt?: Date;
   clickedUrl?: string;
-  clickEvents?: Array<{ url: string; at: Date }>;
+  clickEvents?: Array<{ url: string; at: Date; ignored?: boolean }>;
   clickCount: number;
+  /** True when multi-link burst scanning was detected for this send. */
+  clickBurstIgnored?: boolean;
   unsubscribedAt?: Date;
   sequenceId?: string;
   sequenceIndex?: number;
@@ -924,10 +926,89 @@ export async function getCampaignReport(
   return report;
 }
 
+/** Ignore open/click beacons in the first 45s after send (filters most bots). */
+export const ENGAGEMENT_BOT_GRACE_MS = 45_000;
+/** Ignore counted clicks closer together than this (link scanners). */
+export const CLICK_MIN_GAP_MS = 2_000;
+/** Window used to detect multi-link burst scanning. */
+export const CLICK_BURST_WINDOW_MS = 5_000;
+/** Distinct URLs clicked inside the burst window → treat as bot burst. */
+export const CLICK_BURST_DISTINCT_URLS = 2;
+
+function asTimeMs(value: Date | string | undefined) {
+  if (!value) {
+    return NaN;
+  }
+  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function isWithinBotGracePeriod(send: Pick<CampaignSendDoc, "sentAt" | "status">) {
+  if (send.status !== "sent" || !send.sentAt) {
+    return true;
+  }
+  const sentAt = asTimeMs(send.sentAt);
+  if (!Number.isFinite(sentAt)) {
+    return true;
+  }
+  return Date.now() - sentAt < ENGAGEMENT_BOT_GRACE_MS;
+}
+
+function normalizeClickUrl(url: string) {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    const parsed = new URL(trimmed);
+    parsed.hash = "";
+    return parsed.toString().toLowerCase();
+  } catch {
+    return trimmed.toLowerCase();
+  }
+}
+
+/**
+ * Link-safety bots often hit every URL in the email within a few seconds.
+ * Returns whether this click should be ignored for metrics (redirect still happens).
+ */
+function detectClickBurst(input: {
+  events: Array<{ url: string; at: Date | string }>;
+  now: Date;
+  nextUrl: string;
+}): { ignore: boolean; revokeCountedClick: boolean } {
+  const nowMs = input.now.getTime();
+  const nextNorm = normalizeClickUrl(input.nextUrl);
+  const withNext = [
+    ...input.events.map((event) => ({
+      url: normalizeClickUrl(event.url),
+      at: asTimeMs(event.at),
+    })),
+    { url: nextNorm, at: nowMs },
+  ].filter((event) => Number.isFinite(event.at));
+
+  const windowStart = nowMs - CLICK_BURST_WINDOW_MS;
+  const inWindow = withNext.filter((event) => event.at >= windowStart);
+  const distinct = new Set(inWindow.map((event) => event.url).filter(Boolean));
+  if (distinct.size >= CLICK_BURST_DISTINCT_URLS || inWindow.length >= 3) {
+    return { ignore: true, revokeCountedClick: true };
+  }
+
+  const lastPrior = withNext.length >= 2 ? withNext[withNext.length - 2] : null;
+  if (lastPrior && nowMs - lastPrior.at < CLICK_MIN_GAP_MS) {
+    return { ignore: true, revokeCountedClick: false };
+  }
+
+  return { ignore: false, revokeCountedClick: false };
+}
+
 export async function recordCampaignOpen(token: string) {
   const db = await getDb();
   const send = await db.collection<CampaignSendDoc>("campaign_sends").findOne({ token });
   if (!send) {
+    return;
+  }
+  if (isWithinBotGracePeriod(send)) {
     return;
   }
 
@@ -974,9 +1055,71 @@ export async function recordCampaignClick(token: string, url?: string) {
   if (!send) {
     return;
   }
+  if (isWithinBotGracePeriod(send)) {
+    return;
+  }
 
   const now = new Date();
   const clickedUrl = String(url ?? "").trim();
+
+  // Already flagged as burst — keep redirect, never count again.
+  if (send.clickBurstIgnored) {
+    if (clickedUrl) {
+      await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
+        { _id: send._id },
+        {
+          $push: {
+            clickEvents: { url: clickedUrl, at: now, ignored: true },
+          },
+        },
+      );
+    }
+    return;
+  }
+
+  const burst = detectClickBurst({
+    events: send.clickEvents ?? [],
+    now,
+    nextUrl: clickedUrl,
+  });
+
+  if (burst.ignore) {
+    const update: Record<string, unknown> = {};
+    if (clickedUrl) {
+      update.$push = {
+        clickEvents: {
+          url: clickedUrl,
+          at: now,
+          ignored: true,
+        },
+      };
+    }
+    if (burst.revokeCountedClick && send.clickedAt) {
+      update.$unset = { clickedAt: "", clickedUrl: "" };
+      update.$set = {
+        clickBurstIgnored: true,
+        clickCount: 0,
+      };
+    } else if (burst.revokeCountedClick) {
+      update.$set = { clickBurstIgnored: true };
+    }
+
+    if (Object.keys(update).length > 0) {
+      await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
+        { _id: send._id },
+        update,
+      );
+    }
+
+    if (burst.revokeCountedClick && send.clickedAt) {
+      await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+        { _id: send.blastId, clicks: { $gt: 0 } },
+        { $inc: { clicks: -1 }, $set: { updatedAt: now } },
+      );
+    }
+    return;
+  }
+
   const firstClick = !send.clickedAt;
   await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
     { _id: send._id },

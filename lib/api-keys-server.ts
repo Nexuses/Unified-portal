@@ -36,6 +36,7 @@ export type ApiKeyPublic = {
 type ProjectDoc = {
   _id: ObjectId;
   name: string;
+  logoUrl?: string;
 };
 
 export function hashApiKey(rawKey: string) {
@@ -179,5 +180,6 @@ export async function getSessionUserFromApiKey(
     email: `api-key:${doc._id.toString()}`,
     projectId: doc.projectId.toString(),
     projectName: project.name || "Unknown",
+    projectLogoUrl: project.logoUrl?.trim() || "",
   };
 }

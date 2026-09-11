@@ -9,13 +9,14 @@ import {
   type PortalNavGroupId,
   type PortalPageId,
 } from "@/lib/portal-nav";
-import { getNavIcon, IconSidebarToggle } from "./PortalIcons";
+import { getNavIcon } from "./PortalIcons";
 
 type PortalSidebarProps = {
   highlightPage: PortalPageId;
   openGroups: Record<PortalNavGroupId, boolean>;
   pathname: string;
   projectName: string;
+  projectLogoUrl: string;
 };
 
 export default function PortalSidebar({
@@ -23,6 +24,7 @@ export default function PortalSidebar({
   openGroups,
   pathname,
   projectName,
+  projectLogoUrl,
 }: PortalSidebarProps) {
   const router = useRouter();
 
@@ -37,15 +39,14 @@ export default function PortalSidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
-        <span className="brand-left">Nexuses</span>
-        <button
-          type="button"
-          className="brand-toggle"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar"
-        >
-          <IconSidebarToggle />
-        </button>
+        <span className="brand-left">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            className="brand-logo"
+            src="https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png"
+            alt="Nexuses"
+          />
+        </span>
       </div>
 
       <nav className="nav">
@@ -105,9 +106,21 @@ export default function PortalSidebar({
       </nav>
 
       <div className="sidebar-foot">
-        Workspace
-        <br />
-        <strong style={{ color: "var(--ink)" }}>{projectName}</strong>
+        <div className="sidebar-client-meta">Workspace</div>
+        <div className="sidebar-client">
+          {projectLogoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              className="sidebar-client-logo"
+              src={projectLogoUrl}
+              alt={`${projectName} logo`}
+            />
+          ) : (
+            <span className="sidebar-client-fallback" aria-hidden="true">
+              {projectName.trim().charAt(0).toUpperCase() || "W"}
+            </span>
+          )}
+        </div>
       </div>
     </aside>
   );

@@ -397,3 +397,25 @@ export async function deleteDripCampaign(
     );
   }
 }
+
+export async function duplicateDripCampaign(
+  id: string,
+  kind?: CampaignKind,
+): Promise<DripCampaign> {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(id)}/duplicate${campaignKindSearch(kind)}`,
+    {
+      ...NO_STORE,
+      method: "POST",
+    },
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      typeof data?.error === "string"
+        ? data.error
+        : "Failed to duplicate campaign",
+    );
+  }
+  return data as DripCampaign;
+}
