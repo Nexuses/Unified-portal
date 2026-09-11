@@ -3509,6 +3509,9 @@ select.filter{
 .public-report-route .drip-report-page{
   padding:20px 40px 56px;
 }
+.public-report-route .drip-report-head .drip-back{
+  flex-shrink:0;margin-left:-36px;
+}
 .public-report-route .an-page{
   padding:20px 40px 56px;
 }

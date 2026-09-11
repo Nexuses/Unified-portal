@@ -16,19 +16,12 @@ export default async function PublicCampaignTokenLayout({
   const branding = found
     ? await getProjectBranding(found.projectId)
     : { name: "", logoUrl: "" };
-  const campaign = found?.campaign;
 
   return (
     <>
       <PublicReportHeader
         clientName={branding.name}
         clientLogoUrl={branding.logoUrl}
-        title={campaign?.name || "Campaign report"}
-        description={
-          campaign
-            ? `#${campaign.id}${campaign.kind === "oneone" ? " · 1-1 campaign" : " · Drip campaign"} report`
-            : undefined
-        }
       />
       {children}
     </>
