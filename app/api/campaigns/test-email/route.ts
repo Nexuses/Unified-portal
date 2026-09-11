@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getProjectSender, sendProjectTestEmail } from "@/lib/smtp-senders-server";
-import { injectCampaignTracking, trackingOrigin } from "@/lib/campaign-tracking";
+import { injectCampaignTracking, resolveUtmConfig, trackingOrigin } from "@/lib/campaign-tracking";
 import {
   isSessionError,
   requirePortalSession,
@@ -21,6 +21,14 @@ export async function POST(request: NextRequest) {
       html?: string;
       fromName?: string;
       replyTo?: string;
+      campaignName?: string;
+      utmEnabled?: boolean;
+      utmSourceEnabled?: boolean;
+      utmSource?: string;
+      utmMediumEnabled?: boolean;
+      utmMedium?: string;
+      utmCampaignEnabled?: boolean;
+      utmCampaign?: string;
     };
 
     const to = Array.isArray(body.to) ? body.to : [];
@@ -36,6 +44,10 @@ export async function POST(request: NextRequest) {
       body.html ?? "",
       trackingOrigin(sender?.trackingDomain),
       `test-${Date.now()}`,
+      {
+        utm: resolveUtmConfig(body),
+        campaignName: body.campaignName ?? "",
+      },
     );
 
     const result = await sendProjectTestEmail(projectId, {

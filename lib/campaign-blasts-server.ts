@@ -11,8 +11,8 @@ import {
   type CampaignSequenceProgress,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
-import { getSuppressedEmails } from "@/lib/unsubscribe-server";
-import { injectCampaignTracking, resolveUsableTrackingOrigin } from "@/lib/campaign-tracking";
+import { getSuppressionSets, isSuppressedAddress } from "@/lib/unsubscribe-server";
+import { injectCampaignTracking, resolveUtmConfig, resolveUsableTrackingOrigin } from "@/lib/campaign-tracking";
 import { sendProjectMail } from "@/lib/smtp-senders-server";
 import { normalizeEmailMergeTags } from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
@@ -61,6 +61,13 @@ export type CampaignBlastDoc = {
   windowEnd?: string;
   emailGapMinutes?: number;
   sendLockUntil?: Date;
+  utmEnabled?: boolean;
+  utmSourceEnabled?: boolean;
+  utmSource?: string;
+  utmMediumEnabled?: boolean;
+  utmMedium?: string;
+  utmCampaignEnabled?: boolean;
+  utmCampaign?: string;
 };
 
 export type CampaignSendDoc = {
@@ -546,14 +553,14 @@ async function sendPendingBatch(
     return refreshBlastCounts(blast._id);
   }
 
-  const suppressed = await getSuppressedEmails(blast.projectId);
+  const suppressed = await getSuppressionSets(blast.projectId);
   let lastSuccessAt: Date | null = null;
 
   for (const send of pending) {
-    if (suppressed.has(send.email.trim().toLowerCase())) {
+    if (isSuppressedAddress(send.email, suppressed)) {
       await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
         { _id: send._id },
-        { $set: { status: "failed", error: "Unsubscribed" }, $unset: { claimedAt: "" } },
+        { $set: { status: "failed", error: "Suppressed" }, $unset: { claimedAt: "" } },
       );
       await failLaterSequences(blast._id, send.email, send.sequenceIndex, "Unsubscribed");
       continue;
@@ -561,7 +568,10 @@ async function sendPendingBatch(
     try {
       const content = sequenceContent(blast, send);
       const personalized = applyContactVariables(content.html, send, true);
-      const html = injectCampaignTracking(personalized, trackingBase, send.token);
+      const html = injectCampaignTracking(personalized, trackingBase, send.token, {
+        utm: resolveUtmConfig(blast),
+        campaignName: blast.name,
+      });
       await sendProjectMail(blast.projectId, blast.senderId, {
         to: send.email,
         subject: applyContactVariables(content.subject, send, false),
@@ -658,8 +668,10 @@ export async function launchCampaignBlast(input: {
 
   const recipients = await resolveRecipients(projectId, campaign);
   const unique = new Map(recipients.map((item) => [item.email, item]));
-  const suppressed = await getSuppressedEmails(projectId);
-  const list = [...unique.values()].filter((item) => !suppressed.has(item.email));
+  const suppressed = await getSuppressionSets(projectId);
+  const list = [...unique.values()].filter(
+    (item) => !isSuppressedAddress(item.email, suppressed),
+  );
   if (list.length === 0) {
     throw new Error("This campaign has no recipients to send to.");
   }
@@ -739,6 +751,17 @@ export async function launchCampaignBlast(input: {
           emailGapMinutes: Math.max(0, Number(campaign.emailGapMinutes) || 0),
         }
       : { kind: "drip" as const }),
+    ...(campaign.utmEnabled
+      ? {
+          utmEnabled: true,
+          utmSourceEnabled: campaign.utmSourceEnabled !== false,
+          utmSource: campaign.utmSource,
+          utmMediumEnabled: campaign.utmMediumEnabled !== false,
+          utmMedium: campaign.utmMedium,
+          utmCampaignEnabled: campaign.utmCampaignEnabled !== false,
+          utmCampaign: campaign.utmCampaign,
+        }
+      : {}),
   };
 
   const kindFilter = oneOne

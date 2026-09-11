@@ -65,8 +65,19 @@ export function campaignListRoute(kind?: string) {
   return kind === "oneone" ? PORTAL_ROUTES.oneone : PORTAL_ROUTES.drip;
 }
 
-export function publicCampaignReportPath(token: string) {
-  return `/r/${token}`;
+export function publicCampaignReportPath(
+  token: string,
+  options?: { analyticsToken?: string },
+) {
+  const path = `/r/${encodeURIComponent(token)}`;
+  if (options?.analyticsToken) {
+    return `${path}?a=${encodeURIComponent(options.analyticsToken)}`;
+  }
+  return path;
+}
+
+export function publicAnalyticsPath(token: string) {
+  return `/a/${token}`;
 }
 
 export function portalListRoute(id: string) {

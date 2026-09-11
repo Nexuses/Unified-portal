@@ -15,11 +15,3 @@ export function PortalCampaignEditPage() {
     </div>
   );
 }
-
-export function PortalAnalyticsPage() {
-  return (
-    <div className="crm-empty">
-      Analytics will be available in a future update.
-    </div>
-  );
-}

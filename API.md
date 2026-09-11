@@ -50,7 +50,7 @@ Cookies are httpOnly, `sameSite=lax`, 7-day lifetime (`secure` in production).
 
 Portal-protected routes return **401** `{ "error": "Not authenticated" }` if neither a valid cookie nor a valid API key is present.
 
-Public (no cookie / no key): tracking pixels, unsubscribe, public report links.
+Public (no cookie / no key): tracking pixels, unsubscribe, public campaign reports (`/r/{token}`), public analytics reports (`/a/{token}`).
 
 `/api/users` and `/api/projects` currently do **not** check a session in the route handler (admin UI only). Middleware does **not** protect `/api/*`.
 
@@ -139,6 +139,13 @@ Sequence 1 always has `delayDays: 0`. Later sequences: `delayDays` is 0–365 (0
   "attachmentName": "string",
   "timezoneEnabled": true,
   "timezone": "Asia/Kolkata",
+  "utmEnabled": false,
+  "utmSourceEnabled": true,
+  "utmSource": "nexuses",
+  "utmMediumEnabled": true,
+  "utmMedium": "email",
+  "utmCampaignEnabled": true,
+  "utmCampaign": "[CAMPAIGN_NAME]",
   "listDisplayId": 1,
   "shareToken": "string",
   "sequences": [],
@@ -322,7 +329,7 @@ Admin session cookie. 200 `{ id, email, fullName }`
 Body: any subset of patchable keys.  
 200 updated campaign.
 
-Patchable keys: `name`, `status`, `scheduledAt`, `sentAt`, `tags`, `recipients`, `opens`, `clicks`, `unsubscribed`, `conversions`, `delivered`, `senderId`, `senderName`, `senderEmail`, `listId`, `listName`, `recipientMode`, `individualContacts`, `subject`, `previewText`, `hasDesign`, `designHtml`, `designSourceCampaignId`, `replyToEnabled`, `replyToEmail`, `attachmentEnabled`, `attachmentName`, `timezoneEnabled`, `timezone`, `listDisplayId`, `sequences`, `windowStart`, `windowEnd`, `emailGapMinutes`, `timeline`.
+Patchable keys: `name`, `status`, `scheduledAt`, `sentAt`, `tags`, `recipients`, `opens`, `clicks`, `unsubscribed`, `conversions`, `delivered`, `senderId`, `senderName`, `senderEmail`, `listId`, `listName`, `recipientMode`, `individualContacts`, `subject`, `previewText`, `hasDesign`, `designHtml`, `designSourceCampaignId`, `replyToEnabled`, `replyToEmail`, `attachmentEnabled`, `attachmentName`, `timezoneEnabled`, `timezone`, `utmEnabled`, `utmSourceEnabled`, `utmSource`, `utmMediumEnabled`, `utmMedium`, `utmCampaignEnabled`, `utmCampaign`, `listDisplayId`, `sequences`, `windowStart`, `windowEnd`, `emailGapMinutes`, `timeline`.
 
 Pause/resume via `status`: only `scheduled`/`sending` → `paused`; resume needs a paused send. Errors like `Only running or scheduled campaigns can be paused` / `No paused send found to resume`.
 
@@ -424,6 +431,16 @@ Sends due pending emails for this project. **Must be polled** — no background 
 ### GET `/api/campaigns/stats`
 200 `{ "reports": CampaignReport[] }`
 
+### GET `/api/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD`
+Project-wide dashboard for emails **sent** in the range (UTC days). Unique delivered / opens / clicks / unsubscribes, drip vs 1-1 split, daily series, campaign table, plus contacts and automations created in range. Defaults to last 30 days if `from`/`to` omitted.
+
+200 `AnalyticsDashboard`
+
+### POST `/api/analytics/share`
+Body `{ "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }`. Creates (or reuses a still-valid) public link for that exact range. Links **expire after 30 days**.
+
+200 `{ "token": "string", "url": "https://host/a/{token}", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "expiresAt": "ISO" }`
+
 ### GET `/api/campaigns/{id}/recipients?filter=audience&kind=oneone`
 `filter`: `audience` | `delivered` | `opens` | `clicks` | `unsubscribes` (default `audience`)
 
@@ -443,7 +460,15 @@ No body. 200 `{ "token": "string", "url": "https://host/r/{token}" }`
   "subject": "string",
   "html": "<html>…</html>",
   "fromName": "string",
-  "replyTo": "string"
+  "replyTo": "string",
+  "campaignName": "string",
+  "utmEnabled": false,
+  "utmSourceEnabled": true,
+  "utmSource": "nexuses",
+  "utmMediumEnabled": true,
+  "utmMedium": "email",
+  "utmCampaignEnabled": true,
+  "utmCampaign": "[CAMPAIGN_NAME]"
 }
 ```
 200 `{ "sent": 1 }` — tracking tokens start with `test-` and are not counted in reports.
@@ -499,6 +524,9 @@ Requires `DEEPSEEK_API_KEY` (503 if missing). No DB writes.
 ### GET `/api/public/reports/{token}`
 Public campaign report. Strips `senderId`, `individualContacts`, `designSourceCampaignId`.
 
+### GET `/api/public/analytics/{token}`
+Public analytics dashboard for the date range stored on the share. Same payload as `GET /api/analytics`, plus `shareToken` on each campaign row. Page: `/a/{token}`. Campaign names link to `/r/{shareToken}?a={analyticsToken}` so clients can open the full campaign report and return to the dashboard. **404 / expired page** after 30 days.
+
 ### GET `/api/public/reports/{token}/recipients?filter=`
 Same filters as portal recipients; `contactId` omitted.
 
@@ -513,6 +541,8 @@ Returns a 1×1 GIF. Increments open (ignored if token starts with `test-`, or if
 - same **45s** post-send grace
 - clicks closer than **2s** are ignored
 - **2+ different URLs within 5s** (or 3+ clicks in 5s) = burst scan → click stats cleared for that recipient
+
+If the campaign has **UTM tracking** on, `u` already includes `utm_source` / `utm_medium` / `utm_campaign` (destination is still wrapped as `/t/c/{token}?u=…`). `[CAMPAIGN_NAME]` is replaced with the campaign name.
 
 ### POST `/api/unsubscribe/{token}`
 200 `{ "email": "a@b.com", "alreadyUnsubscribed": false }`  
@@ -558,7 +588,16 @@ Add more contacts: `{ "contacts": [ { "firstName", "lastName", "email", "company
 400 `No contacts to import`
 
 ### GET `/api/crm/suppression`
-Unsubscribe list + entries `{ id, email, fullName, addedAt }`. Creates the Unsubscribe list if missing.
+Unsubscribe list + email entries `{ id, email, fullName, addedAt }` and blocked domains `{ id, domain, addedAt }`. Creates the Unsubscribe list if missing.
+
+### POST `/api/crm/suppression`
+Bulk-add emails or domains. Body: `{ "kind": "email"|"domain", "text": "one per line, CSV, or comma-separated" }`.  
+200 `{ "kind", "added", "skipped", "total" }`.  
+Uploaded emails join the Unsubscribe list and are skipped on send. Uploaded domains skip every recipient at that domain.
+
+### DELETE `/api/crm/suppression`
+Body: `{ "kind": "email"|"domain", "id": "…" }`.  
+Removes an email from the unsubscribe list (and unblocks the contact) or a blocked domain.
 
 ---
 
@@ -724,6 +763,8 @@ Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_
 | POST | `/api/campaigns/launch` | portal |
 | POST | `/api/campaigns/process-due` | portal |
 | GET | `/api/campaigns/stats` | portal |
+| GET | `/api/analytics` | portal |
+| POST | `/api/analytics/share` | portal |
 | POST | `/api/campaigns/test-email` | portal |
 | GET | `/api/campaigns/[id]/recipients` | portal |
 | GET | `/api/campaigns/[id]/export` | portal |
@@ -736,6 +777,7 @@ Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_
 | GET | `/api/public/reports/[token]` | public |
 | GET | `/api/public/reports/[token]/recipients` | public |
 | GET | `/api/public/reports/[token]/export` | public |
+| GET | `/api/public/analytics/[token]` | public |
 | POST | `/api/unsubscribe/[token]` | public |
 | GET | `/api/crm/contacts` | portal |
 | GET | `/api/crm/contacts/[id]` | portal |
@@ -743,7 +785,7 @@ Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_
 | GET | `/api/crm/companies/[id]` | portal |
 | GET, POST | `/api/crm/lists` | portal |
 | GET, POST | `/api/crm/lists/[id]` | portal |
-| GET | `/api/crm/suppression` | portal |
+| GET, POST, DELETE | `/api/crm/suppression` | portal |
 | GET, POST | `/api/integrations/keys` | portal |
 | DELETE | `/api/integrations/keys/[id]` | portal |
 | GET, POST | `/api/integrations/webhooks` | portal |
@@ -762,6 +804,6 @@ Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_
 
 ## Mongo collections (for context)
 
-`users`, `projects`, `admins`, `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `contacts`, `companies`, `lists`, `list_memberships`, `smtp_senders`, `api_keys`, `automations`, `webhooks`
+`users`, `projects`, `admins`, `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `contacts`, `companies`, `lists`, `list_memberships`, `smtp_senders`, `api_keys`, `automations`, `webhooks`, `suppression_entries`, `analytics_shares`
 
 Portal queries always filter by `projectId` from the session (cookie or API key).

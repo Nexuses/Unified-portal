@@ -53,6 +53,13 @@ export type DripCampaignDoc = {
   attachmentName?: string;
   timezoneEnabled?: boolean;
   timezone?: string;
+  utmEnabled?: boolean;
+  utmSourceEnabled?: boolean;
+  utmSource?: string;
+  utmMediumEnabled?: boolean;
+  utmMedium?: string;
+  utmCampaignEnabled?: boolean;
+  utmCampaign?: string;
   listDisplayId?: number;
   shareToken?: string;
   sequences?: CampaignSequence[];
@@ -98,6 +105,13 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     attachmentName: doc.attachmentName,
     timezoneEnabled: doc.timezoneEnabled,
     timezone: doc.timezone,
+    utmEnabled: doc.utmEnabled,
+    utmSourceEnabled: doc.utmSourceEnabled,
+    utmSource: doc.utmSource,
+    utmMediumEnabled: doc.utmMediumEnabled,
+    utmMedium: doc.utmMedium,
+    utmCampaignEnabled: doc.utmCampaignEnabled,
+    utmCampaign: doc.utmCampaign,
     listDisplayId: doc.listDisplayId,
     shareToken: doc.shareToken,
     sequences: doc.sequences,
@@ -352,6 +366,24 @@ export async function ensureCampaignShareToken(
   throw new Error("Could not create a share link");
 }
 
+export async function ensureCampaignShareTokens(
+  projectId: ObjectId,
+  items: Array<{ campaignId: string; kind: CampaignKind }>,
+) {
+  const tokens = new Map<string, string>();
+  for (const item of items) {
+    const key = `${item.kind}:${item.campaignId}`;
+    if (tokens.has(key)) {
+      continue;
+    }
+    const token = await ensureCampaignShareToken(projectId, item.campaignId, item.kind);
+    if (token) {
+      tokens.set(key, token);
+    }
+  }
+  return tokens;
+}
+
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -470,6 +502,13 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "attachmentName",
   "timezoneEnabled",
   "timezone",
+  "utmEnabled",
+  "utmSourceEnabled",
+  "utmSource",
+  "utmMediumEnabled",
+  "utmMedium",
+  "utmCampaignEnabled",
+  "utmCampaign",
   "listDisplayId",
   "sequences",
   "windowStart",
@@ -652,6 +691,13 @@ export async function duplicateProjectDripCampaign(
     attachmentName: existing.attachmentName,
     timezoneEnabled: existing.timezoneEnabled,
     timezone: existing.timezone,
+    utmEnabled: existing.utmEnabled,
+    utmSourceEnabled: existing.utmSourceEnabled,
+    utmSource: existing.utmSource,
+    utmMediumEnabled: existing.utmMediumEnabled,
+    utmMedium: existing.utmMedium,
+    utmCampaignEnabled: existing.utmCampaignEnabled,
+    utmCampaign: existing.utmCampaign,
     listDisplayId: existing.listDisplayId,
     sequences,
     windowStart: existing.windowStart,

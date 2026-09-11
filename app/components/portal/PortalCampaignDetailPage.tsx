@@ -27,6 +27,11 @@ import {
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
 import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
 import {
+  DEFAULT_UTM_CAMPAIGN,
+  DEFAULT_UTM_MEDIUM,
+  DEFAULT_UTM_SOURCE,
+} from "@/lib/campaign-tracking";
+import {
   AUTOMATION_FOLLOW_UP_TAG,
   campaignHasAutomationTag,
   ensureAutomationCampaignTags,
@@ -2027,6 +2032,14 @@ function PreviewTestModal({
           html: previewHtml || html,
           fromName: campaign.senderName,
           replyTo: campaign.replyToEnabled ? campaign.replyToEmail : undefined,
+          campaignName: campaign.name,
+          utmEnabled: campaign.utmEnabled,
+          utmSourceEnabled: campaign.utmSourceEnabled,
+          utmSource: campaign.utmSource,
+          utmMediumEnabled: campaign.utmMediumEnabled,
+          utmMedium: campaign.utmMedium,
+          utmCampaignEnabled: campaign.utmCampaignEnabled,
+          utmCampaign: campaign.utmCampaign,
         }),
       });
       const payload = (await response.json()) as { error?: string; sent?: number };
@@ -2852,6 +2865,7 @@ function SettingsSavedCard({
   attachmentName,
   timezoneEnabled,
   timezone,
+  utmEnabled,
   onEdit,
 }: {
   replyToEnabled: boolean;
@@ -2859,6 +2873,7 @@ function SettingsSavedCard({
   attachmentName?: string;
   timezoneEnabled: boolean;
   timezone?: string;
+  utmEnabled: boolean;
   onEdit: () => void;
 }) {
   return (
@@ -2885,6 +2900,9 @@ function SettingsSavedCard({
           {timezoneEnabled ? (
             <li>Time zone is {formatTimezoneLabel(timezone || "Asia/Kolkata")}.</li>
           ) : null}
+          {utmEnabled ? (
+            <li>UTM tracking is on — campaign links include UTM parameters.</li>
+          ) : null}
         </ul>
       </div>
     </div>
@@ -2907,12 +2925,14 @@ function SettingsToggle({
   on,
   label,
   help,
+  description,
   onToggle,
   children,
 }: {
   on: boolean;
   label: string;
   help: string;
+  description?: string;
   onToggle: () => void;
   children?: ReactNode;
 }) {
@@ -2937,7 +2957,52 @@ function SettingsToggle({
         <span className="drip-settings-label">{label}</span>
         <HelpQuestionIcon help={help} />
       </div>
+      {on && description ? <p className="drip-settings-desc">{description}</p> : null}
       {on && children ? <div className="drip-settings-extra">{children}</div> : null}
+    </div>
+  );
+}
+
+function UtmParamRow({
+  label,
+  param,
+  value,
+  onValueChange,
+}: {
+  label: string;
+  param: string;
+  value: string;
+  onValueChange: (value: string) => void;
+}) {
+  return (
+    <div className="drip-utm-param">
+      <div className="drip-settings-row">
+        <button
+          type="button"
+          className="drip-toggle on drip-toggle-locked"
+          role="switch"
+          aria-checked="true"
+          aria-disabled="true"
+          aria-label={`${label} (${param}) is required`}
+          title="Required when UTM tracking is on"
+          tabIndex={-1}
+        >
+          <svg className="drip-toggle-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+          <span className="drip-toggle-knob" />
+        </button>
+        <span className="drip-settings-label drip-utm-label">
+          {label} ({param})
+        </span>
+      </div>
+      <input
+        type="text"
+        className="drip-utm-value"
+        value={value}
+        onChange={(event) => onValueChange(event.target.value)}
+        aria-label={`${param} value`}
+      />
     </div>
   );
 }
@@ -2950,6 +3015,10 @@ function SettingsPanel({
   draftAttachmentName,
   draftTimezoneEnabled,
   draftTimezone,
+  draftUtmEnabled,
+  draftUtmSource,
+  draftUtmMedium,
+  draftUtmCampaign,
   onClose,
   onSave,
   onReplyToEnabledChange,
@@ -2958,6 +3027,10 @@ function SettingsPanel({
   onAttachmentNameChange,
   onTimezoneEnabledChange,
   onTimezoneChange,
+  onUtmEnabledChange,
+  onUtmSourceChange,
+  onUtmMediumChange,
+  onUtmCampaignChange,
 }: {
   campaign: DripCampaign;
   draftReplyToEnabled: boolean;
@@ -2966,6 +3039,10 @@ function SettingsPanel({
   draftAttachmentName: string;
   draftTimezoneEnabled: boolean;
   draftTimezone: string;
+  draftUtmEnabled: boolean;
+  draftUtmSource: string;
+  draftUtmMedium: string;
+  draftUtmCampaign: string;
   onClose: () => void;
   onSave: () => void;
   onReplyToEnabledChange: (value: boolean) => void;
@@ -2974,6 +3051,10 @@ function SettingsPanel({
   onAttachmentNameChange: (value: string) => void;
   onTimezoneEnabledChange: (value: boolean) => void;
   onTimezoneChange: (value: string) => void;
+  onUtmEnabledChange: (value: boolean) => void;
+  onUtmSourceChange: (value: string) => void;
+  onUtmMediumChange: (value: string) => void;
+  onUtmCampaignChange: (value: string) => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const hasChanges =
@@ -2982,10 +3063,19 @@ function SettingsPanel({
     draftAttachmentEnabled !== Boolean(campaign.attachmentEnabled) ||
     draftAttachmentName !== (campaign.attachmentName ?? "") ||
     draftTimezoneEnabled !== Boolean(campaign.timezoneEnabled) ||
-    draftTimezone !== (campaign.timezone || "Asia/Kolkata");
+    draftTimezone !== (campaign.timezone || "Asia/Kolkata") ||
+    draftUtmEnabled !== Boolean(campaign.utmEnabled) ||
+    draftUtmSource.trim() !== (campaign.utmSource?.trim() || DEFAULT_UTM_SOURCE) ||
+    draftUtmMedium.trim() !== (campaign.utmMedium?.trim() || DEFAULT_UTM_MEDIUM) ||
+    draftUtmCampaign.trim() !== (campaign.utmCampaign?.trim() || DEFAULT_UTM_CAMPAIGN);
   const replyToValid = !draftReplyToEnabled || isValidEmail(draftReplyToEmail.trim());
   const attachmentValid = !draftAttachmentEnabled || Boolean(draftAttachmentName.trim());
-  const canSave = hasChanges && replyToValid && attachmentValid;
+  const utmValid =
+    !draftUtmEnabled ||
+    Boolean(
+      draftUtmSource.trim() && draftUtmMedium.trim() && draftUtmCampaign.trim(),
+    );
+  const canSave = hasChanges && replyToValid && attachmentValid && utmValid;
 
   return (
     <div className="drip-settings-panel">
@@ -3068,6 +3158,33 @@ function SettingsPanel({
               </select>
               <ChevronDownIcon />
             </div>
+          </SettingsToggle>
+
+          <SettingsToggle
+            on={draftUtmEnabled}
+            label="Activate UTM tracking"
+            help="Adds required UTM parameters to every http(s) link, then wraps the link with our click tracker."
+            description="Source, medium, and campaign are required. You can edit their values for this campaign."
+            onToggle={() => onUtmEnabledChange(!draftUtmEnabled)}
+          >
+            <UtmParamRow
+              label="Source"
+              param="utm_source"
+              value={draftUtmSource}
+              onValueChange={onUtmSourceChange}
+            />
+            <UtmParamRow
+              label="Medium"
+              param="utm_medium"
+              value={draftUtmMedium}
+              onValueChange={onUtmMediumChange}
+            />
+            <UtmParamRow
+              label="Campaign"
+              param="utm_campaign"
+              value={draftUtmCampaign}
+              onValueChange={onUtmCampaignChange}
+            />
           </SettingsToggle>
         </div>
       </div>
@@ -3606,6 +3723,10 @@ export default function PortalCampaignDetailPage({
   const [draftAttachmentName, setDraftAttachmentName] = useState("");
   const [draftTimezoneEnabled, setDraftTimezoneEnabled] = useState(false);
   const [draftTimezone, setDraftTimezone] = useState("Asia/Kolkata");
+  const [draftUtmEnabled, setDraftUtmEnabled] = useState(false);
+  const [draftUtmSource, setDraftUtmSource] = useState(DEFAULT_UTM_SOURCE);
+  const [draftUtmMedium, setDraftUtmMedium] = useState(DEFAULT_UTM_MEDIUM);
+  const [draftUtmCampaign, setDraftUtmCampaign] = useState(DEFAULT_UTM_CAMPAIGN);
   const [draftSequences, setDraftSequences] = useState<CampaignSequence[]>([]);
   const [draftWindowStart, setDraftWindowStart] = useState("09:00");
   const [draftWindowEnd, setDraftWindowEnd] = useState("18:00");
@@ -3931,6 +4052,13 @@ export default function PortalCampaignDetailPage({
       patch.attachmentName = draftAttachmentEnabled ? draftAttachmentName : "";
       patch.timezoneEnabled = draftTimezoneEnabled;
       patch.timezone = draftTimezoneEnabled ? draftTimezone : "Asia/Kolkata";
+      patch.utmEnabled = draftUtmEnabled;
+      patch.utmSourceEnabled = true;
+      patch.utmSource = draftUtmSource.trim() || DEFAULT_UTM_SOURCE;
+      patch.utmMediumEnabled = true;
+      patch.utmMedium = draftUtmMedium.trim() || DEFAULT_UTM_MEDIUM;
+      patch.utmCampaignEnabled = true;
+      patch.utmCampaign = draftUtmCampaign.trim() || DEFAULT_UTM_CAMPAIGN;
     }
 
     return patch;
@@ -4042,6 +4170,10 @@ export default function PortalCampaignDetailPage({
     setDraftAttachmentName(campaign?.attachmentName ?? "");
     setDraftTimezoneEnabled(Boolean(campaign?.timezoneEnabled));
     setDraftTimezone(campaign?.timezone || "Asia/Kolkata");
+    setDraftUtmEnabled(Boolean(campaign?.utmEnabled));
+    setDraftUtmSource(campaign?.utmSource?.trim() || DEFAULT_UTM_SOURCE);
+    setDraftUtmMedium(campaign?.utmMedium?.trim() || DEFAULT_UTM_MEDIUM);
+    setDraftUtmCampaign(campaign?.utmCampaign?.trim() || DEFAULT_UTM_CAMPAIGN);
   }
 
   function closeSettingsPanel() {
@@ -4113,6 +4245,13 @@ export default function PortalCampaignDetailPage({
         attachmentName: draftAttachmentEnabled ? draftAttachmentName : "",
         timezoneEnabled: draftTimezoneEnabled,
         timezone: draftTimezoneEnabled ? draftTimezone : "Asia/Kolkata",
+        utmEnabled: draftUtmEnabled,
+        utmSourceEnabled: true,
+        utmSource: draftUtmSource.trim() || DEFAULT_UTM_SOURCE,
+        utmMediumEnabled: true,
+        utmMedium: draftUtmMedium.trim() || DEFAULT_UTM_MEDIUM,
+        utmCampaignEnabled: true,
+        utmCampaign: draftUtmCampaign.trim() || DEFAULT_UTM_CAMPAIGN,
       });
       setSettingsPanelOpen(false);
     } catch (error) {
@@ -4649,6 +4788,10 @@ export default function PortalCampaignDetailPage({
                   draftAttachmentName={draftAttachmentName}
                   draftTimezoneEnabled={draftTimezoneEnabled}
                   draftTimezone={draftTimezone}
+                  draftUtmEnabled={draftUtmEnabled}
+                  draftUtmSource={draftUtmSource}
+                  draftUtmMedium={draftUtmMedium}
+                  draftUtmCampaign={draftUtmCampaign}
                   onClose={closeSettingsPanel}
                   onSave={handleSaveSettings}
                   onReplyToEnabledChange={setDraftReplyToEnabled}
@@ -4657,17 +4800,23 @@ export default function PortalCampaignDetailPage({
                   onAttachmentNameChange={setDraftAttachmentName}
                   onTimezoneEnabledChange={setDraftTimezoneEnabled}
                   onTimezoneChange={setDraftTimezone}
+                  onUtmEnabledChange={setDraftUtmEnabled}
+                  onUtmSourceChange={setDraftUtmSource}
+                  onUtmMediumChange={setDraftUtmMedium}
+                  onUtmCampaignChange={setDraftUtmCampaign}
                 />
               ) : step.id === "settings" &&
                 (campaign.replyToEnabled ||
                   campaign.attachmentEnabled ||
-                  campaign.timezoneEnabled) ? (
+                  campaign.timezoneEnabled ||
+                  campaign.utmEnabled) ? (
                 <SettingsSavedCard
                   replyToEnabled={Boolean(campaign.replyToEnabled)}
                   attachmentEnabled={Boolean(campaign.attachmentEnabled)}
                   attachmentName={campaign.attachmentName}
                   timezoneEnabled={Boolean(campaign.timezoneEnabled)}
                   timezone={campaign.timezone}
+                  utmEnabled={Boolean(campaign.utmEnabled)}
                   onEdit={openSettingsPanel}
                 />
               ) : (

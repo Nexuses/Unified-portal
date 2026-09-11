@@ -6,7 +6,7 @@ const inter = Inter({
   weight: ["400", "500", "600", "700", "800"],
 });
 
-export default function PublicReportLayout({
+export default function PublicAnalyticsLayout({
   children,
 }: {
   children: React.ReactNode;

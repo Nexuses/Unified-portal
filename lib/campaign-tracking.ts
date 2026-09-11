@@ -214,6 +214,75 @@ export async function verifyTrackingDomain(domain: string) {
   }
 }
 
+export const DEFAULT_UTM_SOURCE = "nexuses";
+export const DEFAULT_UTM_MEDIUM = "email";
+export const DEFAULT_UTM_CAMPAIGN = "[CAMPAIGN_NAME]";
+
+export type CampaignUtmConfig = {
+  enabled: boolean;
+  sourceEnabled: boolean;
+  source: string;
+  mediumEnabled: boolean;
+  medium: string;
+  campaignEnabled: boolean;
+  campaign: string;
+};
+
+export type CampaignUtmFields = {
+  utmEnabled?: boolean;
+  utmSourceEnabled?: boolean;
+  utmSource?: string;
+  utmMediumEnabled?: boolean;
+  utmMedium?: string;
+  utmCampaignEnabled?: boolean;
+  utmCampaign?: string;
+};
+
+export function resolveUtmConfig(fields?: CampaignUtmFields | null): CampaignUtmConfig {
+  return {
+    enabled: Boolean(fields?.utmEnabled),
+    sourceEnabled: fields?.utmSourceEnabled !== false,
+    source: fields?.utmSource?.trim() || DEFAULT_UTM_SOURCE,
+    mediumEnabled: fields?.utmMediumEnabled !== false,
+    medium: fields?.utmMedium?.trim() || DEFAULT_UTM_MEDIUM,
+    campaignEnabled: fields?.utmCampaignEnabled !== false,
+    campaign: fields?.utmCampaign?.trim() || DEFAULT_UTM_CAMPAIGN,
+  };
+}
+
+function fillUtmToken(value: string, campaignName: string) {
+  const name = campaignName.trim() || "campaign";
+  return value.replace(/\[CAMPAIGN_NAME\]/gi, name);
+}
+
+export function applyUtmParams(
+  url: string,
+  utm: CampaignUtmConfig,
+  campaignName: string,
+) {
+  if (!utm.enabled) {
+    return url;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+
+  if (utm.source) {
+    parsed.searchParams.set("utm_source", fillUtmToken(utm.source, campaignName));
+  }
+  if (utm.medium) {
+    parsed.searchParams.set("utm_medium", fillUtmToken(utm.medium, campaignName));
+  }
+  if (utm.campaign) {
+    parsed.searchParams.set("utm_campaign", fillUtmToken(utm.campaign, campaignName));
+  }
+  return parsed.toString();
+}
+
 export function campaignTrackingUrls(origin: string, token: string) {
   const base = origin.replace(/\/$/, "");
   return {
@@ -317,9 +386,16 @@ export function injectCampaignTracking(
   html: string,
   origin: string,
   token: string,
+  options?: { utm?: CampaignUtmConfig; campaignName?: string },
 ) {
   const urls = campaignTrackingUrls(origin, token);
   const withUnsubscribe = injectUnsubscribe(html, urls.unsubscribe);
-  const withClicks = wrapTrackedLinks(withUnsubscribe, urls.click);
+  const utm = options?.utm;
+  const campaignName = options?.campaignName ?? "";
+  const withClicks = wrapTrackedLinks(withUnsubscribe, (href) => {
+    const destination =
+      utm?.enabled ? applyUtmParams(href, utm, campaignName) : href;
+    return urls.click(destination);
+  });
   return injectOpenPixel(withClicks, urls.open);
 }

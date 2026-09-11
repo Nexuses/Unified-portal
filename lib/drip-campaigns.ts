@@ -59,6 +59,13 @@ export type DripCampaign = {
   attachmentName?: string;
   timezoneEnabled?: boolean;
   timezone?: string;
+  utmEnabled?: boolean;
+  utmSourceEnabled?: boolean;
+  utmSource?: string;
+  utmMediumEnabled?: boolean;
+  utmMedium?: string;
+  utmCampaignEnabled?: boolean;
+  utmCampaign?: string;
   listDisplayId?: number;
   shareToken?: string;
   sequences?: CampaignSequence[];
