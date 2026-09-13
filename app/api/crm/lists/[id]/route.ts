@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import { mapContact, mapList, type ContactDoc, type ListDoc } from "@/lib/crm";
-import { importContactsToList } from "@/lib/crm-import";
+import { deleteLists, importContactsToList } from "@/lib/crm-import";
 import {
   isSessionError,
   requirePortalSession,
@@ -125,6 +125,33 @@ export async function POST(request: NextRequest, context: RouteContext) {
     console.error("Failed to import list contacts:", error);
     return NextResponse.json(
       { error: "Failed to import contacts" },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(_request: NextRequest, context: RouteContext) {
+  try {
+    const session = await requirePortalSession();
+    if (isSessionError(session)) {
+      return session;
+    }
+
+    const { id } = await context.params;
+    if (!ObjectId.isValid(id)) {
+      return NextResponse.json({ error: "Invalid list id" }, { status: 400 });
+    }
+
+    const result = await deleteLists(new ObjectId(session.projectId), [id]);
+    if (result.deleted === 0) {
+      return NextResponse.json({ error: "List not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("Failed to delete list:", error);
+    return NextResponse.json(
+      { error: "Failed to delete list" },
       { status: 500 },
     );
   }

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   createDripCampaign,
   deleteDripCampaign,
+  deleteDripCampaigns,
   duplicateDripCampaign,
   fetchDripCampaigns,
   formatCampaignStatus,
@@ -277,6 +278,36 @@ export default function PortalDripPage({
     }
   }
 
+  async function handleBulkDelete() {
+    const ids = [...selectedIds];
+    if (ids.length === 0) {
+      return;
+    }
+
+    const confirmText =
+      ids.length === 1
+        ? `Delete campaign "${campaigns.find((item) => item.id === ids[0])?.name ?? ids[0]}"?`
+        : `Delete ${ids.length} campaigns?`;
+    if (!window.confirm(confirmText)) {
+      return;
+    }
+
+    setDeletingId("bulk");
+    setOpenMenuId(null);
+    try {
+      await deleteDripCampaigns(ids, kind);
+      const removed = new Set(ids);
+      setCampaigns((current) => current.filter((item) => !removed.has(item.id)));
+      setSelectedIds(new Set());
+    } catch (error) {
+      window.alert(
+        error instanceof Error ? error.message : "Failed to delete campaigns",
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   async function handleDuplicate(campaign: DripCampaign) {
     setDuplicatingId(campaign.id);
     setOpenMenuId(null);
@@ -409,9 +440,20 @@ export default function PortalDripPage({
             type="checkbox"
             className="drip-check"
             checked={pageItems.length > 0 && pageItems.every((item) => selectedIds.has(item.id))}
+            disabled={!loaded || pageItems.length === 0 || deletingId !== null}
             onChange={(event) => toggleAll(event.target.checked)}
             aria-label="Select all campaigns on this page"
           />
+          {selectedIds.size > 0 ? (
+            <button
+              type="button"
+              className="drip-bulk-delete"
+              disabled={deletingId !== null}
+              onClick={() => void handleBulkDelete()}
+            >
+              {deletingId === "bulk" ? "Deleting..." : `Delete (${selectedIds.size})`}
+            </button>
+          ) : null}
           <label className="drip-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="7" />
@@ -514,6 +556,7 @@ export default function PortalDripPage({
                     type="checkbox"
                     className="drip-check"
                     checked={selectedIds.has(campaign.id)}
+                    disabled={deletingId !== null}
                     onChange={(event) => toggleOne(campaign.id, event.target.checked)}
                     aria-label={`Select ${campaign.name}`}
                   />
@@ -585,7 +628,7 @@ export default function PortalDripPage({
                           aria-label="More actions"
                           aria-expanded={openMenuId === campaign.id}
                           disabled={
-                            deletingId === campaign.id ||
+                            deletingId !== null ||
                             duplicatingId === campaign.id
                           }
                           onClick={() =>
@@ -606,7 +649,7 @@ export default function PortalDripPage({
                               type="button"
                               role="menuitem"
                               disabled={
-                                deletingId === campaign.id ||
+                                deletingId !== null ||
                                 duplicatingId === campaign.id
                               }
                               onClick={() => void handleDuplicate(campaign)}
@@ -621,7 +664,7 @@ export default function PortalDripPage({
                               role="menuitem"
                               className="danger"
                               disabled={
-                                deletingId === campaign.id ||
+                                deletingId !== null ||
                                 duplicatingId === campaign.id
                               }
                               onClick={() => void handleDelete(campaign)}

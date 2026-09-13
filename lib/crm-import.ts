@@ -291,6 +291,40 @@ export async function importContactsToList(
   };
 }
 
+export async function deleteLists(projectId: ObjectId, ids: string[]) {
+  const listIds = [...new Set(ids)]
+    .filter((id) => ObjectId.isValid(id))
+    .map((id) => new ObjectId(id));
+  if (listIds.length === 0) {
+    return { deleted: 0 };
+  }
+
+  const db = await getDb();
+  const lists = await db
+    .collection<ListDoc>("lists")
+    .find({
+      projectId,
+      _id: { $in: listIds },
+      name: { $ne: "Unsubscribe" },
+    })
+    .project({ _id: 1 })
+    .toArray();
+  const allowedIds = lists.map((list) => list._id);
+  if (allowedIds.length === 0) {
+    return { deleted: 0 };
+  }
+
+  await db.collection<ListMembershipDoc>("list_memberships").deleteMany({
+    projectId,
+    listId: { $in: allowedIds },
+  });
+  const result = await db.collection<ListDoc>("lists").deleteMany({
+    projectId,
+    _id: { $in: allowedIds },
+  });
+  return { deleted: result.deletedCount ?? 0 };
+}
+
 export async function deleteProjectCrmData(projectId: ObjectId) {
   const db = await getDb();
   await Promise.all([

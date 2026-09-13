@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import {
   createProjectDripCampaign,
+  deleteProjectDripCampaigns,
   listProjectDripCampaigns,
 } from "@/lib/drip-campaigns-server";
+import { parseCampaignKind } from "@/lib/drip-campaigns";
 import {
   isSessionError,
   requirePortalSession,
@@ -57,9 +59,14 @@ export async function POST(request: NextRequest) {
       return session;
     }
 
-    const body = (await request.json()) as { name?: string; kind?: string };
+    const body = (await request.json().catch(() => ({}))) as {
+      name?: string;
+      kind?: string;
+      autoNumber?: boolean;
+    };
     const name = String(body.name ?? "").trim();
     const kind = body.kind === "oneone" ? "oneone" : "drip";
+    const autoNumber = Boolean(body.autoNumber);
     if (!name) {
       return NextResponse.json(
         { error: "Campaign name is required" },
@@ -72,6 +79,7 @@ export async function POST(request: NextRequest) {
       ObjectId.isValid(session.id) ? new ObjectId(session.id) : null,
       name,
       kind,
+      { autoNumber },
     );
 
     return NextResponse.json(campaign, { status: 201 });
@@ -81,5 +89,40 @@ export async function POST(request: NextRequest) {
     const status = message.includes("already exists") ? 409 : 400;
     console.error("Failed to create drip campaign:", error);
     return NextResponse.json({ error: message }, { status });
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await requirePortalSession();
+    if (isSessionError(session)) {
+      return session;
+    }
+
+    const kind = parseCampaignKind(request.nextUrl.searchParams.get("kind"));
+    const body = await request.json();
+    const ids = Array.isArray(body.ids)
+      ? body.ids.map((id: unknown) => String(id))
+      : [];
+
+    if (ids.length === 0) {
+      return NextResponse.json(
+        { error: "No campaigns selected" },
+        { status: 400 },
+      );
+    }
+
+    const result = await deleteProjectDripCampaigns(
+      new ObjectId(session.projectId),
+      ids,
+      kind,
+    );
+    return NextResponse.json({ deleted: result.deleted }, { headers: NO_STORE });
+  } catch (error) {
+    console.error("Failed to delete campaigns:", error);
+    return NextResponse.json(
+      { error: "Failed to delete campaigns" },
+      { status: 500 },
+    );
   }
 }

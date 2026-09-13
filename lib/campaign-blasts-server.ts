@@ -12,7 +12,12 @@ import {
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { getSuppressionSets, isSuppressedAddress } from "@/lib/unsubscribe-server";
-import { injectCampaignTracking, resolveUtmConfig, resolveUsableTrackingOrigin } from "@/lib/campaign-tracking";
+import {
+  injectCampaignTracking,
+  isNonNavigationalTrackedUrl,
+  resolveUtmConfig,
+  resolveUsableTrackingOrigin,
+} from "@/lib/campaign-tracking";
 import { sendProjectMail } from "@/lib/smtp-senders-server";
 import { normalizeEmailMergeTags } from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
@@ -419,14 +424,42 @@ async function resolveRecipients(
     .filter((contact) => contact.email);
 }
 
+function isCountableClickEvent(event: {
+  url?: string;
+  ignored?: boolean;
+}) {
+  if (event.ignored) {
+    return false;
+  }
+  return !isNonNavigationalTrackedUrl(event.url ?? "");
+}
+
+function sendHasCountableClick(send: Pick<CampaignSendDoc, "clickEvents" | "clickedAt" | "clickedUrl">) {
+  const events = send.clickEvents ?? [];
+  if (events.length > 0) {
+    return events.some((event) => isCountableClickEvent(event));
+  }
+  if (!send.clickedAt) {
+    return false;
+  }
+  return !isNonNavigationalTrackedUrl(send.clickedUrl ?? "");
+}
+
 async function refreshBlastCounts(blastId: ObjectId) {
   const db = await getDb();
   const sends = db.collection<CampaignSendDoc>("campaign_sends");
-  const [delivered, opens, clicks] = await Promise.all([
+  const [delivered, opens, clickDocs] = await Promise.all([
     sends.countDocuments({ blastId, status: "sent" }),
     sends.countDocuments({ blastId, openCount: { $gt: 0 } }),
-    sends.countDocuments({ blastId, clickCount: { $gt: 0 } }),
+    sends
+      .find({
+        blastId,
+        $or: [{ clickCount: { $gt: 0 } }, { clickedAt: { $exists: true } }],
+      })
+      .project({ clickEvents: 1, clickedAt: 1, clickedUrl: 1 })
+      .toArray(),
   ]);
+  const clicks = clickDocs.filter((send) => sendHasCountableClick(send)).length;
 
   const pending = await sends.countDocuments({
     blastId,
@@ -945,7 +978,8 @@ export async function getCampaignReport(
   if (!doc) {
     return null;
   }
-  const [report] = await reportsFromBlasts([doc]);
+  const refreshed = (await refreshBlastCounts(doc._id)) ?? doc;
+  const [report] = await reportsFromBlasts([refreshed]);
   return report;
 }
 
@@ -1084,6 +1118,9 @@ export async function recordCampaignClick(token: string, url?: string) {
 
   const now = new Date();
   const clickedUrl = String(url ?? "").trim();
+  if (clickedUrl && isNonNavigationalTrackedUrl(clickedUrl)) {
+    return;
+  }
 
   // Already flagged as burst — keep redirect, never count again.
   if (send.clickBurstIgnored) {
@@ -1313,6 +1350,7 @@ export async function listCampaignSendRecipients(
             : [];
 
       return events
+        .filter((event) => isCountableClickEvent(event))
         .slice()
         .sort((left, right) => {
           const leftAt = left.at instanceof Date ? left.at.getTime() : new Date(left.at).getTime();

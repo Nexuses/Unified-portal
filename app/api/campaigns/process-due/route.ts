@@ -4,6 +4,7 @@ import {
   processDueCampaignBlasts,
   requestOrigin,
 } from "@/lib/campaign-blasts-server";
+import { processDueAutomationFollowUps } from "@/lib/automations-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -16,11 +17,11 @@ export async function POST(request: NextRequest) {
       return session;
     }
 
-    const reports = await processDueCampaignBlasts(
-      new ObjectId(session.projectId),
-      requestOrigin(request.url, request.headers),
-    );
-    return NextResponse.json({ reports });
+    const projectId = new ObjectId(session.projectId);
+    const origin = requestOrigin(request.url, request.headers);
+    const reports = await processDueCampaignBlasts(projectId, origin);
+    const followUps = await processDueAutomationFollowUps(projectId, origin);
+    return NextResponse.json({ reports, followUps });
   } catch (error) {
     console.error("Failed to process campaign sends:", error);
     return NextResponse.json(

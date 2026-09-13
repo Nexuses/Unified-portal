@@ -353,12 +353,13 @@ export async function fetchDripCampaign(
 export async function createDripCampaign(
   name: string,
   kind: CampaignKind = "drip",
+  options?: { autoNumber?: boolean },
 ): Promise<DripCampaign> {
   const response = await fetch("/api/campaigns", {
     ...NO_STORE,
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, kind }),
+    body: JSON.stringify({ name, kind, autoNumber: options?.autoNumber }),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -403,6 +404,25 @@ export async function deleteDripCampaign(
       typeof data?.error === "string" ? data.error : "Failed to delete campaign",
     );
   }
+}
+
+export async function deleteDripCampaigns(
+  ids: string[],
+  kind?: CampaignKind,
+): Promise<{ deleted: number }> {
+  const response = await fetch(`/api/campaigns${campaignKindSearch(kind)}`, {
+    ...NO_STORE,
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      typeof data?.error === "string" ? data.error : "Failed to delete campaigns",
+    );
+  }
+  return { deleted: Number(data.deleted ?? 0) };
 }
 
 export async function duplicateDripCampaign(

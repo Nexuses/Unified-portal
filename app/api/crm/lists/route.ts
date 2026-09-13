@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import { mapList, type ListDoc } from "@/lib/crm";
-import { createList, importContactsToList } from "@/lib/crm-import";
+import { createList, deleteLists, importContactsToList } from "@/lib/crm-import";
 import {
   isSessionError,
   requirePortalSession,
@@ -96,6 +96,36 @@ export async function POST(request: NextRequest) {
     console.error("Failed to create list:", error);
     return NextResponse.json(
       { error: "Failed to create list" },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await requirePortalSession();
+    if (isSessionError(session)) {
+      return session;
+    }
+
+    const body = await request.json();
+    const ids = Array.isArray(body.ids)
+      ? body.ids.map((id: unknown) => String(id))
+      : [];
+
+    if (ids.length === 0) {
+      return NextResponse.json(
+        { error: "No lists selected" },
+        { status: 400 },
+      );
+    }
+
+    const result = await deleteLists(new ObjectId(session.projectId), ids);
+    return NextResponse.json({ deleted: result.deleted });
+  } catch (error) {
+    console.error("Failed to delete lists:", error);
+    return NextResponse.json(
+      { error: "Failed to delete lists" },
       { status: 500 },
     );
   }

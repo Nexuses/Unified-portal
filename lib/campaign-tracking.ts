@@ -300,10 +300,47 @@ function isTrackingOrUnsubscribeUrl(url: string) {
   );
 }
 
+/** Fonts, stylesheets, and other assets that clients fetch — not real link clicks. */
+export function isNonNavigationalTrackedUrl(url: string) {
+  const raw = String(url ?? "").trim();
+  if (!raw) {
+    return false;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === "fonts.googleapis.com" ||
+    host === "fonts.gstatic.com" ||
+    host.endsWith(".gstatic.com")
+  ) {
+    return true;
+  }
+  if (host.endsWith("googleapis.com") && /^\/css2?\/?$/i.test(parsed.pathname)) {
+    return true;
+  }
+
+  return /\.(css|woff2?|ttf|otf|eot|jpe?g|png|gif|svg|webp|ico)$/i.test(
+    parsed.pathname,
+  );
+}
+
 function wrapTrackedLinks(html: string, clickUrl: (url: string) => string) {
   return html.replace(
-    /href\s*=\s*(?:(["'])([^"']+)\1|([^\s>]+))/gi,
-    (match, quote: string | undefined, quotedUrl: string | undefined, bareUrl: string | undefined) => {
+    /(<(?:a|area)\b[^>]*?\bhref\s*=\s*)(?:(["'])([^"']*)\2|([^\s>]+))/gi,
+    (
+      match,
+      prefix: string,
+      quote: string | undefined,
+      quotedUrl: string | undefined,
+      bareUrl: string | undefined,
+    ) => {
       const trimmed = (quotedUrl ?? bareUrl ?? "").trim();
       if (
         !trimmed ||
@@ -311,7 +348,8 @@ function wrapTrackedLinks(html: string, clickUrl: (url: string) => string) {
         trimmed.startsWith("mailto:") ||
         trimmed.startsWith("tel:") ||
         trimmed.includes("{{") ||
-        isTrackingOrUnsubscribeUrl(trimmed)
+        isTrackingOrUnsubscribeUrl(trimmed) ||
+        isNonNavigationalTrackedUrl(trimmed)
       ) {
         return match;
       }
@@ -319,7 +357,7 @@ function wrapTrackedLinks(html: string, clickUrl: (url: string) => string) {
         return match;
       }
       const wrapped = clickUrl(trimmed);
-      return quote ? `href=${quote}${wrapped}${quote}` : `href="${wrapped}"`;
+      return quote ? `${prefix}${quote}${wrapped}${quote}` : `${prefix}"${wrapped}"`;
     },
   );
 }

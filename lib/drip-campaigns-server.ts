@@ -412,18 +412,129 @@ async function assertUniqueCampaignName(
   }
 }
 
+export async function getNextAvailableCampaignName(
+  projectId: ObjectId,
+  desiredName: string,
+  kind: CampaignKind = "drip",
+): Promise<string> {
+  const trimmed = desiredName.trim();
+  if (!trimmed) {
+    return "Untitled campaign";
+  }
+
+  const db = await getDb();
+  const kindFilter = campaignKindFilter(kind);
+
+  const conflict = await db.collection<DripCampaignDoc>("drip_campaigns").findOne(
+    {
+      projectId,
+      name: { $regex: `^${escapeRegex(trimmed)}$`, $options: "i" },
+      ...kindFilter,
+    },
+    { projection: { _id: 1 } },
+  );
+
+  if (!conflict) {
+    return trimmed;
+  }
+
+  const isStepName = /·\s*step\s*\d+/i.test(trimmed);
+  if (isStepName) {
+    const parenMatch = trimmed.match(/^(.*?)\s*\((\d+)\)$/);
+    const base = parenMatch ? parenMatch[1].trim() : trimmed;
+    const start = parenMatch ? parseInt(parenMatch[2], 10) + 1 : 2;
+
+    for (let counter = start; counter < start + 1000; counter += 1) {
+      const candidate = `${base} (${counter})`;
+      const exists = await db.collection<DripCampaignDoc>("drip_campaigns").findOne(
+        {
+          projectId,
+          name: { $regex: `^${escapeRegex(candidate)}$`, $options: "i" },
+          ...kindFilter,
+        },
+        { projection: { _id: 1 } },
+      );
+      if (!exists) {
+        return candidate;
+      }
+    }
+  } else {
+    const parenMatch = trimmed.match(/^(.*?)\s*\((\d+)\)$/);
+    const spaceMatch = trimmed.match(/^(.*?)\s+(\d+)$/);
+
+    if (parenMatch && parenMatch[1] && parenMatch[2]) {
+      const base = parenMatch[1].trim();
+      const start = parseInt(parenMatch[2], 10) + 1;
+      for (let counter = start; counter < start + 1000; counter += 1) {
+        const candidate = `${base} (${counter})`;
+        const exists = await db.collection<DripCampaignDoc>("drip_campaigns").findOne(
+          {
+            projectId,
+            name: { $regex: `^${escapeRegex(candidate)}$`, $options: "i" },
+            ...kindFilter,
+          },
+          { projection: { _id: 1 } },
+        );
+        if (!exists) {
+          return candidate;
+        }
+      }
+    } else if (spaceMatch && spaceMatch[1] && spaceMatch[2]) {
+      const base = spaceMatch[1].trim();
+      const start = parseInt(spaceMatch[2], 10) + 1;
+      for (let counter = start; counter < start + 1000; counter += 1) {
+        const candidate = `${base} ${counter}`;
+        const exists = await db.collection<DripCampaignDoc>("drip_campaigns").findOne(
+          {
+            projectId,
+            name: { $regex: `^${escapeRegex(candidate)}$`, $options: "i" },
+            ...kindFilter,
+          },
+          { projection: { _id: 1 } },
+        );
+        if (!exists) {
+          return candidate;
+        }
+      }
+    } else {
+      const base = trimmed;
+      for (let counter = 2; counter < 1000; counter += 1) {
+        const candidate = `${base} ${counter}`;
+        const exists = await db.collection<DripCampaignDoc>("drip_campaigns").findOne(
+          {
+            projectId,
+            name: { $regex: `^${escapeRegex(candidate)}$`, $options: "i" },
+            ...kindFilter,
+          },
+          { projection: { _id: 1 } },
+        );
+        if (!exists) {
+          return candidate;
+        }
+      }
+    }
+  }
+
+  return `${trimmed} (${Date.now().toString(36)})`;
+}
+
 export async function createProjectDripCampaign(
   projectId: ObjectId,
   userId: ObjectId | null,
   name: string,
   kind: CampaignKind = "drip",
+  options?: { autoNumber?: boolean },
 ) {
-  const trimmed = name.trim();
+  let trimmed = name.trim();
   if (!trimmed) {
     throw new Error("Campaign name is required");
   }
 
-  await assertUniqueCampaignName(projectId, trimmed, { kind });
+  if (options?.autoNumber) {
+    trimmed = await getNextAvailableCampaignName(projectId, trimmed, kind);
+  } else {
+    await assertUniqueCampaignName(projectId, trimmed, { kind });
+  }
 
   const db = await getDb();
   const now = new Date();
@@ -768,4 +879,20 @@ export async function deleteProjectDripCampaign(
   });
 
   return true;
+}
+
+export async function deleteProjectDripCampaigns(
+  projectId: ObjectId,
+  campaignIds: string[],
+  kind?: CampaignKind,
+) {
+  const uniqueIds = [...new Set(campaignIds.map((id) => String(id).trim()).filter(Boolean))];
+  let deleted = 0;
+  for (const campaignId of uniqueIds) {
+    const ok = await deleteProjectDripCampaign(projectId, campaignId, kind);
+    if (ok) {
+      deleted += 1;
+    }
+  }
+  return { deleted };
 }

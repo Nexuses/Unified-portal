@@ -242,6 +242,7 @@ Common tags: `"automation"`, `"automation-follow-up"` (campaigns created from Ma
 
 `status`: `"draft"` | `"scheduled"` | `"running"` | `"completed"`  
 `whoSource`: `"current"` | `"past"`  
+On Email 1, `whoSource: "past"` links an already-sent campaign (`campaignId` + `pastCampaignId`). That blast is **not resent**; follow-ups wait, then go to its openers/clickers.  
 `engagement`: `"opens"` | `"clicks"` | `"opens_or_clicks"`  
 Follow-up waits: **days may be 0**; **hours minimum 1**.
 
@@ -316,11 +317,11 @@ Admin session cookie. 200 `{ id, email, fullName }`
 
 ### POST `/api/campaigns`
 ```json
-{ "name": "Welcome", "kind": "drip" }
+{ "name": "Welcome", "kind": "drip", "autoNumber": true }
 ```
-`kind` defaults to `"drip"`.  
+`kind` defaults to `"drip"`. Pass `"autoNumber": true` to automatically append/increment a numeric suffix if a campaign with the requested name already exists.  
 201: `DripCampaign`  
-400 name required · 409 name already exists for that kind.
+400 name required · 409 name already exists for that kind (if `autoNumber` not set).
 
 ### GET `/api/campaigns/{id}?kind=drip|oneone`
 200 `DripCampaign` · 404 `Campaign not found`
@@ -332,6 +333,10 @@ Body: any subset of patchable keys.
 Patchable keys: `name`, `status`, `scheduledAt`, `sentAt`, `tags`, `recipients`, `opens`, `clicks`, `unsubscribed`, `conversions`, `delivered`, `senderId`, `senderName`, `senderEmail`, `listId`, `listName`, `recipientMode`, `individualContacts`, `subject`, `previewText`, `hasDesign`, `designHtml`, `designSourceCampaignId`, `replyToEnabled`, `replyToEmail`, `attachmentEnabled`, `attachmentName`, `timezoneEnabled`, `timezone`, `utmEnabled`, `utmSourceEnabled`, `utmSource`, `utmMediumEnabled`, `utmMedium`, `utmCampaignEnabled`, `utmCampaign`, `listDisplayId`, `sequences`, `windowStart`, `windowEnd`, `emailGapMinutes`, `timeline`.
 
 Pause/resume via `status`: only `scheduled`/`sending` → `paused`; resume needs a paused send. Errors like `Only running or scheduled campaigns can be paused` / `No paused send found to resume`.
+
+### DELETE `/api/campaigns?kind=drip|oneone`
+Body: `{ "ids": ["1", "2"] }`. Deletes those campaigns plus their blasts and sends.  
+200 `{ "deleted": number }` · 400 `No campaigns selected`
 
 ### DELETE `/api/campaigns/{id}?kind=drip|oneone`
 200 `{ "ok": true }` — also deletes blasts and sends.
@@ -425,8 +430,8 @@ Deletes previous blasts/sends for that campaign+kind, then creates new ones.
 ---
 
 ### POST `/api/campaigns/process-due`
-No body. 200 `{ "reports": CampaignReport[] }`  
-Sends due pending emails for this project. **Must be polled** — no background cron.
+No body. 200 `{ "reports": CampaignReport[], "followUps": { "launched": number } }`  
+Sends due pending emails for this project, then launches due **automation follow-up** campaigns (after the step wait, to openers/clickers). **Must be polled** — no background cron.
 
 ### GET `/api/campaigns/stats`
 200 `{ "reports": CampaignReport[] }`
@@ -580,12 +585,20 @@ Companies with nested contacts.
 ```
 201 `{ "list": CrmList, "importSummary": { "imported", "skipped", "companiesCreated", "contactsCreated", "contactsUpdated" } | null }`
 
+### DELETE `/api/crm/lists`
+Body: `{ "ids": ["…"] }`. Deletes those lists and their memberships. Contacts stay in CRM. The Unsubscribe list is skipped.  
+200 `{ "deleted": number }` · 400 `No lists selected`
+
 ### GET `/api/crm/lists/{id}`
 `{ "list": CrmList, "contacts": Contact[] }`
 
 ### POST `/api/crm/lists/{id}`
 Add more contacts: `{ "contacts": [ { "firstName", "lastName", "email", "companyName" } ] }`  
 400 `No contacts to import`
+
+### DELETE `/api/crm/lists/{id}`
+Deletes one list and its memberships. Contacts stay in CRM.  
+404 if missing or the Unsubscribe list.
 
 ### GET `/api/crm/suppression`
 Unsubscribe list + email entries `{ id, email, fullName, addedAt }` and blocked domains `{ id, domain, addedAt }`. Creates the Unsubscribe list if missing.
@@ -757,7 +770,7 @@ Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_
 | POST | `/api/auth/admin-login` | none |
 | POST | `/api/auth/admin-logout` | none |
 | GET | `/api/auth/admin-me` | admin cookie |
-| GET, POST | `/api/campaigns` | portal (cookie or Bearer) |
+| GET, POST, DELETE | `/api/campaigns` | portal (cookie or Bearer) |
 | GET, PATCH, DELETE | `/api/campaigns/[id]` | portal |
 | POST | `/api/campaigns/[id]/duplicate` | portal |
 | POST | `/api/campaigns/launch` | portal |
@@ -783,8 +796,8 @@ Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_
 | GET | `/api/crm/contacts/[id]` | portal |
 | GET | `/api/crm/companies` | portal |
 | GET | `/api/crm/companies/[id]` | portal |
-| GET, POST | `/api/crm/lists` | portal |
-| GET, POST | `/api/crm/lists/[id]` | portal |
+| GET, POST, DELETE | `/api/crm/lists` | portal |
+| GET, POST, DELETE | `/api/crm/lists/[id]` | portal |
 | GET, POST, DELETE | `/api/crm/suppression` | portal |
 | GET, POST | `/api/integrations/keys` | portal |
 | DELETE | `/api/integrations/keys/[id]` | portal |

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   createAutomation,
   fetchAutomation,
+  fetchAutomations,
   patchAutomation,
   portalAutomationHistoryRoute,
   portalAutomationRoute,
@@ -45,6 +46,9 @@ function padTime(value: number) {
 }
 
 function isCampaignReady(campaign: DripCampaign) {
+  if (campaign.status === "sent") {
+    return true;
+  }
   if (!campaign.senderId?.trim() || !campaign.senderEmail?.trim()) {
     return false;
   }
@@ -87,6 +91,7 @@ function newEmailStep(partial?: Partial<AutoStep>): AutoStep {
   return {
     id: `step-${Math.random().toString(36).slice(2, 10)}`,
     type: "email",
+    campaignKind: "drip",
     waitDays: 0,
     waitHours: 0,
     whoSource: "current",
@@ -95,15 +100,102 @@ function newEmailStep(partial?: Partial<AutoStep>): AutoStep {
   };
 }
 
-function waitLabel(step: AutoStep) {
-  const days = Math.max(0, Number(step.waitDays) || 0);
-  const hours = Math.max(1, Number(step.waitHours) || 1);
-  const parts: string[] = [];
-  if (days > 0) {
-    parts.push(`${days} day${days === 1 ? "" : "s"}`);
+function stepKind(step: Pick<AutoStep, "campaignKind">): CampaignKind {
+  return step.campaignKind === "oneone" ? "oneone" : "drip";
+}
+
+function campaignKindOf(campaign: Pick<DripCampaign, "kind">): CampaignKind {
+  return campaign.kind === "oneone" ? "oneone" : "drip";
+}
+
+function pastCampaignKey(campaign: Pick<DripCampaign, "id" | "kind">) {
+  return `${campaignKindOf(campaign)}:${campaign.id}`;
+}
+
+function findPastCampaignByKey(key: string, campaigns: DripCampaign[]) {
+  if (!key) {
+    return undefined;
   }
-  parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
-  return `Wait ${parts.join(" ")}`;
+  const sep = key.indexOf(":");
+  if (sep < 0) {
+    return campaigns.find((campaign) => campaign.id === key);
+  }
+  const kind = key.slice(0, sep);
+  const id = key.slice(sep + 1);
+  return (
+    campaigns.find(
+      (campaign) => campaign.id === id && campaignKindOf(campaign) === kind,
+    ) || campaigns.find((campaign) => campaign.id === key)
+  );
+}
+
+function stepPastKey(
+  step: Pick<
+    AutoStep,
+    "pastCampaignId" | "pastCampaignKind" | "campaignId" | "campaignKind"
+  >,
+) {
+  const id = step.pastCampaignId || step.campaignId || "";
+  if (!id) {
+    return "";
+  }
+  const kind = step.pastCampaignKind || step.campaignKind;
+  return `${kind === "oneone" ? "oneone" : "drip"}:${id}`;
+}
+
+function KindToggle({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: CampaignKind;
+  disabled?: boolean;
+  onChange: (next: CampaignKind) => void;
+}) {
+  return (
+    <div className="auto-kind-toggle" role="group" aria-label="Campaign type">
+      <button
+        type="button"
+        className={value === "drip" ? "active" : ""}
+        disabled={disabled}
+        onClick={() => onChange("drip")}
+      >
+        Drip
+      </button>
+      <button
+        type="button"
+        className={value === "oneone" ? "active" : ""}
+        disabled={disabled}
+        onClick={() => onChange("oneone")}
+      >
+        1-1
+      </button>
+    </div>
+  );
+}
+
+function normalizeWait(days: number, hours: number) {
+  const waitDays = Math.max(0, Number.isFinite(days) ? days : 0);
+  let waitHours = Math.max(0, Math.min(23, Number.isFinite(hours) ? hours : 0));
+  if (waitDays === 0 && waitHours < 1) {
+    waitHours = 1;
+  }
+  return { waitDays, waitHours };
+}
+
+function waitLabel(step: Pick<AutoStep, "waitDays" | "waitHours">) {
+  const { waitDays, waitHours } = normalizeWait(
+    Number(step.waitDays) || 0,
+    Number(step.waitHours) || 0,
+  );
+  const parts: string[] = [];
+  if (waitDays > 0) {
+    parts.push(`${waitDays} day${waitDays === 1 ? "" : "s"}`);
+  }
+  if (waitHours > 0) {
+    parts.push(`${waitHours} hour${waitHours === 1 ? "" : "s"}`);
+  }
+  return parts.length === 0 ? "Wait immediately" : `Wait ${parts.join(" ")}`;
 }
 
 function whoLabel(step: AutoStep) {
@@ -139,6 +231,7 @@ export default function PortalAutomationPage({
   const searchParams = useSearchParams();
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const addWrapRef = useRef<HTMLDivElement | null>(null);
 
   const [recordId, setRecordId] = useState(automationId || "");
   const [status, setStatus] = useState<AutomationStatus>("draft");
@@ -169,6 +262,7 @@ export default function PortalAutomationPage({
   const [draftPastId, setDraftPastId] = useState("");
   const [draftEngagement, setDraftEngagement] =
     useState<EngagementKind>("opens_or_clicks");
+  const [draftStepKind, setDraftStepKind] = useState<CampaignKind>("drip");
 
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleMode, setScheduleMode] = useState<"now" | "later">("now");
@@ -192,9 +286,12 @@ export default function PortalAutomationPage({
   const firstCampaign = firstStep ? campaignByStep[firstStep.id] ?? null : null;
 
   const firstReady = firstCampaign ? isCampaignReady(firstCampaign) : false;
+  const startingFromPast = Boolean(
+    firstStep?.whoSource === "past" && firstCampaign,
+  );
   const followUpsConfigured = steps.every((step, index) => {
     if (index === 0) {
-      return true;
+      return firstStep?.whoSource !== "past" || Boolean(firstStep.pastCampaignId);
     }
     if (step.whoSource === "past" && !step.pastCampaignId) {
       return false;
@@ -205,6 +302,9 @@ export default function PortalAutomationPage({
     const campaign = campaignByStep[step.id];
     if (!campaign) {
       return false;
+    }
+    if (campaign.status === "sent" || (index === 0 && step.whoSource === "past")) {
+      return true;
     }
     const audienceOptional = index > 0;
     return readinessGaps(campaign, { audienceOptional }).length === 0;
@@ -343,7 +443,6 @@ export default function PortalAutomationPage({
           }
           setRecordId("");
           setStatus("draft");
-          setName("Untitled automation");
           setKind("drip");
           setSteps([]);
           setSelectedStepId(null);
@@ -353,6 +452,36 @@ export default function PortalAutomationPage({
           setLaunchError("");
           setLoadError("");
           persistEnabledRef.current = false;
+
+          try {
+            const [autoList, dripList] = await Promise.all([
+              fetchAutomations().catch(() => []),
+              fetchDripCampaigns("drip").catch(() => []),
+            ]);
+            const existingNames = new Set<string>();
+            for (const item of autoList) {
+              if (item.name) existingNames.add(item.name.trim().toLowerCase());
+            }
+            for (const item of dripList) {
+              if (item.name) existingNames.add(item.name.trim().toLowerCase());
+            }
+
+            let defaultName = "Untitled automation";
+            if (existingNames.has(defaultName.toLowerCase())) {
+              let count = 2;
+              while (existingNames.has(`untitled automation ${count}`.toLowerCase())) {
+                count += 1;
+              }
+              defaultName = `Untitled automation ${count}`;
+            }
+            if (!cancelled) {
+              setName(defaultName);
+            }
+          } catch {
+            if (!cancelled) {
+              setName("Untitled automation");
+            }
+          }
           return;
         }
 
@@ -446,6 +575,21 @@ export default function PortalAutomationPage({
   }, [chat, chatting]);
 
   useEffect(() => {
+    if (!addOpen) {
+      return;
+    }
+    addWrapRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [addOpen]);
+
+  useEffect(() => {
+    if (selectedStep?.whoSource === "past") {
+      void loadPastCampaigns();
+    }
+    // Load the picker list when a past-campaign step is opened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStepId, selectedStep?.whoSource]);
+
+  useEffect(() => {
     if (!addOpen && draftWho !== "past") {
       return;
     }
@@ -465,7 +609,7 @@ export default function PortalAutomationPage({
           .sort((a, b) => (b.sentAt || "").localeCompare(a.sentAt || ""));
         setPastCampaigns(merged);
         if (!draftPastId && merged[0]) {
-          setDraftPastId(merged[0].id);
+          setDraftPastId(pastCampaignKey(merged[0]));
         }
       } catch {
         if (!cancelled) {
@@ -503,6 +647,9 @@ export default function PortalAutomationPage({
         steps: initialSteps,
         status: "draft",
       });
+      if (created.name && created.name !== name) {
+        setName(created.name);
+      }
       setRecordId(created.id);
       persistEnabledRef.current = true;
       router.replace(portalAutomationRoute(created.id));
@@ -512,6 +659,195 @@ export default function PortalAutomationPage({
       return await ensuringRef.current;
     } finally {
       ensuringRef.current = null;
+    }
+  }
+
+  async function loadPastCampaigns() {
+    setLoadingPast(true);
+    try {
+      const [drip, oneone] = await Promise.all([
+        fetchDripCampaigns("drip"),
+        fetchDripCampaigns("oneone"),
+      ]);
+      const merged = [...drip, ...oneone].filter(
+        (campaign) =>
+          campaign.status === "sent" ||
+          campaign.opens > 0 ||
+          campaign.clicks > 0,
+      );
+      setPastCampaigns(merged);
+    } finally {
+      setLoadingPast(false);
+    }
+  }
+
+  function setFirstStepSource(source: WhoSource) {
+    if (!firstStep || locked) {
+      return;
+    }
+    const stepId = firstStep.id;
+    if (source === "current") {
+      setSteps((prev) =>
+        prev.map((step, index) =>
+          index === 0
+            ? {
+                ...step,
+                whoSource: "current",
+                campaignId: undefined,
+                pastCampaignId: undefined,
+                pastCampaignName: undefined,
+                pastCampaignKind: undefined,
+              }
+            : step,
+        ),
+      );
+      setCampaignByStep((current) => {
+        const next = { ...current };
+        delete next[stepId];
+        return next;
+      });
+      return;
+    }
+    setSteps((prev) =>
+      prev.map((step, index) =>
+        index === 0
+          ? {
+              ...step,
+              whoSource: "past",
+              campaignId: undefined,
+              pastCampaignId: undefined,
+              pastCampaignName: undefined,
+              pastCampaignKind: undefined,
+            }
+          : step,
+      ),
+    );
+    setCampaignByStep((current) => {
+      const next = { ...current };
+      delete next[stepId];
+      return next;
+    });
+    void loadPastCampaigns();
+  }
+
+  async function attachPastCampaignToFirstStep(campaign: DripCampaign) {
+    if (!firstStep || locked) {
+      return;
+    }
+    const stepId = firstStep.id;
+    setLoadingCampaign(true);
+    setLoadError("");
+    try {
+      const full =
+        (await fetchDripCampaign(campaign.id, campaignKindOf(campaign))) ||
+        campaign;
+      const resolvedKind = campaignKindOf(full);
+      setKind(resolvedKind);
+      setSteps((prev) =>
+        prev.map((step, index) =>
+          index === 0
+            ? {
+                ...step,
+                whoSource: "past",
+                campaignId: full.id,
+                campaignKind: resolvedKind,
+                pastCampaignId: full.id,
+                pastCampaignName: full.name,
+                pastCampaignKind: resolvedKind,
+              }
+            : step,
+        ),
+      );
+      setCampaignByStep((current) => ({
+        ...current,
+        [stepId]: full,
+      }));
+    } catch (error) {
+      setLoadError(
+        error instanceof Error
+          ? error.message
+          : "Failed to load the past campaign",
+      );
+    } finally {
+      setLoadingCampaign(false);
+    }
+  }
+
+  function lastFollowUp() {
+    return steps.length > 1 ? steps[steps.length - 1] : null;
+  }
+
+  function applyDraftToLastFollowUp(patch: {
+    waitDays?: number;
+    waitHours?: number;
+    whoSource?: WhoSource;
+    pastCampaignId?: string;
+    pastCampaignName?: string;
+    pastCampaignKind?: CampaignKind;
+    engagement?: EngagementKind;
+    campaignKind?: CampaignKind;
+  }) {
+    setSteps((current) => {
+      if (current.length < 2) {
+        return current;
+      }
+      const last = current[current.length - 1];
+      if (last.campaignId) {
+        return current;
+      }
+      const wait = normalizeWait(
+        patch.waitDays ?? last.waitDays ?? 0,
+        patch.waitHours ?? last.waitHours ?? 1,
+      );
+      return current.map((step, index) =>
+        index === current.length - 1
+          ? {
+              ...step,
+              ...wait,
+              whoSource: patch.whoSource ?? step.whoSource,
+              pastCampaignId:
+                patch.pastCampaignId !== undefined
+                  ? patch.pastCampaignId
+                  : step.pastCampaignId,
+              pastCampaignName:
+                patch.pastCampaignName !== undefined
+                  ? patch.pastCampaignName
+                  : step.pastCampaignName,
+              pastCampaignKind:
+                patch.pastCampaignKind !== undefined
+                  ? patch.pastCampaignKind
+                  : step.pastCampaignKind,
+              engagement: patch.engagement ?? step.engagement,
+              campaignKind: patch.campaignKind ?? step.campaignKind,
+            }
+          : step,
+      );
+    });
+  }
+
+  function toggleAddStep() {
+    if (locked) {
+      return;
+    }
+    if (steps.length === 0) {
+      addFirstEmailStep();
+      return;
+    }
+    const next = !addOpen;
+    setAddOpen(next);
+    setLoadError("");
+    if (next) {
+      setSelectedStepId(null);
+      const last = lastFollowUp();
+      if (last && !last.campaignId) {
+        const wait = normalizeWait(last.waitDays ?? 0, last.waitHours ?? 1);
+        setDraftWaitDays(String(wait.waitDays));
+        setDraftWaitHours(String(wait.waitHours));
+        setDraftWho(last.whoSource === "past" ? "past" : "current");
+        setDraftPastId(last.pastCampaignId || "");
+        setDraftEngagement(last.engagement || "opens_or_clicks");
+        setDraftStepKind(stepKind(last));
+      }
     }
   }
 
@@ -539,27 +875,48 @@ export default function PortalAutomationPage({
       addFirstEmailStep();
       return;
     }
-    const waitDays = Math.max(0, Number(draftWaitDays) || 0);
-    const waitHours = Math.max(1, Math.min(23, Number(draftWaitHours) || 1));
+    const { waitDays, waitHours } = normalizeWait(
+      Number(draftWaitDays) || 0,
+      Number(draftWaitHours) || 0,
+    );
     if (draftWho === "past" && !draftPastId) {
       setLoadError("Pick a past campaign for opens/clicks.");
       return;
     }
-    const past = pastCampaigns.find((campaign) => campaign.id === draftPastId);
-    const step = newEmailStep({
+    const past = findPastCampaignByKey(draftPastId, pastCampaigns);
+    const pastKind: CampaignKind | undefined =
+      draftWho === "past"
+        ? past
+          ? campaignKindOf(past)
+          : "drip"
+        : undefined;
+    const followUpPatch: {
+      campaignKind: CampaignKind;
+      waitDays: number;
+      waitHours: number;
+      whoSource: WhoSource;
+      pastCampaignId?: string;
+      pastCampaignKind?: CampaignKind;
+      pastCampaignName?: string;
+      engagement: EngagementKind;
+    } = {
+      campaignKind: draftStepKind,
       waitDays,
       waitHours,
       whoSource: draftWho,
-      pastCampaignId: draftWho === "past" ? draftPastId : undefined,
-      pastCampaignKind:
-        draftWho === "past"
-          ? past?.kind === "oneone"
-            ? "oneone"
-            : "drip"
-          : undefined,
+      pastCampaignId: draftWho === "past" ? past?.id || draftPastId : undefined,
+      pastCampaignKind: pastKind,
       pastCampaignName: draftWho === "past" ? past?.name : undefined,
       engagement: draftEngagement,
-    });
+    };
+    const last = lastFollowUp();
+    if (last && !last.campaignId) {
+      applyDraftToLastFollowUp(followUpPatch);
+      setAddOpen(false);
+      setLoadError("");
+      return;
+    }
+    const step = newEmailStep(followUpPatch);
     setSteps((prev) => [...prev, step]);
     setSelectedStepId(step.id);
     setAddOpen(false);
@@ -575,20 +932,24 @@ export default function PortalAutomationPage({
     try {
       const stepIndex = steps.findIndex((item) => item.id === step.id);
       const isFollowUp = stepIndex > 0;
+      const campaignKind = stepKind(step);
       const autoId = await ensureAutomationRecord(
         steps.map((item) =>
           item.id === step.id ? item : item,
         ),
       );
+      const desiredCampaignName =
+        stepIndex <= 0
+          ? name.trim() || "Untitled automation"
+          : `${name.trim() || "Untitled"} · step ${stepIndex + 1}`;
+
       const response = await fetch("/api/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name:
-            stepIndex <= 0
-              ? name.trim() || "Untitled automation"
-              : `${name.trim() || "Untitled"} · step ${stepIndex + 1}`,
-          kind,
+          name: desiredCampaignName,
+          kind: campaignKind,
+          autoNumber: true,
         }),
       });
       const data = await response.json().catch(() => null);
@@ -596,6 +957,13 @@ export default function PortalAutomationPage({
         throw new Error(
           typeof data?.error === "string" ? data.error : "Failed to create campaign",
         );
+      }
+
+      if (data.name && data.name !== desiredCampaignName && stepIndex <= 0) {
+        setName(data.name);
+        void patchAutomation(autoId, { name: data.name }).catch(() => {
+          /* ignore */
+        });
       }
 
       const existingTags = Array.isArray(data.tags) ? data.tags : [];
@@ -625,12 +993,12 @@ export default function PortalAutomationPage({
         patch.listName = "";
       }
 
-      await patchDripCampaign(data.id, patch, kind);
+      await patchDripCampaign(data.id, patch, campaignKind);
 
       setSteps((prev) =>
         prev.map((item) =>
           item.id === step.id
-            ? { ...item, campaignId: data.id, campaignKind: kind }
+            ? { ...item, campaignId: data.id, campaignKind }
             : item,
         ),
       );
@@ -639,7 +1007,7 @@ export default function PortalAutomationPage({
         AUTOMATION_LINK_KEY,
         JSON.stringify({
           campaignId: data.id,
-          kind,
+          kind: campaignKind,
           stepId: step.id,
           followUp: isFollowUp,
           automationId: autoId,
@@ -654,7 +1022,7 @@ export default function PortalAutomationPage({
 
       const followUpQuery = isFollowUp ? "&automationFollowUp=1" : "";
       router.push(
-        `${portalCampaignRoute(data.id, kind)}?fromAutomation=1&stepId=${encodeURIComponent(step.id)}${followUpQuery}&automationId=${encodeURIComponent(autoId)}`,
+        `${portalCampaignRoute(data.id, campaignKind)}?fromAutomation=1&stepId=${encodeURIComponent(step.id)}${followUpQuery}&automationId=${encodeURIComponent(autoId)}`,
       );
     } catch (error) {
       setLoadError(
@@ -754,33 +1122,37 @@ export default function PortalAutomationPage({
     setLaunching(true);
     setLaunchError("");
     try {
-      const timezone = firstCampaign.timezone || "Asia/Kolkata";
-      const response = await fetch("/api/campaigns/launch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          campaign: firstCampaign,
-          mode: scheduleMode,
-          scheduledFor:
-            scheduleMode === "later"
-              ? zonedDateTimeToIso(
-                  scheduleDate,
-                  scheduleHour,
-                  scheduleMinute,
-                  timezone,
-                )
-              : undefined,
-        }),
-      });
-      const data = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(
-          typeof data?.error === "string" ? data.error : "Failed to launch",
-        );
+      const alreadySent =
+        firstCampaign.status === "sent" || firstStep?.whoSource === "past";
+      if (!alreadySent) {
+        const timezone = firstCampaign.timezone || "Asia/Kolkata";
+        const response = await fetch("/api/campaigns/launch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            campaign: firstCampaign,
+            mode: scheduleMode,
+            scheduledFor:
+              scheduleMode === "later"
+                ? zonedDateTimeToIso(
+                    scheduleDate,
+                    scheduleHour,
+                    scheduleMinute,
+                    timezone,
+                  )
+                : undefined,
+          }),
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(
+            typeof data?.error === "string" ? data.error : "Failed to launch",
+          );
+        }
       }
       void fetch("/api/campaigns/process-due", { method: "POST" });
       const nextStatus: AutomationStatus =
-        scheduleMode === "later" ? "scheduled" : "running";
+        alreadySent || scheduleMode !== "later" ? "running" : "scheduled";
       if (recordId) {
         await patchAutomation(recordId, {
           status: nextStatus,
@@ -795,13 +1167,17 @@ export default function PortalAutomationPage({
       setAddOpen(false);
       const followUpCount = Math.max(0, steps.length - 1);
       setLaunchNotice(
-        followUpCount > 0
-          ? scheduleMode === "now"
-            ? `Step 1 launched. This automation is now locked.`
-            : `Step 1 scheduled. This automation is now locked.`
-          : scheduleMode === "now"
-            ? "Campaign launched. This automation is now locked."
-            : "Campaign scheduled. This automation is now locked.",
+        alreadySent
+          ? followUpCount > 0
+            ? "Started from the past campaign. Follow-ups will send after the wait to openers/clickers."
+            : "Started from the past campaign. This automation is now locked."
+          : followUpCount > 0
+            ? scheduleMode === "now"
+              ? `Step 1 launched. This automation is now locked.`
+              : `Step 1 scheduled. This automation is now locked.`
+            : scheduleMode === "now"
+              ? "Campaign launched. This automation is now locked."
+              : "Campaign scheduled. This automation is now locked.",
       );
       const refreshed = await fetchDripCampaign(
         firstCampaign.id,
@@ -840,47 +1216,6 @@ export default function PortalAutomationPage({
             ‹
           </button>
         </div>
-
-        {selectedStep && !locked ? (
-          <div className="auto-ai-actions">
-            <p className="auto-ai-actions-label">Email step</p>
-            <button
-              type="button"
-              className="btn-dark auto-ai-redirect"
-              disabled={creating}
-              onClick={() => void createAndOpenCampaign(selectedStep)}
-            >
-              {creating
-                ? "Opening…"
-                : selectedStep.campaignId
-                  ? "Re-open setup"
-                  : `Create ${kind === "oneone" ? "1-1" : "Drip"} campaign`}
-            </button>
-            {selectedStep.campaignId ? (
-              <button
-                type="button"
-                className="btn-soft auto-ai-redirect"
-                onClick={() => openStepCampaign(selectedStep)}
-              >
-                Continue setup in{" "}
-                {selectedStep.campaignKind === "oneone" ? "1-1" : "Drip"}
-              </button>
-            ) : null}
-            <p className="auto-ai-actions-note">
-              Finish sender, list, subject, and design there, then use{" "}
-              <strong>Return to Automation</strong>.
-            </p>
-          </div>
-        ) : null}
-        {selectedStep && locked ? (
-          <div className="auto-ai-actions">
-            <p className="auto-ai-actions-label">Launched</p>
-            <p className="auto-ai-actions-note">
-              This automation is locked after launch. Open History to view it, or
-              create a new automation to build again.
-            </p>
-          </div>
-        ) : null}
 
         {chat.length === 0 ? (
           <div className="auto-ai-suggestions">
@@ -922,7 +1257,13 @@ export default function PortalAutomationPage({
           }}
         >
           <span className="auto-ai-context">
-            {kind === "oneone" ? "1-1" : "Drip"} · Automation
+            {steps.some((step) => stepKind(step) === "oneone") &&
+            steps.some((step) => stepKind(step) === "drip")
+              ? "Drip + 1-1"
+              : stepKind(steps[0] ?? { campaignKind: kind }) === "oneone"
+                ? "1-1"
+                : "Drip"}{" "}
+            · Automation
           </span>
           <div className="auto-ai-input-row">
             <input
@@ -992,24 +1333,6 @@ export default function PortalAutomationPage({
             <span className={`auto-badge${locked ? " auto-badge-locked" : ""}`}>
               {statusBadgeLabel(status)}
             </span>
-            <div className="auto-kind-toggle" role="group" aria-label="Campaign type">
-              <button
-                type="button"
-                className={kind === "drip" ? "active" : ""}
-                disabled={locked}
-                onClick={() => setKind("drip")}
-              >
-                Drip
-              </button>
-              <button
-                type="button"
-                className={kind === "oneone" ? "active" : ""}
-                disabled={locked}
-                onClick={() => setKind("oneone")}
-              >
-                1-1
-              </button>
-            </div>
             {automationReady && !locked ? (
               <span className="auto-ready-tick" title="Ready to launch">
                 ✓ Ready
@@ -1039,7 +1362,7 @@ export default function PortalAutomationPage({
                 setScheduleOpen(true);
               }}
             >
-              Schedule
+              {startingFromPast ? "Start" : "Schedule"}
             </button>
           )}
         </header>
@@ -1079,7 +1402,9 @@ export default function PortalAutomationPage({
                 <span className="lbl">Step 1</span>
                 <span className="val">
                   {firstReady
-                    ? "Ready to schedule"
+                    ? startingFromPast
+                      ? "Past campaign ready"
+                      : "Ready to schedule"
                     : firstCampaign
                       ? `Missing: ${firstGaps.join(", ")}`
                       : "Create first email"}
@@ -1092,14 +1417,20 @@ export default function PortalAutomationPage({
               const campaign = campaignByStep[step.id];
               const audienceOptional = index > 0;
               const stepReady = campaign
-                ? readinessGaps(campaign, { audienceOptional }).length === 0
+                ? campaign.status === "sent" ||
+                  (index === 0 && step.whoSource === "past") ||
+                  readinessGaps(campaign, { audienceOptional }).length === 0
                 : false;
 
               return (
                 <div key={step.id} className="auto-step-block">
                   <div className="auto-connector" />
                   {index === 0 ? (
-                    <div className="auto-delay-pill">Email · start</div>
+                    <div className="auto-delay-pill">
+                      {step.whoSource === "past"
+                        ? "Email · past campaign"
+                        : "Email · start"}
+                    </div>
                   ) : (
                     <div className="auto-delay-pill auto-delay-pill-wait">
                       {waitLabel(step)} · {whoLabel(step)}
@@ -1119,13 +1450,16 @@ export default function PortalAutomationPage({
                     </span>
                     <span className="auto-step-meta">
                       <strong>
-                        Email {index + 1} · {kind === "oneone" ? "1-1" : "Drip"}
+                        Email {index + 1} · {stepKind(step) === "oneone" ? "1-1" : "Drip"}
                         {stepReady ? " ✓" : ""}
                       </strong>
                       <em>
                         {campaign?.name ||
+                          step.pastCampaignName ||
                           (index === 0
-                            ? "Create campaign to set up"
+                            ? step.whoSource === "past"
+                              ? "Select a past campaign"
+                              : "Create campaign to set up"
                             : "Set wait → then create follow-up email")}
                       </em>
                     </span>
@@ -1141,6 +1475,104 @@ export default function PortalAutomationPage({
                           ? "Email campaign setup"
                           : `Follow-up email · step ${index + 1}`}
                       </h4>
+                      {!locked && index === 0 ? (
+                        <>
+                          <div className="auto-field">
+                            <span>Start from</span>
+                            <div className="auto-kind-toggle">
+                              <button
+                                type="button"
+                                className={
+                                  step.whoSource !== "past" ? "active" : ""
+                                }
+                                onClick={() => setFirstStepSource("current")}
+                              >
+                                Create new
+                              </button>
+                              <button
+                                type="button"
+                                className={
+                                  step.whoSource === "past" ? "active" : ""
+                                }
+                                onClick={() => setFirstStepSource("past")}
+                              >
+                                Past campaign
+                              </button>
+                            </div>
+                          </div>
+                          {step.whoSource === "past" ? (
+                            <label className="auto-field">
+                              Past campaign
+                              <select
+                                value={stepPastKey(step)}
+                                onChange={(event) => {
+                                  const picked = findPastCampaignByKey(
+                                    event.target.value,
+                                    pastCampaigns,
+                                  );
+                                  if (picked) {
+                                    void attachPastCampaignToFirstStep(picked);
+                                  }
+                                }}
+                              >
+                                <option value="">
+                                  {loadingPast
+                                    ? "Loading…"
+                                    : "Select a sent campaign"}
+                                </option>
+                                {pastCampaigns.map((campaign) => (
+                                  <option
+                                    key={pastCampaignKey(campaign)}
+                                    value={pastCampaignKey(campaign)}
+                                  >
+                                    {campaign.name} · {campaign.opens} opens ·{" "}
+                                    {campaign.clicks} clicks ·{" "}
+                                    {campaignKindOf(campaign) === "oneone"
+                                      ? "1-1"
+                                      : "Drip"}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          ) : null}
+                        </>
+                      ) : null}
+                      {!locked ? (
+                        <div className="auto-field">
+                          <span>
+                            {index === 0
+                              ? "Send this email as"
+                              : "Send this follow-up as"}
+                          </span>
+                          <KindToggle
+                            value={stepKind(step)}
+                            disabled={
+                              Boolean(step.campaignId) ||
+                              (index === 0 && step.whoSource === "past")
+                            }
+                            onChange={(next) => {
+                              updateSelectedFollowUp({ campaignKind: next });
+                              if (index === 0) {
+                                setKind(next);
+                              }
+                            }}
+                          />
+                          {step.campaignId ||
+                          (index === 0 && step.whoSource === "past") ? (
+                            <p className="auto-step-setup-note">
+                              {index === 0 && step.whoSource === "past"
+                                ? "Type matches the past campaign and stays locked."
+                                : "Type is locked after the campaign is created."}
+                            </p>
+                          ) : index > 0 ? (
+                            <p className="auto-step-setup-note">
+                              Step 1 can be Drip and this step can be 1-1 (or the
+                              reverse). After the wait, openers/clickers get this
+                              campaign.
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {locked ? (
                         <p className="auto-step-setup-note">
                           View only — this automation is locked after launch.
@@ -1165,29 +1597,29 @@ export default function PortalAutomationPage({
                                 min={0}
                                 value={String(step.waitDays ?? 0)}
                                 onChange={(event) =>
-                                  updateSelectedFollowUp({
-                                    waitDays: Math.max(
-                                      0,
+                                  updateSelectedFollowUp(
+                                    normalizeWait(
                                       Number(event.target.value) || 0,
+                                      Number(step.waitHours) || 0,
                                     ),
-                                  })
+                                  )
                                 }
                               />
                             </label>
                             <label className="auto-field">
-                              Hours (min 1)
+                              Hours (0–23)
                               <input
                                 type="number"
-                                min={1}
+                                min={0}
                                 max={23}
-                                value={String(Math.max(1, step.waitHours ?? 1))}
+                                value={String(step.waitHours ?? 0)}
                                 onChange={(event) =>
-                                  updateSelectedFollowUp({
-                                    waitHours: Math.max(
-                                      1,
-                                      Math.min(23, Number(event.target.value) || 1),
+                                  updateSelectedFollowUp(
+                                    normalizeWait(
+                                      Number(step.waitDays) || 0,
+                                      Number(event.target.value) || 0,
                                     ),
-                                  })
+                                  )
                                 }
                               />
                             </label>
@@ -1218,24 +1650,7 @@ export default function PortalAutomationPage({
                                 onClick={() => {
                                   setAddOpen(false);
                                   updateSelectedFollowUp({ whoSource: "past" });
-                                  void (async () => {
-                                    setLoadingPast(true);
-                                    try {
-                                      const [drip, oneone] = await Promise.all([
-                                        fetchDripCampaigns("drip"),
-                                        fetchDripCampaigns("oneone"),
-                                      ]);
-                                      const merged = [...drip, ...oneone].filter(
-                                        (c) =>
-                                          c.status === "sent" ||
-                                          c.opens > 0 ||
-                                          c.clicks > 0,
-                                      );
-                                      setPastCampaigns(merged);
-                                    } finally {
-                                      setLoadingPast(false);
-                                    }
-                                  })();
+                                  void loadPastCampaigns();
                                 }}
                               >
                                 Past campaign
@@ -1246,16 +1661,18 @@ export default function PortalAutomationPage({
                             <label className="auto-field">
                               Past campaign
                               <select
-                                value={step.pastCampaignId || ""}
+                                value={stepPastKey(step)}
                                 onChange={(event) => {
-                                  const picked = pastCampaigns.find(
-                                    (c) => c.id === event.target.value,
+                                  const picked = findPastCampaignByKey(
+                                    event.target.value,
+                                    pastCampaigns,
                                   );
                                   updateSelectedFollowUp({
-                                    pastCampaignId: event.target.value || undefined,
+                                    pastCampaignId: picked?.id,
                                     pastCampaignName: picked?.name,
-                                    pastCampaignKind:
-                                      picked?.kind === "oneone" ? "oneone" : "drip",
+                                    pastCampaignKind: picked
+                                      ? campaignKindOf(picked)
+                                      : undefined,
                                   });
                                 }}
                               >
@@ -1263,9 +1680,15 @@ export default function PortalAutomationPage({
                                   {loadingPast ? "Loading…" : "Select campaign"}
                                 </option>
                                 {pastCampaigns.map((campaign) => (
-                                  <option key={campaign.id} value={campaign.id}>
+                                  <option
+                                    key={pastCampaignKey(campaign)}
+                                    value={pastCampaignKey(campaign)}
+                                  >
                                     {campaign.name} · {campaign.opens} opens ·{" "}
-                                    {campaign.clicks} clicks
+                                    {campaign.clicks} clicks ·{" "}
+                                    {campaignKindOf(campaign) === "oneone"
+                                      ? "1-1"
+                                      : "Drip"}
                                   </option>
                                 ))}
                               </select>
@@ -1302,6 +1725,13 @@ export default function PortalAutomationPage({
                             </div>
                           </div>
                         </>
+                      ) : !locked && step.whoSource === "past" ? (
+                        <p className="auto-step-setup-note">
+                          This email already went out. It will not be sent again.
+                          Follow-ups wait, then go to people who opened or clicked
+                          it. Schedule becomes Start when the rest of the
+                          automation is ready.
+                        </p>
                       ) : !locked ? (
                         <p className="auto-step-setup-note">
                           Open Drip or 1-1 to finish the campaign (sender, list,
@@ -1326,21 +1756,25 @@ export default function PortalAutomationPage({
                                 className="btn-soft"
                                 onClick={() => openStepCampaign(step)}
                               >
-                                Edit in {kind === "oneone" ? "1-1" : "Drip"}
+                                {index === 0 && step.whoSource === "past"
+                                  ? `View in ${stepKind(step) === "oneone" ? "1-1" : "Drip"}`
+                                  : `Edit in ${stepKind(step) === "oneone" ? "1-1" : "Drip"}`}
                               </button>
                             ) : null}
-                            <button
-                              type="button"
-                              className="btn-dark"
-                              disabled={creating}
-                              onClick={() => void createAndOpenCampaign(step)}
-                            >
-                              {creating
-                                ? "Opening…"
-                                : step.campaignId
-                                  ? "Re-open campaign setup"
-                                  : `Create ${kind === "oneone" ? "1-1" : "Drip"} campaign`}
-                            </button>
+                            {!(index === 0 && step.whoSource === "past") ? (
+                              <button
+                                type="button"
+                                className="btn-dark"
+                                disabled={creating}
+                                onClick={() => void createAndOpenCampaign(step)}
+                              >
+                                {creating
+                                  ? "Opening…"
+                                  : step.campaignId
+                                    ? "Re-open campaign setup"
+                                    : `Create ${stepKind(step) === "oneone" ? "1-1" : "Drip"} campaign`}
+                              </button>
+                            ) : null}
                           </div>
                         </>
                       ) : null}
@@ -1351,24 +1785,12 @@ export default function PortalAutomationPage({
             })}
 
             {!locked ? (
-            <div className="auto-add-wrap">
+            <div className="auto-add-wrap" ref={addWrapRef}>
               <div className="auto-connector short" />
               <button
                 type="button"
-                className="auto-add-btn"
-                onClick={() => {
-                  if (steps.length === 0) {
-                    addFirstEmailStep();
-                    return;
-                  }
-                  if (!firstReady) {
-                    setLoadError(
-                      "Finish and return from step 1 email setup before adding the next step.",
-                    );
-                    return;
-                  }
-                  setAddOpen((open) => !open);
-                }}
+                className={`auto-add-btn${addOpen ? " active" : ""}`}
+                onClick={toggleAddStep}
               >
                 + Add step
               </button>
@@ -1376,9 +1798,31 @@ export default function PortalAutomationPage({
                 <div className="auto-add-menu auto-add-menu-wide">
                   <h4 className="auto-add-title">Next email after wait</h4>
                   <p className="auto-add-desc">
-                    Wait a gap, then email people who opened or clicked the current
-                    or a past campaign. You’ll set the email itself in Drip / 1-1.
+                    Wait a gap, then email people who opened or clicked. This next
+                    step can be Drip or 1-1, independent of step 1.
                   </p>
+                  <div className="auto-field">
+                    <span>Send next email as</span>
+                    <KindToggle
+                      value={draftStepKind}
+                      onChange={(next) => {
+                        setDraftStepKind(next);
+                        applyDraftToLastFollowUp({ campaignKind: next });
+                      }}
+                    />
+                  </div>
+                  <div className="auto-delay-pill auto-delay-pill-wait">
+                    {waitLabel({
+                      waitDays: Number(draftWaitDays) || 0,
+                      waitHours: Number(draftWaitHours) || 0,
+                    })}{" "}
+                    · {draftWho === "past" ? "Past campaign" : "Current campaign"} ·{" "}
+                    {draftEngagement === "opens"
+                      ? "opens"
+                      : draftEngagement === "clicks"
+                        ? "clicks"
+                        : "opens or clicks"}
+                  </div>
                   <div className="auto-wait-grid">
                     <label className="auto-field">
                       After how many days
@@ -1386,43 +1830,60 @@ export default function PortalAutomationPage({
                         type="number"
                         min={0}
                         value={draftWaitDays}
-                        onChange={(event) => setDraftWaitDays(event.target.value)}
+                        onChange={(event) => {
+                          const waitDays = Math.max(0, Number(event.target.value) || 0);
+                          setDraftWaitDays(String(waitDays));
+                          applyDraftToLastFollowUp({
+                            waitDays,
+                            waitHours: Number(draftWaitHours) || 0,
+                          });
+                        }}
                       />
                     </label>
                     <label className="auto-field">
-                      Hours (min 1)
+                      Hours (0–23)
                       <input
                         type="number"
-                        min={1}
+                        min={0}
                         max={23}
                         value={draftWaitHours}
                         onChange={(event) => {
-                          const next = Number(event.target.value);
-                          if (Number.isNaN(next) || next < 1) {
-                            setDraftWaitHours("1");
-                            return;
-                          }
-                          setDraftWaitHours(String(Math.min(23, next)));
+                          const waitHours = Math.max(
+                            0,
+                            Math.min(23, Number(event.target.value) || 0),
+                          );
+                          setDraftWaitHours(String(waitHours));
+                          applyDraftToLastFollowUp({
+                            waitDays: Number(draftWaitDays) || 0,
+                            waitHours,
+                          });
                         }}
                       />
                     </label>
                   </div>
                   <div className="auto-field">
                     <span>Source</span>
-                    <div className="auto-kind-toggle">
+                    <div className="auto-kind-toggle auto-kind-stack">
                       <button
                         type="button"
                         className={draftWho === "current" ? "active" : ""}
-                        onClick={() => setDraftWho("current")}
+                        onClick={() => {
+                          setDraftWho("current");
+                          applyDraftToLastFollowUp({ whoSource: "current" });
+                        }}
                       >
-                        Current campaign open/click
+                        Current campaign
                       </button>
                       <button
                         type="button"
                         className={draftWho === "past" ? "active" : ""}
-                        onClick={() => setDraftWho("past")}
+                        onClick={() => {
+                          setDraftWho("past");
+                          applyDraftToLastFollowUp({ whoSource: "past" });
+                          void loadPastCampaigns();
+                        }}
                       >
-                        Past campaign open/click
+                        Past campaign
                       </button>
                     </div>
                   </div>
@@ -1431,15 +1892,36 @@ export default function PortalAutomationPage({
                       Past campaign
                       <select
                         value={draftPastId}
-                        onChange={(event) => setDraftPastId(event.target.value)}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setDraftPastId(value);
+                          const picked = findPastCampaignByKey(
+                            value,
+                            pastCampaigns,
+                          );
+                          applyDraftToLastFollowUp({
+                            whoSource: "past",
+                            pastCampaignId: picked?.id,
+                            pastCampaignName: picked?.name,
+                            pastCampaignKind: picked
+                              ? campaignKindOf(picked)
+                              : undefined,
+                          });
+                        }}
                       >
                         <option value="">
                           {loadingPast ? "Loading…" : "Select campaign"}
                         </option>
                         {pastCampaigns.map((campaign) => (
-                          <option key={campaign.id} value={campaign.id}>
+                          <option
+                            key={pastCampaignKey(campaign)}
+                            value={pastCampaignKey(campaign)}
+                          >
                             {campaign.name} · {campaign.opens} opens ·{" "}
-                            {campaign.clicks} clicks
+                            {campaign.clicks} clicks ·{" "}
+                            {campaignKindOf(campaign) === "oneone"
+                              ? "1-1"
+                              : "Drip"}
                           </option>
                         ))}
                       </select>
@@ -1459,7 +1941,10 @@ export default function PortalAutomationPage({
                           key={value}
                           type="button"
                           className={draftEngagement === value ? "active" : ""}
-                          onClick={() => setDraftEngagement(value)}
+                          onClick={() => {
+                            setDraftEngagement(value);
+                            applyDraftToLastFollowUp({ engagement: value });
+                          }}
                         >
                           {label}
                         </button>
@@ -1479,7 +1964,9 @@ export default function PortalAutomationPage({
                       className="btn-dark"
                       onClick={confirmAddFollowUp}
                     >
-                      Add email step
+                      {lastFollowUp() && !lastFollowUp()?.campaignId
+                        ? "Save wait"
+                        : "Add email step"}
                     </button>
                   </div>
                 </div>
@@ -1512,7 +1999,7 @@ export default function PortalAutomationPage({
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="drip-schedule-head">
-              <h3>Schedule</h3>
+              <h3>{startingFromPast ? "Start automation" : "Schedule"}</h3>
               <button
                 type="button"
                 className="crm-modal-close"
@@ -1524,9 +2011,11 @@ export default function PortalAutomationPage({
             </div>
             <div className="drip-schedule-body">
               <div className="drip-schedule-question">
-                When should step 1 send? Follow-ups wait their gap, then go to
-                openers/clickers.
+                {startingFromPast
+                  ? "Email 1 already sent. Start the automation so follow-ups wait, then go to openers/clickers of that campaign."
+                  : "When should step 1 send? Follow-ups wait their gap, then go to openers/clickers."}
               </div>
+              {!startingFromPast ? (
               <label className="drip-schedule-option">
                 <input
                   type="radio"
@@ -1536,6 +2025,8 @@ export default function PortalAutomationPage({
                 />
                 <span>Send now</span>
               </label>
+              ) : null}
+              {!startingFromPast ? (
               <label className="drip-schedule-option">
                 <input
                   type="radio"
@@ -1545,7 +2036,8 @@ export default function PortalAutomationPage({
                 />
                 <span>Schedule for later</span>
               </label>
-              {scheduleMode === "later" ? (
+              ) : null}
+              {!startingFromPast && scheduleMode === "later" ? (
                 <div className="drip-schedule-later">
                   <label className="drip-schedule-field">
                     <span>Date</span>
@@ -1616,9 +2108,11 @@ export default function PortalAutomationPage({
               >
                 {launching
                   ? "Saving…"
-                  : scheduleMode === "now"
-                    ? "Send now"
-                    : "Schedule"}
+                  : startingFromPast
+                    ? "Start automation"
+                    : scheduleMode === "now"
+                      ? "Send now"
+                      : "Schedule"}
               </button>
             </div>
           </div>
