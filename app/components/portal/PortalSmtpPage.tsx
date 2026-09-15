@@ -9,7 +9,6 @@ import {
 } from "@/lib/campaign-tracking";
 import {
   formatSenderDisplayName,
-  type SenderAuthVerification,
 } from "@/lib/mxtoolbox";
 import {
   getSmtpProvider,
@@ -123,6 +122,46 @@ function SenderExpandedDetails({
     );
   }
 
+  if (sender.noInbox) {
+    return (
+      <div className="vs-details">
+        <div className="vs-field">
+          <div className="lbl">Inbox checks</div>
+          <div className="val">
+            No inbox — SPF, DKIM, and DMARC skipped
+            <VerificationMark ok />
+          </div>
+          <div className="vs-field-note">
+            This sender is marked as outbound-only. DNS auth checks are not required.
+          </div>
+        </div>
+        <div className="vs-field">
+          <div className="lbl">Tracking domain</div>
+          <div className="val">
+            {sender.trackingVerification?.verified
+              ? trackingOrigin(sender.trackingDomain).replace(/^https?:\/\//, "")
+              : DEFAULT_TRACKING_HOST}
+            {sender.trackingVerification?.verified ? (
+              <VerificationMark ok />
+            ) : sender.pendingTrackingDomain || sender.trackingDomain ? (
+              <VerificationMark ok={false} />
+            ) : null}
+          </div>
+          <div className="vs-field-note">
+            {sender.pendingTrackingDomain && !sender.trackingVerification?.verified
+              ? `Waiting for DNS/HTTPS on ${sender.pendingTrackingDomain}.`
+              : sender.trackingDomain && sender.trackingVerification?.verified
+                ? sender.trackingVerification?.detail || "Verified custom tracking domain."
+                : sender.trackingDomain
+                  ? sender.trackingVerification?.detail ||
+                    `Custom domain set but not usable yet — emails use ${DEFAULT_TRACKING_HOST}.`
+                  : `Using default ${DEFAULT_TRACKING_HOST}.`}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!verification) {
     return (
       <div className="vs-details vs-details-loading">
@@ -190,7 +229,11 @@ function SenderExpandedDetails({
   );
 }
 
-function isSenderVerified(verification?: SenderAuthVerification) {
+function isSenderVerified(sender: Pick<SmtpSender, "noInbox" | "verification">) {
+  if (sender.noInbox) {
+    return true;
+  }
+  const verification = sender.verification;
   return Boolean(
     verification?.spfOk && verification?.dkimOk && verification?.dmarcOk,
   );
@@ -206,6 +249,7 @@ export default function PortalSmtpPage() {
   const [selectedProvider, setSelectedProvider] =
     useState<SmtpProviderDefinition | null>(null);
   const [form, setForm] = useState<SenderCredentials>(EMPTY_FORM);
+  const [noInbox, setNoInbox] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingSenderId, setEditingSenderId] = useState<string | null>(null);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
@@ -256,7 +300,11 @@ export default function PortalSmtpPage() {
 
   useEffect(() => {
     senders.forEach((sender) => {
-      if (sender.verification || autoVerifiedRef.current.has(sender.id)) {
+      if (
+        sender.noInbox ||
+        sender.verification ||
+        autoVerifiedRef.current.has(sender.id)
+      ) {
         return;
       }
 
@@ -271,6 +319,7 @@ export default function PortalSmtpPage() {
     setModalStep("provider");
     setSelectedProvider(null);
     setForm(EMPTY_FORM);
+    setNoInbox(false);
     setError("");
     setSuccess("");
   }
@@ -286,6 +335,7 @@ export default function PortalSmtpPage() {
     setModalStep("form");
     setSelectedProvider(provider);
     setForm(buildEditForm(sender, provider));
+    setNoInbox(Boolean(sender.noInbox));
     setError("");
     setSuccess("");
     setMenuOpenId(null);
@@ -300,6 +350,7 @@ export default function PortalSmtpPage() {
     setModalStep("provider");
     setSelectedProvider(null);
     setForm(EMPTY_FORM);
+    setNoInbox(false);
     setError("");
   }
 
@@ -316,6 +367,7 @@ export default function PortalSmtpPage() {
   function selectProvider(provider: SmtpProviderDefinition) {
     setSelectedProvider(provider);
     setForm(buildInitialForm(provider));
+    setNoInbox(false);
     setModalStep("form");
   }
 
@@ -323,6 +375,7 @@ export default function PortalSmtpPage() {
     setModalStep("provider");
     setSelectedProvider(null);
     setForm(EMPTY_FORM);
+    setNoInbox(false);
   }
 
   function updateField(key: keyof SenderCredentials, value: string) {
@@ -352,6 +405,7 @@ export default function PortalSmtpPage() {
           body: JSON.stringify({
             provider: selectedProvider.id,
             ...form,
+            noInbox,
           }),
         },
       );
@@ -369,16 +423,20 @@ export default function PortalSmtpPage() {
           current.map((entry) => (entry.id === data.id ? data : entry)),
         );
         setSuccess(
-          isSenderVerified(data.verification)
-            ? "Sender updated and verified successfully."
-            : "Sender updated. Review SPF, DKIM, and DMARC status in the sender details.",
+          data.noInbox
+            ? "Sender updated. SPF, DKIM, and DMARC checks were skipped (no inbox)."
+            : isSenderVerified(data)
+              ? "Sender updated and verified successfully."
+              : "Sender updated. Review SPF, DKIM, and DMARC status in the sender details.",
         );
       } else {
         setSenders((current) => [data, ...current]);
         setSuccess(
-          isSenderVerified(data.verification)
-            ? "Sender added and verified successfully."
-            : "Sender added. Review SPF, DKIM, and DMARC status in the sender details.",
+          data.noInbox
+            ? "Sender added. SPF, DKIM, and DMARC checks were skipped (no inbox)."
+            : isSenderVerified(data)
+              ? "Sender added and verified successfully."
+              : "Sender added. Review SPF, DKIM, and DMARC status in the sender details.",
         );
       }
       closeModal(true);
@@ -591,7 +649,7 @@ export default function PortalSmtpPage() {
             {senders.map((sender) => {
               const expanded = isExpanded(sender.id);
               const menuOpen = menuOpenId === sender.id;
-              const verified = isSenderVerified(sender.verification);
+              const verified = isSenderVerified(sender);
               const verifying = verifyingId === sender.id;
 
               return (
@@ -605,7 +663,11 @@ export default function PortalSmtpPage() {
                         className={`vs-verified ${verified ? "" : "pending"}`}
                       >
                         <span className="dot" />
-                        {verified ? "Verified" : "Needs setup"}
+                        {sender.noInbox
+                          ? "No inbox"
+                          : verified
+                            ? "Verified"
+                            : "Needs setup"}
                       </span>
                     </div>
                     <div className="vs-actions">
@@ -685,7 +747,12 @@ export default function PortalSmtpPage() {
                         type="button"
                         className="vs-retest"
                         aria-label="Retest DNS records"
-                        disabled={verifying}
+                        disabled={verifying || Boolean(sender.noInbox)}
+                        title={
+                          sender.noInbox
+                            ? "DNS checks are skipped for no-inbox senders"
+                            : "Retest DNS records"
+                        }
                         onClick={() => void recheckSender(sender.id)}
                       >
                         <svg
@@ -821,6 +888,36 @@ export default function PortalSmtpPage() {
                         />
                       </div>
                     ))}
+                    <div className="smtp-no-inbox-row">
+                      <div className="smtp-no-inbox-copy">
+                        <div className="smtp-no-inbox-label">No inbox</div>
+                        <p className="smtp-no-inbox-hint">
+                          Skip SPF, DKIM, and DMARC checks for outbound-only
+                          senders.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className={`drip-toggle${noInbox ? " on" : ""}`}
+                        role="switch"
+                        aria-checked={noInbox}
+                        aria-label="No inbox"
+                        onClick={() => setNoInbox((current) => !current)}
+                      >
+                        {noInbox ? (
+                          <svg
+                            className="drip-toggle-check"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        ) : null}
+                        <span className="drip-toggle-knob" />
+                      </button>
+                    </div>
                   </div>
                 </form>
               ) : null}

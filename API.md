@@ -765,10 +765,10 @@ Create/update fields:
 Secrets are masked in responses. Default tracking host: `unified.nexuses.xyz`.
 
 ### GET `/api/smtp/senders`
-### POST `/api/smtp/senders` — 201 sender (runs DNS verification)
+### POST `/api/smtp/senders` — 201 sender (runs DNS verification unless `noInbox: true`)
 ### PATCH `/api/smtp/senders/{id}`
 ### DELETE `/api/smtp/senders/{id}` — `{ "success": true }`
-### POST `/api/smtp/senders/{id}/verify` — refresh DKIM/DMARC/SPF
+### POST `/api/smtp/senders/{id}/verify` — refresh DKIM/DMARC/SPF (skipped when `noInbox`)
 ### POST `/api/smtp/senders/{id}/tracking` — body `{ "trackingDomain": "track.example.com" }` → `{ sender, records[] }`
 ### POST `/api/smtp/senders/{id}/tracking/verify`
 

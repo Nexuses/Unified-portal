@@ -55,6 +55,8 @@ export type SenderDoc = {
   apiKey?: string;
   cloudflareAccountId?: string;
   cloudflareEmailApiToken?: string;
+  /** Skip SPF / DKIM / DMARC checks (outbound-only / no inbox). */
+  noInbox?: boolean;
   verification?: SenderAuthVerification;
   createdBy: ObjectId | null;
   createdAt: Date;
@@ -76,6 +78,7 @@ export type SmtpSender = {
   apiKey?: string;
   cloudflareAccountId?: string;
   cloudflareEmailApiToken?: string;
+  noInbox?: boolean;
   verification?: SenderAuthVerification;
   createdAt: string;
   updatedAt: string;
@@ -278,6 +281,7 @@ export function mapSender(doc: SenderDoc): SmtpSender {
     apiKey: maskSecret(doc.apiKey),
     cloudflareAccountId: doc.cloudflareAccountId,
     cloudflareEmailApiToken: maskSecret(doc.cloudflareEmailApiToken),
+    noInbox: Boolean(doc.noInbox),
     verification: doc.verification,
     trackingDomain: doc.trackingDomain,
     pendingTrackingDomain: doc.pendingTrackingDomain,
@@ -350,6 +354,7 @@ export function parseSenderInput(
       apiKey: values.apiKey,
       cloudflareAccountId: values.cloudflareAccountId,
       cloudflareEmailApiToken: values.cloudflareEmailApiToken,
+      noInbox: Boolean(body.noInbox),
     },
   };
 }

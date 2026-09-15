@@ -18,6 +18,32 @@ import {
   verifyTrackingDomain,
 } from "@/lib/campaign-tracking";
 
+function skippedInboxVerification(): SenderAuthVerification {
+  return {
+    checkedAt: new Date().toISOString(),
+    dkimOk: true,
+    dkimLabel: "Skipped — no inbox",
+    dkimDetail: "SPF, DKIM, and DMARC checks are skipped for no-inbox senders.",
+    dmarcOk: true,
+    dmarcLabel: "Skipped — no inbox",
+    dmarcDetail: "SPF, DKIM, and DMARC checks are skipped for no-inbox senders.",
+    spfOk: true,
+    spfLabel: "Skipped — no inbox",
+    spfDetail: "SPF, DKIM, and DMARC checks are skipped for no-inbox senders.",
+  };
+}
+
+async function resolveSenderAuthVerification(
+  fromEmail: string,
+  provider: SmtpProviderId,
+  noInbox?: boolean,
+) {
+  if (noInbox) {
+    return skippedInboxVerification();
+  }
+  return verifySenderAuth(emailDomain(fromEmail), provider);
+}
+
 export async function getProjectSenders(projectId: ObjectId) {
   const db = await getDb();
   const senders = await db
@@ -77,8 +103,11 @@ export async function verifyProjectSender(
     return null;
   }
 
-  const domain = emailDomain(sender.fromEmail);
-  const verification = await verifySenderAuth(domain, sender.provider);
+  const verification = await resolveSenderAuthVerification(
+    sender.fromEmail,
+    sender.provider,
+    sender.noInbox,
+  );
   await saveSenderVerification(projectId, senderId, verification);
 
   const updated = await db.collection<SenderDoc>("smtp_senders").findOne({
@@ -111,8 +140,11 @@ export async function createProjectSender(
 
   await db.collection<SenderDoc>("smtp_senders").insertOne(doc);
 
-  const domain = emailDomain(doc.fromEmail);
-  const verification = await verifySenderAuth(domain, doc.provider);
+  const verification = await resolveSenderAuthVerification(
+    doc.fromEmail,
+    doc.provider,
+    doc.noInbox,
+  );
   await saveSenderVerification(projectId, doc._id, verification);
 
   const saved = await db.collection<SenderDoc>("smtp_senders").findOne({
@@ -177,6 +209,9 @@ export async function updateProjectSender(
   if (input.cloudflareEmailApiToken) {
     updates.cloudflareEmailApiToken = input.cloudflareEmailApiToken;
   }
+  if (input.noInbox !== undefined) {
+    updates.noInbox = Boolean(input.noInbox);
+  }
 
   await db.collection<SenderDoc>("smtp_senders").updateOne(
     { _id: senderId, projectId },
@@ -184,8 +219,13 @@ export async function updateProjectSender(
   );
 
   const fromEmail = updates.fromEmail ?? existing.fromEmail;
-  const domain = emailDomain(fromEmail);
-  const verification = await verifySenderAuth(domain, existing.provider);
+  const noInbox =
+    updates.noInbox !== undefined ? updates.noInbox : Boolean(existing.noInbox);
+  const verification = await resolveSenderAuthVerification(
+    fromEmail,
+    existing.provider,
+    noInbox,
+  );
   await saveSenderVerification(projectId, senderId, verification);
 
   const updated = await db.collection<SenderDoc>("smtp_senders").findOne({
