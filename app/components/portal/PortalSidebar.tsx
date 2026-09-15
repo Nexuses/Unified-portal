@@ -70,16 +70,13 @@ export default function PortalSidebar({
 
           const Icon = getNavIcon(item.id);
           const isOpen = openGroups[item.id];
-          const isGroupActive = item.children.some((child) =>
-            isNavItemActive(child.href, pathname),
-          );
 
           return (
             <div key={item.id} className="nav-group">
               <button
                 type="button"
                 data-group={item.id}
-                className={`nav-item${isOpen ? " open" : ""}${isGroupActive ? " active" : ""}`}
+                className={`nav-item${isOpen ? " open" : ""}`}
                 onClick={() => handleGroupClick(item.id, item.href)}
               >
                 <Icon />

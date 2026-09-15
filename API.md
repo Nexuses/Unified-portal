@@ -441,6 +441,37 @@ Project-wide dashboard for emails **sent** in the range (UTC days). Unique deliv
 
 200 `AnalyticsDashboard`
 
+### GET `/api/analytics/kanban`
+Saved kanban lists for this project (name + selected campaigns). Oldest per-campaign boards without a name are ignored.
+
+200 `KanbanList[]`
+
+### POST `/api/analytics/kanban`
+```json
+{ "name": "Q3 outreach", "campaigns": [{ "campaignId": "23", "kind": "drip", "name": "Launch" }] }
+```
+Create a list from one or more **sent or running** Drip and/or 1-1 campaigns. People are merged by email; opens/clicks are OR’d. Delivered start in **Prospect**, opens in **Engage**, clicks in **Cold**.
+
+201 `KanbanBoard`
+
+### GET `/api/analytics/kanban/{id}`
+200 `KanbanBoard` — `{ id, name, campaigns, stages, placements, people }`
+
+### PATCH `/api/analytics/kanban/{id}`
+```json
+{ "stages": [], "placements": { "a@b.com": "stage-id" }, "campaigns": [] }
+```
+System stages Prospect / Engage / Cold are always kept (dots: blue / orange / purple). Custom stages can be added with a `color` from the fixed palette. `campaigns` replaces the selected sent/running campaigns.
+
+### POST `/api/analytics/kanban/{id}/chat`
+```json
+{ "message": "Move Jane to Engage", "history": [] }
+```
+Board assistant. Can create a stage or move people. Returns `{ "reply": "string", "board": KanbanBoard }`.
+
+### DELETE `/api/analytics/kanban/{id}`
+200 `{ "ok": true }`
+
 ### POST `/api/analytics/share`
 Body `{ "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }`. Creates (or reuses a still-valid) public link for that exact range. Links **expire after 30 days**.
 
@@ -578,11 +609,26 @@ Companies with nested contacts.
 {
   "name": "Newsletter",
   "contacts": [
-    { "firstName": "Jane", "lastName": "Doe", "email": "jane@co.com", "companyName": "Co" }
+    {
+      "firstName": "Jane",
+      "lastName": "Doe",
+      "email": "jane@co.com",
+      "companyName": "Co",
+      "attributes": {
+        "position": "Founder",
+        "industry": "SaaS",
+        "website": "https://co.com",
+        "companySourceUrl": "https://linkedin.com/company/co",
+        "personalLinkedIn": "https://linkedin.com/in/jane",
+        "contactSourceUrl": "https://co.com/jane",
+        "personLocation": "Austin, TX"
+      }
+    }
   ],
   "importFileName": "export.csv"
 }
 ```
+Rows need **firstName**, **email**, and **companyName**. Extra fields go in `attributes`.  
 201 `{ "list": CrmList, "importSummary": { "imported", "skipped", "companiesCreated", "contactsCreated", "contactsUpdated" } | null }`
 
 ### DELETE `/api/crm/lists`
@@ -593,7 +639,7 @@ Body: `{ "ids": ["…"] }`. Deletes those lists and their memberships. Contacts 
 `{ "list": CrmList, "contacts": Contact[] }`
 
 ### POST `/api/crm/lists/{id}`
-Add more contacts: `{ "contacts": [ { "firstName", "lastName", "email", "companyName" } ] }`  
+Add more contacts: `{ "contacts": [ { "firstName", "lastName", "email", "companyName", "attributes?" } ] }`  
 400 `No contacts to import`
 
 ### DELETE `/api/crm/lists/{id}`
@@ -777,6 +823,9 @@ Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_
 | POST | `/api/campaigns/process-due` | portal |
 | GET | `/api/campaigns/stats` | portal |
 | GET | `/api/analytics` | portal |
+| GET, POST | `/api/analytics/kanban` | portal |
+| GET, PATCH, DELETE | `/api/analytics/kanban/[id]` | portal |
+| POST | `/api/analytics/kanban/[id]/chat` | portal |
 | POST | `/api/analytics/share` | portal |
 | POST | `/api/campaigns/test-email` | portal |
 | GET | `/api/campaigns/[id]/recipients` | portal |
@@ -817,6 +866,6 @@ Does **not** delete `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `api_
 
 ## Mongo collections (for context)
 
-`users`, `projects`, `admins`, `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `contacts`, `companies`, `lists`, `list_memberships`, `smtp_senders`, `api_keys`, `automations`, `webhooks`, `suppression_entries`, `analytics_shares`
+`users`, `projects`, `admins`, `drip_campaigns`, `campaign_blasts`, `campaign_sends`, `contacts`, `companies`, `lists`, `list_memberships`, `smtp_senders`, `api_keys`, `automations`, `webhooks`, `suppression_entries`, `analytics_shares`, `analytics_kanban`
 
 Portal queries always filter by `projectId` from the session (cookie or API key).

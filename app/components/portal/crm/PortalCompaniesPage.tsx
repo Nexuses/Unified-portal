@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { CompanyWithContacts } from "@/lib/crm";
+import { downloadCsv } from "@/lib/csv";
 import { portalCompanyRoute } from "@/lib/portal-nav";
 
 export default function PortalCompaniesPage() {
@@ -11,6 +12,8 @@ export default function PortalCompaniesPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     async function loadCompanies() {
@@ -53,16 +56,83 @@ export default function PortalCompaniesPage() {
     );
   }, [companies, search]);
 
+  const filteredIds = useMemo(
+    () => filteredCompanies.map((company) => company.id),
+    [filteredCompanies],
+  );
+  const selectedOnPage = filteredIds.filter((id) => selectedIds.includes(id));
+  const allVisibleSelected =
+    filteredIds.length > 0 && selectedOnPage.length === filteredIds.length;
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate =
+        selectedOnPage.length > 0 && !allVisibleSelected;
+    }
+  }, [allVisibleSelected, selectedOnPage.length]);
+
+  function toggleCompany(id: string) {
+    setSelectedIds((current) =>
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id],
+    );
+  }
+
+  function toggleAllVisible() {
+    setSelectedIds((current) => {
+      if (allVisibleSelected) {
+        return current.filter((id) => !filteredIds.includes(id));
+      }
+      return Array.from(new Set([...current, ...filteredIds]));
+    });
+  }
+
+  function exportSelectedContacts() {
+    const selected = companies.filter((company) =>
+      selectedIds.includes(company.id),
+    );
+    const rows = selected.flatMap((company) =>
+      company.contacts.map((contact) => [
+        contact.fullName,
+        contact.email,
+        company.name,
+        company.domain,
+      ]),
+    );
+    if (rows.length === 0) {
+      setError("Selected companies have no contacts to export.");
+      return;
+    }
+    setError("");
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(
+      `company-contacts-${stamp}.csv`,
+      ["Contact", "Email", "Company", "Domain"],
+      rows,
+    );
+  }
+
   return (
     <>
       <div className="crm-page-head">
-        <h2>Companies</h2>
+        <div>
+          <h2>Companies</h2>
+          <p className="desc">
+            Companies created from imported contacts, with associated people in
+            one place.
+          </p>
+        </div>
         <div className="crm-actions">
-          <button type="button" className="btn-soft" disabled>
-            Import companies
-          </button>
-          <button type="button" className="btn-dark" disabled>
-            Create company
+          <button
+            type="button"
+            className="btn-dark"
+            disabled={selectedIds.length === 0}
+            onClick={exportSelectedContacts}
+          >
+            {selectedIds.length > 0
+              ? `Export contacts (${selectedIds.length})`
+              : "Export contacts"}
           </button>
         </div>
       </div>
@@ -71,91 +141,26 @@ export default function PortalCompaniesPage() {
         <button type="button" className="crm-tab active">
           All companies
         </button>
-        <button
-          type="button"
-          className="crm-tab-add"
-          aria-label="Add view"
-          disabled
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </button>
       </div>
 
-      <div className="crm-filter-row">
-        <button type="button" className="dd-btn" disabled>
-          Add filter{" "}
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <path d="m6 9 6 6 6-6" />
+      <div className="drip-toolbar">
+        <label className="drip-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
           </svg>
-        </button>
-        <div className="spacer" />
-        <button
-          type="button"
-          className="icon-square"
-          aria-label="Settings"
-          disabled
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-          >
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
-          </svg>
-        </button>
+          <input
+            type="search"
+            placeholder="Search by company name or domain"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
       </div>
 
       <div className="crm-meta-row">
         <div className="crm-count">
           {loading ? "Loading..." : `${filteredCompanies.length} companies`}
-        </div>
-        <div className="crm-meta-right">
-          <button type="button" className="link-purple" disabled>
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-            >
-              <rect x="3" y="4" width="7" height="16" rx="1" />
-              <rect x="14" y="4" width="7" height="10" rx="1" />
-            </svg>
-            Customize columns
-          </button>
-          <div className="search-input wide">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-            >
-              <circle cx="11" cy="11" r="7" />
-              <path d="m20 20-3-3" />
-            </svg>
-            <input
-              type="search"
-              placeholder="Company name, domain"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              className="lists-search-input"
-            />
-          </div>
         </div>
       </div>
 
@@ -166,60 +171,19 @@ export default function PortalCompaniesPage() {
           <thead>
             <tr>
               <th className="chk">
-                <input type="checkbox" readOnly />
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  disabled={loading || filteredIds.length === 0}
+                  onChange={toggleAllVisible}
+                  aria-label="Select all companies"
+                />
               </th>
-              <th>
-                <span className="th-sort">
-                  Company name{" "}
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path d="m8 9 4 4 4-4M16 15l-4-4-4 4" />
-                  </svg>
-                </span>
-              </th>
-              <th>
-                <span className="th-sort">
-                  Domain{" "}
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path d="m8 9 4 4 4-4M16 15l-4-4-4 4" />
-                  </svg>
-                </span>
-              </th>
-              <th>
-                <span className="th-sort">
-                  Owner{" "}
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path d="m8 9 4 4 4-4M16 15l-4-4-4 4" />
-                  </svg>
-                </span>
-              </th>
-              <th>
-                <span className="th-sort">
-                  Phone number{" "}
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path d="m8 9 4 4 4-4M16 15l-4-4-4 4" />
-                  </svg>
-                </span>
-              </th>
+              <th>Company name</th>
+              <th>Domain</th>
+              <th>Owner</th>
+              <th>Contacts</th>
             </tr>
           </thead>
           <tbody>
@@ -232,15 +196,21 @@ export default function PortalCompaniesPage() {
             ) : filteredCompanies.length === 0 ? (
               <tr>
                 <td colSpan={5} className="crm-empty">
-                  No companies yet. Companies are created automatically when
-                  you import contacts with a company name.
+                  {search.trim()
+                    ? "No companies match that search."
+                    : "No companies yet. Companies are created automatically when you import contacts with a company name."}
                 </td>
               </tr>
             ) : (
               filteredCompanies.map((company) => (
                 <tr key={company.id}>
                   <td className="chk">
-                    <input type="checkbox" readOnly />
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(company.id)}
+                      onChange={() => toggleCompany(company.id)}
+                      aria-label={`Select ${company.name}`}
+                    />
                   </td>
                   <td>
                     <button
@@ -255,7 +225,7 @@ export default function PortalCompaniesPage() {
                   </td>
                   <td>{company.domain || "—"}</td>
                   <td>{company.owner}</td>
-                  <td className="muted-cell">—</td>
+                  <td>{company.contactCount}</td>
                 </tr>
               ))
             )}

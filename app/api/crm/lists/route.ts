@@ -76,6 +76,16 @@ export async function POST(request: NextRequest) {
           lastName: String(row.lastName ?? "").trim(),
           email: String(row.email ?? "").trim(),
           companyName: String(row.companyName ?? "").trim(),
+          attributes:
+            row.attributes &&
+            typeof row.attributes === "object" &&
+            !Array.isArray(row.attributes)
+              ? Object.fromEntries(
+                  Object.entries(row.attributes as Record<string, unknown>).map(
+                    ([key, value]) => [key, String(value ?? "").trim()],
+                  ),
+                )
+              : {},
         })),
       );
     }

@@ -1,27 +1,70 @@
 import type { ObjectId } from "mongodb";
 
-export type CrmImportField =
+export type CrmCoreField =
   | "firstName"
   | "lastName"
   | "email"
   | "companyName";
 
+export type CrmAttributeKey =
+  | CrmCoreField
+  | "position"
+  | "industry"
+  | "website"
+  | "companySourceUrl"
+  | "personalLinkedIn"
+  | "contactSourceUrl"
+  | "personLocation"
+  | "phoneNumber"
+  | (string & {});
+
+/** @deprecated Prefer CrmAttributeKey / DEFAULT_LIST_ATTRIBUTES */
+export type CrmImportField = CrmCoreField;
+
+export type ListAttributeDef = {
+  key: string;
+  label: string;
+  required: boolean;
+  locked?: boolean;
+};
+
+export const DEFAULT_LIST_ATTRIBUTES: ListAttributeDef[] = [
+  { key: "firstName", label: "First Name", required: true, locked: true },
+  { key: "lastName", label: "Last Name", required: false },
+  { key: "companyName", label: "Company Name", required: true, locked: true },
+  { key: "position", label: "Position", required: false },
+  { key: "email", label: "Email", required: true, locked: true },
+  { key: "phoneNumber", label: "Phone Number", required: false },
+  { key: "industry", label: "Industry", required: false },
+  { key: "website", label: "Website", required: false },
+  { key: "companySourceUrl", label: "Company Source URL", required: false },
+  { key: "personalLinkedIn", label: "Personal LinkedIn", required: false },
+  { key: "contactSourceUrl", label: "Contact Source URL", required: false },
+  { key: "personLocation", label: "Person Location", required: false },
+];
+
 export const CRM_IMPORT_FIELDS: {
   key: CrmImportField;
   label: string;
   required: boolean;
-}[] = [
-  { key: "firstName", label: "First name", required: true },
-  { key: "lastName", label: "Last name", required: true },
-  { key: "email", label: "Email", required: true },
-  { key: "companyName", label: "Company name", required: false },
-];
+}[] = DEFAULT_LIST_ATTRIBUTES.filter((field) =>
+  ["firstName", "lastName", "email", "companyName"].includes(field.key),
+).map((field) => ({
+  key: field.key as CrmImportField,
+  label: field.label,
+  required: field.required,
+}));
+
+export const CONTACT_ATTRIBUTE_LABELS: Record<string, string> = Object.fromEntries(
+  DEFAULT_LIST_ATTRIBUTES.map((field) => [field.key, field.label]),
+);
 
 export type CrmContactInput = {
   firstName: string;
   lastName: string;
   email: string;
   companyName?: string;
+  attributes?: Record<string, string>;
 };
 
 export type Contact = {
@@ -32,6 +75,7 @@ export type Contact = {
   email: string;
   companyId: string | null;
   companyName: string;
+  attributes: Record<string, string>;
   subscribed: boolean;
   blocklisted: boolean;
   createdAt: string;
@@ -159,6 +203,7 @@ export type ContactDoc = {
   email: string;
   companyId: ObjectId | null;
   companyName: string;
+  attributes?: Record<string, string>;
   subscribed: boolean;
   blocklisted: boolean;
   createdBy: ObjectId | null;
@@ -203,15 +248,25 @@ export function mapContact(doc: ContactDoc): Contact {
     id: doc._id.toString(),
     firstName: doc.firstName,
     lastName: doc.lastName,
-    fullName: `${doc.firstName} ${doc.lastName}`.trim(),
+    fullName: `${doc.firstName} ${doc.lastName}`.trim() || doc.email,
     email: doc.email,
     companyId: doc.companyId?.toString() ?? null,
     companyName: doc.companyName,
+    attributes: doc.attributes ?? {},
     subscribed: doc.subscribed,
     blocklisted: doc.blocklisted,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
   };
+}
+
+export function slugifyAttributeKey(label: string) {
+  const base = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return base || `custom_${Date.now().toString(36)}`;
 }
 
 export function mapCompany(doc: CompanyDoc): Company {

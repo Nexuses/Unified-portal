@@ -163,8 +163,13 @@ export async function importContactsToList(
     const lastName = row.lastName.trim();
     const email = row.email.trim().toLowerCase();
     const companyName = row.companyName?.trim() ?? "";
+    const attributes = Object.fromEntries(
+      Object.entries(row.attributes ?? {})
+        .map(([key, value]) => [key.trim(), String(value ?? "").trim()])
+        .filter(([key, value]) => key && value),
+    );
 
-    if (!email || !firstName || !lastName) {
+    if (!email || !firstName || !companyName) {
       skipped += 1;
       continue;
     }
@@ -211,6 +216,7 @@ export async function importContactsToList(
             lastName,
             companyId,
             companyName,
+            attributes,
             updatedAt: now,
           },
         },
@@ -223,6 +229,7 @@ export async function importContactsToList(
         email,
         companyId,
         companyName,
+        attributes,
         subscribed: true,
         blocklisted: false,
         createdBy: context.userId,

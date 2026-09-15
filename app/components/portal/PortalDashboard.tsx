@@ -100,6 +100,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
   const [lastCampaigns, setLastCampaigns] = useState<DripCampaign[] | null>(
     null,
   );
+  const [allCampaigns, setAllCampaigns] = useState<DripCampaign[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -188,6 +189,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
           .filter((campaign) => campaign.status === "sent")
           .sort((a, b) => campaignTimestamp(b) - campaignTimestamp(a))
           .slice(0, 3);
+        setAllCampaigns(data);
         setLastCampaigns(latest);
       } catch {
         // Keep the empty state if campaigns fail to load.
@@ -201,6 +203,27 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
       cancelled = true;
     };
   }, []);
+
+  const plannedToday = useMemo(() => {
+    const now = new Date();
+    const start = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    ).getTime();
+    const end = start + DAY_MS;
+    return allCampaigns
+      .filter((campaign) => {
+        if (campaign.status !== "scheduled" && campaign.status !== "sending") {
+          return false;
+        }
+        const raw =
+          campaign.scheduledAt || campaign.updatedAt || campaign.createdAt;
+        const ms = raw ? new Date(raw).getTime() : 0;
+        return Number.isFinite(ms) && ms >= start && ms < end;
+      })
+      .sort((a, b) => campaignTimestamp(a) - campaignTimestamp(b));
+  }, [allCampaigns]);
 
   const calendarDays = useMemo(
     () => buildCalendarDays(viewDate.getFullYear(), viewDate.getMonth()),
@@ -319,55 +342,87 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
               Create campaign
             </Link>
           </div>
-          <div className="planned-empty">Nothing planned for today</div>
-          <div className="tip-row">
-            <div className="tip-card">
-              <div className="tip-icon">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+          {plannedToday.length > 0 ? (
+            <div className="planned-list">
+              {plannedToday.map((campaign) => (
+                <Link
+                  key={`${campaign.kind ?? "drip"}-${campaign.id}`}
+                  href={portalCampaignRoute(campaign.id, campaign.kind)}
+                  className="planned-row"
                 >
-                  <circle cx="12" cy="8" r="3.2" />
-                  <path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" />
-                </svg>
-              </div>
-              <h4>Do you have new contacts to organize?</h4>
-              <p>
-                Use segmentation to send personalized messages and organize
-                your contacts.
-              </p>
-              <Link href={PORTAL_ROUTES.segments} className="link-purple">
-                Segment contacts →
-              </Link>
+                  <div>
+                    <div className="planned-name">{campaign.name}</div>
+                    <div className="planned-meta">
+                      {STATUS_LABELS[campaign.status]}
+                      {campaign.scheduledAt
+                        ? ` · ${new Date(campaign.scheduledAt).toLocaleTimeString(
+                            undefined,
+                            { hour: "numeric", minute: "2-digit" },
+                          )}`
+                        : ""}
+                      {` · ${campaign.kind === "oneone" ? "1-1" : "Drip"}`}
+                    </div>
+                  </div>
+                </Link>
+              ))}
             </div>
-            <div className="tip-card">
-              <div className="tip-icon">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M22 2 11 13" />
-                  <path d="M22 2 15 22l-4-9-9-4 20-7Z" />
-                </svg>
+          ) : (
+            <>
+              <div className="planned-empty">Nothing planned for today</div>
+              <div className="tip-row">
+                <div className="tip-card">
+                  <div className="tip-icon">
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <circle cx="12" cy="8" r="3.2" />
+                      <path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" />
+                    </svg>
+                  </div>
+                  <h4>Do you have new contacts to organize?</h4>
+                  <p>
+                    Use segmentation to send personalized messages and organize
+                    your contacts.
+                  </p>
+                  <Link href={PORTAL_ROUTES.segments} className="link-purple">
+                    Segment contacts →
+                  </Link>
+                </div>
+                <div className="tip-card">
+                  <div className="tip-icon">
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="3" y="4" width="5.5" height="16" rx="1.2" />
+                      <rect x="9.25" y="4" width="5.5" height="11" rx="1.2" />
+                      <rect x="15.5" y="4" width="5.5" height="14" rx="1.2" />
+                    </svg>
+                  </div>
+                  <h4>Track campaign leads on Kanban</h4>
+                  <p>
+                    Group sent campaigns into a board, move people by engagement,
+                    and follow up from Prospect to Engage to Cold.
+                  </p>
+                  <Link
+                    href={PORTAL_ROUTES["analytics-kanban"]}
+                    className="link-purple"
+                  >
+                    Open Kanban →
+                  </Link>
+                </div>
               </div>
-              <h4>Expand your reach with sign-up forms</h4>
-              <p>
-                Grow your audience, convert website visitors to subscribers,
-                and collect valuable information.
-              </p>
-              <button type="button" className="link-purple">
-                Create sign-up form →
-              </button>
-            </div>
-          </div>
+            </>
+          )}
         </div>
       </div>
 

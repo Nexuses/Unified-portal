@@ -5,12 +5,16 @@ import {
   requirePortalSession,
 } from "@/lib/require-portal-session";
 
-const SYSTEM_PROMPT = `You are the Unified Portal Automation assistant.
-Help users design email drip and 1-1 campaign sequences for the Nexuses portal.
-Be concrete: suggest subjects, HTML-friendly email copy, delays, and follow-ups on opens/clicks.
-Use merge tags like {{ contact.FIRSTNAME }}, {{ contact.EMAIL }}, {{ contact.COMPANY }}, {{ unsubscribe }}.
-When proposing a sequence, use a clear numbered list of steps.
-Keep answers practical and ready to paste into the Automation canvas.`;
+const SYSTEM_PROMPT = `You are the Nexuses Automation assistant on the flow canvas.
+
+Reply like a senior marketer: short, specific, and ready to use.
+- 4–8 sentences or a tight numbered list. No preamble.
+- Suggest real subject lines, wait times, and who should get the next email (opened / clicked / either).
+- Use merge tags: {{ contact.FIRSTNAME }}, {{ contact.EMAIL }}, {{ contact.COMPANY }}, {{ unsubscribe }}.
+- If the user already has steps, talk about THOSE steps. Say what is missing (campaign, wait, design).
+- Drip = one email to a list. 1-1 = sequenced personal emails. Steps can mix kinds.
+- Past-campaign Email 1 is already sent; do not tell them to resend it.
+- Never invent portal buttons that do not exist. Next actions are: create/edit in Drip or 1-1, add a step, Start/Schedule.`;
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,7 +29,17 @@ export async function POST(request: NextRequest) {
       context?: {
         kind?: string;
         campaignName?: string;
+        status?: string;
         stepCount?: number;
+        steps?: Array<{
+          n?: number;
+          kind?: string;
+          name?: string;
+          campaignStatus?: string;
+          start?: string;
+          wait?: string;
+          who?: string;
+        }>;
       };
     } | null;
 
@@ -50,14 +64,24 @@ export async function POST(request: NextRequest) {
         content: item.content.slice(0, 4000),
       }));
 
+    const stepLines = Array.isArray(body?.context?.steps)
+      ? body.context.steps
+          .slice(0, 8)
+          .map((step) => {
+            const n = typeof step?.n === "number" ? step.n : "?";
+            return `Email ${n}: ${step?.kind || "drip"} · ${step?.name || "untitled"} · ${step?.campaignStatus || "none"} · ${step?.wait || ""} · ${step?.who || ""}`;
+          })
+          .join(" | ")
+      : "";
     const contextBits = [
-      body?.context?.kind ? `Campaign kind: ${body.context.kind}` : "",
       body?.context?.campaignName
-        ? `Campaign name: ${body.context.campaignName}`
+        ? `Automation: ${body.context.campaignName}`
         : "",
+      body?.context?.status ? `Status: ${body.context.status}` : "",
       typeof body?.context?.stepCount === "number"
-        ? `Current steps on canvas: ${body.context.stepCount}`
+        ? `${body.context.stepCount} steps`
         : "",
+      stepLines ? `Canvas: ${stepLines}` : "",
     ]
       .filter(Boolean)
       .join(". ");

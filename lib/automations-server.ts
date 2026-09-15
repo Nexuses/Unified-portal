@@ -198,6 +198,16 @@ function blastKindFilter(kind?: CampaignKind) {
     : { kind: { $ne: "oneone" as const } };
 }
 
+function resolveStepKind(
+  step?: Pick<AutomationStep, "campaignKind"> | null,
+  fallback?: CampaignKind,
+): CampaignKind {
+  if (step?.campaignKind === "oneone" || step?.campaignKind === "drip") {
+    return step.campaignKind;
+  }
+  return fallback === "oneone" ? "oneone" : "drip";
+}
+
 function sendMatchesEngagement(
   send: CampaignSendDoc,
   engagement: AutomationEngagement,
@@ -297,8 +307,7 @@ export async function processDueAutomationFollowUps(
         continue;
       }
 
-      const followKind =
-        step.campaignKind === "oneone" ? "oneone" : automation.kind;
+      const followKind = resolveStepKind(step, automation.kind);
       const followUp = await getProjectDripCampaign(
         projectId,
         step.campaignId,
@@ -326,12 +335,11 @@ export async function processDueAutomationFollowUps(
         whoSource === "past" ? step.pastCampaignId : previous?.campaignId;
       const sourceKind =
         whoSource === "past"
-          ? step.pastCampaignKind === "oneone"
-            ? "oneone"
-            : "drip"
-          : previous?.campaignKind === "oneone"
-            ? "oneone"
-            : automation.kind;
+          ? resolveStepKind(
+              { campaignKind: step.pastCampaignKind },
+              "drip",
+            )
+          : resolveStepKind(previous, automation.kind);
       if (!sourceId) {
         continue;
       }

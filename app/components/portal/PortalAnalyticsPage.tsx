@@ -460,7 +460,7 @@ export function PortalAnalyticsPage() {
     <div className="an-page">
       <div className="crm-page-head an-page-head">
         <div>
-          <h2>Analytics</h2>
+          <h2>Report</h2>
           <p className="desc">
             Project-wide email performance for {formatAnalyticsRange(from, to)}.
             Public URLs expire after {ANALYTICS_SHARE_TTL_DAYS} days.

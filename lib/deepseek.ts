@@ -23,7 +23,7 @@ export async function chatWithDeepSeek(input: {
     body: JSON.stringify({
       model: input.model || "deepseek-chat",
       messages: input.messages,
-      temperature: 0.5,
+      temperature: 0.35,
     }),
   });
 

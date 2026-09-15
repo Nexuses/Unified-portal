@@ -31,10 +31,9 @@ type WhoSource = "current" | "past";
 type AutoStep = AutomationStep;
 
 const SUGGESTIONS = [
-  "Suggest me some ideas of campaigns",
-  "Help me plan a drip follow-up",
-  "What should I put in a 1-1 sequence?",
-  "Audit my automation before launch",
+  "Plan a 3-email welcome drip",
+  "Write a 1-1 follow-up after a click",
+  "Audit this flow before I start",
 ];
 
 const AUTOMATION_LINK_KEY = "unified_automation_linked_campaign";
@@ -170,6 +169,77 @@ function KindToggle({
       >
         1-1
       </button>
+    </div>
+  );
+}
+
+function FlowWire({
+  tone = "idle",
+  short,
+}: {
+  tone?: "idle" | "live" | "done";
+  short?: boolean;
+}) {
+  return (
+    <div
+      className={`auto-wire${short ? " short" : ""} auto-wire-${tone}`}
+      aria-hidden
+    >
+      <span className="auto-wire-track" />
+      <span className="auto-wire-pulse" />
+    </div>
+  );
+}
+
+function MailIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="3" y="5" width="18" height="14" rx="2.5" />
+      <path d="m4 7 8 6 8-6" />
+    </svg>
+  );
+}
+
+function formatChatInline(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) =>
+    part.startsWith("**") && part.endsWith("**") ? (
+      <strong key={index}>{part.slice(2, -2)}</strong>
+    ) : (
+      <span key={index}>{part}</span>
+    ),
+  );
+}
+
+function ChatRichText({ text }: { text: string }) {
+  const blocks = text.trim().split(/\n{2,}/);
+  return (
+    <div className="auto-ai-md">
+      {blocks.map((block, index) => {
+        const lines = block.split("\n").filter((line) => line.trim());
+        const list = lines.length > 1 && lines.every((line) => /^\s*([-*]|\d+\.)\s/.test(line));
+        if (list) {
+          return (
+            <ul key={index}>
+              {lines.map((line, lineIndex) => (
+                <li key={lineIndex}>
+                  {formatChatInline(line.replace(/^\s*([-*]|\d+\.)\s/, ""))}
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <p key={index}>
+            {lines.map((line, lineIndex) => (
+              <span key={lineIndex}>
+                {lineIndex > 0 ? <br /> : null}
+                {formatChatInline(line)}
+              </span>
+            ))}
+          </p>
+        );
+      })}
     </div>
   );
 }
@@ -370,7 +440,6 @@ export default function PortalAutomationPage({
         throw new Error("Linked campaign not found");
       }
       const resolvedKind = campaign.kind === "oneone" ? "oneone" : "drip";
-      setKind(resolvedKind);
 
       setSteps((prev) => {
         const base = prev.length > 0 ? prev : baseSteps;
@@ -381,6 +450,7 @@ export default function PortalAutomationPage({
             campaignKind: resolvedKind,
             waitDays: 0,
           });
+          setKind(resolvedKind);
           setSelectedStepId(step.id);
           setCampaignByStep({ [step.id]: campaign });
           return [step];
@@ -390,6 +460,9 @@ export default function PortalAutomationPage({
           ? base.findIndex((step) => step.id === targetStepId)
           : base.findIndex((step) => step.campaignId === campaign.id);
         const index = matchIndex >= 0 ? matchIndex : 0;
+        if (index === 0) {
+          setKind(resolvedKind);
+        }
         const next = base.map((step, i) =>
           i === index
             ? {
@@ -549,9 +622,9 @@ export default function PortalAutomationPage({
     return () => {
       cancelled = true;
     };
-    // Intentionally bootstrap once per mount / id.
+    // Remount when History hits New automation (?new=).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, automationId]);
+  }, [mode, automationId, searchParams.get("new")]);
 
   useEffect(() => {
     if (!recordId || !persistEnabledRef.current || bootstrapping || locked) {
@@ -560,7 +633,7 @@ export default function PortalAutomationPage({
     const timer = window.setTimeout(() => {
       void patchAutomation(recordId, {
         name: name.trim() || "Untitled automation",
-        kind,
+        kind: steps[0] ? stepKind(steps[0]) : kind,
         steps,
         status: "draft",
       }).catch(() => {
@@ -573,6 +646,18 @@ export default function PortalAutomationPage({
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chat, chatting]);
+
+  useEffect(() => {
+    if (status !== "running" && status !== "scheduled") {
+      return;
+    }
+    const tick = () => {
+      void fetch("/api/campaigns/process-due", { method: "POST" });
+    };
+    tick();
+    const timer = window.setInterval(tick, 15000);
+    return () => window.clearInterval(timer);
+  }, [status]);
 
   useEffect(() => {
     if (!addOpen) {
@@ -1094,7 +1179,23 @@ export default function PortalAutomationPage({
           context: {
             kind,
             campaignName: name,
+            status,
             stepCount: steps.length,
+            steps: steps.map((step, index) => {
+              const campaign = campaignByStep[step.id];
+              return {
+                n: index + 1,
+                kind: stepKind(step),
+                name:
+                  campaign?.name ||
+                  step.pastCampaignName ||
+                  (step.campaignId ? `Campaign ${step.campaignId}` : "not created"),
+                campaignStatus: campaign?.status || "none",
+                start: step.whoSource === "past" ? "past" : "new",
+                wait: index === 0 ? "start" : waitLabel(step),
+                who: index === 0 ? "everyone on the list" : whoLabel(step),
+              };
+            }),
           },
         }),
       });
@@ -1158,7 +1259,7 @@ export default function PortalAutomationPage({
           status: nextStatus,
           steps,
           name: name.trim() || "Untitled automation",
-          kind,
+          kind: firstStep ? stepKind(firstStep) : kind,
         });
       }
       setStatus(nextStatus);
@@ -1206,7 +1307,10 @@ export default function PortalAutomationPage({
     <div className={`auto-page${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <aside className="auto-ai">
         <div className="auto-ai-top">
-          <h2>How can I help you today?</h2>
+          <div>
+            <p className="auto-ai-kicker">Assistant</p>
+            <h2>Ask about this flow</h2>
+          </div>
           <button
             type="button"
             className="auto-ai-collapse"
@@ -1237,11 +1341,19 @@ export default function PortalAutomationPage({
                 key={`${turn.role}-${index}`}
                 className={`auto-ai-bubble ${turn.role}`}
               >
-                {turn.content}
+                {turn.role === "assistant" ? (
+                  <ChatRichText text={turn.content} />
+                ) : (
+                  turn.content
+                )}
               </div>
             ))}
             {chatting ? (
-              <div className="auto-ai-bubble assistant">Thinking…</div>
+              <div className="auto-ai-bubble assistant auto-ai-thinking">
+                <span />
+                <span />
+                <span />
+              </div>
             ) : null}
             <div ref={chatEndRef} />
           </div>
@@ -1256,26 +1368,25 @@ export default function PortalAutomationPage({
             void sendChat(draft);
           }}
         >
-          <span className="auto-ai-context">
-            {steps.some((step) => stepKind(step) === "oneone") &&
-            steps.some((step) => stepKind(step) === "drip")
-              ? "Drip + 1-1"
-              : stepKind(steps[0] ?? { campaignKind: kind }) === "oneone"
-                ? "1-1"
-                : "Drip"}{" "}
-            · Automation
-          </span>
-          <div className="auto-ai-input-row">
-            <input
+          <div className="auto-ai-box">
+            <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              placeholder="Ask about campaigns…"
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void sendChat(draft);
+                }
+              }}
+              placeholder="Ask for subjects, wait times, or a next step…"
               disabled={chatting}
+              rows={2}
             />
             <button
               type="submit"
-              className="btn-dark"
+              className="auto-ai-send"
               disabled={chatting || !draft.trim()}
+              aria-label="Send"
             >
               Send
             </button>
@@ -1330,18 +1441,11 @@ export default function PortalAutomationPage({
                 </button>
               ) : null}
             </div>
-            <span className={`auto-badge${locked ? " auto-badge-locked" : ""}`}>
+            <span className={`auto-badge auto-badge-${status}`}>
               {statusBadgeLabel(status)}
             </span>
             {automationReady && !locked ? (
-              <span className="auto-ready-tick" title="Ready to launch">
-                ✓ Ready
-              </span>
-            ) : null}
-            {locked ? (
-              <span className="auto-ready-tick auto-locked-tick" title="Locked after launch">
-                Locked
-              </span>
+              <span className="auto-ready-tick">Ready</span>
             ) : null}
             <a className="btn-soft auto-history-link" href={portalAutomationHistoryRoute()}>
               History
@@ -1368,9 +1472,10 @@ export default function PortalAutomationPage({
         </header>
 
         {locked ? (
-          <div className="auto-banner-ok">
-            This automation was launched and can no longer be edited. Create a new
-            one from Automation if you need changes.
+          <div className={`auto-banner-ok${status === "completed" ? " done" : ""}`}>
+            {status === "completed"
+              ? "This flow is done. Open History to start a new one."
+              : "This flow is live. Steps stay locked."}
           </div>
         ) : null}
 
@@ -1393,21 +1498,27 @@ export default function PortalAutomationPage({
             className="auto-canvas"
             style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}
           >
-            <div className="auto-start-node">
+            <div
+              className={`auto-start-node${
+                status === "completed" ? " done" : firstReady ? " ready" : ""
+              }`}
+            >
               <div className="auto-start-row">
-                <span className="lbl">Steps</span>
-                <span className="val">{steps.length || "None yet"}</span>
+                <span className="lbl">Start</span>
+                <span className="val">
+                  {steps.length} {steps.length === 1 ? "step" : "steps"}
+                </span>
               </div>
               <div className="auto-start-row">
-                <span className="lbl">Step 1</span>
+                <span className="lbl">Email 1</span>
                 <span className="val">
                   {firstReady
                     ? startingFromPast
-                      ? "Past campaign ready"
-                      : "Ready to schedule"
+                      ? "Past campaign"
+                      : "Ready"
                     : firstCampaign
-                      ? `Missing: ${firstGaps.join(", ")}`
-                      : "Create first email"}
+                      ? firstGaps[0] || "Needs setup"
+                      : "Add email"}
                 </span>
               </div>
             </div>
@@ -1422,23 +1533,43 @@ export default function PortalAutomationPage({
                   readinessGaps(campaign, { audienceOptional }).length === 0
                 : false;
 
+              const cardTone =
+                campaign?.status === "sent" || status === "completed"
+                  ? "done"
+                  : stepReady
+                    ? "ready"
+                    : "";
+              const previousCampaign =
+                index > 0 ? campaignByStep[steps[index - 1].id] : firstCampaign;
+              const wireTone =
+                status === "completed" ||
+                previousCampaign?.status === "sent" ||
+                (index === 0 && startingFromPast)
+                  ? "done"
+                  : status === "running" ||
+                      status === "scheduled" ||
+                      firstReady ||
+                      stepReady
+                    ? "live"
+                    : "idle";
+
               return (
                 <div key={step.id} className="auto-step-block">
-                  <div className="auto-connector" />
+                  <FlowWire tone={wireTone} />
                   {index === 0 ? (
                     <div className="auto-delay-pill">
-                      {step.whoSource === "past"
-                        ? "Email · past campaign"
-                        : "Email · start"}
+                      {step.whoSource === "past" ? "Past campaign" : "First email"}
                     </div>
                   ) : (
                     <div className="auto-delay-pill auto-delay-pill-wait">
-                      {waitLabel(step)} · {whoLabel(step)}
+                      {waitLabel(step)}
                     </div>
                   )}
                   <button
                     type="button"
-                    className={`auto-step-card${open ? " active" : ""}`}
+                    className={`auto-step-card${open ? " active" : ""}${
+                      cardTone ? ` ${cardTone}` : ""
+                    }`}
                     onClick={() =>
                       setSelectedStepId((current) =>
                         current === step.id ? null : step.id,
@@ -1446,23 +1577,30 @@ export default function PortalAutomationPage({
                     }
                   >
                     <span className="auto-step-icon" aria-hidden>
-                      ✉
+                      <MailIcon />
                     </span>
                     <span className="auto-step-meta">
                       <strong>
-                        Email {index + 1} · {stepKind(step) === "oneone" ? "1-1" : "Drip"}
-                        {stepReady ? " ✓" : ""}
+                        Email {index + 1}
+                        <em className="auto-step-kind">
+                          {stepKind(step) === "oneone" ? "1-1" : "Drip"}
+                        </em>
                       </strong>
                       <em>
                         {campaign?.name ||
                           step.pastCampaignName ||
                           (index === 0
                             ? step.whoSource === "past"
-                              ? "Select a past campaign"
-                              : "Create campaign to set up"
-                            : "Set wait → then create follow-up email")}
+                              ? "Pick a sent campaign"
+                              : "Create campaign"
+                            : "Set wait, then create")}
                       </em>
                     </span>
+                    {cardTone === "done" ? (
+                      <span className="auto-step-check">Done</span>
+                    ) : stepReady ? (
+                      <span className="auto-step-check ready">Ready</span>
+                    ) : null}
                   </button>
 
                   {open ? (
@@ -1470,11 +1608,7 @@ export default function PortalAutomationPage({
                       className="auto-step-setup"
                       onClick={(event) => event.stopPropagation()}
                     >
-                      <h4>
-                        {index === 0
-                          ? "Email campaign setup"
-                          : `Follow-up email · step ${index + 1}`}
-                      </h4>
+                      <h4>{index === 0 ? "Email 1" : `Email ${index + 1}`}</h4>
                       {!locked && index === 0 ? (
                         <>
                           <div className="auto-field">
@@ -1539,11 +1673,7 @@ export default function PortalAutomationPage({
                       ) : null}
                       {!locked ? (
                         <div className="auto-field">
-                          <span>
-                            {index === 0
-                              ? "Send this email as"
-                              : "Send this follow-up as"}
-                          </span>
+                          <span>Type</span>
                           <KindToggle
                             value={stepKind(step)}
                             disabled={
@@ -1559,39 +1689,20 @@ export default function PortalAutomationPage({
                           />
                           {step.campaignId ||
                           (index === 0 && step.whoSource === "past") ? (
-                            <p className="auto-step-setup-note">
-                              {index === 0 && step.whoSource === "past"
-                                ? "Type matches the past campaign and stays locked."
-                                : "Type is locked after the campaign is created."}
-                            </p>
-                          ) : index > 0 ? (
-                            <p className="auto-step-setup-note">
-                              Step 1 can be Drip and this step can be 1-1 (or the
-                              reverse). After the wait, openers/clickers get this
-                              campaign.
-                            </p>
+                            <p className="auto-step-setup-note">Type is locked.</p>
                           ) : null}
                         </div>
                       ) : null}
                       {locked ? (
                         <p className="auto-step-setup-note">
-                          View only — this automation is locked after launch.
-                          {index > 0
-                            ? ` ${waitLabel(step)} · ${whoLabel(step)}.`
-                            : ""}
+                          {index > 0 ? `${waitLabel(step)} · ${whoLabel(step)}` : "Locked"}
                         </p>
                       ) : null}
                       {!locked && index > 0 ? (
                         <>
-                          <p className="auto-step-setup-note">
-                            Sender is copied from step 1 (not editable). Recipients stay
-                            empty in Drip and fill automatically from opens &amp; clicks
-                            after the wait — then this step becomes launch-ready. Finish
-                            subject/design in Drip / 1-1, then return here.
-                          </p>
                           <div className="auto-wait-grid">
                             <label className="auto-field">
-                              Wait (days)
+                              Days
                               <input
                                 type="number"
                                 min={0}
@@ -1607,7 +1718,7 @@ export default function PortalAutomationPage({
                               />
                             </label>
                             <label className="auto-field">
-                              Hours (0–23)
+                              Hours
                               <input
                                 type="number"
                                 min={0}
@@ -1695,8 +1806,7 @@ export default function PortalAutomationPage({
                             </label>
                           ) : (
                             <p className="auto-step-setup-note">
-                              Uses engagers from the previous email in this automation
-                              after the wait.
+                              Sends to people who engaged with the previous email.
                             </p>
                           )}
                           <div className="auto-field">
@@ -1727,28 +1837,15 @@ export default function PortalAutomationPage({
                         </>
                       ) : !locked && step.whoSource === "past" ? (
                         <p className="auto-step-setup-note">
-                          This email already went out. It will not be sent again.
-                          Follow-ups wait, then go to people who opened or clicked
-                          it. Schedule becomes Start when the rest of the
-                          automation is ready.
+                          Already sent. Follow-ups use its openers and clickers.
                         </p>
                       ) : !locked ? (
                         <p className="auto-step-setup-note">
-                          Open Drip or 1-1 to finish the campaign (sender, list,
-                          design). Then return here — Schedule unlocks with a ✓ when
-                          the automation is ready.
+                          Finish sender, list, and design in Drip or 1-1.
                         </p>
                       ) : null}
                       {!locked ? (
                         <>
-                          <label className="auto-field">
-                            Automation name
-                            <input
-                              value={name}
-                              onChange={(event) => setName(event.target.value)}
-                              placeholder="Campaign name"
-                            />
-                          </label>
                           <div className="auto-step-setup-actions">
                             {step.campaignId ? (
                               <button
@@ -1786,7 +1883,7 @@ export default function PortalAutomationPage({
 
             {!locked ? (
             <div className="auto-add-wrap" ref={addWrapRef}>
-              <div className="auto-connector short" />
+              <FlowWire short tone={firstReady ? "live" : "idle"} />
               <button
                 type="button"
                 className={`auto-add-btn${addOpen ? " active" : ""}`}
@@ -1796,13 +1893,9 @@ export default function PortalAutomationPage({
               </button>
               {addOpen ? (
                 <div className="auto-add-menu auto-add-menu-wide">
-                  <h4 className="auto-add-title">Next email after wait</h4>
-                  <p className="auto-add-desc">
-                    Wait a gap, then email people who opened or clicked. This next
-                    step can be Drip or 1-1, independent of step 1.
-                  </p>
+                  <h4 className="auto-add-title">Next email</h4>
                   <div className="auto-field">
-                    <span>Send next email as</span>
+                    <span>Type</span>
                     <KindToggle
                       value={draftStepKind}
                       onChange={(next) => {
@@ -1825,7 +1918,7 @@ export default function PortalAutomationPage({
                   </div>
                   <div className="auto-wait-grid">
                     <label className="auto-field">
-                      After how many days
+                      Days
                       <input
                         type="number"
                         min={0}

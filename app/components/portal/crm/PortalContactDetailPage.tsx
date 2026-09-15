@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  CONTACT_ATTRIBUTE_LABELS,
   formatCompanyDate,
   formatListDate,
   formatRelativeTime,
@@ -17,12 +18,14 @@ import {
   portalCompanyRoute,
   portalContactRoute,
   portalListRoute,
+  portalReturnPath,
   PORTAL_ROUTES,
   portalCampaignRoute,
 } from "@/lib/portal-nav";
 
 type PortalContactDetailPageProps = {
   contactId: string;
+  from?: string;
 };
 
 type DetailTab = "overview" | "history" | "lists" | "preferences";
@@ -152,7 +155,7 @@ function ContactHistoryTimeline({
   }
 
   return (
-    <>
+    <div className="cd-history-animate">
       {groups.map((group) => (
         <div key={group.label}>
           <div className="cd-history-day">{group.label}</div>
@@ -180,7 +183,7 @@ function ContactHistoryTimeline({
           ? `Added via a contacts import on ${formatCompanyDate(contact.createdAt)}`
           : `Added on ${formatCompanyDate(contact.createdAt)}`}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -343,8 +346,10 @@ function CampaignStatsBar({ stats }: { stats: ContactCampaignStats }) {
 
 export default function PortalContactDetailPage({
   contactId,
+  from,
 }: PortalContactDetailPageProps) {
   const router = useRouter();
+  const backHref = portalReturnPath(from, PORTAL_ROUTES.contacts);
   const [contact, setContact] = useState<ContactDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -416,8 +421,8 @@ export default function PortalContactDetailPage({
             <button
               type="button"
               className="cd-back"
-              aria-label="Back to contacts"
-              onClick={() => router.push(PORTAL_ROUTES.contacts)}
+              aria-label="Back"
+              onClick={() => router.push(backHref)}
             >
               <svg
                 viewBox="0 0 24 24"
@@ -442,8 +447,8 @@ export default function PortalContactDetailPage({
           <button
             type="button"
             className="cd-back"
-            aria-label="Back to contacts"
-            onClick={() => router.push(PORTAL_ROUTES.contacts)}
+            aria-label="Back"
+            onClick={() => router.push(backHref)}
           >
             <svg
               viewBox="0 0 24 24"
@@ -491,7 +496,7 @@ export default function PortalContactDetailPage({
             disabled={!navigation?.prevId}
             onClick={() =>
               navigation?.prevId
-                ? router.push(portalContactRoute(navigation.prevId))
+                ? router.push(portalContactRoute(navigation.prevId, from))
                 : undefined
             }
           >
@@ -511,7 +516,7 @@ export default function PortalContactDetailPage({
             disabled={!navigation?.nextId}
             onClick={() =>
               navigation?.nextId
-                ? router.push(portalContactRoute(navigation.nextId))
+                ? router.push(portalContactRoute(navigation.nextId, from))
                 : undefined
             }
           >
@@ -707,6 +712,14 @@ export default function PortalContactDetailPage({
                   )}
                 </div>
               </div>
+              {Object.entries(contact.attributes ?? {}).map(([key, value]) => (
+                <div className="cd-field" key={key}>
+                  <div className="cd-label">
+                    {CONTACT_ATTRIBUTE_LABELS[key] ?? key}
+                  </div>
+                  <div className="cd-value">{value || "—"}</div>
+                </div>
+              ))}
             </div>
           </div>
 

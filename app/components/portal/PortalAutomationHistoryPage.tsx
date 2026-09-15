@@ -1,15 +1,24 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
   deleteAutomation,
   fetchAutomations,
-  patchAutomation,
   portalAutomationRoute,
+  type AutomationStatus,
   type PortalAutomation,
 } from "@/lib/automations";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
+
+const STATUS_FILTERS: Array<AutomationStatus | "all"> = [
+  "all",
+  "draft",
+  "scheduled",
+  "running",
+  "completed",
+];
 
 function formatUpdated(iso: string) {
   try {
@@ -36,14 +45,15 @@ function statusLabel(status: PortalAutomation["status"]) {
 }
 
 export default function PortalAutomationHistoryPage() {
+  const router = useRouter();
   const [items, setItems] = useState<PortalAutomation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<AutomationStatus | "all">(
+    "all",
+  );
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const [renaming, setRenaming] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,16 +95,20 @@ export default function PortalAutomationHistoryPage() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) {
-      return visibleItems;
-    }
-    return visibleItems.filter(
-      (item) =>
+    return visibleItems.filter((item) => {
+      if (statusFilter !== "all" && item.status !== statusFilter) {
+        return false;
+      }
+      if (!q) {
+        return true;
+      }
+      return (
         item.name.toLowerCase().includes(q) ||
         item.status.toLowerCase().includes(q) ||
-        item.kind.toLowerCase().includes(q),
-    );
-  }, [visibleItems, query]);
+        item.kind.toLowerCase().includes(q)
+      );
+    });
+  }, [visibleItems, query, statusFilter]);
 
   async function handleDelete(id: string) {
     if (!window.confirm("Delete this automation?")) {
@@ -112,46 +126,25 @@ export default function PortalAutomationHistoryPage() {
     }
   }
 
-  function startRename(item: PortalAutomation) {
-    setRenamingId(item.id);
-    setRenameValue(item.name || "Untitled automation");
-  }
-
-  async function saveRename(id: string) {
-    const nextName = renameValue.trim();
-    if (!nextName) {
-      setError("Name is required");
-      return;
-    }
-    setRenaming(true);
-    setError("");
-    try {
-      const updated = await patchAutomation(id, { name: nextName });
-      setItems((current) =>
-        current.map((item) => (item.id === id ? { ...item, ...updated } : item)),
-      );
-      setRenamingId(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to rename");
-    } finally {
-      setRenaming(false);
-    }
-  }
-
   return (
     <div className="crm-page auto-history-page">
       <div className="crm-page-head drip-page-head">
         <div>
           <h2>Automation history</h2>
           <p className="auto-history-sub">
-            Each row is one automation (all email steps inside it). Saved only after you
-            add the first email step. Rename, edit, or delete drafts here.
+            Saved flows. Delete drafts anytime.
           </p>
         </div>
         <div className="crm-actions">
-          <Link href={PORTAL_ROUTES.automation} className="btn-dark">
+          <button
+            type="button"
+            className="btn-dark"
+            onClick={() =>
+              router.push(`${PORTAL_ROUTES.automation}?new=${Date.now()}`)
+            }
+          >
             New automation
-          </Link>
+          </button>
         </div>
       </div>
 
@@ -171,6 +164,20 @@ export default function PortalAutomationHistoryPage() {
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
+          <select
+            className="drip-select"
+            value={statusFilter}
+            onChange={(event) =>
+              setStatusFilter(event.target.value as AutomationStatus | "all")
+            }
+            aria-label="Filter by status"
+          >
+            {STATUS_FILTERS.map((option) => (
+              <option key={option} value={option}>
+                {option === "all" ? "All statuses" : statusLabel(option)}
+              </option>
+            ))}
+          </select>
         </div>
 
         {loading ? (
@@ -178,92 +185,67 @@ export default function PortalAutomationHistoryPage() {
         ) : filtered.length === 0 ? (
           <div className="auto-history-empty">
             <p>No automations yet.</p>
-            <Link href={PORTAL_ROUTES.automation} className="btn-dark">
+            <button
+              type="button"
+              className="btn-dark"
+              onClick={() =>
+                router.push(`${PORTAL_ROUTES.automation}?new=${Date.now()}`)
+              }
+            >
               Create automation
-            </Link>
+            </button>
           </div>
         ) : (
           <div className="auto-history-list">
             {filtered.map((item) => (
-              <div key={item.id} className="auto-history-row">
-                <div className="auto-history-main">
-                  {renamingId === item.id ? (
-                    <div className="auto-history-rename">
-                      <input
-                        value={renameValue}
-                        onChange={(event) => setRenameValue(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            void saveRename(item.id);
-                          }
-                          if (event.key === "Escape") {
-                            setRenamingId(null);
-                          }
-                        }}
-                        aria-label="Automation name"
-                        autoFocus
-                      />
-                      <button
-                        type="button"
-                        className="btn-dark"
-                        disabled={renaming}
-                        onClick={() => void saveRename(item.id)}
-                      >
-                        {renaming ? "Saving…" : "Save"}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-soft"
-                        disabled={renaming}
-                        onClick={() => setRenamingId(null)}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <Link
-                      href={portalAutomationRoute(item.id)}
-                      className="auto-history-name"
-                    >
-                      {item.name || "Untitled automation"}
-                    </Link>
-                  )}
+              <div
+                key={item.id}
+                className={`auto-history-row${
+                  item.status === "completed"
+                    ? " done"
+                    : item.status === "running" || item.status === "scheduled"
+                      ? " live"
+                      : ""
+                }`}
+              >
+                <Link
+                  href={portalAutomationRoute(item.id)}
+                  className="auto-history-main"
+                >
+                  <span className="auto-history-name">
+                    {item.name || "Untitled automation"}
+                  </span>
                   <div className="auto-history-meta">
-                    <span className="auto-history-pill">{statusLabel(item.status)}</span>
+                    <span
+                      className={`auto-history-pill${
+                        item.status === "completed" ? " done" : ""
+                      }`}
+                    >
+                      {statusLabel(item.status)}
+                    </span>
                     <span>{item.kind === "oneone" ? "1-1" : "Drip"}</span>
                     <span>
                       {item.steps.length} step{item.steps.length === 1 ? "" : "s"}
                     </span>
                     <span>Updated {formatUpdated(item.updatedAt)}</span>
                   </div>
-                </div>
-                <div className="auto-history-actions">
-                  {item.status === "draft" && renamingId !== item.id ? (
-                    <button
-                      type="button"
-                      className="btn-soft"
-                      onClick={() => startRename(item)}
-                    >
-                      Rename
-                    </button>
-                  ) : null}
-                  <Link
-                    href={portalAutomationRoute(item.id)}
-                    className="btn-soft"
-                  >
-                    {item.status === "draft" ? "Edit" : "View"}
-                  </Link>
-                  {item.status === "draft" ? (
+                </Link>
+                {item.status === "draft" ? (
+                  <div className="auto-history-actions">
                     <button
                       type="button"
                       className="btn-link-purple"
                       disabled={deletingId === item.id}
-                      onClick={() => void handleDelete(item.id)}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void handleDelete(item.id);
+                      }}
                     >
                       {deletingId === item.id ? "Deleting…" : "Delete"}
                     </button>
-                  ) : null}
-                </div>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
