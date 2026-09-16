@@ -169,6 +169,7 @@ export async function importContactsToList(
         .filter(([key, value]) => key && value),
     );
 
+    // Last Name is optional — only First Name, Email, and Company Name are required.
     if (!email || !firstName || !companyName) {
       skipped += 1;
       continue;

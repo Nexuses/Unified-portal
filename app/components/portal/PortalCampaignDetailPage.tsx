@@ -4051,7 +4051,9 @@ export default function PortalCampaignDetailPage({
       patch.attachmentEnabled = draftAttachmentEnabled;
       patch.attachmentName = draftAttachmentEnabled ? draftAttachmentName : "";
       patch.timezoneEnabled = draftTimezoneEnabled;
-      patch.timezone = draftTimezoneEnabled ? draftTimezone : "Asia/Kolkata";
+      patch.timezone = draftTimezoneEnabled
+        ? draftTimezone.trim() || "Asia/Kolkata"
+        : "Asia/Kolkata";
       patch.utmEnabled = draftUtmEnabled;
       patch.utmSourceEnabled = true;
       patch.utmSource = draftUtmSource.trim() || DEFAULT_UTM_SOURCE;

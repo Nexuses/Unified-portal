@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   isNavItemActive,
@@ -27,13 +28,33 @@ export default function PortalSidebar({
   projectLogoUrl,
 }: PortalSidebarProps) {
   const router = useRouter();
+  const [manualOpen, setManualOpen] = useState<
+    Partial<Record<PortalNavGroupId, boolean>>
+  >({});
 
-  function handleGroupClick(groupId: PortalNavGroupId, href: string) {
-    if (openGroups[groupId] && isNavItemActive(href, pathname)) {
+  useEffect(() => {
+    setManualOpen({});
+  }, [pathname]);
+
+  function isGroupOpen(groupId: PortalNavGroupId) {
+    if (manualOpen[groupId] !== undefined) {
+      return Boolean(manualOpen[groupId]);
+    }
+    return openGroups[groupId];
+  }
+
+  function handleGroupClick(groupId: PortalNavGroupId) {
+    const currentlyOpen = isGroupOpen(groupId);
+
+    if (currentlyOpen) {
+      setManualOpen((current) => ({ ...current, [groupId]: false }));
       return;
     }
 
-    router.push(PORTAL_GROUP_DEFAULTS[groupId]);
+    setManualOpen((current) => ({ ...current, [groupId]: true }));
+    if (!openGroups[groupId]) {
+      router.push(PORTAL_GROUP_DEFAULTS[groupId]);
+    }
   }
 
   return (
@@ -69,7 +90,7 @@ export default function PortalSidebar({
           }
 
           const Icon = getNavIcon(item.id);
-          const isOpen = openGroups[item.id];
+          const isOpen = isGroupOpen(item.id);
 
           return (
             <div key={item.id} className="nav-group">
@@ -77,7 +98,7 @@ export default function PortalSidebar({
                 type="button"
                 data-group={item.id}
                 className={`nav-item${isOpen ? " open" : ""}`}
-                onClick={() => handleGroupClick(item.id, item.href)}
+                onClick={() => handleGroupClick(item.id)}
               >
                 <Icon />
                 {item.label}

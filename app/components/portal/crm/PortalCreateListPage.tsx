@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   CONTACT_ATTRIBUTE_LABELS,
   DEFAULT_LIST_ATTRIBUTES,
+  REQUIRED_CONTACT_FIELDS,
   slugifyAttributeKey,
   type ListAttributeDef,
 } from "@/lib/crm";
@@ -115,11 +116,8 @@ export default function PortalCreateListPage() {
     if (csvHeaders.length === 0) {
       return [];
     }
-    return mapRowsToContacts(csvHeaders, csvRows, fieldMapping).filter(
-      (row) =>
-        row.firstName.trim() &&
-        row.email.trim() &&
-        row.companyName.trim(),
+    return mapRowsToContacts(csvHeaders, csvRows, fieldMapping).filter((row) =>
+      REQUIRED_CONTACT_FIELDS.every((field) => row[field].trim()),
     );
   }, [csvHeaders, csvRows, fieldMapping]);
 
@@ -357,9 +355,10 @@ export default function PortalCreateListPage() {
               </h3>
               <p>
                 Select a CSV containing your contacts to import into “
-                {listName.trim()}”. Columns are auto-mapped to First Name, Last
-                Name, Company Name, Position, Email, Industry, Website, and
-                related fields.
+                {listName.trim()}”. Required columns:{" "}
+                <strong>First Name</strong>, <strong>Email</strong>, and{" "}
+                <strong>Company Name</strong>. Last Name and other fields are
+                optional and auto-mapped when present.
               </p>
             </div>
             <button type="button" className="link-purple" onClick={downloadExample}>

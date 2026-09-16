@@ -104,7 +104,7 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     attachmentEnabled: doc.attachmentEnabled,
     attachmentName: doc.attachmentName,
     timezoneEnabled: doc.timezoneEnabled,
-    timezone: doc.timezone,
+    timezone: doc.timezone?.trim() || "Asia/Kolkata",
     utmEnabled: doc.utmEnabled,
     utmSourceEnabled: doc.utmSourceEnabled,
     utmSource: doc.utmSource,

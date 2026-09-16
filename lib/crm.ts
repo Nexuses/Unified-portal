@@ -43,6 +43,13 @@ export const DEFAULT_LIST_ATTRIBUTES: ListAttributeDef[] = [
   { key: "personLocation", label: "Person Location", required: false },
 ];
 
+/** Core fields required on CSV import / create contact. Last Name is optional. */
+export const REQUIRED_CONTACT_FIELDS = [
+  "firstName",
+  "email",
+  "companyName",
+] as const;
+
 export const CRM_IMPORT_FIELDS: {
   key: CrmImportField;
   label: string;

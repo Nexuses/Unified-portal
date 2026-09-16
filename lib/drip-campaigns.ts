@@ -187,24 +187,40 @@ export function formatCampaignStatus(campaign: DripCampaign) {
   return { label: "Draft", detail: "Not scheduled yet" };
 }
 
+const DEFAULT_CAMPAIGN_TIMEZONE = "Asia/Kolkata";
+
+export function resolveCampaignTimezone(timeZone?: string | null) {
+  const trimmed = timeZone?.trim();
+  return trimmed || DEFAULT_CAMPAIGN_TIMEZONE;
+}
+
 export function formatCampaignClock(
   value: string | Date,
-  timeZone = "Asia/Kolkata",
+  timeZone = DEFAULT_CAMPAIGN_TIMEZONE,
 ) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) {
     return String(value);
   }
 
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone,
-  }).format(date);
+  const zones = [resolveCampaignTimezone(timeZone), DEFAULT_CAMPAIGN_TIMEZONE, "UTC"];
+  for (const zone of zones) {
+    try {
+      return new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: zone,
+      }).format(date);
+    } catch {
+      // Try the next fallback zone.
+    }
+  }
+
+  return date.toISOString();
 }
 
 export function zonedDateTimeToIso(
@@ -213,8 +229,9 @@ export function zonedDateTimeToIso(
   minute: string,
   timeZone: string,
 ) {
+  const zone = resolveCampaignTimezone(timeZone);
   const asUtc = new Date(`${date}T${hour}:${minute}:00.000Z`);
-  const tzStamp = asUtc.toLocaleString("sv-SE", { timeZone });
+  const tzStamp = asUtc.toLocaleString("sv-SE", { timeZone: zone });
   const tzAsUtc = new Date(`${tzStamp.replace(" ", "T")}Z`);
   return new Date(asUtc.getTime() + (asUtc.getTime() - tzAsUtc.getTime())).toISOString();
 }
@@ -239,7 +256,7 @@ export function mergeBlastReport(
     sequenceProgress?: CampaignSequenceProgress;
   },
 ): DripCampaign {
-  const timezone = campaign.timezone || "Asia/Kolkata";
+  const timezone = campaign.timezone || DEFAULT_CAMPAIGN_TIMEZONE;
   return {
     ...campaign,
     status:
