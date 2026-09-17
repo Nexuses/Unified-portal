@@ -1,4 +1,10 @@
+import type { Metadata } from "next";
 import BrevoAuthCard from "../components/BrevoAuthCard";
+
+export const metadata: Metadata = {
+  title: "Admin sign in",
+  description: "Sign in to the Nexuses Unified Portal admin console.",
+};
 
 export default function AdminLoginPage() {
   return (
@@ -20,7 +26,7 @@ export default function AdminLoginPage() {
           name: "password",
           label: "Password",
           type: "password",
-          placeholder: "Enter admin password",
+          placeholder: "Enter your password",
         },
       ]}
     />

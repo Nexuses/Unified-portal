@@ -2,8 +2,20 @@ import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import type { ContactDoc, ListDoc, ListMembershipDoc } from "@/lib/crm";
 import { createList } from "@/lib/crm-import";
+import {
+  extractBulkSuppressionValues,
+  normalizeSuppressionDomain,
+  normalizeSuppressionEmail,
+  type SuppressionKind,
+} from "@/lib/unsubscribe-client";
 
 export const UNSUBSCRIBE_LIST_NAME = "Unsubscribe";
+export type { SuppressionKind };
+export {
+  extractBulkSuppressionValues,
+  normalizeSuppressionDomain,
+  normalizeSuppressionEmail,
+} from "@/lib/unsubscribe-client";
 
 export type SuppressionEntry = {
   id: string;
@@ -17,8 +29,6 @@ export type SuppressionDomainEntry = {
   domain: string;
   addedAt: string;
 };
-
-export type SuppressionKind = "email" | "domain";
 
 export type SuppressionSets = {
   emails: Set<string>;
@@ -60,50 +70,6 @@ export async function getOrCreateUnsubscribeList(
     return existing;
   }
   return createList(projectId, UNSUBSCRIBE_LIST_NAME, userId);
-}
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
-
-export function normalizeSuppressionEmail(value: string) {
-  const email = value.trim().toLowerCase().replace(/^mailto:/i, "");
-  return EMAIL_RE.test(email) ? email : "";
-}
-
-export function normalizeSuppressionDomain(value: string) {
-  let raw = value.trim().toLowerCase();
-  if (!raw) {
-    return "";
-  }
-  raw = raw.replace(/^https?:\/\//, "");
-  if (raw.startsWith("@")) {
-    raw = raw.slice(1);
-  }
-  if (raw.includes("@")) {
-    raw = raw.slice(raw.lastIndexOf("@") + 1);
-  }
-  raw = raw.split("/")[0]?.split("?")[0]?.split(":")[0] ?? "";
-  raw = raw.replace(/^www\./, "").replace(/\.$/, "");
-  return DOMAIN_RE.test(raw) ? raw : "";
-}
-
-export function extractBulkSuppressionValues(text: string, kind: SuppressionKind) {
-  const tokens = text
-    .replace(/^\uFEFF/, "")
-    .split(/[\s,;]+/)
-    .map((token) => token.trim())
-    .filter(Boolean);
-  const values = new Set<string>();
-  for (const token of tokens) {
-    const next =
-      kind === "email"
-        ? normalizeSuppressionEmail(token)
-        : normalizeSuppressionDomain(token);
-    if (next) {
-      values.add(next);
-    }
-  }
-  return [...values];
 }
 
 export function isSuppressedAddress(email: string, suppression: SuppressionSets) {
@@ -203,14 +169,28 @@ async function upsertSuppressionEntry(
   return Boolean(result.upsertedCount);
 }
 
-export async function getUnsubscribeListEntries(projectId: ObjectId) {
+export async function getUnsubscribeListEntries(
+  projectId: ObjectId,
+  options?: { page?: number; pageSize?: number },
+) {
+  const pageSize = Math.min(100, Math.max(1, options?.pageSize ?? 50));
+  const page = Math.max(1, options?.page ?? 1);
   const list = await getOrCreateUnsubscribeList(projectId);
   const db = await getDb();
-  const memberships = await db
-    .collection<ListMembershipDoc>("list_memberships")
-    .find({ projectId, listId: list._id })
-    .sort({ addedAt: -1 })
-    .toArray();
+
+  const [emailTotal, memberships] = await Promise.all([
+    db.collection<ListMembershipDoc>("list_memberships").countDocuments({
+      projectId,
+      listId: list._id,
+    }),
+    db
+      .collection<ListMembershipDoc>("list_memberships")
+      .find({ projectId, listId: list._id })
+      .sort({ addedAt: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .toArray(),
+  ]);
 
   const contacts = memberships.length
     ? await db
@@ -238,16 +218,22 @@ export async function getUnsubscribeListEntries(projectId: ObjectId) {
     ];
   });
 
+  const domains = await listSuppressionDomains(projectId);
+
   return {
     list: {
       id: list._id.toString(),
       name: list.name,
       displayId: list.displayId,
-      contactCount: entries.length,
+      contactCount: emailTotal,
       createdAt: list.createdAt.toISOString(),
     },
     entries,
-    domains: await listSuppressionDomains(projectId),
+    domains,
+    emailTotal,
+    domainTotal: domains.length,
+    page,
+    pageSize,
   };
 }
 
@@ -438,6 +424,26 @@ export async function bulkImportSuppression(
   text: string,
 ) {
   const values = extractBulkSuppressionValues(text, kind);
+  return bulkImportSuppressionValues(projectId, userId, kind, values);
+}
+
+export async function bulkImportSuppressionValues(
+  projectId: ObjectId,
+  userId: ObjectId | null,
+  kind: SuppressionKind,
+  rawValues: string[],
+) {
+  const values = [
+    ...new Set(
+      rawValues
+        .map((value) =>
+          kind === "email"
+            ? normalizeSuppressionEmail(value)
+            : normalizeSuppressionDomain(value),
+        )
+        .filter(Boolean),
+    ),
+  ];
   if (values.length === 0) {
     throw new Error(
       kind === "email"
@@ -446,35 +452,241 @@ export async function bulkImportSuppression(
     );
   }
 
+  if (kind === "domain") {
+    return bulkImportSuppressionDomains(projectId, userId, values);
+  }
+  return bulkImportSuppressionEmails(projectId, userId, values);
+}
+
+const SUPPRESSION_WRITE_BATCH = 500;
+
+async function bulkImportSuppressionDomains(
+  projectId: ObjectId,
+  userId: ObjectId | null,
+  domains: string[],
+) {
+  const db = await getDb();
+  const now = new Date();
   let added = 0;
   let skipped = 0;
-  if (kind === "email") {
-    for (const email of values) {
-      const result = await addEmailToUnsubscribeList(projectId, email, userId);
-      if (result.added) {
-        added += 1;
-      } else {
-        skipped += 1;
+
+  for (let offset = 0; offset < domains.length; offset += SUPPRESSION_WRITE_BATCH) {
+    const batch = domains.slice(offset, offset + SUPPRESSION_WRITE_BATCH);
+    const existing = await db
+      .collection<SuppressionEntryDoc>("suppression_entries")
+      .find({ projectId, kind: "domain", value: { $in: batch } })
+      .project({ value: 1 })
+      .toArray();
+    const already = new Set(existing.map((doc) => doc.value));
+    skipped += already.size;
+
+    const ops = batch
+      .filter((domain) => !already.has(domain))
+      .map((domain) => ({
+        updateOne: {
+          filter: { projectId, kind: "domain" as const, value: domain },
+          update: {
+            $setOnInsert: {
+              _id: new ObjectId(),
+              projectId,
+              kind: "domain" as const,
+              value: domain,
+              source: "upload" as const,
+              createdBy: userId,
+              createdAt: now,
+            },
+          },
+          upsert: true,
+        },
+      }));
+
+    if (ops.length > 0) {
+      const result = await db
+        .collection<SuppressionEntryDoc>("suppression_entries")
+        .bulkWrite(ops, { ordered: false });
+      added += result.upsertedCount;
+    }
+  }
+
+  return { kind: "domain" as const, added, skipped, total: domains.length };
+}
+
+async function bulkImportSuppressionEmails(
+  projectId: ObjectId,
+  userId: ObjectId | null,
+  emails: string[],
+) {
+  const db = await getDb();
+  const list = await getOrCreateUnsubscribeList(projectId, userId);
+  const now = new Date();
+  let added = 0;
+  let skipped = 0;
+
+  for (let offset = 0; offset < emails.length; offset += SUPPRESSION_WRITE_BATCH) {
+    const batch = emails.slice(offset, offset + SUPPRESSION_WRITE_BATCH);
+
+    const [existingContacts, existingSuppression] = await Promise.all([
+      db
+        .collection<ContactDoc>("contacts")
+        .find({ projectId, email: { $in: batch } })
+        .project({ _id: 1, email: 1 })
+        .toArray(),
+      db
+        .collection<SuppressionEntryDoc>("suppression_entries")
+        .find({ projectId, kind: "email", value: { $in: batch } })
+        .project({ value: 1 })
+        .toArray(),
+    ]);
+
+    const contactByEmail = new Map(
+      existingContacts.map((contact) => [
+        contact.email.trim().toLowerCase(),
+        contact,
+      ]),
+    );
+    const alreadySuppressed = new Set(existingSuppression.map((doc) => doc.value));
+
+    if (existingContacts.length > 0) {
+      await db.collection<ContactDoc>("contacts").updateMany(
+        { projectId, _id: { $in: existingContacts.map((contact) => contact._id) } },
+        {
+          $set: {
+            subscribed: false,
+            blocklisted: true,
+            updatedAt: now,
+          },
+        },
+      );
+    }
+
+    const missingEmails = batch.filter((email) => !contactByEmail.has(email));
+    if (missingEmails.length > 0) {
+      const docs = missingEmails.map((email) => ({
+        _id: new ObjectId(),
+        projectId,
+        firstName: "Blocked",
+        lastName: "",
+        email,
+        companyId: null,
+        companyName: "",
+        subscribed: false,
+        blocklisted: true,
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now,
+      }));
+      try {
+        await db.collection<ContactDoc>("contacts").insertMany(docs, { ordered: false });
+      } catch (error) {
+        // Parallel uploads / races can hit duplicate emails; continue with a refetch.
+        if (
+          !(error instanceof Error) ||
+          !/duplicate|E11000/i.test(error.message)
+        ) {
+          throw error;
+        }
+      }
+      for (const doc of docs) {
+        if (!contactByEmail.has(doc.email)) {
+          contactByEmail.set(doc.email, doc);
+        }
       }
     }
-  } else {
-    for (const domain of values) {
-      const inserted = await upsertSuppressionEntry(
+
+    const contacts = await db
+      .collection<ContactDoc>("contacts")
+      .find({ projectId, email: { $in: batch } })
+      .project({ _id: 1, email: 1 })
+      .toArray();
+    const contactIds = contacts.map((contact) => contact._id);
+
+    const existingMemberships =
+      contactIds.length === 0
+        ? []
+        : await db
+            .collection<ListMembershipDoc>("list_memberships")
+            .find({
+              projectId,
+              listId: list._id,
+              contactId: { $in: contactIds },
+            })
+            .project({ contactId: 1 })
+            .toArray();
+    const memberIds = new Set(
+      existingMemberships.map((membership) => membership.contactId.toString()),
+    );
+
+    const newMemberships = contacts
+      .filter((contact) => !memberIds.has(contact._id.toString()))
+      .map((contact) => ({
+        _id: new ObjectId(),
         projectId,
-        "domain",
-        domain,
-        "upload",
-        userId,
+        listId: list._id,
+        contactId: contact._id,
+        addedAt: now,
+        addedBy: userId,
+        source: "import" as const,
+      }));
+
+    if (newMemberships.length > 0) {
+      await db.collection<ListMembershipDoc>("list_memberships").insertMany(newMemberships, {
+        ordered: false,
+      });
+    }
+
+    const suppressionOps = batch.map((email) => ({
+      updateOne: {
+        filter: { projectId, kind: "email" as const, value: email },
+        update: {
+          $setOnInsert: {
+            _id: new ObjectId(),
+            projectId,
+            kind: "email" as const,
+            value: email,
+            source: "upload" as const,
+            createdBy: userId,
+            createdAt: now,
+          },
+        },
+        upsert: true,
+      },
+    }));
+    if (suppressionOps.length > 0) {
+      await db
+        .collection<SuppressionEntryDoc>("suppression_entries")
+        .bulkWrite(suppressionOps, { ordered: false });
+    }
+
+    for (const email of batch) {
+      const contact = contacts.find(
+        (item) => item.email.trim().toLowerCase() === email,
       );
-      if (inserted) {
-        added += 1;
-      } else {
+      const hadMembership = contact
+        ? memberIds.has(contact._id.toString())
+        : false;
+      if (alreadySuppressed.has(email) && hadMembership) {
         skipped += 1;
+      } else {
+        added += 1;
       }
     }
   }
 
-  return { kind, added, skipped, total: values.length };
+  const emailTotal = await db.collection<ListMembershipDoc>("list_memberships").countDocuments({
+    projectId,
+    listId: list._id,
+  });
+  await db.collection<ListDoc>("lists").updateOne(
+    { _id: list._id },
+    {
+      $set: {
+        contactCount: emailTotal,
+        updatedAt: now,
+      },
+    },
+  );
+
+  return { kind: "email" as const, added, skipped, total: emails.length };
 }
 
 export async function removeSuppressionItem(

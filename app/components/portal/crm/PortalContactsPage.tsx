@@ -25,6 +25,7 @@ export default function PortalContactsPage() {
   const [searchField, setSearchField] = useState<"all" | "name" | "email">("all");
   const [error, setError] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deleting, setDeleting] = useState(false);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -151,6 +152,46 @@ export default function PortalContactsPage() {
     });
   }
 
+  async function deleteSelectedContacts() {
+    if (selectedIds.length === 0 || deleting) {
+      return;
+    }
+
+    const label =
+      selectedIds.length === 1
+        ? contacts.find((contact) => contact.id === selectedIds[0])?.fullName ??
+          "this contact"
+        : `${selectedIds.length} contacts`;
+    const confirmText =
+      selectedIds.length === 1
+        ? `Delete contact "${label}"? This removes them from all lists.`
+        : `Delete ${selectedIds.length} contacts? This removes them from all lists.`;
+    if (!window.confirm(confirmText)) {
+      return;
+    }
+
+    setDeleting(true);
+    setError("");
+    try {
+      const response = await fetch("/api/crm/contacts", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to delete contacts");
+      }
+      const removed = new Set(selectedIds);
+      setContacts((current) => current.filter((contact) => !removed.has(contact.id)));
+      setSelectedIds([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete contacts");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   function openCreateModal() {
     setValues(emptyAttributeValues());
     setModalError("");
@@ -246,6 +287,16 @@ export default function PortalContactsPage() {
       </div>
 
       <div className="drip-toolbar">
+        {selectedIds.length > 0 ? (
+          <button
+            type="button"
+            className="lists-bulk-delete"
+            disabled={deleting}
+            onClick={() => void deleteSelectedContacts()}
+          >
+            {deleting ? "Deleting..." : `Delete (${selectedIds.length})`}
+          </button>
+        ) : null}
         <label className="drip-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="11" cy="11" r="7" />

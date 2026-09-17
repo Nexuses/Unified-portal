@@ -158,6 +158,8 @@ export async function importContactsToList(
     .collection("companies")
     .countDocuments({ projectId: context.projectId });
 
+  const seenEmails = new Set<string>();
+
   for (const row of rows) {
     const firstName = row.firstName.trim();
     const lastName = row.lastName.trim();
@@ -174,6 +176,12 @@ export async function importContactsToList(
       skipped += 1;
       continue;
     }
+
+    if (seenEmails.has(email)) {
+      skipped += 1;
+      continue;
+    }
+    seenEmails.add(email);
 
     const beforeCompanies = companyCache.size;
     const companyId = companyName

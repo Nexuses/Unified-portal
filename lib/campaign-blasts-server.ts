@@ -13,6 +13,10 @@ import {
 } from "@/lib/drip-campaigns";
 import { getSuppressionSets, isSuppressedAddress } from "@/lib/unsubscribe-server";
 import {
+  DEFAULT_PROJECT_SENDING_LIMIT,
+  normalizeSendingLimit,
+} from "@/lib/projects";
+import {
   injectCampaignTracking,
   isNonNavigationalTrackedUrl,
   resolveUtmConfig,
@@ -669,6 +673,38 @@ async function sendPendingBatch(
   return refreshBlastCounts(blast._id);
 }
 
+async function getProjectSendingQuota(projectId: ObjectId) {
+  const db = await getDb();
+  const [project, blasts] = await Promise.all([
+    db.collection("projects").findOne(
+      { _id: projectId },
+      { projection: { sendingLimit: 1 } },
+    ),
+    db
+      .collection<CampaignBlastDoc>("campaign_blasts")
+      .find({
+        projectId,
+        status: { $in: ["sent", "sending", "scheduled", "paused"] },
+      })
+      .project({ delivered: 1, recipients: 1 })
+      .toArray(),
+  ]);
+
+  const sendingLimit = normalizeSendingLimit(
+    project?.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
+  );
+  const used = blasts.reduce((sum, blast) => {
+    const delivered = Number(blast.delivered);
+    if (Number.isFinite(delivered) && delivered > 0) {
+      return sum + delivered;
+    }
+    const recipients = Number(blast.recipients);
+    return sum + (Number.isFinite(recipients) ? recipients : 0);
+  }, 0);
+
+  return { sendingLimit, used };
+}
+
 export async function launchCampaignBlast(input: {
   projectId: ObjectId;
   campaign: DripCampaign;
@@ -707,6 +743,14 @@ export async function launchCampaignBlast(input: {
   );
   if (list.length === 0) {
     throw new Error("This campaign has no recipients to send to.");
+  }
+
+  const { sendingLimit, used } = await getProjectSendingQuota(projectId);
+  const remaining = Math.max(0, sendingLimit - used);
+  if (list.length > remaining) {
+    throw new Error(
+      `Sending limit reached. This campaign needs ${list.length.toLocaleString()} emails, but only ${remaining.toLocaleString()} remain of ${sendingLimit.toLocaleString()}.`,
+    );
   }
 
   const db = await getDb();
@@ -983,8 +1027,10 @@ export async function getCampaignReport(
   return report;
 }
 
-/** Ignore open/click beacons in the first 45s after send (filters most bots). */
-export const ENGAGEMENT_BOT_GRACE_MS = 45_000;
+/** Ignore open beacons in the first 25s after send (filters most bots). */
+export const OPEN_BOT_GRACE_MS = 25_000;
+/** Ignore click beacons in the first 45s after send (filters most bots). */
+export const CLICK_BOT_GRACE_MS = 45_000;
 /** Ignore counted clicks closer together than this (link scanners). */
 export const CLICK_MIN_GAP_MS = 2_000;
 /** Window used to detect multi-link burst scanning. */
@@ -1000,7 +1046,10 @@ function asTimeMs(value: Date | string | undefined) {
   return Number.isFinite(ms) ? ms : NaN;
 }
 
-function isWithinBotGracePeriod(send: Pick<CampaignSendDoc, "sentAt" | "status">) {
+function isWithinBotGracePeriod(
+  send: Pick<CampaignSendDoc, "sentAt" | "status">,
+  graceMs: number,
+) {
   if (send.status !== "sent" || !send.sentAt) {
     return true;
   }
@@ -1008,7 +1057,26 @@ function isWithinBotGracePeriod(send: Pick<CampaignSendDoc, "sentAt" | "status">
   if (!Number.isFinite(sentAt)) {
     return true;
   }
-  return Date.now() - sentAt < ENGAGEMENT_BOT_GRACE_MS;
+  return Date.now() - sentAt < graceMs;
+}
+
+async function getProjectEngagementFlags(projectId: ObjectId) {
+  const db = await getDb();
+  const project = await db.collection("projects").findOne(
+    { _id: projectId },
+    { projection: { instantOpen: 1, instantClick: 1, instantOpenClick: 1 } },
+  );
+  const legacyBoth = Boolean(project?.instantOpenClick);
+  return {
+    skipOpenGrace:
+      typeof project?.instantOpen === "boolean"
+        ? Boolean(project.instantOpen)
+        : legacyBoth,
+    skipClickGrace:
+      typeof project?.instantClick === "boolean"
+        ? Boolean(project.instantClick)
+        : legacyBoth,
+  };
 }
 
 function normalizeClickUrl(url: string) {
@@ -1065,7 +1133,8 @@ export async function recordCampaignOpen(token: string) {
   if (!send) {
     return;
   }
-  if (isWithinBotGracePeriod(send)) {
+  const { skipOpenGrace } = await getProjectEngagementFlags(send.projectId);
+  if (!skipOpenGrace && isWithinBotGracePeriod(send, OPEN_BOT_GRACE_MS)) {
     return;
   }
 
@@ -1112,7 +1181,8 @@ export async function recordCampaignClick(token: string, url?: string) {
   if (!send) {
     return;
   }
-  if (isWithinBotGracePeriod(send)) {
+  const { skipClickGrace } = await getProjectEngagementFlags(send.projectId);
+  if (!skipClickGrace && isWithinBotGracePeriod(send, CLICK_BOT_GRACE_MS)) {
     return;
   }
 

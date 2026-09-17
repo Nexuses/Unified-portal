@@ -272,3 +272,109 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
 
   return { events, stats };
 }
+
+export async function deleteContacts(projectId: ObjectId, ids: string[]) {
+  const contactIds = [...new Set(ids)]
+    .filter((id) => ObjectId.isValid(id))
+    .map((id) => new ObjectId(id));
+  if (contactIds.length === 0) {
+    return { deleted: 0 };
+  }
+
+  const db = await getDb();
+  const contacts = await db
+    .collection<ContactDoc>("contacts")
+    .find({ projectId, _id: { $in: contactIds } })
+    .project({ _id: 1, companyId: 1 })
+    .toArray();
+  if (contacts.length === 0) {
+    return { deleted: 0 };
+  }
+
+  const allowedIds = contacts.map((contact) => contact._id);
+  const companyIds = [
+    ...new Map(
+      contacts
+        .filter((contact) => contact.companyId)
+        .map((contact) => [contact.companyId.toString(), contact.companyId]),
+    ).values(),
+  ];
+
+  const memberships = await db
+    .collection<ListMembershipDoc>("list_memberships")
+    .find({ projectId, contactId: { $in: allowedIds } })
+    .project({ listId: 1 })
+    .toArray();
+  const listIds = [
+    ...new Map(
+      memberships.map((membership) => [
+        membership.listId.toString(),
+        membership.listId,
+      ]),
+    ).values(),
+  ];
+
+  await db.collection<ListMembershipDoc>("list_memberships").deleteMany({
+    projectId,
+    contactId: { $in: allowedIds },
+  });
+
+  const result = await db.collection<ContactDoc>("contacts").deleteMany({
+    projectId,
+    _id: { $in: allowedIds },
+  });
+
+  if (listIds.length > 0) {
+    const listCounts = await db
+      .collection<ListMembershipDoc>("list_memberships")
+      .aggregate<{ _id: ObjectId; count: number }>([
+        { $match: { projectId, listId: { $in: listIds } } },
+        { $group: { _id: "$listId", count: { $sum: 1 } } },
+      ])
+      .toArray();
+    const countMap = new Map(
+      listCounts.map((entry) => [entry._id.toString(), entry.count]),
+    );
+    await Promise.all(
+      listIds.map((listId) =>
+        db.collection<ListDoc>("lists").updateOne(
+          { _id: listId, projectId },
+          {
+            $set: {
+              contactCount: countMap.get(listId.toString()) ?? 0,
+              updatedAt: new Date(),
+            },
+          },
+        ),
+      ),
+    );
+  }
+
+  if (companyIds.length > 0) {
+    const companyCounts = await db
+      .collection<ContactDoc>("contacts")
+      .aggregate<{ _id: ObjectId; count: number }>([
+        { $match: { projectId, companyId: { $in: companyIds } } },
+        { $group: { _id: "$companyId", count: { $sum: 1 } } },
+      ])
+      .toArray();
+    const companyCountMap = new Map(
+      companyCounts.map((entry) => [entry._id.toString(), entry.count]),
+    );
+    await Promise.all(
+      companyIds.map((companyId) =>
+        db.collection<CompanyDoc>("companies").updateOne(
+          { _id: companyId, projectId },
+          {
+            $set: {
+              contactCount: companyCountMap.get(companyId.toString()) ?? 0,
+              updatedAt: new Date(),
+            },
+          },
+        ),
+      ),
+    );
+  }
+
+  return { deleted: result.deletedCount ?? 0 };
+}

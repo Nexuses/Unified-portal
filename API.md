@@ -570,7 +570,7 @@ Same filters as portal recipients; `contactId` omitted.
 Excel (`.xlsx`) — same workbook as portal export.
 
 ### GET `/api/campaigns/track/open/{token}`
-Returns a 1×1 GIF. Increments open (ignored if token starts with `test-`, or if the email was sent less than **45 seconds** ago — bot filter).
+Returns a 1×1 GIF. Increments open (ignored if token starts with `test-`, or if the email was sent less than **25 seconds** ago — bot filter).
 
 ### GET `/api/campaigns/track/click/{token}?u=https://example.com`
 302 redirect to `u` (http/https only). Records click with bot filters (redirect still happens):
@@ -628,8 +628,12 @@ Companies with nested contacts.
   "importFileName": "export.csv"
 }
 ```
-Rows need **firstName**, **email**, and **companyName**. Extra fields go in `attributes`.  
+Rows need **firstName**, **email**, and **companyName**. Extra fields go in `attributes`. Duplicate emails in the same upload are skipped.
 201 `{ "list": CrmList, "importSummary": { "imported", "skipped", "companiesCreated", "contactsCreated", "contactsUpdated" } | null }`
+
+### POST `/api/crm/contacts/lookup-lists`
+Body: `{ "emails": ["a@co.com"] }`
+200 `{ "matches": [ { "email", "lists": [ { "id", "name", "displayId" } ] } ] }` — existing CRM list memberships for those emails.
 
 ### DELETE `/api/crm/lists`
 Body: `{ "ids": ["…"] }`. Deletes those lists and their memberships. Contacts stay in CRM. The Unsubscribe list is skipped.  

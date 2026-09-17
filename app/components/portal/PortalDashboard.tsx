@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { Contact } from "@/lib/crm";
 import type { CampaignStatus, DripCampaign } from "@/lib/drip-campaigns";
-import { EMAIL_PLAN_LIMIT } from "@/lib/drip-campaigns";
+import { DEFAULT_PROJECT_SENDING_LIMIT } from "@/lib/projects";
 import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
 
 const SENDER_SOFT_LIMIT = 10;
@@ -94,6 +94,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
     null,
   );
   const [emailsSent, setEmailsSent] = useState<number | null>(null);
+  const [sendingLimit, setSendingLimit] = useState(DEFAULT_PROJECT_SENDING_LIMIT);
   const [dripEmailsSent, setDripEmailsSent] = useState<number | null>(null);
   const [oneOneEmailsSent, setOneOneEmailsSent] = useState<number | null>(null);
   const [senderCount, setSenderCount] = useState<number | null>(null);
@@ -131,9 +132,10 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
 
     async function loadUsage() {
       try {
-        const [statsResponse, sendersResponse] = await Promise.all([
+        const [statsResponse, sendersResponse, meResponse] = await Promise.all([
           fetch("/api/campaigns/stats"),
           fetch("/api/smtp/senders"),
+          fetch("/api/auth/me"),
         ]);
         const statsData = (await statsResponse.json()) as {
           reports?: Array<{
@@ -143,9 +145,21 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
           }>;
         };
         const sendersData = (await sendersResponse.json()) as unknown;
+        const meData = (await meResponse.json()) as {
+          sendingLimit?: number;
+          error?: string;
+        };
 
         if (cancelled) {
           return;
+        }
+
+        if (
+          meResponse.ok &&
+          typeof meData.sendingLimit === "number" &&
+          meData.sendingLimit > 0
+        ) {
+          setSendingLimit(meData.sendingLimit);
         }
 
         if (statsResponse.ok && Array.isArray(statsData.reports)) {
@@ -257,13 +271,13 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
   const emailsMeta =
     emailsSent === null
       ? "…"
-      : `${formatCount(emailsSentValue)} / ${formatCount(EMAIL_PLAN_LIMIT)}`;
+      : `${formatCount(emailsSentValue)} / ${formatCount(sendingLimit)}`;
   const sendersMeta =
     senderCount === null ? "…" : formatCount(senderCountValue);
   const emailsBarWidth =
     emailsSent === null
       ? 0
-      : Math.min(100, (emailsSentValue / EMAIL_PLAN_LIMIT) * 100);
+      : Math.min(100, (emailsSentValue / Math.max(sendingLimit, 1)) * 100);
   const sendersBarWidth =
     senderCount === null
       ? 0

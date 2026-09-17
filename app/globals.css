@@ -661,6 +661,105 @@ body {
   overflow-x: auto;
 }
 
+.admin-sending-limit {
+  display: inline-flex;
+  align-items: center;
+}
+
+.admin-sending-limit-input {
+  width: 110px;
+  height: 34px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  background: #fff;
+  font-family: inherit;
+}
+
+.admin-sending-limit-input:focus {
+  outline: none;
+  border-color: #a78bfa;
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2);
+}
+
+.admin-sending-limit-input:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.admin-open-click-action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 120px;
+}
+
+.admin-toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-open-click-label {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  line-height: 1.2;
+}
+
+.admin-open-click-state {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.admin-toggle {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: #d1d5db;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background 0.15s ease;
+}
+
+.admin-toggle.on {
+  background: #16a34a;
+}
+
+.admin-toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.admin-toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+  transition: left 0.15s ease;
+}
+
+.admin-toggle.on .admin-toggle-knob {
+  left: 21px;
+}
+
 .admin-table {
   width: 100%;
   border-collapse: collapse;

@@ -311,7 +311,12 @@ export function formatSequenceProgress(progress?: CampaignSequenceProgress) {
   };
 }
 
-export const EMAIL_PLAN_LIMIT = 50000;
+import {
+  DEFAULT_PROJECT_SENDING_LIMIT,
+  normalizeSendingLimit,
+} from "@/lib/projects";
+
+export const EMAIL_PLAN_LIMIT = DEFAULT_PROJECT_SENDING_LIMIT;
 export const MAX_INDIVIDUAL_CONTACTS = 10;
 
 const NO_STORE: RequestInit = { cache: "no-store" };

@@ -103,13 +103,13 @@ export function normalizeEmailMergeTags(html: string) {
     return html;
   }
 
+  // Only rewrite explicit merge-tag formats. Do not touch bare `{foo}` or `%foo%`
+  // — those appear in CSS and break HTML when rewritten.
   let next = html;
   next = replaceKnownTags(next, /\{\{\{\s*([^}]+?)\s*\}\}\}/g);
   next = replaceKnownTags(next, /\{\{\s*([^}]+?)\s*\}\}/g);
   next = replaceKnownTags(next, /\*\|([^|*]+)\|\*/g);
   next = replaceKnownTags(next, /%%([^%]+)%%/g);
-  next = replaceKnownTags(next, /%([A-Za-z][A-Za-z0-9._:-]*)%/g);
   next = replaceKnownTags(next, /\[\[([^\]]+)\]\]/g);
-  next = replaceKnownTags(next, /\{([A-Za-z][A-Za-z0-9._]*)\}/g);
   return next;
 }

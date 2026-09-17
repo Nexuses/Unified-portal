@@ -1,18 +1,15 @@
-"use client";
+import type { Metadata } from "next";
+import AdminLayoutClient from "./AdminLayoutClient";
 
-import { usePathname } from "next/navigation";
-import AdminShell from "../components/AdminShell";
+export const metadata: Metadata = {
+  title: "Admin",
+  description: "Nexuses Unified Portal admin console for projects and users.",
+};
 
 export default function AdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const pathname = usePathname();
-
-  if (pathname === "/admin") {
-    return children;
-  }
-
-  return <AdminShell>{children}</AdminShell>;
+  return <AdminLayoutClient>{children}</AdminLayoutClient>;
 }

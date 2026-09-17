@@ -2,6 +2,10 @@ import { createHash, randomBytes } from "crypto";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import type { SessionUser } from "@/lib/auth";
+import {
+  DEFAULT_PROJECT_SENDING_LIMIT,
+  normalizeSendingLimit,
+} from "@/lib/projects";
 
 export const API_KEY_PREFIX = "up_live_";
 
@@ -37,6 +41,7 @@ type ProjectDoc = {
   _id: ObjectId;
   name: string;
   logoUrl?: string;
+  sendingLimit?: number;
 };
 
 export function hashApiKey(rawKey: string) {
@@ -181,5 +186,8 @@ export async function getSessionUserFromApiKey(
     projectId: doc.projectId.toString(),
     projectName: project.name || "Unknown",
     projectLogoUrl: project.logoUrl?.trim() || "",
+    sendingLimit: normalizeSendingLimit(
+      project.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
+    ),
   };
 }

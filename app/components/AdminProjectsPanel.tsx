@@ -16,6 +16,9 @@ export default function AdminProjectsPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [savingLimitId, setSavingLimitId] = useState<string | null>(null);
+  const [limitDrafts, setLimitDrafts] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
   async function loadProjects() {
@@ -121,6 +124,103 @@ export default function AdminProjectsPanel() {
     }
   }
 
+  async function toggleEngagementFlag(
+    project: Project,
+    field: "instantOpen" | "instantClick",
+  ) {
+    const next = !project[field];
+    setTogglingId(`${project.id}:${field}`);
+    setError("");
+    setProjects((current) =>
+      current.map((item) =>
+        item.id === project.id ? { ...item, [field]: next } : item,
+      ),
+    );
+    try {
+      const response = await fetch(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: next }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update tracking setting");
+      }
+      setProjects((current) =>
+        current.map((item) =>
+          item.id === project.id ? { ...item, ...data } : item,
+        ),
+      );
+    } catch (err) {
+      setProjects((current) =>
+        current.map((item) =>
+          item.id === project.id ? { ...item, [field]: project[field] } : item,
+        ),
+      );
+      setError(
+        err instanceof Error ? err.message : "Failed to update tracking setting",
+      );
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  async function saveSendingLimit(project: Project) {
+    const raw = limitDrafts[project.id] ?? String(project.sendingLimit ?? 50000);
+    const parsed = Number(String(raw).replace(/,/g, "").trim());
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      setError("Sending limit must be at least 1.");
+      setLimitDrafts((current) => ({
+        ...current,
+        [project.id]: String(project.sendingLimit ?? 50000),
+      }));
+      return;
+    }
+    const next = Math.min(Math.floor(parsed), 10_000_000);
+    if (next === project.sendingLimit) {
+      setLimitDrafts((current) => {
+        const copy = { ...current };
+        delete copy[project.id];
+        return copy;
+      });
+      return;
+    }
+
+    setSavingLimitId(project.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sendingLimit: next }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update sending limit");
+      }
+      setProjects((current) =>
+        current.map((item) =>
+          item.id === project.id ? { ...item, ...data } : item,
+        ),
+      );
+      setLimitDrafts((current) => {
+        const copy = { ...current };
+        delete copy[project.id];
+        return copy;
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to update sending limit",
+      );
+      setLimitDrafts((current) => ({
+        ...current,
+        [project.id]: String(project.sendingLimit ?? 50000),
+      }));
+    } finally {
+      setSavingLimitId(null);
+    }
+  }
+
   return (
     <div className="admin-page">
       <div className="admin-layout">
@@ -210,19 +310,21 @@ export default function AdminProjectsPanel() {
                   <th>Slug</th>
                   <th>Users</th>
                   <th>Logo</th>
-                  <th aria-label="Actions" />
+                  <th>Sending limit</th>
+                  <th>Action</th>
+                  <th aria-label="Manage" />
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={5} className="admin-empty">
+                    <td colSpan={7} className="admin-empty">
                       Loading projects...
                     </td>
                   </tr>
                 ) : projects.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="admin-empty">
+                    <td colSpan={7} className="admin-empty">
                       No projects yet. Create one on the left.
                     </td>
                   </tr>
@@ -255,6 +357,91 @@ export default function AdminProjectsPanel() {
                         ) : (
                           <span className="admin-logo-fallback">—</span>
                         )}
+                      </td>
+                      <td>
+                        <label className="admin-sending-limit">
+                          <input
+                            className="admin-sending-limit-input"
+                            type="number"
+                            min={1}
+                            step={1}
+                            inputMode="numeric"
+                            value={
+                              limitDrafts[project.id] ??
+                              String(project.sendingLimit ?? 50000)
+                            }
+                            disabled={savingLimitId === project.id}
+                            aria-label={`Sending limit for ${project.name}`}
+                            onChange={(event) =>
+                              setLimitDrafts((current) => ({
+                                ...current,
+                                [project.id]: event.target.value,
+                              }))
+                            }
+                            onBlur={() => void saveSendingLimit(project)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.currentTarget.blur();
+                              }
+                            }}
+                          />
+                        </label>
+                      </td>
+                      <td>
+                        <div className="admin-open-click-action">
+                          <div className="admin-toggle-row">
+                            <button
+                              type="button"
+                              className={`admin-toggle${project.instantOpen ? " on" : ""}`}
+                              role="switch"
+                              aria-checked={project.instantOpen}
+                              aria-label={`Open tracking for ${project.name}`}
+                              title={
+                                project.instantOpen
+                                  ? "ON: opens counted immediately (no delay)"
+                                  : "OFF: normal open bot-grace delay applies"
+                              }
+                              disabled={togglingId === `${project.id}:instantOpen`}
+                              onClick={() =>
+                                void toggleEngagementFlag(project, "instantOpen")
+                              }
+                            >
+                              <span className="admin-toggle-knob" />
+                            </button>
+                            <span className="admin-open-click-label">
+                              Open
+                              <span className="admin-open-click-state">
+                                {project.instantOpen ? "On" : "Off"}
+                              </span>
+                            </span>
+                          </div>
+                          <div className="admin-toggle-row">
+                            <button
+                              type="button"
+                              className={`admin-toggle${project.instantClick ? " on" : ""}`}
+                              role="switch"
+                              aria-checked={project.instantClick}
+                              aria-label={`Click tracking for ${project.name}`}
+                              title={
+                                project.instantClick
+                                  ? "ON: clicks counted immediately (no delay)"
+                                  : "OFF: normal click bot-grace delay applies"
+                              }
+                              disabled={togglingId === `${project.id}:instantClick`}
+                              onClick={() =>
+                                void toggleEngagementFlag(project, "instantClick")
+                              }
+                            >
+                              <span className="admin-toggle-knob" />
+                            </button>
+                            <span className="admin-open-click-label">
+                              Click
+                              <span className="admin-open-click-state">
+                                {project.instantClick ? "On" : "Off"}
+                              </span>
+                            </span>
+                          </div>
+                        </div>
                       </td>
                       <td className="admin-actions">
                         <div className="admin-action-group">

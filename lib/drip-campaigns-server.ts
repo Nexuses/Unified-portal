@@ -700,6 +700,21 @@ export async function updateProjectDripCampaign(
     { $set: updates },
   );
 
+  if (typeof updates.designHtml === "string") {
+    const verified = await db.collection<DripCampaignDoc>("drip_campaigns").findOne(
+      { _id: existing._id },
+      { projection: { designHtml: 1, hasDesign: 1 } },
+    );
+    if (!verified || verified.designHtml !== updates.designHtml) {
+      console.error("[campaigns.update] designHtml mismatch after $set", {
+        campaignId,
+        expectedLen: updates.designHtml.length,
+        actualLen: verified?.designHtml?.length ?? 0,
+      });
+      throw new Error("Design HTML failed to save — please try again");
+    }
+  }
+
   return getProjectDripCampaign(projectId, campaignId, resolvedKind);
 }
 

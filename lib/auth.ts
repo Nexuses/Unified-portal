@@ -2,6 +2,10 @@ import { cookies } from "next/headers";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import type { AdminDoc, SessionAdmin } from "@/lib/admins";
+import {
+  DEFAULT_PROJECT_SENDING_LIMIT,
+  normalizeSendingLimit,
+} from "@/lib/projects";
 
 export const USER_SESSION_COOKIE = "portal_user_session";
 export const ADMIN_SESSION_COOKIE = "portal_admin_session";
@@ -13,6 +17,7 @@ export type SessionUser = {
   projectId: string;
   projectName: string;
   projectLogoUrl: string;
+  sendingLimit: number;
 };
 
 export type { SessionAdmin };
@@ -28,6 +33,7 @@ type ProjectDoc = {
   _id: ObjectId;
   name: string;
   logoUrl?: string;
+  sendingLimit?: number;
 };
 
 export async function getSessionUser(): Promise<SessionUser | null> {
@@ -58,6 +64,9 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     projectId: user.projectId.toString(),
     projectName: project?.name || "Unknown",
     projectLogoUrl: project?.logoUrl?.trim() || "",
+    sendingLimit: normalizeSendingLimit(
+      project?.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
+    ),
   };
 }
 

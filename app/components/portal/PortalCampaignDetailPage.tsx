@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import type { SmtpSender } from "@/lib/smtp-senders";
 import type { Contact, CrmList } from "@/lib/crm";
 import {
   campaignSequences,
   createEmptySequence,
+  EMAIL_PLAN_LIMIT,
   fetchDripCampaign,
   fetchDripCampaigns,
   getRemainingEmailCredits,
@@ -38,7 +39,7 @@ import {
 } from "@/lib/automations";
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
 import { getEmailTemplate, loadEmailTemplates } from "@/lib/email-templates";
-import { normalizeEmailMergeTags, replaceUnsubscribeVariables } from "@/lib/email-variables";
+import { replaceUnsubscribeVariables } from "@/lib/email-variables";
 import {
   addSavedTestEmail,
   isValidEmail,
@@ -385,8 +386,7 @@ function applyContactVariables(text: string, contact: Contact | null, forHtml = 
     return "";
   }
 
-  const normalized = normalizeEmailMergeTags(text);
-  const withUnsubscribe = replaceUnsubscribeVariables(normalized, "#unsubscribe");
+  const withUnsubscribe = replaceUnsubscribeVariables(text, "#unsubscribe");
 
   if (!contact) {
     return withUnsubscribe;
@@ -1661,6 +1661,13 @@ function DesignSavedCard({
   const [moreOpen, setMoreOpen] = useState(false);
   const [viewHtmlOpen, setViewHtmlOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  const previewKey = useMemo(() => {
+    let hash = 0;
+    for (let i = 0; i < html.length; i += 1) {
+      hash = (hash * 31 + html.charCodeAt(i)) | 0;
+    }
+    return `${html.length}-${hash}`;
+  }, [html]);
 
   useEffect(() => {
     if (!moreOpen) {
@@ -1760,7 +1767,12 @@ function DesignSavedCard({
       <div className="drip-design-saved-preview">
         {html.trim() ? (
           <div className="drip-design-saved-thumb">
-            <iframe title="Saved email design" sandbox="" srcDoc={html} />
+            <iframe
+              key={previewKey}
+              title="Saved email design"
+              sandbox=""
+              srcDoc={html}
+            />
             <button type="button" className="drip-design-preview-hover-btn" onClick={onPreview}>
               Preview &amp; Test
             </button>
@@ -2353,22 +2365,30 @@ function PreviewTestModal({
 
 function CustomHtmlEditor({
   campaign,
+  campaignKind,
+  sequenceId = null,
   contacts,
   initialHtml,
   onQuit,
-  onSaveAndQuit,
+  onSaved,
 }: {
   campaign: DripCampaign;
+  campaignKind: CampaignKind;
+  sequenceId?: string | null;
   contacts: Contact[];
   initialHtml: string;
   onQuit: () => void;
-  onSaveAndQuit: (html: string) => void;
+  onSaved: (updated: DripCampaign) => void;
 }) {
-  const [htmlDraft, setHtmlDraft] = useState(() => normalizeEmailMergeTags(initialHtml));
+  const [htmlDraft, setHtmlDraft] = useState(initialHtml);
+  const deferredHtml = useDeferredValue(htmlDraft);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const moreRef = useRef<HTMLDivElement>(null);
   const htmlInputRef = useRef<HTMLTextAreaElement>(null);
+  const savingLockRef = useRef(false);
 
   useEffect(() => {
     if (!moreOpen) {
@@ -2385,65 +2405,93 @@ function CustomHtmlEditor({
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [moreOpen]);
 
-  function applyNormalizedHtml(next: string, cursor?: number) {
-    setHtmlDraft(next);
-    if (cursor === undefined) {
+  async function handleSaveAndQuit() {
+    if (savingLockRef.current) {
       return;
     }
-    requestAnimationFrame(() => {
-      const input = htmlInputRef.current;
-      if (!input) {
-        return;
+    savingLockRef.current = true;
+    setSaving(true);
+    setSaveError("");
+    // Always read the live textarea value — never trust a stale closure.
+    const htmlToSave = htmlInputRef.current?.value ?? htmlDraft;
+    const resolvedSequenceId =
+      typeof sequenceId === "string" && sequenceId.trim() ? sequenceId : null;
+    try {
+      let patch: Partial<DripCampaign>;
+      if (resolvedSequenceId) {
+        const sequences = campaignSequences(campaign).map((sequence) =>
+          sequence.id === resolvedSequenceId
+            ? {
+                ...sequence,
+                hasDesign: Boolean(htmlToSave.trim()),
+                designHtml: htmlToSave,
+                designSourceCampaignId: "",
+              }
+            : sequence,
+        );
+        patch = sequenceCampaignPatch(
+          sequences,
+          campaign.windowStart || "09:00",
+          campaign.windowEnd || "18:00",
+          Math.max(0, Number(campaign.emailGapMinutes) || 0),
+        );
+      } else {
+        patch = {
+          hasDesign: Boolean(htmlToSave.trim()),
+          designHtml: htmlToSave,
+          designSourceCampaignId: "",
+        };
       }
-      input.setSelectionRange(cursor, cursor);
-    });
-  }
 
-  function handleHtmlPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    const pasted = event.clipboardData.getData("text");
-    if (!pasted) {
-      return;
+      const updated = await patchDripCampaign(campaign.id, patch, campaignKind);
+      const merged: DripCampaign = {
+        ...updated,
+        hasDesign: patch.hasDesign ?? updated.hasDesign,
+        designHtml: patch.designHtml ?? updated.designHtml,
+        designSourceCampaignId:
+          patch.designSourceCampaignId ?? updated.designSourceCampaignId,
+        sequences: patch.sequences ?? updated.sequences,
+        subject: patch.subject ?? updated.subject,
+        previewText: patch.previewText ?? updated.previewText,
+      };
+      onSaved(merged);
+    } catch (error) {
+      setSaveError(
+        error instanceof Error ? error.message : "Failed to save HTML design.",
+      );
+    } finally {
+      savingLockRef.current = false;
+      setSaving(false);
     }
-
-    const start = event.currentTarget.selectionStart;
-    const end = event.currentTarget.selectionEnd;
-    const merged = htmlDraft.slice(0, start) + pasted + htmlDraft.slice(end);
-    const normalized = normalizeEmailMergeTags(merged);
-    if (normalized === merged) {
-      return;
-    }
-
-    event.preventDefault();
-    const prefix = normalizeEmailMergeTags(htmlDraft.slice(0, start) + pasted);
-    applyNormalizedHtml(normalized, prefix.length);
-  }
-
-  function handleSaveAndQuit() {
-    onSaveAndQuit(normalizeEmailMergeTags(htmlDraft));
   }
 
   return (
     <div className="drip-html-editor" role="dialog" aria-modal="true" aria-label="Custom HTML editor">
       <header className="drip-html-editor-bar">
         <div className="drip-html-editor-brand">
-          <span className="drip-html-editor-logo" aria-hidden="true">
-            B
-          </span>
+          <img
+            className="drip-html-editor-logo"
+            src="https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png"
+            alt="Nexuses"
+          />
           <span className="drip-html-editor-name">{campaign.name}</span>
         </div>
         <div className="drip-html-editor-actions">
           <button
             type="button"
             className="drip-html-btn-outline"
-            onClick={() => {
-              setHtmlDraft((current) => normalizeEmailMergeTags(current));
-              setPreviewOpen(true);
-            }}
+            disabled={saving}
+            onClick={() => setPreviewOpen(true)}
           >
             Preview &amp; Test
           </button>
-          <button type="button" className="drip-html-btn-dark" onClick={handleSaveAndQuit}>
-            Save &amp; Quit
+          <button
+            type="button"
+            className="drip-html-btn-dark"
+            onClick={() => void handleSaveAndQuit()}
+            disabled={saving}
+          >
+            {saving ? "Saving…" : "Save & Quit"}
           </button>
           <div className="drip-html-more-wrap" ref={moreRef}>
             <button
@@ -2486,16 +2534,40 @@ function CustomHtmlEditor({
           <code>{"{{ contact.EMAIL }}"}</code>, and{" "}
           <code>{"{{ contact.COMPANY }}"}</code>.
         </div>
-        <textarea
-          ref={htmlInputRef}
-          className="drip-html-editor-input"
-          value={htmlDraft}
-          onChange={(event) => setHtmlDraft(event.target.value)}
-          onPaste={handleHtmlPaste}
-          onBlur={() => setHtmlDraft((current) => normalizeEmailMergeTags(current))}
-          placeholder="Paste or write your custom HTML email here."
-          spellCheck={false}
-        />
+        {saveError ? (
+          <div className="drip-html-editor-error">{saveError}</div>
+        ) : null}
+        <div className="drip-html-editor-panes">
+          <div className="drip-html-editor-pane drip-html-editor-code">
+            <div className="drip-html-editor-pane-label">HTML</div>
+            <textarea
+              ref={htmlInputRef}
+              className="drip-html-editor-input"
+              value={htmlDraft}
+              onChange={(event) => setHtmlDraft(event.target.value)}
+              placeholder="Paste or write your custom HTML email here."
+              spellCheck={false}
+              disabled={saving}
+              aria-label="HTML source"
+            />
+          </div>
+          <div className="drip-html-editor-pane drip-html-editor-preview">
+            <div className="drip-html-editor-pane-label">Preview</div>
+            <div className="drip-html-editor-preview-frame">
+              {deferredHtml.trim() ? (
+                <iframe
+                  title="Email preview"
+                  sandbox=""
+                  srcDoc={deferredHtml}
+                />
+              ) : (
+                <div className="drip-html-editor-preview-empty">
+                  Paste HTML on the left to see a live preview here.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
       {previewOpen ? (
@@ -2512,16 +2584,24 @@ function CustomHtmlEditor({
 
 function DesignEmailModal({
   campaign,
+  campaignKind,
+  sequenceId = null,
   contacts,
   startInEditor = false,
   onClose,
   onSaveDesign,
+  onHtmlSaved,
 }: {
   campaign: DripCampaign;
+  campaignKind: CampaignKind;
+  sequenceId?: string | null;
   contacts: Contact[];
   startInEditor?: boolean;
   onClose: () => void;
-  onSaveDesign: (patch: Pick<DripCampaign, "hasDesign" | "designHtml" | "designSourceCampaignId">) => void;
+  onSaveDesign: (
+    patch: Pick<DripCampaign, "hasDesign" | "designHtml" | "designSourceCampaignId">,
+  ) => void | Promise<void>;
+  onHtmlSaved: (updated: DripCampaign) => void;
 }) {
   const [htmlEditorOpen, setHtmlEditorOpen] = useState(startInEditor);
   const [search, setSearch] = useState("");
@@ -2625,17 +2705,7 @@ function DesignEmailModal({
     );
   }, [campaignEmails, search]);
 
-  function handleSaveCustomHtml(html: string) {
-    const normalized = normalizeEmailMergeTags(html);
-    const trimmed = normalized.trim();
-    onSaveDesign({
-      hasDesign: Boolean(trimmed),
-      designHtml: normalized,
-      designSourceCampaignId: undefined,
-    });
-  }
-
-  function handleUseTemplate(templateId: string) {
+  async function handleUseTemplate(templateId: string) {
     const fromList = campaignEmails.find((item) => item.id === templateId);
     const template = fromList ?? getEmailTemplate(templateId);
 
@@ -2648,9 +2718,9 @@ function DesignEmailModal({
       return;
     }
 
-    onSaveDesign({
+    await onSaveDesign({
       hasDesign: true,
-      designHtml: normalizeEmailMergeTags(html),
+      designHtml: html,
       designSourceCampaignId: templateId,
     });
   }
@@ -2663,10 +2733,12 @@ function DesignEmailModal({
     return (
       <CustomHtmlEditor
         campaign={campaign}
+        campaignKind={campaignKind}
+        sequenceId={sequenceId}
         contacts={contacts}
         initialHtml={campaign.designHtml ?? ""}
-        onQuit={onClose}
-        onSaveAndQuit={handleSaveCustomHtml}
+        onQuit={startInEditor ? onClose : () => setHtmlEditorOpen(false)}
+        onSaved={onHtmlSaved}
       />
     );
   }
@@ -2712,7 +2784,7 @@ function DesignEmailModal({
                 <button
                   type="button"
                   className="drip-template-preview-use"
-                  onClick={() => handleUseTemplate(previewTemplate.id)}
+                  onClick={() => void handleUseTemplate(previewTemplate.id)}
                 >
                   Use template
                 </button>
@@ -2806,7 +2878,7 @@ function DesignEmailModal({
                           <button
                             type="button"
                             className="drip-design-card-use"
-                            onClick={() => handleUseTemplate(item.id)}
+                            onClick={() => void handleUseTemplate(item.id)}
                           >
                             Use template
                           </button>
@@ -3768,11 +3840,35 @@ export default function PortalCampaignDetailPage({
 
   const [projectCampaigns, setProjectCampaigns] = useState<DripCampaign[]>([]);
   campaignRef.current = campaign;
-  const emailPlanLimit = contacts.length;
+  const [emailPlanLimit, setEmailPlanLimit] = useState(EMAIL_PLAN_LIMIT);
   const remainingEmails = useMemo(
     () => getRemainingEmailCredits(projectCampaigns, emailPlanLimit),
     [projectCampaigns, emailPlanLimit],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSendingLimit() {
+      try {
+        const response = await fetch("/api/auth/me");
+        const data = (await response.json()) as { sendingLimit?: number };
+        if (
+          !cancelled &&
+          response.ok &&
+          typeof data.sendingLimit === "number" &&
+          data.sendingLimit > 0
+        ) {
+          setEmailPlanLimit(data.sendingLimit);
+        }
+      } catch {
+        // Keep default plan limit.
+      }
+    }
+    void loadSendingLimit();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -3800,9 +3896,17 @@ export default function PortalCampaignDetailPage({
         setProjectCampaigns(all);
         if (next) {
           void ensureAutomationCampaignTags([next], kind).then((tagged) => {
-            if (!cancelled && tagged[0]) {
-              setCampaign(tagged[0]);
+            if (cancelled || !tagged[0]) {
+              return;
             }
+            // Only merge tags — never replace the whole campaign (that raced with
+            // design HTML saves and rolled content back to a stale server snapshot).
+            setCampaign((current) => {
+              if (!current || current.id !== tagged[0].id) {
+                return current;
+              }
+              return { ...current, tags: tagged[0].tags };
+            });
           });
         }
       } catch {
@@ -3820,16 +3924,6 @@ export default function PortalCampaignDetailPage({
       cancelled = true;
     };
   }, [campaignId, kind, router]);
-
-  useEffect(() => {
-    return () => {
-      const current = campaignRef.current;
-      if (!current || current.status === "sent" || current.status === "sending" || current.status === "paused") {
-        return;
-      }
-      void patchDripCampaign(campaignId, current, kind).catch(() => undefined);
-    };
-  }, [campaignId, kind]);
 
   useEffect(() => {
     if (!senderPanelOpen && !recipientsPanelOpen) {
@@ -3942,12 +4036,24 @@ export default function PortalCampaignDetailPage({
     });
     try {
       const updated = await patchDripCampaign(campaignId, patch, kind);
-      campaignRef.current = updated;
-      setCampaign(updated);
+      // Never let a stale API payload wipe fields we just saved in this patch.
+      const merged: DripCampaign = {
+        ...updated,
+        ...(patch.hasDesign !== undefined ? { hasDesign: patch.hasDesign } : {}),
+        ...(patch.designHtml !== undefined ? { designHtml: patch.designHtml } : {}),
+        ...(patch.designSourceCampaignId !== undefined
+          ? { designSourceCampaignId: patch.designSourceCampaignId }
+          : {}),
+        ...(patch.sequences !== undefined ? { sequences: patch.sequences } : {}),
+        ...(patch.subject !== undefined ? { subject: patch.subject } : {}),
+        ...(patch.previewText !== undefined ? { previewText: patch.previewText } : {}),
+      };
+      campaignRef.current = merged;
+      setCampaign(merged);
       setProjectCampaigns((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item)),
+        current.map((item) => (item.id === merged.id ? merged : item)),
       );
-      return updated;
+      return merged;
     } catch (error) {
       if (previous) {
         campaignRef.current = previous;
@@ -4070,13 +4176,15 @@ export default function PortalCampaignDetailPage({
     event?.preventDefault();
     const current = campaignRef.current;
     const draftPatch = pendingDraftPatch();
-    if (current && current.status !== "sent" && current.status !== "sending" && current.status !== "paused") {
+    if (
+      current &&
+      current.status !== "sent" &&
+      current.status !== "sending" &&
+      current.status !== "paused" &&
+      Object.keys(draftPatch).length > 0
+    ) {
       try {
-        await persistCampaign(
-          Object.keys(draftPatch).length > 0
-            ? draftPatch
-            : current,
-        );
+        await persistCampaign(draftPatch);
       } catch {
         // Navigate anyway; latest successful save is already in MongoDB.
       }
@@ -4269,8 +4377,15 @@ export default function PortalCampaignDetailPage({
   }
 
   function openDesignModal(sequenceId?: string) {
-    closeAllPanels();
-    setDesignSequenceId(sequenceId ?? null);
+    // onClick={openDesignModal} would pass a MouseEvent — only accept real ids.
+    const resolvedSequenceId =
+      typeof sequenceId === "string" && sequenceId.trim() ? sequenceId : null;
+    setSenderPanelOpen(false);
+    setRecipientsPanelOpen(false);
+    setSubjectPanelOpen(false);
+    setSettingsPanelOpen(false);
+    setSequencesPanelOpen(false);
+    setDesignSequenceId(resolvedSequenceId);
     setDesignModalOpen(true);
   }
 
@@ -4351,10 +4466,12 @@ export default function PortalCampaignDetailPage({
 
       await persistCampaign(patch);
       setDesignModalOpen(false);
+      setDesignSequenceId(null);
     } catch (error) {
       setPersistError(
         error instanceof Error ? error.message : "Failed to save campaign",
       );
+      throw error;
     }
   }
 
@@ -4750,9 +4867,10 @@ export default function PortalCampaignDetailPage({
                 />
               ) : step.id === "design" && campaign.hasDesign && !designModalOpen ? (
                 <DesignSavedCard
+                  key={`design-${campaign.updatedAt ?? ""}-${(campaign.designHtml ?? "").length}`}
                   html={campaign.designHtml ?? ""}
                   fileName={campaign.name}
-                  onEdit={openDesignModal}
+                  onEdit={() => openDesignModal()}
                   onPreview={() => {
                     if (!requiredStepsComplete) {
                       setSetupErrorToast((value) => value + 1);
@@ -4874,10 +4992,27 @@ export default function PortalCampaignDetailPage({
       {designModalOpen ? (
         <DesignEmailModal
           campaign={designCampaign}
+          campaignKind={
+            campaign.kind === "oneone" || kind === "oneone" ? "oneone" : "drip"
+          }
+          sequenceId={designSequenceId}
           contacts={contacts}
-          startInEditor={false}
+          startInEditor={Boolean(designCampaign.designHtml?.trim())}
           onClose={closeDesignModal}
           onSaveDesign={handleSaveDesign}
+          onHtmlSaved={(updated) => {
+            campaignRef.current = updated;
+            setCampaign(updated);
+            setProjectCampaigns((current) =>
+              current.map((item) => (item.id === updated.id ? updated : item)),
+            );
+            if (designSequenceId && updated.sequences) {
+              setDraftSequences(updated.sequences);
+              setSequencesPanelOpen(true);
+            }
+            setDesignModalOpen(false);
+            setDesignSequenceId(null);
+          }}
         />
       ) : null}
 

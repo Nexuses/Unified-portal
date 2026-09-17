@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteAutomation,
   fetchAutomations,
@@ -53,7 +53,9 @@ export default function PortalAutomationHistoryPage() {
   const [statusFilter, setStatusFilter] = useState<AutomationStatus | "all">(
     "all",
   );
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,19 +112,118 @@ export default function PortalAutomationHistoryPage() {
     });
   }, [visibleItems, query, statusFilter]);
 
-  async function handleDelete(id: string) {
-    if (!window.confirm("Delete this automation?")) {
+  const filteredIds = useMemo(() => filtered.map((item) => item.id), [filtered]);
+  const selectedOnPage = filteredIds.filter((id) => selectedIds.has(id));
+  const allVisibleSelected =
+    filteredIds.length > 0 && selectedOnPage.length === filteredIds.length;
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate =
+        selectedOnPage.length > 0 && !allVisibleSelected;
+    }
+  }, [allVisibleSelected, selectedOnPage.length]);
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const allowed = new Set(visibleItems.map((item) => item.id));
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of current) {
+        if (allowed.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [visibleItems]);
+
+  function toggleOne(id: string, checked: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllVisible(checked: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        for (const id of filteredIds) {
+          next.add(id);
+        }
+      } else {
+        for (const id of filteredIds) {
+          next.delete(id);
+        }
+      }
+      return next;
+    });
+  }
+
+  async function deleteSelected(ids: string[]) {
+    if (ids.length === 0 || deleting) {
       return;
     }
-    setDeletingId(id);
+
+    const confirmText =
+      ids.length === 1
+        ? `Delete automation "${items.find((item) => item.id === ids[0])?.name || "Untitled automation"}"?`
+        : `Delete ${ids.length} automations?`;
+    if (!window.confirm(confirmText)) {
+      return;
+    }
+
+    setDeleting(true);
     setError("");
     try {
-      await deleteAutomation(id);
-      setItems((current) => current.filter((item) => item.id !== id));
+      const results = await Promise.allSettled(
+        ids.map((id) => deleteAutomation(id)),
+      );
+      const removed = new Set<string>();
+      const failures: string[] = [];
+      results.forEach((result, index) => {
+        const id = ids[index];
+        if (result.status === "fulfilled") {
+          removed.add(id);
+        } else {
+          failures.push(
+            result.reason instanceof Error
+              ? result.reason.message
+              : "Failed to delete",
+          );
+        }
+      });
+
+      if (removed.size > 0) {
+        setItems((current) => current.filter((item) => !removed.has(item.id)));
+        setSelectedIds((current) => {
+          const next = new Set(current);
+          for (const id of removed) {
+            next.delete(id);
+          }
+          return next;
+        });
+      }
+
+      if (failures.length > 0) {
+        setError(
+          removed.size > 0
+            ? `Deleted ${removed.size}, but ${failures.length} failed.`
+            : failures[0] || "Failed to delete",
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete");
     } finally {
-      setDeletingId(null);
+      setDeleting(false);
     }
   }
 
@@ -132,7 +233,7 @@ export default function PortalAutomationHistoryPage() {
         <div>
           <h2>Automation history</h2>
           <p className="auto-history-sub">
-            Saved flows. Delete drafts anytime.
+            Saved flows. Select one or more to delete.
           </p>
         </div>
         <div className="crm-actions">
@@ -152,6 +253,25 @@ export default function PortalAutomationHistoryPage() {
 
       <div className="drip-shell">
         <div className="drip-toolbar">
+          <input
+            ref={selectAllRef}
+            type="checkbox"
+            className="drip-check"
+            checked={allVisibleSelected}
+            disabled={loading || filteredIds.length === 0 || deleting}
+            onChange={(event) => toggleAllVisible(event.target.checked)}
+            aria-label="Select all automations"
+          />
+          {selectedIds.size > 0 ? (
+            <button
+              type="button"
+              className="lists-bulk-delete"
+              disabled={deleting}
+              onClick={() => void deleteSelected([...selectedIds])}
+            >
+              {deleting ? "Deleting…" : `Delete (${selectedIds.size})`}
+            </button>
+          ) : null}
           <label className="drip-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="7" />
@@ -206,8 +326,16 @@ export default function PortalAutomationHistoryPage() {
                     : item.status === "running" || item.status === "scheduled"
                       ? " live"
                       : ""
-                }`}
+                }${selectedIds.has(item.id) ? " selected" : ""}`}
               >
+                <input
+                  type="checkbox"
+                  className="drip-check auto-history-check"
+                  checked={selectedIds.has(item.id)}
+                  disabled={deleting}
+                  onChange={(event) => toggleOne(item.id, event.target.checked)}
+                  aria-label={`Select ${item.name || "Untitled automation"}`}
+                />
                 <Link
                   href={portalAutomationRoute(item.id)}
                   className="auto-history-main"
@@ -230,22 +358,20 @@ export default function PortalAutomationHistoryPage() {
                     <span>Updated {formatUpdated(item.updatedAt)}</span>
                   </div>
                 </Link>
-                {item.status === "draft" ? (
-                  <div className="auto-history-actions">
-                    <button
-                      type="button"
-                      className="btn-link-purple"
-                      disabled={deletingId === item.id}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void handleDelete(item.id);
-                      }}
-                    >
-                      {deletingId === item.id ? "Deleting…" : "Delete"}
-                    </button>
-                  </div>
-                ) : null}
+                <div className="auto-history-actions">
+                  <button
+                    type="button"
+                    className="btn-link-purple"
+                    disabled={deleting}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      void deleteSelected([item.id]);
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             ))}
           </div>

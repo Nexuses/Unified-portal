@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import {
   bulkImportSuppression,
+  bulkImportSuppressionValues,
   getUnsubscribeListEntries,
   removeSuppressionItem,
   type SuppressionKind,
@@ -11,14 +12,21 @@ import {
   requirePortalSession,
 } from "@/lib/require-portal-session";
 
-export async function GET() {
+export const maxDuration = 300;
+
+export async function GET(request: NextRequest) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) {
       return session;
     }
 
-    const data = await getUnsubscribeListEntries(new ObjectId(session.projectId));
+    const page = Number(request.nextUrl.searchParams.get("page") ?? "1");
+    const pageSize = Number(request.nextUrl.searchParams.get("pageSize") ?? "50");
+    const data = await getUnsubscribeListEntries(new ObjectId(session.projectId), {
+      page: Number.isFinite(page) ? page : 1,
+      pageSize: Number.isFinite(pageSize) ? pageSize : 50,
+    });
     return NextResponse.json(data);
   } catch (error) {
     console.error("Failed to load suppression list:", error);
@@ -39,16 +47,20 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as {
       kind?: string;
       text?: string;
+      values?: unknown;
     };
     const kind: SuppressionKind = body.kind === "domain" ? "domain" : "email";
-    const text = String(body.text ?? "");
     const userId = ObjectId.isValid(session.id) ? new ObjectId(session.id) : null;
-    const result = await bulkImportSuppression(
-      new ObjectId(session.projectId),
-      userId,
-      kind,
-      text,
-    );
+    const projectId = new ObjectId(session.projectId);
+
+    const values = Array.isArray(body.values)
+      ? body.values.map((value) => String(value ?? "").trim()).filter(Boolean)
+      : null;
+
+    const result = values
+      ? await bulkImportSuppressionValues(projectId, userId, kind, values)
+      : await bulkImportSuppression(projectId, userId, kind, String(body.text ?? ""));
+
     return NextResponse.json(result);
   } catch (error) {
     const message =

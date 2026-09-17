@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   CONTACT_ATTRIBUTE_LABELS,
@@ -19,6 +19,23 @@ import {
 import { PORTAL_ROUTES, portalListRoute } from "@/lib/portal-nav";
 
 type WizardStep = "name" | "upload" | "mapping" | "confirm";
+
+type ExistingListRef = {
+  id: string;
+  name: string;
+  displayId: number;
+};
+
+type ImportRow = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  companyName: string;
+  attributes: Record<string, string>;
+  inFileDuplicate: boolean;
+  existingLists: ExistingListRef[];
+};
 
 const STEP_ORDER: WizardStep[] = ["name", "upload", "mapping", "confirm"];
 
@@ -93,6 +110,9 @@ export default function PortalCreateListPage() {
   const [dragOver, setDragOver] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [confirmRows, setConfirmRows] = useState<ImportRow[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [lookupLoading, setLookupLoading] = useState(false);
 
   function attributeLabel(key: string) {
     return (
@@ -121,7 +141,108 @@ export default function PortalCreateListPage() {
     );
   }, [csvHeaders, csvRows, fieldMapping]);
 
-  const previewContacts = mappedContacts.slice(0, 8);
+  const duplicateCount = useMemo(
+    () => confirmRows.filter((row) => row.inFileDuplicate).length,
+    [confirmRows],
+  );
+
+  const alreadyInListsCount = useMemo(
+    () =>
+      confirmRows.filter(
+        (row) => !row.inFileDuplicate && row.existingLists.length > 0,
+      ).length,
+    [confirmRows],
+  );
+
+  const importableRows = useMemo(
+    () =>
+      confirmRows.filter(
+        (row) => !row.inFileDuplicate && selectedIds.has(row.id),
+      ),
+    [confirmRows, selectedIds],
+  );
+
+  const selectableRows = useMemo(
+    () => confirmRows.filter((row) => !row.inFileDuplicate),
+    [confirmRows],
+  );
+
+  const allSelectableChecked =
+    selectableRows.length > 0 &&
+    selectableRows.every((row) => selectedIds.has(row.id));
+
+  useEffect(() => {
+    if (step !== "confirm") {
+      return;
+    }
+
+    const seen = new Set<string>();
+    const rows: ImportRow[] = mappedContacts.map((row, index) => {
+      const email = row.email.trim().toLowerCase();
+      const inFileDuplicate = seen.has(email);
+      if (!inFileDuplicate) {
+        seen.add(email);
+      }
+      return {
+        id: `${email}-${index}`,
+        firstName: row.firstName,
+        lastName: row.lastName,
+        email,
+        companyName: row.companyName,
+        attributes: row.attributes,
+        inFileDuplicate,
+        existingLists: [],
+      };
+    });
+
+    setConfirmRows(rows);
+    setSelectedIds(
+      new Set(rows.filter((row) => !row.inFileDuplicate).map((row) => row.id)),
+    );
+
+    const uniqueEmails = [...seen];
+    if (uniqueEmails.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    setLookupLoading(true);
+
+    void (async () => {
+      try {
+        const response = await fetch("/api/crm/contacts/lookup-lists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ emails: uniqueEmails }),
+        });
+        const data = await response.json();
+        if (cancelled || !response.ok) {
+          return;
+        }
+        const matchMap = new Map<string, ExistingListRef[]>(
+          (data.matches as Array<{ email: string; lists: ExistingListRef[] }> | undefined)?.map(
+            (match) => [match.email.toLowerCase(), match.lists],
+          ) ?? [],
+        );
+        setConfirmRows((current) =>
+          current.map((row) => ({
+            ...row,
+            existingLists: matchMap.get(row.email) ?? [],
+          })),
+        );
+      } catch {
+        // Keep confirm usable even if lookup fails.
+      } finally {
+        if (!cancelled) {
+          setLookupLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step, mappedContacts]);
 
   const sampleForHeader = (header: string) => {
     const index = csvHeaders.indexOf(header);
@@ -138,6 +259,39 @@ export default function PortalCreateListPage() {
     .filter((item) => item.required)
     .every((item) => Boolean(fieldMapping[item.key]));
 
+  function toggleRow(id: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllSelectable() {
+    if (allSelectableChecked) {
+      setSelectedIds(new Set());
+      return;
+    }
+    setSelectedIds(new Set(selectableRows.map((row) => row.id)));
+  }
+
+  function removeSelectedRows() {
+    if (selectedIds.size === 0) {
+      return;
+    }
+    setConfirmRows((current) =>
+      current.filter((row) => !selectedIds.has(row.id)),
+    );
+    setSelectedIds(new Set());
+  }
+
+  function removeDuplicateRows() {
+    setConfirmRows((current) => current.filter((row) => !row.inFileDuplicate));
+  }
   function addAttribute(mapToHeader?: string) {
     const label = newAttributeLabel.trim() || mapToHeader?.trim() || "";
     if (!label) {
@@ -241,6 +395,11 @@ export default function PortalCreateListPage() {
   }
 
   async function handleCreate() {
+    if (importableRows.length === 0) {
+      setError("Select at least one contact to import.");
+      return;
+    }
+
     setSaving(true);
     setError("");
     try {
@@ -249,7 +408,13 @@ export default function PortalCreateListPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: listName.trim(),
-          contacts: mappedContacts,
+          contacts: importableRows.map((row) => ({
+            firstName: row.firstName,
+            lastName: row.lastName,
+            email: row.email,
+            companyName: row.companyName,
+            attributes: row.attributes,
+          })),
           importFileName,
         }),
       });
@@ -579,13 +744,56 @@ export default function PortalCreateListPage() {
           <div className="list-upload-head">
             <div>
               <h3>
-                <span>3</span> Confirm import
+                <span>4</span> Confirm import
               </h3>
               <p>
-                Import <strong>{mappedContacts.length.toLocaleString()}</strong>{" "}
-                contacts into <strong>{listName.trim()}</strong>
+                Import <strong>{importableRows.length.toLocaleString()}</strong>{" "}
+                selected contact
+                {importableRows.length === 1 ? "" : "s"} into{" "}
+                <strong>{listName.trim()}</strong>
                 {importFileName ? ` from ${importFileName}` : ""}.
+                {duplicateCount > 0 ? (
+                  <>
+                    {" "}
+                    <strong className="list-dup-count">
+                      {duplicateCount.toLocaleString()} duplicate
+                      {duplicateCount === 1 ? "" : "s"}
+                    </strong>{" "}
+                    in this file will not be added.
+                  </>
+                ) : null}
+                {alreadyInListsCount > 0 ? (
+                  <>
+                    {" "}
+                    {alreadyInListsCount.toLocaleString()} contact
+                    {alreadyInListsCount === 1 ? " is" : "s are"} already on
+                    other lists.
+                  </>
+                ) : null}
               </p>
+            </div>
+          </div>
+
+          <div className="list-confirm-toolbar">
+            <div className="list-confirm-toolbar-actions">
+              {duplicateCount > 0 ? (
+                <button
+                  type="button"
+                  className="btn-soft"
+                  onClick={removeDuplicateRows}
+                >
+                  Hide duplicates
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="btn-soft"
+                onClick={removeSelectedRows}
+                disabled={selectedIds.size === 0}
+              >
+                Remove selected
+                {selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}
+              </button>
             </div>
           </div>
 
@@ -593,40 +801,92 @@ export default function PortalCreateListPage() {
             <table>
               <thead>
                 <tr>
-                  <th>First name</th>
+                  <th className="list-confirm-name-col">
+                    <label className="list-confirm-select-all">
+                      <input
+                        type="checkbox"
+                        checked={allSelectableChecked}
+                        onChange={toggleAllSelectable}
+                        disabled={selectableRows.length === 0}
+                        aria-label="Select all"
+                      />
+                      <span>First name</span>
+                    </label>
+                  </th>
                   <th>Last name</th>
                   <th>Email</th>
                   <th>Company</th>
-                  <th>Extra fields</th>
+                  <th>Already in lists</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {previewContacts.map((row, index) => (
-                  <tr key={`${row.email}-${index}`}>
-                    <td>{row.firstName}</td>
-                    <td>{row.lastName || "—"}</td>
-                    <td>{row.email}</td>
-                    <td>{row.companyName || "—"}</td>
-                    <td>
-                      {Object.keys(row.attributes).length === 0
-                        ? "—"
-                        : Object.entries(row.attributes)
-                            .map(
-                              ([key, value]) =>
-                                `${attributeLabel(key)}: ${value}`,
-                            )
-                            .join(" · ")}
-                    </td>
+                {confirmRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={6}>No contacts left to import.</td>
                   </tr>
-                ))}
+                ) : (
+                  confirmRows.map((row) => {
+                    const checked = selectedIds.has(row.id);
+                    return (
+                      <tr
+                        key={row.id}
+                        className={
+                          row.inFileDuplicate
+                            ? "list-confirm-dup"
+                            : row.existingLists.length > 0
+                              ? "list-confirm-existing"
+                              : undefined
+                        }
+                      >
+                        <td className="list-confirm-name-col">
+                          <label className="list-confirm-row-name">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={row.inFileDuplicate}
+                              onChange={() => toggleRow(row.id)}
+                              aria-label={`Select ${row.email}`}
+                            />
+                            <span>{row.firstName}</span>
+                          </label>
+                        </td>
+                        <td>{row.lastName || "—"}</td>
+                        <td>{row.email}</td>
+                        <td>{row.companyName || "—"}</td>
+                        <td>
+                          {lookupLoading && !row.inFileDuplicate ? (
+                            <span className="list-confirm-muted">Checking…</span>
+                          ) : row.existingLists.length === 0 ? (
+                            "—"
+                          ) : (
+                            <span className="list-confirm-lists">
+                              {row.existingLists
+                                .map(
+                                  (list) =>
+                                    `${list.name} (#${list.displayId})`,
+                                )
+                                .join(", ")}
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          {row.inFileDuplicate ? (
+                            <span className="list-status-pill dup">Duplicate</span>
+                          ) : row.existingLists.length > 0 ? (
+                            <span className="list-status-pill existing">
+                              On other list
+                            </span>
+                          ) : (
+                            <span className="list-status-pill new">New</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
-            {mappedContacts.length > previewContacts.length ? (
-              <p className="list-confirm-more">
-                Showing {previewContacts.length} of {mappedContacts.length}{" "}
-                contacts.
-              </p>
-            ) : null}
           </div>
 
           <div className="list-create-actions">
@@ -642,9 +902,11 @@ export default function PortalCreateListPage() {
               type="button"
               className="btn-dark"
               onClick={() => void handleCreate()}
-              disabled={saving}
+              disabled={saving || importableRows.length === 0}
             >
-              {saving ? "Importing…" : "Create list & import"}
+              {saving
+                ? "Importing…"
+                : `Create list & import (${importableRows.length})`}
             </button>
           </div>
         </div>
