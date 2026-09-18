@@ -29,6 +29,8 @@ export default function PortalMasterInboxPage() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
+  const [replyBody, setReplyBody] = useState("");
+  const [sendingReply, setSendingReply] = useState(false);
   const [error, setError] = useState("");
   const [syncNote, setSyncNote] = useState("");
 
@@ -94,6 +96,7 @@ export default function PortalMasterInboxPage() {
 
   async function openThread(threadKey: string) {
     setSelectedKey(threadKey);
+    setReplyBody("");
     setLoadingThread(true);
     setError("");
     try {
@@ -120,14 +123,68 @@ export default function PortalMasterInboxPage() {
     }
   }
 
+  async function sendReply() {
+    if (!selectedKey || !replyBody.trim() || sendingReply) {
+      return;
+    }
+    setSendingReply(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/inbox/${encodeURIComponent(selectedKey)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: replyBody }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to send reply");
+      }
+      const nextMessages = Array.isArray(data.messages) ? data.messages : [];
+      setMessages(nextMessages);
+      setReplyBody("");
+      const preview =
+        replyBody.replace(/\s+/g, " ").trim().slice(0, 140) || "(no preview)";
+      setThreads((current) => {
+        const updated = current.map((thread) =>
+          thread.threadKey === selectedKey
+            ? {
+                ...thread,
+                preview: `You: ${preview}`,
+                messageCount: nextMessages.length || thread.messageCount + 1,
+                latestAt: new Date().toISOString(),
+                unreadCount: 0,
+              }
+            : thread,
+        );
+        return updated.sort(
+          (a, b) =>
+            new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime(),
+        );
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to send reply");
+    } finally {
+      setSendingReply(false);
+    }
+  }
+
   function onInboxChange(nextId: string) {
     setSelectedInboxId(nextId);
     setSelectedKey(null);
     setMessages([]);
+    setReplyBody("");
     setSyncNote("");
   }
 
   const selected = threads.find((thread) => thread.threadKey === selectedKey);
+  const replyToLabel =
+    selected?.fromName ||
+    selected?.relatedContactEmail ||
+    selected?.fromEmail ||
+    "contact";
   const selectedInboxLabel =
     selectedInboxId === "all"
       ? inboxes.length === 0
@@ -251,32 +308,81 @@ export default function PortalMasterInboxPage() {
                 </div>
               </header>
               <div className="inbox-messages">
-                {messages.map((message) => (
-                  <article key={message.id} className="inbox-message">
-                    <div className="inbox-message-meta">
-                      <strong>
-                        {message.fromName || message.fromEmail}
-                      </strong>
-                      <span>{formatWhen(message.receivedAt)}</span>
-                    </div>
-                    <div className="inbox-message-to">
-                      to {message.toEmail}
-                    </div>
-                    {message.htmlBody.trim() ? (
-                      <iframe
-                        className="inbox-message-html"
-                        title={message.subject}
-                        sandbox=""
-                        srcDoc={message.htmlBody}
-                      />
-                    ) : (
-                      <pre className="inbox-message-text">
-                        {message.textBody || "(empty message)"}
-                      </pre>
-                    )}
-                  </article>
-                ))}
+                {messages.map((message) => {
+                  const outbound = message.direction === "outbound";
+                  return (
+                    <article
+                      key={message.id}
+                      className={`inbox-message${outbound ? " outbound" : ""}`}
+                    >
+                      <div className="inbox-message-meta">
+                        <strong>
+                          {outbound
+                            ? `You · ${message.fromEmail}`
+                            : message.fromName || message.fromEmail}
+                        </strong>
+                        <span>{formatWhen(message.receivedAt)}</span>
+                      </div>
+                      <div className="inbox-message-to">
+                        to {message.toEmail}
+                      </div>
+                      {message.htmlBody.trim() ? (
+                        <iframe
+                          className="inbox-message-html"
+                          title={message.subject}
+                          sandbox=""
+                          srcDoc={message.htmlBody}
+                        />
+                      ) : (
+                        <pre className="inbox-message-text">
+                          {message.textBody || "(empty message)"}
+                        </pre>
+                      )}
+                    </article>
+                  );
+                })}
               </div>
+              <form
+                className="inbox-reply"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void sendReply();
+                }}
+              >
+                <label className="inbox-reply-label" htmlFor="inbox-reply-body">
+                  Reply to {replyToLabel}
+                </label>
+                <textarea
+                  id="inbox-reply-body"
+                  className="inbox-reply-input"
+                  rows={4}
+                  placeholder="Write your reply…"
+                  value={replyBody}
+                  disabled={sendingReply}
+                  onChange={(event) => setReplyBody(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      (event.metaKey || event.ctrlKey) &&
+                      event.key === "Enter"
+                    ) {
+                      event.preventDefault();
+                      void sendReply();
+                    }
+                  }}
+                />
+                <div className="inbox-reply-actions">
+                  <span className="inbox-reply-hint">
+                    Sends from {selected?.senderEmail || "your Gmail sender"}
+                  </span>
+                  <button
+                    type="submit"
+                    className="btn-dark"
+                    disabled={sendingReply || !replyBody.trim()}
+                  >
+                    {sendingReply ? "Sending…" : "Send reply"}
+                  </button>
+                </div>
+              </form>
             </>
           )}
         </section>

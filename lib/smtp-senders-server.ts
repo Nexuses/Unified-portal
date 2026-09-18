@@ -404,6 +404,10 @@ export type ProjectMailInput = {
   fromName?: string;
   replyTo?: string;
   listUnsubscribeUrl?: string;
+  /** RFC Message-ID to set as In-Reply-To (with or without brackets). */
+  inReplyTo?: string;
+  /** RFC Message-ID list for References header. */
+  references?: string[];
 };
 
 export type DeliverMailResult = {
@@ -449,6 +453,8 @@ export async function sendProjectMail(
     fromName: input.fromName,
     replyTo: input.replyTo,
     listUnsubscribeUrl: input.listUnsubscribeUrl,
+    inReplyTo: input.inReplyTo,
+    references: input.references,
   });
 }
 
@@ -479,6 +485,8 @@ async function deliverWithSender(
     fromName?: string;
     replyTo?: string;
     listUnsubscribeUrl?: string;
+    inReplyTo?: string;
+    references?: string[];
   },
 ): Promise<DeliverMailResult> {
   const fromEmail = sender.fromEmail;
@@ -495,6 +503,25 @@ async function deliverWithSender(
   const listUnsubscribeUrl = input.listUnsubscribeUrl?.trim() || undefined;
   const messageId =
     sender.provider === "gmail" ? createOutboundMessageId() : undefined;
+
+  const inReplyToRaw = String(input.inReplyTo ?? "").trim();
+  const inReplyTo = inReplyToRaw
+    ? inReplyToRaw.startsWith("<")
+      ? inReplyToRaw
+      : `<${inReplyToRaw.replace(/^<|>$/g, "")}>`
+    : undefined;
+  const references = (input.references ?? [])
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+    .map((item) => (item.startsWith("<") ? item : `<${item.replace(/^<|>$/g, "")}>`));
+  const referencesHeader =
+    references.length > 0 ? references.join(" ") : undefined;
+
+  const extraHeaders: Record<string, string> = {};
+  if (listUnsubscribeUrl) {
+    extraHeaders["List-Unsubscribe"] = `<${listUnsubscribeUrl}>`;
+    extraHeaders["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
+  }
 
   if (sender.provider === "sendgrid" && sender.apiKey) {
     await sendWithSendgrid(sender.apiKey, {
@@ -558,14 +585,9 @@ async function deliverWithSender(
     html,
     replyTo,
     messageId,
-    ...(listUnsubscribeUrl
-      ? {
-          headers: {
-            "List-Unsubscribe": `<${listUnsubscribeUrl}>`,
-            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-          },
-        }
-      : {}),
+    inReplyTo,
+    references: referencesHeader,
+    ...(Object.keys(extraHeaders).length > 0 ? { headers: extraHeaders } : {}),
   });
 
   return {

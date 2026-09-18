@@ -12,8 +12,6 @@ import {
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { PORTAL_ROUTES, portalContactRoute, portalListRoute, publicAnalyticsPath, publicCampaignReportPath } from "@/lib/portal-nav";
-import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
-import type { SmtpProviderId } from "@/lib/smtp-senders";
 
 type PeopleView = "delivered" | "opens" | "clicks" | "bounces" | "replies" | "unsubscribes" | "audience";
 
@@ -214,7 +212,6 @@ export default function PortalCampaignReport({
   const [pausing, setPausing] = useState(false);
   const [sequencesOpen, setSequencesOpen] = useState(false);
   const [sequencePreviewIndex, setSequencePreviewIndex] = useState(0);
-  const [senderProviderId, setSenderProviderId] = useState<SmtpProviderId | null>(null);
   const isPublic = Boolean(publicToken);
 
   useEffect(() => {
@@ -273,51 +270,6 @@ export default function PortalCampaignReport({
       window.clearInterval(timer);
     };
   }, [campaign.id, campaign.status, publicToken]);
-
-  useEffect(() => {
-    if (isPublic || !campaign.senderId) {
-      setSenderProviderId(null);
-      return;
-    }
-    let cancelled = false;
-    async function loadSenderProvider() {
-      try {
-        const response = await fetch("/api/smtp/senders", { cache: "no-store" });
-        const data = await response.json().catch(() => null);
-        if (cancelled || !response.ok) {
-          return;
-        }
-        const senders = Array.isArray(data)
-          ? data
-          : Array.isArray(data?.senders)
-            ? data.senders
-            : [];
-        const match = senders.find(
-          (item: { id?: string; provider?: string }) => item.id === campaign.senderId,
-        );
-        if (
-          match?.provider === "aws_ses" ||
-          match?.provider === "gmail" ||
-          match?.provider === "outlook" ||
-          match?.provider === "sendgrid" ||
-          match?.provider === "cloudflare" ||
-          match?.provider === "resend"
-        ) {
-          setSenderProviderId(match.provider);
-        } else {
-          setSenderProviderId(null);
-        }
-      } catch {
-        if (!cancelled) {
-          setSenderProviderId(null);
-        }
-      }
-    }
-    void loadSenderProvider();
-    return () => {
-      cancelled = true;
-    };
-  }, [campaign.senderId, isPublic]);
 
   useEffect(() => {
     if (!peopleView) {
@@ -610,13 +562,17 @@ export default function PortalCampaignReport({
       rate: rate(campaign.bounces ?? 0, campaign.recipients),
       view: "bounces" as PeopleView,
     },
-    {
-      label: "Replies",
-      value: campaign.replies ?? 0,
-      rateLabel: "Reply rate",
-      rate: rate(campaign.replies ?? 0, campaign.recipients),
-      view: "replies" as PeopleView,
-    },
+    ...(campaign.kind === "oneone"
+      ? [
+          {
+            label: "Replies",
+            value: campaign.replies ?? 0,
+            rateLabel: "Reply rate",
+            rate: rate(campaign.replies ?? 0, campaign.recipients),
+            view: "replies" as PeopleView,
+          },
+        ]
+      : []),
     {
       label: "Unsubscribes",
       value: campaign.unsubscribed,
@@ -727,10 +683,7 @@ export default function PortalCampaignReport({
             </div>
             <div>
               <span>From</span>
-              <strong className="drip-report-from" title={from}>
-                <span className="drip-report-from-text">{from || "—"}</span>
-                <SmtpProviderBadge providerId={senderProviderId} />
-              </strong>
+              <strong title={from}>{from || "—"}</strong>
             </div>
             <div>
               <span>Reply to</span>
@@ -839,8 +792,10 @@ export default function PortalCampaignReport({
       ) : null}
 
       <div className="drip-report-tabs">
-        {["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
-          (label) => (
+        {(campaign.kind === "oneone"
+          ? ["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"]
+          : ["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Unsubscribes"]
+        ).map((label) => (
             <button
               key={label}
               type="button"
@@ -849,8 +804,7 @@ export default function PortalCampaignReport({
             >
               {label}
             </button>
-          ),
-        )}
+        ))}
       </div>
 
       <div className="drip-report-section-head">

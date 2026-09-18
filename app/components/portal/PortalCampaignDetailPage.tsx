@@ -29,6 +29,10 @@ import {
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
 import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
 import {
+  formatTimezoneLabel,
+  listCampaignTimezones,
+} from "@/lib/campaign-timezones";
+import {
   DEFAULT_UTM_CAMPAIGN,
   DEFAULT_UTM_MEDIUM,
   DEFAULT_UTM_SOURCE,
@@ -3141,31 +3145,6 @@ function sendersAllowedForKind(
   return senders.filter((sender) => sender.provider !== "gmail");
 }
 
-const SCHEDULE_TIMEZONES = [
-  "Asia/Kolkata",
-  "UTC",
-  "America/New_York",
-  "America/Los_Angeles",
-  "Europe/London",
-  "Europe/Paris",
-  "Asia/Dubai",
-  "Asia/Singapore",
-  "Australia/Sydney",
-];
-
-function formatTimezoneLabel(timeZone: string) {
-  try {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone,
-      timeZoneName: "longOffset",
-    }).formatToParts(new Date());
-    const offset = parts.find((part) => part.type === "timeZoneName")?.value ?? "";
-    return `${timeZone} ${offset.replace("GMT", "GMT ")}`.trim();
-  } catch {
-    return timeZone;
-  }
-}
-
 function padTime(value: number) {
   return String(value).padStart(2, "0");
 }
@@ -3461,7 +3440,7 @@ function SettingsPanel({
           >
             <div className="drip-schedule-select-wrap drip-settings-timezone">
               <select value={draftTimezone} onChange={(event) => onTimezoneChange(event.target.value)}>
-                {SCHEDULE_TIMEZONES.map((zone) => (
+                {listCampaignTimezones(draftTimezone).map((zone) => (
                   <option key={zone} value={zone}>
                     {formatTimezoneLabel(zone)}
                   </option>

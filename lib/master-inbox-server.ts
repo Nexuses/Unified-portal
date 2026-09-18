@@ -11,7 +11,7 @@ export type InboxMessageDoc = {
   projectId: ObjectId;
   senderId: ObjectId;
   senderEmail: string;
-  direction: "inbound";
+  direction: "inbound" | "outbound";
   fromEmail: string;
   fromName: string;
   toEmail: string;
@@ -38,6 +38,7 @@ export type InboxMessage = {
   id: string;
   senderId: string;
   senderEmail: string;
+  direction: "inbound" | "outbound";
   fromEmail: string;
   fromName: string;
   toEmail: string;
@@ -125,6 +126,7 @@ function mapInboxMessage(doc: InboxMessageDoc): InboxMessage {
     id: doc._id.toString(),
     senderId: doc.senderId.toString(),
     senderEmail: doc.senderEmail,
+    direction: doc.direction === "outbound" ? "outbound" : "inbound",
     fromEmail: doc.fromEmail,
     fromName: doc.fromName,
     toEmail: doc.toEmail,
@@ -138,6 +140,18 @@ function mapInboxMessage(doc: InboxMessageDoc): InboxMessage {
     receivedAt: doc.receivedAt.toISOString(),
     readAt: doc.readAt?.toISOString(),
   };
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function plainTextToHtml(body: string) {
+  return `<div style="font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;white-space:pre-wrap;">${escapeHtml(body)}</div>`;
 }
 
 function extractAddress(
@@ -622,6 +636,11 @@ export async function listProjectInboxThreads(
     ) {
       continue;
     }
+    const outbound = message.direction === "outbound";
+    const contactEmail =
+      message.relatedContactEmail ||
+      (outbound ? message.toEmail : message.fromEmail);
+    const contactName = outbound ? "" : message.fromName;
     const existing = threads.get(message.threadKey);
     const preview =
       message.textBody.replace(/\s+/g, " ").trim().slice(0, 140) ||
@@ -630,22 +649,30 @@ export async function listProjectInboxThreads(
       threads.set(message.threadKey, {
         threadKey: message.threadKey,
         subject: message.subject,
-        fromEmail: message.fromEmail,
-        fromName: message.fromName,
-        preview,
+        fromEmail: contactEmail,
+        fromName: contactName,
+        preview: outbound ? `You: ${preview}` : preview,
         messageCount: 1,
-        unreadCount: message.readAt ? 0 : 1,
+        unreadCount: outbound || message.readAt ? 0 : 1,
         latestAt: message.receivedAt.toISOString(),
         relatedCampaignId: message.relatedCampaignId,
-        relatedContactEmail: message.relatedContactEmail,
+        relatedContactEmail: message.relatedContactEmail || contactEmail,
         senderId: message.senderId.toString(),
         senderEmail: message.senderEmail,
       });
       continue;
     }
     existing.messageCount += 1;
-    if (!message.readAt) {
+    if (!outbound && !message.readAt) {
       existing.unreadCount += 1;
+    }
+    // Keep contact identity from inbound messages when present
+    if (!outbound && contactEmail) {
+      existing.fromEmail = contactEmail;
+      existing.fromName = contactName;
+      if (!existing.relatedContactEmail) {
+        existing.relatedContactEmail = contactEmail;
+      }
     }
   }
 
@@ -682,4 +709,210 @@ export async function markInboxThreadRead(
     { $set: { readAt: now, updatedAt: now } },
   );
   return listProjectInboxThreadMessages(projectId, threadKey);
+}
+
+export async function replyToInboxThread(
+  projectId: ObjectId,
+  threadKey: string,
+  input: { body: string },
+) {
+  const body = String(input.body ?? "").trim();
+  if (!body) {
+    throw new Error("Reply cannot be empty");
+  }
+
+  const db = await getDb();
+  const docs = await db
+    .collection<InboxMessageDoc>("inbox_messages")
+    .find({
+      projectId,
+      threadKey,
+      relatedSendId: { $exists: true },
+    })
+    .sort({ receivedAt: 1 })
+    .toArray();
+
+  if (docs.length === 0) {
+    throw new Error("Thread not found");
+  }
+
+  const inbound =
+    [...docs].reverse().find((doc) => doc.direction !== "outbound") ?? docs[0];
+  const latest = docs[docs.length - 1];
+  const toEmail = (
+    inbound.relatedContactEmail ||
+    (inbound.direction === "outbound" ? inbound.toEmail : inbound.fromEmail) ||
+    ""
+  )
+    .trim()
+    .toLowerCase();
+  if (!toEmail || !toEmail.includes("@")) {
+    throw new Error("No recipient found for this thread");
+  }
+
+  if (!inbound.relatedSendId || !inbound.relatedCampaignId) {
+    throw new Error("This thread is not linked to a campaign send");
+  }
+
+  const sender = await resolveReplySender(projectId, {
+    senderId: inbound.senderId,
+    senderEmail: inbound.senderEmail,
+    relatedSendId: inbound.relatedSendId,
+  });
+
+  // Heal stale senderId on this thread when the Gmail account was reconnected
+  const storedSenderId =
+    inbound.senderId instanceof ObjectId
+      ? inbound.senderId
+      : ObjectId.isValid(String(inbound.senderId ?? ""))
+        ? new ObjectId(String(inbound.senderId))
+        : null;
+  if (!storedSenderId || !storedSenderId.equals(sender._id)) {
+    await db.collection<InboxMessageDoc>("inbox_messages").updateMany(
+      { projectId, threadKey },
+      {
+        $set: {
+          senderId: sender._id,
+          senderEmail: sender.fromEmail,
+          updatedAt: new Date(),
+        },
+      },
+    );
+  }
+
+  const subjectBase = String(latest.subject || inbound.subject || "").trim() || "(no subject)";
+  const subject = /^re:\s/i.test(subjectBase) ? subjectBase : `Re: ${subjectBase}`;
+
+  const referenceIds = [
+    ...docs.flatMap((doc) => [doc.messageId, ...(doc.references ?? [])]),
+    latest.messageId,
+  ]
+    .map((id) => normalizeMessageId(id))
+    .filter(Boolean);
+  const uniqueRefs = [...new Set(referenceIds)];
+  const inReplyTo = normalizeMessageId(latest.messageId);
+
+  const html = plainTextToHtml(body);
+  const { sendProjectMail } = await import("@/lib/smtp-senders-server");
+  const delivered = await sendProjectMail(projectId, sender._id.toString(), {
+    to: toEmail,
+    subject,
+    html,
+    fromName: undefined,
+    inReplyTo: unwrapMessageId(inReplyTo),
+    references: uniqueRefs.map((id) => unwrapMessageId(id)).filter(Boolean),
+  });
+
+  const now = new Date();
+  const outboundMessageId =
+    normalizeMessageId(delivered.messageId) ||
+    normalizeMessageId(createOutboundMessageId());
+
+  const outboundDoc: InboxMessageDoc = {
+    _id: new ObjectId(),
+    projectId,
+    senderId: sender._id,
+    senderEmail: sender.fromEmail,
+    direction: "outbound",
+    fromEmail: sender.fromEmail,
+    fromName: "",
+    toEmail,
+    subject,
+    textBody: body,
+    htmlBody: html,
+    messageId: outboundMessageId,
+    inReplyTo: inReplyTo || undefined,
+    references: uniqueRefs,
+    threadKey,
+    relatedSendId: inbound.relatedSendId,
+    relatedBlastId: inbound.relatedBlastId,
+    relatedCampaignId: inbound.relatedCampaignId,
+    relatedContactEmail: inbound.relatedContactEmail || toEmail,
+    imapUid: Date.now(),
+    mailbox: "outbound",
+    receivedAt: now,
+    readAt: now,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await db.collection<InboxMessageDoc>("inbox_messages").insertOne(outboundDoc);
+
+  return {
+    message: mapInboxMessage(outboundDoc),
+    messages: await listProjectInboxThreadMessages(projectId, threadKey),
+  };
+}
+
+async function resolveReplySender(
+  projectId: ObjectId,
+  options: {
+    senderId?: ObjectId | string;
+    senderEmail?: string;
+    relatedSendId?: ObjectId;
+  },
+) {
+  const db = await getDb();
+  const triedIds = new Set<string>();
+
+  async function byId(raw: ObjectId | string | undefined | null) {
+    const idStr =
+      raw instanceof ObjectId
+        ? raw.toString()
+        : String(raw ?? "").trim();
+    if (!idStr || !ObjectId.isValid(idStr) || triedIds.has(idStr)) {
+      return null;
+    }
+    triedIds.add(idStr);
+    return db.collection<SenderDoc>("smtp_senders").findOne({
+      _id: new ObjectId(idStr),
+      projectId,
+    });
+  }
+
+  const byStoredId = await byId(options.senderId);
+  if (byStoredId) {
+    return byStoredId;
+  }
+
+  if (options.relatedSendId) {
+    const send = await db.collection<CampaignSendDoc>("campaign_sends").findOne({
+      _id: options.relatedSendId,
+      projectId,
+    });
+    if (send?.blastId) {
+      const blast = await db.collection<{ senderId?: string }>("campaign_blasts").findOne({
+        _id: send.blastId,
+        projectId,
+      });
+      const byBlast = await byId(blast?.senderId);
+      if (byBlast) {
+        return byBlast;
+      }
+    }
+  }
+
+  const email = String(options.senderEmail ?? "").trim().toLowerCase();
+  if (email) {
+    const senders = await db
+      .collection<SenderDoc>("smtp_senders")
+      .find({ projectId })
+      .toArray();
+    const byEmail =
+      senders.find(
+        (item) =>
+          item.fromEmail.trim().toLowerCase() === email &&
+          item.provider === "gmail" &&
+          item.noInbox !== true,
+      ) ||
+      senders.find((item) => item.fromEmail.trim().toLowerCase() === email);
+    if (byEmail) {
+      return byEmail;
+    }
+    throw new Error(
+      `Sender not found for ${email}. Reconnect this Gmail account under SMTP & Senders, then try again.`,
+    );
+  }
+
+  throw new Error("Sender not found");
 }

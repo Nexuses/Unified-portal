@@ -121,6 +121,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
       { id: "companies", label: "Companies", href: PORTAL_ROUTES.companies },
     ],
   },
+  { type: "item", id: "inbox", label: "Master Inbox", href: PORTAL_ROUTES.inbox },
   {
     type: "group",
     id: "marketing",
@@ -152,7 +153,6 @@ export const PORTAL_NAV: PortalNavItem[] = [
     ],
   },
   { type: "item", id: "smtp", label: "SMTP & Senders", href: PORTAL_ROUTES.smtp },
-  { type: "item", id: "inbox", label: "Master Inbox", href: PORTAL_ROUTES.inbox },
   { type: "item", id: "unsub", label: "Suppression List", href: PORTAL_ROUTES.unsub },
   {
     type: "item",
