@@ -40,7 +40,7 @@ import {
 } from "@/lib/automations";
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
 import { getEmailTemplate, loadEmailTemplates } from "@/lib/email-templates";
-import { replaceUnsubscribeVariables } from "@/lib/email-variables";
+import { normalizeEmailMergeTags, replaceUnsubscribeVariables } from "@/lib/email-variables";
 import {
   addSavedTestEmail,
   isValidEmail,
@@ -463,6 +463,8 @@ const CONTACT_VARIABLES = [
   { label: "UNSUBSCRIBE", tag: "{{ unsubscribe }}" },
 ];
 
+const CONTACT_VARIABLE_ORDER = ["FIRSTNAME", "LASTNAME", "EMAIL", "COMPANY"] as const;
+
 function escapeHtml(value: string) {
   return value
     .replaceAll("&", "&amp;")
@@ -471,28 +473,56 @@ function escapeHtml(value: string) {
     .replaceAll('"', "&quot;");
 }
 
-function applyContactVariables(text: string, contact: Contact | null, forHtml = false) {
-  if (!text) {
-    return "";
-  }
-
-  const withUnsubscribe = replaceUnsubscribeVariables(text, "#unsubscribe");
-
+function contactVariableValues(contact: Contact | null): Record<string, string> {
   if (!contact) {
-    return withUnsubscribe;
+    return {};
   }
-
-  const values: Record<string, string> = {
+  return {
     FIRSTNAME: contact.firstName || "",
     LASTNAME: contact.lastName || "",
     EMAIL: contact.email || "",
     COMPANY: contact.companyName || "",
   };
+}
 
-  return withUnsubscribe.replace(/\{\{\s*contact\.([A-Za-z]+)\s*\}\}/g, (_, key: string) => {
-    const value = values[key.toUpperCase()] ?? "";
-    return forHtml ? escapeHtml(value) : value;
-  });
+function extractContactVariableKeys(...texts: string[]) {
+  const keys = new Set<string>();
+  for (const text of texts) {
+    const normalized = normalizeEmailMergeTags(text || "");
+    for (const match of normalized.matchAll(/\{\{\s*contact\.([A-Za-z]+)\s*\}\}/gi)) {
+      keys.add(match[1].toUpperCase());
+    }
+  }
+  const ordered = CONTACT_VARIABLE_ORDER.filter((key) => keys.has(key));
+  const rest = [...keys]
+    .filter((key) => !CONTACT_VARIABLE_ORDER.includes(key as (typeof CONTACT_VARIABLE_ORDER)[number]))
+    .sort();
+  return [...ordered, ...rest];
+}
+
+function applyVariableMap(
+  text: string,
+  values: Record<string, string>,
+  forHtml = false,
+) {
+  if (!text) {
+    return "";
+  }
+  const withUnsubscribe = replaceUnsubscribeVariables(
+    normalizeEmailMergeTags(text),
+    "#unsubscribe",
+  );
+  return withUnsubscribe.replace(
+    /\{\{\s*contact\.([A-Za-z]+)\s*\}\}/g,
+    (_, key: string) => {
+      const value = values[key.toUpperCase()] ?? "";
+      return forHtml ? escapeHtml(value) : value;
+    },
+  );
+}
+
+function applyContactVariables(text: string, contact: Contact | null, forHtml = false) {
+  return applyVariableMap(text, contactVariableValues(contact), forHtml);
 }
 
 function insertIntoTextarea(
@@ -2005,6 +2035,7 @@ function PreviewTestModal({
   const [contactSearch, setContactSearch] = useState("");
   const [contactDropdownOpen, setContactDropdownOpen] = useState(false);
   const [selectedContactId, setSelectedContactId] = useState("");
+  const [testVariables, setTestVariables] = useState<Record<string, string>>({});
   const [recipientOpen, setRecipientOpen] = useState(false);
   const [recipientDraft, setRecipientDraft] = useState("");
   const [selectedRecipients, setSelectedRecipients] = useState<string[]>([]);
@@ -2015,28 +2046,72 @@ function PreviewTestModal({
   const contactSearchRef = useRef<HTMLDivElement>(null);
   const recipientFieldRef = useRef<HTMLDivElement>(null);
 
+  const htmlVariableKeys = useMemo(
+    () =>
+      extractContactVariableKeys(
+        html,
+        campaign.subject ?? "",
+        campaign.previewText ?? "",
+      ),
+    [html, campaign.subject, campaign.previewText],
+  );
+
   const filteredContacts = useMemo(() => {
     const query = contactSearch.trim().toLowerCase();
-    if (!query) {
-      return [];
-    }
-    return contacts.filter(
-      (contact) =>
-        contact.email.toLowerCase().includes(query) ||
-        contact.fullName.toLowerCase().includes(query),
-    );
+    const eligible = contacts.filter((contact) => !contact.blocklisted);
+    const list = !query
+      ? eligible.slice(0, 40)
+      : eligible.filter(
+          (contact) =>
+            contact.email.toLowerCase().includes(query) ||
+            contact.fullName.toLowerCase().includes(query),
+        );
+    return list.slice(0, 40);
   }, [contactSearch, contacts]);
 
   const selectedContact =
-    contacts.find((contact) => contact.id === selectedContactId) ?? null;
+    contacts.find(
+      (contact) => contact.id === selectedContactId && !contact.blocklisted,
+    ) ?? null;
 
-  const previewSubject = applyContactVariables(campaign.subject ?? "", selectedContact);
-  const previewPreviewText = applyContactVariables(campaign.previewText ?? "", selectedContact);
-  const previewHtml = applyContactVariables(html, selectedContact, true);
+  useEffect(() => {
+    if (!selectedContactId) {
+      return;
+    }
+    const selected = contacts.find((contact) => contact.id === selectedContactId);
+    if (selected?.blocklisted) {
+      setSelectedContactId("");
+      setContactSearch("");
+    }
+  }, [contacts, selectedContactId]);
+
+  const previewValues = useMemo(
+    () => contactVariableValues(selectedContact),
+    [selectedContact],
+  );
+  const activeValues = tab === "test" ? testVariables : previewValues;
+  const previewSubject = applyVariableMap(campaign.subject ?? "", activeValues);
+  const previewPreviewText = applyVariableMap(
+    campaign.previewText ?? "",
+    activeValues,
+  );
+  const previewHtml = applyVariableMap(html, activeValues, true);
 
   useEffect(() => {
     setSavedTestEmails(loadSavedTestEmails());
   }, [tab]);
+
+  useEffect(() => {
+    setTestVariables((current) => {
+      const next = { ...current };
+      for (const key of htmlVariableKeys) {
+        if (next[key] === undefined) {
+          next[key] = "";
+        }
+      }
+      return next;
+    });
+  }, [htmlVariableKeys]);
 
   const filteredSavedEmails = useMemo(() => {
     const query = recipientDraft.trim().toLowerCase();
@@ -2076,6 +2151,12 @@ function PreviewTestModal({
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [recipientOpen]);
+
+  function selectPreviewContact(contact: Contact) {
+    setSelectedContactId(contact.id);
+    setContactSearch(contact.email);
+    setContactDropdownOpen(false);
+  }
 
   function commitRecipientEmail(raw?: string) {
     const parts = (raw ?? recipientDraft)
@@ -2120,6 +2201,9 @@ function PreviewTestModal({
       return;
     }
 
+    const testSubject = applyVariableMap(campaign.subject ?? "", testVariables);
+    const testHtml = applyVariableMap(html, testVariables, true);
+
     setSendingTest(true);
     setTestStatus("");
 
@@ -2130,8 +2214,8 @@ function PreviewTestModal({
         body: JSON.stringify({
           senderId: campaign.senderId,
           to: emails,
-          subject: previewSubject || campaign.subject || "",
-          html: previewHtml || html,
+          subject: testSubject || campaign.subject || "",
+          html: testHtml || html,
           fromName: campaign.senderName,
           replyTo: campaign.replyToEnabled ? campaign.replyToEmail : undefined,
           campaignName: campaign.name,
@@ -2231,6 +2315,7 @@ function PreviewTestModal({
             <div className={`drip-preview-frame ${device}`}>
               {previewHtml.trim() ? (
                 <iframe
+                  key={`preview-${tab}-${selectedContactId}-${Object.values(activeValues).join("|")}`}
                   title="Email preview"
                   sandbox=""
                   srcDoc={previewHtml}
@@ -2245,7 +2330,7 @@ function PreviewTestModal({
             {tab === "preview" ? (
               <>
                 <h4>Who would you like to preview this email as?</h4>
-                <p>Select a contact</p>
+                <p>Select a contact to fill merge tags in the preview.</p>
                 <div className="drip-preview-search-wrap" ref={contactSearchRef}>
                   <label className="drip-design-search drip-preview-search">
                     <SearchIcon />
@@ -2255,11 +2340,12 @@ function PreviewTestModal({
                       onChange={(event) => {
                         const next = event.target.value;
                         setContactSearch(next);
-                        setContactDropdownOpen(next.trim().length > 0);
+                        setContactDropdownOpen(true);
                       }}
-                      placeholder="Search by email"
+                      onFocus={() => setContactDropdownOpen(true)}
+                      placeholder="Search by name or email"
                     />
-                    {contactSearch ? (
+                    {contactSearch || selectedContactId ? (
                       <button
                         type="button"
                         className="drip-preview-search-clear"
@@ -2284,13 +2370,14 @@ function PreviewTestModal({
                             key={contact.id}
                             type="button"
                             className={`drip-preview-contact${selectedContactId === contact.id ? " selected" : ""}`}
-                            onClick={() => {
-                              setSelectedContactId(contact.id);
-                              setContactSearch(contact.email);
-                              setContactDropdownOpen(false);
-                            }}
+                            onClick={() => selectPreviewContact(contact)}
                           >
-                            {contact.email}
+                            <span className="drip-preview-contact-name">
+                              {contact.fullName || contact.email}
+                            </span>
+                            {contact.fullName ? (
+                              <span className="drip-preview-contact-email">{contact.email}</span>
+                            ) : null}
                           </button>
                         ))
                       )}
@@ -2298,20 +2385,70 @@ function PreviewTestModal({
                   ) : null}
                 </div>
                 {selectedContact ? (
-                  <div className="drip-preview-selected">
-                    Previewing as {selectedContact.fullName || selectedContact.email}
+                  <div className="drip-preview-selected-card">
+                    <div className="drip-preview-selected-title">Selected contact</div>
+                    <div className="drip-preview-selected-grid">
+                      <div>
+                        <span>First name</span>
+                        <strong>{selectedContact.firstName || "—"}</strong>
+                      </div>
+                      <div>
+                        <span>Last name</span>
+                        <strong>{selectedContact.lastName || "—"}</strong>
+                      </div>
+                      <div>
+                        <span>Email</span>
+                        <strong>{selectedContact.email || "—"}</strong>
+                      </div>
+                      <div>
+                        <span>Company</span>
+                        <strong>{selectedContact.companyName || "—"}</strong>
+                      </div>
+                    </div>
                   </div>
-                ) : null}
+                ) : (
+                  <div className="drip-preview-selected muted">
+                    No contact selected — merge tags stay as placeholders.
+                  </div>
+                )}
               </>
             ) : null}
 
             {tab === "test" ? (
               <>
-                <h4>Who do you want to test your email with?</h4>
-                <p>Send your email to one or more recipients.</p>
+                <h4>Fill variables, then send a test</h4>
+                <p>
+                  Enter values for the merge tags in this email, then choose who
+                  receives the test.
+                </p>
+                {htmlVariableKeys.length > 0 ? (
+                  <div className="drip-preview-test-vars">
+                    <div className="drip-preview-recipients-label">Variables</div>
+                    {htmlVariableKeys.map((key) => (
+                      <label key={key} className="drip-preview-var-field">
+                        <span>{key}</span>
+                        <input
+                          type="text"
+                          value={testVariables[key] ?? ""}
+                          placeholder={`{{ contact.${key} }}`}
+                          onChange={(event) =>
+                            setTestVariables((current) => ({
+                              ...current,
+                              [key]: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="drip-preview-selected muted">
+                    No contact variables found in this email.
+                  </div>
+                )}
                 <div className="drip-preview-recipients">
                   <div className="drip-preview-recipients-label">
-                    Recipients <span className="drip-required-mark">*</span>
+                    Test email <span className="drip-required-mark">*</span>
                   </div>
                   <div className="drip-preview-recipients-field" ref={recipientFieldRef}>
                     <label className="drip-design-search drip-preview-search drip-preview-recipient-input">
@@ -2416,7 +2553,8 @@ function PreviewTestModal({
                       className="btn-dark drip-preview-send"
                       disabled={
                         sendingTest ||
-                        selectedRecipients.length === 0 ||
+                        (selectedRecipients.length === 0 &&
+                          !isValidEmail(recipientDraft.trim())) ||
                         !html.trim() ||
                         !campaign.senderId
                       }
@@ -5180,17 +5318,26 @@ export default function PortalCampaignDetailPage({
           campaign={campaign}
           onClose={() => setScheduleOpen(false)}
           onConfirm={async ({ mode, scheduledFor }) => {
+            const launchKind =
+              campaign.kind === "oneone" || kind === "oneone" ? "oneone" : "drip";
             const response = await fetch("/api/campaigns/launch", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ campaign, mode, scheduledFor }),
+              body: JSON.stringify({
+                campaign: { ...campaign, kind: launchKind },
+                mode,
+                scheduledFor,
+              }),
             });
             const data = await response.json();
             if (!response.ok) {
               throw new Error(data.error || "Failed to launch campaign");
             }
 
-            const updated = mergeBlastReport(campaign, data);
+            const updated = mergeBlastReport(
+              { ...campaign, kind: launchKind },
+              data,
+            );
             setCampaign(updated);
             setScheduleOpen(false);
             router.push(`${listHref}?notice=scheduled`);

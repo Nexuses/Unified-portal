@@ -172,16 +172,13 @@ async function findBlastForCampaign(
 ) {
   const db = await getDb();
   if (kind) {
-    const typed = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+    // Kind-scoped only — never fall back across drip ↔ 1-1 (IDs can collide).
+    return db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
       projectId,
       campaignId,
       ...blastKindFilter(kind),
     });
-    if (typed) {
-      return typed;
-    }
   }
-  // Fallback for older blasts missing kind, or kind/campaignId desync
   return db.collection<CampaignBlastDoc>("campaign_blasts").findOne(
     { projectId, campaignId },
     { sort: { updatedAt: -1 } },
@@ -1219,7 +1216,6 @@ export async function pauseCampaignBlast(
       $set: {
         status: "paused",
         updatedAt: new Date(),
-        ...(kind === "oneone" && blast.kind !== "oneone" ? { kind: "oneone" } : {}),
       },
     },
   );
@@ -1262,7 +1258,6 @@ export async function resumeCampaignBlast(
       $set: {
         status: nextStatus,
         updatedAt: now,
-        ...(kind === "oneone" && blast.kind !== "oneone" ? { kind: "oneone" } : {}),
       },
     },
   );

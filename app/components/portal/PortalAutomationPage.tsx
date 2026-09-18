@@ -1231,7 +1231,11 @@ export default function PortalAutomationPage({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            campaign: firstCampaign,
+            campaign: {
+              ...firstCampaign,
+              kind:
+                firstCampaign.kind === "oneone" ? "oneone" : "drip",
+            },
             mode: scheduleMode,
             scheduledFor:
               scheduleMode === "later"

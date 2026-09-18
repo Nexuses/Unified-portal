@@ -130,9 +130,6 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
 
 async function withBlastReport(doc: DripCampaignDoc): Promise<DripCampaign> {
   const campaign = mapCampaign(doc);
-  if (campaign.status === "draft") {
-    return campaign;
-  }
 
   try {
     const reports = await getProjectCampaignReports(doc.projectId);
@@ -187,37 +184,28 @@ async function updateCampaignIdRefs(
     { $set: { campaignId: toId, updatedAt: new Date() } },
   );
 
+  // Only move blasts that already match this kind — never steal the other kind's blasts.
   const blasts = await db
     .collection("campaign_blasts")
     .find({ projectId, campaignId: fromId, ...kindFilter })
     .project({ _id: 1 })
     .toArray();
-  // Also catch older blasts that may be missing kind
-  const fallbackBlasts =
-    blasts.length > 0 || kind !== "oneone"
-      ? []
-      : await db
-          .collection("campaign_blasts")
-          .find({ projectId, campaignId: fromId })
-          .project({ _id: 1 })
-          .toArray();
-  const allBlasts = blasts.length > 0 ? blasts : fallbackBlasts;
-  if (allBlasts.length === 0) {
+  if (blasts.length === 0) {
     return;
   }
 
   await db.collection("campaign_blasts").updateMany(
-    { _id: { $in: allBlasts.map((blast) => blast._id) } },
+    { _id: { $in: blasts.map((blast) => blast._id) } },
     {
       $set: {
         campaignId: toId,
         updatedAt: new Date(),
-        ...(kind === "oneone" ? { kind: "oneone" } : {}),
+        kind: kind === "oneone" ? "oneone" : "drip",
       },
     },
   );
   await db.collection("campaign_sends").updateMany(
-    { blastId: { $in: allBlasts.map((blast) => blast._id) } },
+    { blastId: { $in: blasts.map((blast) => blast._id) } },
     { $set: { campaignId: toId } },
   );
 }
@@ -307,8 +295,11 @@ export async function listProjectDripCampaigns(
         item.campaignId === campaign.id &&
         (item.kind || "drip") === (campaign.kind || "drip"),
     );
-    if (!report || campaign.status === "draft" || campaign.status === "paused") {
+    if (!report) {
       return campaign;
+    }
+    if (campaign.status === "paused") {
+      return { ...mergeBlastReport(campaign, report), status: "paused" };
     }
     return mergeBlastReport(campaign, report);
   });

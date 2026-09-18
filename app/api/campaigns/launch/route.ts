@@ -5,7 +5,10 @@ import {
   requestOrigin,
 } from "@/lib/campaign-blasts-server";
 import { mergeBlastReport, type DripCampaign } from "@/lib/drip-campaigns";
-import { updateProjectDripCampaign } from "@/lib/drip-campaigns-server";
+import {
+  getProjectDripCampaign,
+  updateProjectDripCampaign,
+} from "@/lib/drip-campaigns-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -33,24 +36,49 @@ export async function POST(request: NextRequest) {
     }
 
     const projectId = new ObjectId(session.projectId);
+    const kind = body.campaign.kind === "oneone" ? "oneone" : "drip";
+    const existing = await getProjectDripCampaign(projectId, body.campaign.id, kind);
+    if (!existing) {
+      return NextResponse.json({ error: "Campaign not found." }, { status: 404 });
+    }
+
+    // Never trust a cross-kind client payload — lock id + kind to the DB row.
+    const campaign: DripCampaign = {
+      ...existing,
+      ...body.campaign,
+      id: existing.id,
+      kind,
+    };
+
     const report = await launchCampaignBlast({
       projectId,
-      campaign: body.campaign,
+      campaign,
       mode: body.mode,
       scheduledFor: body.scheduledFor,
       origin: requestOrigin(request.url, request.headers),
     });
 
-    const launched = mergeBlastReport(body.campaign, report);
-    await updateProjectDripCampaign(projectId, body.campaign.id, launched);
+    const launched = mergeBlastReport(campaign, report);
+    const updated = await updateProjectDripCampaign(
+      projectId,
+      existing.id,
+      launched,
+      kind,
+    );
+    if (!updated) {
+      return NextResponse.json(
+        { error: "Failed to update campaign after launch." },
+        { status: 500 },
+      );
+    }
 
     emitWebhookEventBackground({
       projectId,
       type: "campaign.launched",
       data: {
-        campaignId: body.campaign.id,
-        kind: body.campaign.kind === "oneone" ? "oneone" : "drip",
-        name: body.campaign.name,
+        campaignId: existing.id,
+        kind,
+        name: campaign.name,
         mode: body.mode,
         status: report.status,
         recipients: report.recipients,
