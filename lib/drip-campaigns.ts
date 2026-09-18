@@ -40,6 +40,8 @@ export type DripCampaign = {
   clicks: number;
   unsubscribed: number;
   conversions: number;
+  bounces: number;
+  replies: number;
   delivered?: number;
   senderId?: string;
   senderName?: string;
@@ -246,6 +248,8 @@ export function mergeBlastReport(
     clicks: number;
     unsubscribed: number;
     conversions: number;
+    bounces?: number;
+    replies?: number;
     delivered?: number;
     sentAt?: string;
     scheduledFor?: string;
@@ -272,6 +276,8 @@ export function mergeBlastReport(
     clicks: report.clicks,
     unsubscribed: report.unsubscribed,
     conversions: report.conversions,
+    bounces: report.bounces ?? campaign.bounces ?? 0,
+    replies: report.replies ?? campaign.replies ?? 0,
     delivered: report.delivered ?? campaign.delivered,
     sentAt: report.sentAt || campaign.sentAt,
     scheduledAt: report.scheduledFor

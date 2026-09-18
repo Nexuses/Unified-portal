@@ -34,6 +34,8 @@ export type DripCampaignDoc = {
   clicks: number;
   unsubscribed: number;
   conversions: number;
+  bounces?: number;
+  replies?: number;
   delivered?: number;
   senderId?: string;
   senderName?: string;
@@ -86,6 +88,8 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     clicks: doc.clicks ?? 0,
     unsubscribed: doc.unsubscribed ?? 0,
     conversions: doc.conversions ?? 0,
+    bounces: doc.bounces ?? 0,
+    replies: doc.replies ?? 0,
     delivered: doc.delivered,
     senderId: doc.senderId,
     senderName: doc.senderName,
@@ -126,7 +130,7 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
 
 async function withBlastReport(doc: DripCampaignDoc): Promise<DripCampaign> {
   const campaign = mapCampaign(doc);
-  if (campaign.status === "draft" || campaign.status === "paused") {
+  if (campaign.status === "draft") {
     return campaign;
   }
 
@@ -137,7 +141,15 @@ async function withBlastReport(doc: DripCampaignDoc): Promise<DripCampaign> {
         item.campaignId === doc.campaignId &&
         (item.kind || "drip") === (campaign.kind || "drip"),
     );
-    return report ? mergeBlastReport(campaign, report) : campaign;
+    if (!report) {
+      return campaign;
+    }
+    const merged = mergeBlastReport(campaign, report);
+    // Keep explicit pause even if blast refresh reports sending metrics
+    if (campaign.status === "paused") {
+      return { ...merged, status: "paused" };
+    }
+    return merged;
   } catch {
     return campaign;
   }
@@ -180,16 +192,32 @@ async function updateCampaignIdRefs(
     .find({ projectId, campaignId: fromId, ...kindFilter })
     .project({ _id: 1 })
     .toArray();
-  if (blasts.length === 0) {
+  // Also catch older blasts that may be missing kind
+  const fallbackBlasts =
+    blasts.length > 0 || kind !== "oneone"
+      ? []
+      : await db
+          .collection("campaign_blasts")
+          .find({ projectId, campaignId: fromId })
+          .project({ _id: 1 })
+          .toArray();
+  const allBlasts = blasts.length > 0 ? blasts : fallbackBlasts;
+  if (allBlasts.length === 0) {
     return;
   }
 
   await db.collection("campaign_blasts").updateMany(
-    { _id: { $in: blasts.map((blast) => blast._id) } },
-    { $set: { campaignId: toId, updatedAt: new Date() } },
+    { _id: { $in: allBlasts.map((blast) => blast._id) } },
+    {
+      $set: {
+        campaignId: toId,
+        updatedAt: new Date(),
+        ...(kind === "oneone" ? { kind: "oneone" } : {}),
+      },
+    },
   );
   await db.collection("campaign_sends").updateMany(
-    { blastId: { $in: blasts.map((blast) => blast._id) } },
+    { blastId: { $in: allBlasts.map((blast) => blast._id) } },
     { $set: { campaignId: toId } },
   );
 }
@@ -554,6 +582,8 @@ export async function createProjectDripCampaign(
     clicks: 0,
     unsubscribed: 0,
     conversions: 0,
+    bounces: 0,
+    replies: 0,
     ...(isOneOne
       ? {
           sequences: [createEmptySequence(0)],
@@ -594,6 +624,8 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "clicks",
   "unsubscribed",
   "conversions",
+  "bounces",
+  "replies",
   "delivered",
   "senderId",
   "senderName",
@@ -680,7 +712,10 @@ export async function updateProjectDripCampaign(
     ) {
       throw new Error("Only running or scheduled campaigns can be paused");
     }
-    await pauseCampaignBlast(projectId, campaignId, resolvedKind);
+    const paused = await pauseCampaignBlast(projectId, campaignId, resolvedKind);
+    if (!paused && existing.status !== "paused") {
+      throw new Error("No running send found to pause");
+    }
   }
 
   if (
@@ -690,8 +725,13 @@ export async function updateProjectDripCampaign(
     const resumed = await resumeCampaignBlast(projectId, campaignId, resolvedKind);
     if (resumed === "scheduled") {
       updates.status = "scheduled";
+    } else if (resumed === "sent") {
+      updates.status = "sent";
     } else if (!resumed) {
-      throw new Error("No paused send found to resume");
+      // Drip was paused but blast row is missing/mismatched — clear stuck pause
+      updates.status = "sending";
+    } else {
+      updates.status = "sending";
     }
   }
 
@@ -796,6 +836,8 @@ export async function duplicateProjectDripCampaign(
     clicks: 0,
     unsubscribed: 0,
     conversions: 0,
+    bounces: 0,
+    replies: 0,
     delivered: 0,
     senderId: existing.senderId,
     senderName: existing.senderName,

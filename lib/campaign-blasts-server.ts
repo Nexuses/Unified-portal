@@ -23,8 +23,14 @@ import {
   resolveUsableTrackingOrigin,
 } from "@/lib/campaign-tracking";
 import { sendProjectMail } from "@/lib/smtp-senders-server";
+import { normalizeStoredMessageId } from "@/lib/master-inbox-server";
 import { normalizeEmailMergeTags } from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
+import {
+  GMAIL_DAILY_LIMIT_DEFAULT,
+  normalizeGmailDailyLimit,
+  type SenderDoc,
+} from "@/lib/smtp-senders";
 
 export type BlastStatus = "scheduled" | "sending" | "sent" | "paused";
 
@@ -61,6 +67,8 @@ export type CampaignBlastDoc = {
   clicks: number;
   unsubscribed: number;
   conversions: number;
+  bounces: number;
+  replies: number;
   timeline: BlastTimelineEvent[];
   createdAt: Date;
   updatedAt: Date;
@@ -103,9 +111,17 @@ export type CampaignSendDoc = {
   /** True when multi-link burst scanning was detected for this send. */
   clickBurstIgnored?: boolean;
   unsubscribedAt?: Date;
+  /** Set when a real reply is matched via Master Inbox. */
+  repliedAt?: Date;
+  /** Set when a bounce/DSN is matched via Master Inbox. */
+  bouncedAt?: Date;
   sequenceId?: string;
   sequenceIndex?: number;
   availableAt?: Date;
+  /** Outbound RFC Message-ID (angle brackets). */
+  messageId?: string;
+  /** Lowercased Message-ID without brackets for reply matching. */
+  messageIdNorm?: string;
 };
 
 export type CampaignReport = {
@@ -127,6 +143,8 @@ export type CampaignReport = {
   clicks: number;
   unsubscribed: number;
   conversions: number;
+  bounces: number;
+  replies: number;
   listId?: string;
   listName?: string;
   listDisplayId?: number;
@@ -145,6 +163,29 @@ function blastKindFilter(kind?: string): Record<string, unknown> {
     return { kind: { $ne: "oneone" as const } };
   }
   return {};
+}
+
+async function findBlastForCampaign(
+  projectId: ObjectId,
+  campaignId: string,
+  kind?: "drip" | "oneone",
+) {
+  const db = await getDb();
+  if (kind) {
+    const typed = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+      projectId,
+      campaignId,
+      ...blastKindFilter(kind),
+    });
+    if (typed) {
+      return typed;
+    }
+  }
+  // Fallback for older blasts missing kind, or kind/campaignId desync
+  return db.collection<CampaignBlastDoc>("campaign_blasts").findOne(
+    { projectId, campaignId },
+    { sort: { updatedAt: -1 } },
+  );
 }
 
 function parseHmToMinutes(value: string) {
@@ -204,18 +245,33 @@ async function failLaterSequences(
   sequenceIndex: number | undefined,
   error: string,
 ) {
-  if (typeof sequenceIndex !== "number") {
-    return;
-  }
+  const index = typeof sequenceIndex === "number" ? sequenceIndex : 0;
   const db = await getDb();
   await db.collection<CampaignSendDoc>("campaign_sends").updateMany(
     {
       blastId,
       email,
-      sequenceIndex: { $gt: sequenceIndex },
-      status: "pending",
+      sequenceIndex: { $gt: index },
+      status: { $in: ["pending", "sending"] },
     },
-    { $set: { status: "failed", error } },
+    {
+      $set: { status: "failed", error },
+      $unset: { claimedAt: "" },
+    },
+  );
+}
+
+/** Stop later 1-1 steps when a contact replies to an earlier sequence email. */
+export async function stopOneOneSequencesOnReply(send: {
+  blastId: ObjectId;
+  email: string;
+  sequenceIndex?: number;
+}) {
+  await failLaterSequences(
+    send.blastId,
+    send.email,
+    typeof send.sequenceIndex === "number" ? send.sequenceIndex : 0,
+    "Replied",
   );
 }
 
@@ -289,6 +345,8 @@ function mapReport(
     clicks: doc.clicks,
     unsubscribed: doc.unsubscribed,
     conversions: doc.conversions,
+    bounces: doc.bounces ?? 0,
+    replies: doc.replies ?? 0,
     listId: doc.listId,
     listName: doc.listName,
     listDisplayId: doc.listDisplayId,
@@ -452,8 +510,12 @@ function sendHasCountableClick(send: Pick<CampaignSendDoc, "clickEvents" | "clic
 async function refreshBlastCounts(blastId: ObjectId) {
   const db = await getDb();
   const sends = db.collection<CampaignSendDoc>("campaign_sends");
-  const [delivered, opens, clickDocs] = await Promise.all([
-    sends.countDocuments({ blastId, status: "sent" }),
+  const [delivered, opens, clickDocs, bounceEmails, replies] = await Promise.all([
+    sends.countDocuments({
+      blastId,
+      status: "sent",
+      bouncedAt: { $exists: false },
+    }),
     sends.countDocuments({ blastId, openCount: { $gt: 0 } }),
     sends
       .find({
@@ -462,8 +524,23 @@ async function refreshBlastCounts(blastId: ObjectId) {
       })
       .project({ clickEvents: 1, clickedAt: 1, clickedUrl: 1 })
       .toArray(),
+    sends.distinct("email", {
+      blastId,
+      $or: [
+        { bouncedAt: { $exists: true } },
+        {
+          status: "failed",
+          error: { $nin: ["Unsubscribed", "Suppressed", "Replied"] },
+        },
+      ],
+    }),
+    sends.countDocuments({
+      blastId,
+      repliedAt: { $exists: true },
+    }),
   ]);
   const clicks = clickDocs.filter((send) => sendHasCountableClick(send)).length;
+  const bounces = bounceEmails.length;
 
   const pending = await sends.countDocuments({
     blastId,
@@ -478,7 +555,13 @@ async function refreshBlastCounts(blastId: ObjectId) {
 
   const now = new Date();
   const nextStatus: BlastStatus =
-    pending === 0 ? "sent" : blast.status === "scheduled" ? "scheduled" : "sending";
+    blast.status === "paused"
+      ? "paused"
+      : pending === 0
+        ? "sent"
+        : blast.status === "scheduled"
+          ? "scheduled"
+          : "sending";
   const timeline = [...blast.timeline];
   if (nextStatus === "sent" && blast.status !== "sent") {
     timeline.unshift({
@@ -497,6 +580,8 @@ async function refreshBlastCounts(blastId: ObjectId) {
         delivered,
         opens,
         clicks,
+        bounces,
+        replies,
         status: nextStatus,
         sentAt: nextStatus === "sent" ? blast.sentAt ?? now : blast.sentAt,
         timeline,
@@ -508,9 +593,68 @@ async function refreshBlastCounts(blastId: ObjectId) {
   return db.collection<CampaignBlastDoc>("campaign_blasts").findOne({ _id: blastId });
 }
 
+function utcDayBounds(now = new Date()) {
+  const start = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return { start, end };
+}
+
+/** How many emails this sender has already used today (UTC), including in-flight claims. */
+async function countSenderSendsToday(
+  projectId: ObjectId,
+  senderId: string,
+  dayStart: Date,
+  dayEnd: Date,
+) {
+  const db = await getDb();
+  const blastDocs = await db
+    .collection<CampaignBlastDoc>("campaign_blasts")
+    .find({ projectId, senderId }, { projection: { _id: 1 } })
+    .toArray();
+  const blastIds = blastDocs.map((blast) => blast._id);
+  if (blastIds.length === 0) {
+    return 0;
+  }
+  return db.collection<CampaignSendDoc>("campaign_sends").countDocuments({
+    projectId,
+    blastId: { $in: blastIds },
+    $or: [
+      { status: "sent", sentAt: { $gte: dayStart, $lt: dayEnd } },
+      { status: "sending", claimedAt: { $gte: dayStart, $lt: dayEnd } },
+    ],
+  });
+}
+
+async function remainingGmailDailySends(
+  projectId: ObjectId,
+  senderId: string,
+  now = new Date(),
+) {
+  if (!ObjectId.isValid(senderId)) {
+    return null;
+  }
+  const db = await getDb();
+  const sender = await db.collection<SenderDoc>("smtp_senders").findOne({
+    _id: new ObjectId(senderId),
+    projectId,
+  });
+  if (!sender || sender.provider !== "gmail") {
+    return null;
+  }
+  const dailyLimit = normalizeGmailDailyLimit(
+    sender.dailyLimit ?? GMAIL_DAILY_LIMIT_DEFAULT,
+  );
+  const { start, end } = utcDayBounds(now);
+  const used = await countSenderSendsToday(projectId, senderId, start, end);
+  return Math.max(0, dailyLimit - used);
+}
+
 async function sendPendingBatch(
   blast: CampaignBlastDoc,
   limit = SEND_BATCH,
+  depth = 0,
 ) {
   const db = await getDb();
   const now = new Date();
@@ -522,8 +666,58 @@ async function sendPendingBatch(
     return blast;
   }
 
+  const gmailRemaining = await remainingGmailDailySends(
+    blast.projectId,
+    blast.senderId,
+    now,
+  );
+  if (gmailRemaining !== null) {
+    if (gmailRemaining <= 0) {
+      return blast;
+    }
+    limit = Math.min(limit, gmailRemaining);
+  }
+
   const gapMinutes = oneOne ? Math.max(0, Number(blast.emailGapMinutes) || 0) : 0;
   if (oneOne) {
+    // Repair stuck later sequences that should already be unlocked from an earlier send
+    if (blast.sequences && blast.sequences.length > 1) {
+      const sentSteps = await db
+        .collection<CampaignSendDoc>("campaign_sends")
+        .find({
+          blastId: blast._id,
+          status: "sent",
+          sequenceIndex: { $gte: 0 },
+        })
+        .project({ email: 1, sequenceIndex: 1, sentAt: 1 })
+        .toArray();
+      for (const sent of sentSteps) {
+        if (typeof sent.sequenceIndex !== "number") {
+          continue;
+        }
+        const nextSequence = blast.sequences[sent.sequenceIndex + 1];
+        if (!nextSequence) {
+          continue;
+        }
+        const delayDays = Math.max(0, Number(nextSequence.delayDays) || 0);
+        const base = sent.sentAt instanceof Date ? sent.sentAt : now;
+        const availableAt = new Date(base.getTime() + delayDays * 24 * 60 * 60 * 1000);
+        if (availableAt.getTime() > now.getTime()) {
+          continue;
+        }
+        await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
+          {
+            blastId: blast._id,
+            email: sent.email,
+            sequenceIndex: sent.sequenceIndex + 1,
+            status: "pending",
+            availableAt: { $gt: now },
+          },
+          { $set: { availableAt } },
+        );
+      }
+    }
+
     const locked = await db.collection<CampaignBlastDoc>("campaign_blasts").findOneAndUpdate(
       {
         _id: blast._id,
@@ -602,6 +796,25 @@ async function sendPendingBatch(
       await failLaterSequences(blast._id, send.email, send.sequenceIndex, "Unsubscribed");
       continue;
     }
+
+    // 1-1: if this contact already replied, never send further sequences
+    if (oneOne) {
+      const stoppedByReply = await db.collection<CampaignSendDoc>("campaign_sends").findOne({
+        blastId: blast._id,
+        email: send.email,
+        status: "failed",
+        error: "Replied",
+      });
+      if (stoppedByReply) {
+        await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
+          { _id: send._id },
+          { $set: { status: "failed", error: "Replied" }, $unset: { claimedAt: "" } },
+        );
+        await failLaterSequences(blast._id, send.email, send.sequenceIndex, "Replied");
+        continue;
+      }
+    }
+
     try {
       const content = sequenceContent(blast, send);
       const personalized = applyContactVariables(content.html, send, true);
@@ -609,7 +822,7 @@ async function sendPendingBatch(
         utm: resolveUtmConfig(blast),
         campaignName: blast.name,
       });
-      await sendProjectMail(blast.projectId, blast.senderId, {
+      const mailResult = await sendProjectMail(blast.projectId, blast.senderId, {
         to: send.email,
         subject: applyContactVariables(content.subject, send, false),
         html,
@@ -619,27 +832,40 @@ async function sendPendingBatch(
       });
       const sentAt = new Date();
       lastSuccessAt = sentAt;
+      const messageId = mailResult?.messageId;
       await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
         { _id: send._id },
-        { $set: { status: "sent", sentAt, error: undefined }, $unset: { claimedAt: "" } },
+        {
+          $set: {
+            status: "sent",
+            sentAt,
+            error: undefined,
+            ...(messageId
+              ? {
+                  messageId,
+                  messageIdNorm: normalizeStoredMessageId(messageId),
+                }
+              : {}),
+          },
+          $unset: { claimedAt: "" },
+        },
       );
 
       if (typeof send.sequenceIndex === "number" && blast.sequences) {
         const nextSequence = blast.sequences[send.sequenceIndex + 1];
         if (nextSequence) {
           const delayDays = Math.max(0, Number(nextSequence.delayDays) || 0);
+          const availableAt = new Date(
+            sentAt.getTime() + delayDays * 24 * 60 * 60 * 1000,
+          );
           await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
             {
               blastId: blast._id,
-              email: send.email,
+              email: send.email.trim().toLowerCase(),
               sequenceIndex: send.sequenceIndex + 1,
               status: "pending",
             },
-            {
-              $set: {
-                availableAt: new Date(sentAt.getTime() + delayDays * 24 * 60 * 60 * 1000),
-              },
-            },
+            { $set: { availableAt } },
           );
         }
       }
@@ -668,6 +894,23 @@ async function sendPendingBatch(
       { _id: blast._id },
       { $set: { sendLockUntil: lockUntil, updatedAt: now } },
     );
+
+    // With 0-day sequence delay (and no minute gap), keep draining newly unlocked steps
+    if (gapMinutes === 0 && lastSuccessAt && depth < 10) {
+      const dueNext = await db.collection<CampaignSendDoc>("campaign_sends").countDocuments({
+        blastId: blast._id,
+        status: "pending",
+        $or: [{ availableAt: { $exists: false } }, { availableAt: { $lte: new Date() } }],
+      });
+      if (dueNext > 0) {
+        const refreshed = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+          _id: blast._id,
+        });
+        if (refreshed && refreshed.status === "sending") {
+          return sendPendingBatch(refreshed, limit, depth + 1);
+        }
+      }
+    }
   }
 
   return refreshBlastCounts(blast._id);
@@ -816,6 +1059,8 @@ export async function launchCampaignBlast(input: {
     clicks: 0,
     unsubscribed: 0,
     conversions: 0,
+    bounces: 0,
+    replies: 0,
     timeline,
     createdAt: now,
     updatedAt: now,
@@ -957,14 +1202,26 @@ export async function pauseCampaignBlast(
   kind?: "drip" | "oneone",
 ) {
   const db = await getDb();
+  const blast = await findBlastForCampaign(projectId, campaignId, kind);
+  if (!blast) {
+    return false;
+  }
+  if (blast.status === "paused") {
+    return true;
+  }
+  if (blast.status !== "sending" && blast.status !== "scheduled") {
+    return false;
+  }
+
   const result = await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+    { _id: blast._id },
     {
-      projectId,
-      campaignId,
-      ...blastKindFilter(kind),
-      status: { $in: ["sending", "scheduled"] },
+      $set: {
+        status: "paused",
+        updatedAt: new Date(),
+        ...(kind === "oneone" && blast.kind !== "oneone" ? { kind: "oneone" } : {}),
+      },
     },
-    { $set: { status: "paused", updatedAt: new Date() } },
   );
   return result.matchedCount > 0;
 }
@@ -975,13 +1232,21 @@ export async function resumeCampaignBlast(
   kind?: "drip" | "oneone",
 ) {
   const db = await getDb();
-  const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
-    projectId,
-    campaignId,
-    ...blastKindFilter(kind),
-    status: "paused",
-  });
+  const blast = await findBlastForCampaign(projectId, campaignId, kind);
   if (!blast) {
+    return null;
+  }
+
+  if (blast.status === "sent") {
+    return "sent" as const;
+  }
+
+  if (blast.status === "sending" || blast.status === "scheduled") {
+    // Already active (e.g. drip/blast status desync) — treat as resumed
+    return blast.status;
+  }
+
+  if (blast.status !== "paused") {
     return null;
   }
 
@@ -993,7 +1258,13 @@ export async function resumeCampaignBlast(
 
   await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
     { _id: blast._id },
-    { $set: { status: nextStatus, updatedAt: now } },
+    {
+      $set: {
+        status: nextStatus,
+        updatedAt: now,
+        ...(kind === "oneone" && blast.kind !== "oneone" ? { kind: "oneone" } : {}),
+      },
+    },
   );
 
   return nextStatus;
@@ -1302,6 +1573,8 @@ export type CampaignRecipientFilter =
   | "delivered"
   | "opens"
   | "clicks"
+  | "bounces"
+  | "replies"
   | "unsubscribes"
   | "audience";
 
@@ -1312,11 +1585,13 @@ export type CampaignSendRecipient = {
   companyName: string;
   contactId?: string;
   status: CampaignSendDoc["status"];
+  error?: string;
   sentAt?: string;
   openedAt?: string;
   clickedAt?: string;
   clickedUrl?: string;
   unsubscribedAt?: string;
+  repliedAt?: string;
   sequenceIndex?: number;
   sequenceNumber?: number;
 };
@@ -1325,6 +1600,8 @@ const RECIPIENT_FILTERS: CampaignRecipientFilter[] = [
   "delivered",
   "opens",
   "clicks",
+  "bounces",
+  "replies",
   "unsubscribes",
   "audience",
 ];
@@ -1353,10 +1630,21 @@ export async function listCampaignSendRecipients(
 
   if (filter === "delivered") {
     query.status = "sent";
+    query.bouncedAt = { $exists: false };
   } else if (filter === "opens") {
     query.openCount = { $gt: 0 };
   } else if (filter === "clicks") {
     query.clickCount = { $gt: 0 };
+  } else if (filter === "bounces") {
+    query.$or = [
+      { bouncedAt: { $exists: true } },
+      {
+        status: "failed",
+        error: { $nin: ["Unsubscribed", "Suppressed", "Replied"] },
+      },
+    ];
+  } else if (filter === "replies") {
+    query.repliedAt = { $exists: true };
   } else if (filter === "unsubscribes") {
     query.unsubscribedAt = { $exists: true, $ne: null };
   }
@@ -1398,11 +1686,13 @@ export async function listCampaignSendRecipients(
       companyName: doc.companyName || "",
       contactId: contactIdsByEmail.get(email),
       status: doc.status,
+      error: doc.error || "",
       sentAt: doc.sentAt?.toISOString(),
       openedAt: doc.openedAt?.toISOString(),
       clickedAt: doc.clickedAt?.toISOString(),
       clickedUrl: doc.clickedUrl || "",
       unsubscribedAt: doc.unsubscribedAt?.toISOString(),
+      repliedAt: doc.repliedAt?.toISOString(),
       sequenceIndex,
       sequenceNumber:
         typeof sequenceIndex === "number" ? sequenceIndex + 1 : undefined,
@@ -1438,6 +1728,21 @@ export async function listCampaignSendRecipients(
           }),
         );
     });
+  }
+
+  // One row per email for bounces (1-1 can create multiple failed sequence rows)
+  if (filter === "bounces") {
+    const seen = new Set<string>();
+    const unique: CampaignSendDoc[] = [];
+    for (const doc of docs) {
+      const key = doc.email.trim().toLowerCase();
+      if (!key || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      unique.push(doc);
+    }
+    return unique.map((doc) => mapRecipient(doc));
   }
 
   return docs.map((doc) => mapRecipient(doc));

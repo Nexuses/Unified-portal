@@ -12,11 +12,16 @@ import {
 } from "@/lib/mxtoolbox";
 import {
   getSmtpProvider,
+  GMAIL_DAILY_LIMIT_DEFAULT,
+  GMAIL_DAILY_LIMIT_MAX,
+  GMAIL_DAILY_LIMIT_MIN,
+  normalizeGmailDailyLimit,
   SMTP_PROVIDERS,
   type SenderCredentials,
   type SmtpProviderDefinition,
   type SmtpSender,
 } from "@/lib/smtp-senders";
+import { SmtpProviderBadge, SmtpProviderLogo } from "@/app/components/portal/SmtpProviderBadge";
 
 type ModalStep = "provider" | "form";
 
@@ -58,35 +63,6 @@ function buildEditForm(
   };
 }
 
-function SmtpProviderLogo({
-  provider,
-  size = "md",
-}: {
-  provider: Pick<SmtpProviderDefinition, "name" | "logoUrl" | "iconClass" | "iconLabel">;
-  size?: "sm" | "md" | "lg" | "head";
-}) {
-  const [failed, setFailed] = useState(false);
-
-  if (provider.logoUrl && !failed) {
-    return (
-      <span className={`smtp-logo-wrap ${size}`}>
-        <img
-          src={provider.logoUrl}
-          alt={`${provider.name} logo`}
-          className="smtp-logo"
-          onError={() => setFailed(true)}
-        />
-      </span>
-    );
-  }
-
-  return (
-    <span className={`smtp-icon ${provider.iconClass} ${size}`}>
-      {provider.iconLabel}
-    </span>
-  );
-}
-
 function VerificationMark({ ok }: { ok: boolean }) {
   if (ok) {
     return (
@@ -105,14 +81,97 @@ function VerificationMark({ ok }: { ok: boolean }) {
   );
 }
 
+function TrackingDomainField({ sender }: { sender: SmtpSender }) {
+  return (
+    <div className="vs-field">
+      <div className="lbl">Tracking domain</div>
+      <div className="val">
+        {sender.trackingVerification?.verified
+          ? trackingOrigin(sender.trackingDomain).replace(/^https?:\/\//, "")
+          : DEFAULT_TRACKING_HOST}
+        {sender.trackingVerification?.verified ? (
+          <VerificationMark ok />
+        ) : sender.pendingTrackingDomain || sender.trackingDomain ? (
+          <VerificationMark ok={false} />
+        ) : null}
+      </div>
+      <div className="vs-field-note">
+        {sender.pendingTrackingDomain && !sender.trackingVerification?.verified
+          ? `Waiting for DNS/HTTPS on ${sender.pendingTrackingDomain}.`
+          : sender.trackingDomain && sender.trackingVerification?.verified
+            ? "Verified custom tracking domain."
+            : sender.trackingDomain
+              ? `Custom domain set but not usable yet — emails use ${DEFAULT_TRACKING_HOST}.`
+              : `Using default ${DEFAULT_TRACKING_HOST}.`}
+      </div>
+    </div>
+  );
+}
+
+function GmailDailyLimitField({
+  sender,
+  saving,
+  onSave,
+}: {
+  sender: SmtpSender;
+  saving: boolean;
+  onSave: (dailyLimit: number) => void | Promise<void>;
+}) {
+  const current = normalizeGmailDailyLimit(
+    sender.dailyLimit ?? GMAIL_DAILY_LIMIT_DEFAULT,
+  );
+  const [value, setValue] = useState(String(current));
+  const dirty = normalizeGmailDailyLimit(value) !== current;
+
+  useEffect(() => {
+    setValue(String(current));
+  }, [current, sender.id]);
+
+  return (
+    <div className="vs-field vs-daily-limit-field">
+      <div className="lbl">Daily limit</div>
+      <div className="vs-daily-limit-edit">
+        <input
+          type="number"
+          min={GMAIL_DAILY_LIMIT_MIN}
+          max={GMAIL_DAILY_LIMIT_MAX}
+          step={1}
+          value={value}
+          disabled={saving}
+          aria-label="Gmail daily send limit"
+          onChange={(event) => setValue(event.target.value)}
+          onBlur={() => {
+            const next = normalizeGmailDailyLimit(value);
+            setValue(String(next));
+          }}
+        />
+        <button
+          type="button"
+          className="vs-edit"
+          disabled={saving || !dirty}
+          onClick={() => void onSave(normalizeGmailDailyLimit(value))}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SenderExpandedDetails({
   sender,
   verifying,
+  dailyLimitSaving,
+  onDailyLimitSave,
 }: {
   sender: SmtpSender;
   verifying: boolean;
+  dailyLimitSaving?: boolean;
+  onDailyLimitSave?: (dailyLimit: number) => void | Promise<void>;
 }) {
   const verification = sender.verification;
+  const showDailyLimit =
+    sender.provider === "gmail" && typeof onDailyLimitSave === "function";
 
   if (verifying) {
     return (
@@ -135,29 +194,14 @@ function SenderExpandedDetails({
             This sender is marked as outbound-only. DNS auth checks are not required.
           </div>
         </div>
-        <div className="vs-field">
-          <div className="lbl">Tracking domain</div>
-          <div className="val">
-            {sender.trackingVerification?.verified
-              ? trackingOrigin(sender.trackingDomain).replace(/^https?:\/\//, "")
-              : DEFAULT_TRACKING_HOST}
-            {sender.trackingVerification?.verified ? (
-              <VerificationMark ok />
-            ) : sender.pendingTrackingDomain || sender.trackingDomain ? (
-              <VerificationMark ok={false} />
-            ) : null}
-          </div>
-          <div className="vs-field-note">
-            {sender.pendingTrackingDomain && !sender.trackingVerification?.verified
-              ? `Waiting for DNS/HTTPS on ${sender.pendingTrackingDomain}.`
-              : sender.trackingDomain && sender.trackingVerification?.verified
-                ? sender.trackingVerification?.detail || "Verified custom tracking domain."
-                : sender.trackingDomain
-                  ? sender.trackingVerification?.detail ||
-                    `Custom domain set but not usable yet — emails use ${DEFAULT_TRACKING_HOST}.`
-                  : `Using default ${DEFAULT_TRACKING_HOST}.`}
-          </div>
-        </div>
+        {showDailyLimit ? (
+          <GmailDailyLimitField
+            sender={sender}
+            saving={Boolean(dailyLimitSaving)}
+            onSave={onDailyLimitSave}
+          />
+        ) : null}
+        <TrackingDomainField sender={sender} />
       </div>
     );
   }
@@ -202,29 +246,14 @@ function SenderExpandedDetails({
           <div className="vs-field-note">{verification.spfDetail}</div>
         ) : null}
       </div>
-      <div className="vs-field">
-        <div className="lbl">Tracking domain</div>
-        <div className="val">
-          {sender.trackingVerification?.verified
-            ? trackingOrigin(sender.trackingDomain).replace(/^https?:\/\//, "")
-            : DEFAULT_TRACKING_HOST}
-          {sender.trackingVerification?.verified ? (
-            <VerificationMark ok />
-          ) : sender.pendingTrackingDomain || sender.trackingDomain ? (
-            <VerificationMark ok={false} />
-          ) : null}
-        </div>
-        <div className="vs-field-note">
-          {sender.pendingTrackingDomain && !sender.trackingVerification?.verified
-            ? `Waiting for DNS/HTTPS on ${sender.pendingTrackingDomain}.`
-            : sender.trackingDomain && sender.trackingVerification?.verified
-              ? sender.trackingVerification?.detail || "Verified custom tracking domain."
-              : sender.trackingDomain
-                ? sender.trackingVerification?.detail ||
-                  `Custom domain set but not usable yet — emails use ${DEFAULT_TRACKING_HOST}.`
-                : `Using default ${DEFAULT_TRACKING_HOST}.`}
-        </div>
-      </div>
+      <TrackingDomainField sender={sender} />
+      {showDailyLimit ? (
+        <GmailDailyLimitField
+          sender={sender}
+          saving={Boolean(dailyLimitSaving)}
+          onSave={onDailyLimitSave}
+        />
+      ) : null}
     </div>
   );
 }
@@ -250,12 +279,14 @@ export default function PortalSmtpPage() {
     useState<SmtpProviderDefinition | null>(null);
   const [form, setForm] = useState<SenderCredentials>(EMPTY_FORM);
   const [noInbox, setNoInbox] = useState(false);
+  const [dailyLimit, setDailyLimit] = useState(GMAIL_DAILY_LIMIT_DEFAULT);
   const [saving, setSaving] = useState(false);
   const [editingSenderId, setEditingSenderId] = useState<string | null>(null);
-  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [dailyLimitSavingId, setDailyLimitSavingId] = useState<string | null>(null);
   const [trackingSender, setTrackingSender] = useState<SmtpSender | null>(null);
   const [trackingDomainDraft, setTrackingDomainDraft] = useState("");
   const [trackingRecords, setTrackingRecords] = useState<TrackingDnsRecord[]>([]);
@@ -336,6 +367,11 @@ export default function PortalSmtpPage() {
     setSelectedProvider(provider);
     setForm(buildEditForm(sender, provider));
     setNoInbox(Boolean(sender.noInbox));
+    setDailyLimit(
+      sender.provider === "gmail"
+        ? normalizeGmailDailyLimit(sender.dailyLimit ?? GMAIL_DAILY_LIMIT_DEFAULT)
+        : GMAIL_DAILY_LIMIT_DEFAULT,
+    );
     setError("");
     setSuccess("");
     setMenuOpenId(null);
@@ -351,6 +387,7 @@ export default function PortalSmtpPage() {
     setSelectedProvider(null);
     setForm(EMPTY_FORM);
     setNoInbox(false);
+    setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
     setError("");
   }
 
@@ -368,6 +405,7 @@ export default function PortalSmtpPage() {
     setSelectedProvider(provider);
     setForm(buildInitialForm(provider));
     setNoInbox(false);
+    setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
     setModalStep("form");
   }
 
@@ -376,6 +414,7 @@ export default function PortalSmtpPage() {
     setSelectedProvider(null);
     setForm(EMPTY_FORM);
     setNoInbox(false);
+    setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
   }
 
   function updateField(key: keyof SenderCredentials, value: string) {
@@ -406,6 +445,7 @@ export default function PortalSmtpPage() {
             provider: selectedProvider.id,
             ...form,
             noInbox,
+            ...(selectedProvider.id === "gmail" ? { dailyLimit } : {}),
           }),
         },
       );
@@ -453,6 +493,37 @@ export default function PortalSmtpPage() {
     }
   }
 
+  async function handleDailyLimitSave(sender: SmtpSender, nextLimit: number) {
+    if (sender.provider !== "gmail") {
+      return;
+    }
+    const dailyLimitValue = normalizeGmailDailyLimit(nextLimit);
+    setDailyLimitSavingId(sender.id);
+    setError("");
+    setSuccess("");
+    try {
+      const response = await fetch(`/api/smtp/senders/${sender.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dailyLimit: dailyLimitValue }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update daily limit");
+      }
+      setSenders((current) =>
+        current.map((entry) => (entry.id === data.id ? data : entry)),
+      );
+      setSuccess(`Daily limit updated to ${data.dailyLimit ?? dailyLimitValue}.`);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to update daily limit",
+      );
+    } finally {
+      setDailyLimitSavingId(null);
+    }
+  }
+
   async function handleDelete(sender: SmtpSender) {
     if (!window.confirm(`Delete sender ${sender.fromEmail}?`)) {
       return;
@@ -469,7 +540,7 @@ export default function PortalSmtpPage() {
         throw new Error(data.error || "Failed to delete sender");
       }
       setSenders((current) => current.filter((entry) => entry.id !== sender.id));
-      setCollapsedIds((current) => {
+      setExpandedIds((current) => {
         const next = new Set(current);
         next.delete(sender.id);
         return next;
@@ -484,7 +555,7 @@ export default function PortalSmtpPage() {
   }
 
   function toggleExpanded(senderId: string) {
-    setCollapsedIds((current) => {
+    setExpandedIds((current) => {
       const next = new Set(current);
       if (next.has(senderId)) {
         next.delete(senderId);
@@ -497,7 +568,7 @@ export default function PortalSmtpPage() {
   }
 
   function isExpanded(senderId: string) {
-    return !collapsedIds.has(senderId);
+    return expandedIds.has(senderId);
   }
 
   async function recheckSender(senderId: string) {
@@ -654,10 +725,25 @@ export default function PortalSmtpPage() {
 
               return (
                 <div className="vs-card" key={sender.id}>
-                  <div className="vs-card-top">
+                  <div
+                    className={`vs-card-top${expanded ? " is-expanded" : ""}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={expanded}
+                    onClick={() => toggleExpanded(sender.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        toggleExpanded(sender.id);
+                      }
+                    }}
+                  >
                     <div className="vs-sender">
-                      <div className="vs-email">
-                        {formatSenderDisplayName(sender.fromEmail)}
+                      <div className="vs-email-row">
+                        <SmtpProviderBadge providerId={sender.provider} />
+                        <div className="vs-email">
+                          {formatSenderDisplayName(sender.fromEmail)}
+                        </div>
                       </div>
                       <span
                         className={`vs-verified ${verified ? "" : "pending"}`}
@@ -670,7 +756,11 @@ export default function PortalSmtpPage() {
                             : "Needs setup"}
                       </span>
                     </div>
-                    <div className="vs-actions">
+                    <div
+                      className="vs-actions"
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => event.stopPropagation()}
+                    >
                       <button
                         type="button"
                         className="vs-edit"
@@ -789,7 +879,14 @@ export default function PortalSmtpPage() {
                     </div>
                   </div>
                   {expanded ? (
-                    <SenderExpandedDetails sender={sender} verifying={verifying} />
+                    <SenderExpandedDetails
+                      sender={sender}
+                      verifying={verifying}
+                      dailyLimitSaving={dailyLimitSavingId === sender.id}
+                      onDailyLimitSave={(nextLimit) =>
+                        handleDailyLimitSave(sender, nextLimit)
+                      }
+                    />
                   ) : null}
                 </div>
               );
@@ -888,6 +985,32 @@ export default function PortalSmtpPage() {
                         />
                       </div>
                     ))}
+                    {selectedProvider.id === "gmail" ? (
+                      <div className="crm-field">
+                        <label htmlFor="smtp-daily-limit">Daily limit</label>
+                        <input
+                          id="smtp-daily-limit"
+                          type="number"
+                          min={GMAIL_DAILY_LIMIT_MIN}
+                          max={GMAIL_DAILY_LIMIT_MAX}
+                          step={1}
+                          value={dailyLimit}
+                          onChange={(event) => {
+                            const next = Number(event.target.value);
+                            if (!Number.isFinite(next)) {
+                              setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
+                              return;
+                            }
+                            setDailyLimit(
+                              Math.min(
+                                GMAIL_DAILY_LIMIT_MAX,
+                                Math.max(GMAIL_DAILY_LIMIT_MIN, Math.floor(next)),
+                              ),
+                            );
+                          }}
+                        />
+                      </div>
+                    ) : null}
                     <div className="smtp-no-inbox-row">
                       <div className="smtp-no-inbox-copy">
                         <div className="smtp-no-inbox-label">No inbox</div>

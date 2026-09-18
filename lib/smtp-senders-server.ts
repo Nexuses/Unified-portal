@@ -8,6 +8,7 @@ import {
 import { getDb } from "@/lib/mongodb";
 import {
   mapSender,
+  normalizeGmailDailyLimit,
   type SenderDoc,
   type SmtpProviderId,
 } from "@/lib/smtp-senders";
@@ -17,6 +18,7 @@ import {
   trackingDnsRecords,
   verifyTrackingDomain,
 } from "@/lib/campaign-tracking";
+import { createOutboundMessageId } from "@/lib/master-inbox-server";
 
 function skippedInboxVerification(): SenderAuthVerification {
   return {
@@ -212,6 +214,9 @@ export async function updateProjectSender(
   if (input.noInbox !== undefined) {
     updates.noInbox = Boolean(input.noInbox);
   }
+  if (existing.provider === "gmail" && input.dailyLimit !== undefined) {
+    updates.dailyLimit = normalizeGmailDailyLimit(input.dailyLimit);
+  }
 
   await db.collection<SenderDoc>("smtp_senders").updateOne(
     { _id: senderId, projectId },
@@ -401,6 +406,10 @@ export type ProjectMailInput = {
   listUnsubscribeUrl?: string;
 };
 
+export type DeliverMailResult = {
+  messageId?: string;
+};
+
 export async function sendProjectTestEmail(
   projectId: ObjectId,
   input: TestEmailInput,
@@ -426,14 +435,14 @@ export async function sendProjectMail(
   projectId: ObjectId,
   senderId: string,
   input: ProjectMailInput,
-) {
+): Promise<DeliverMailResult> {
   const sender = await loadProjectSender(projectId, senderId);
   const to = input.to.trim().toLowerCase();
   if (!to) {
     throw new Error("Recipient is missing");
   }
 
-  await deliverWithSender(sender, {
+  return deliverWithSender(sender, {
     to: [to],
     subject: input.subject,
     html: input.html,
@@ -471,7 +480,7 @@ async function deliverWithSender(
     replyTo?: string;
     listUnsubscribeUrl?: string;
   },
-) {
+): Promise<DeliverMailResult> {
   const fromEmail = sender.fromEmail;
   const from = input.fromName?.trim()
     ? `"${input.fromName.trim()}" <${fromEmail}>`
@@ -484,6 +493,8 @@ async function deliverWithSender(
 
   const replyTo = input.replyTo?.trim() || undefined;
   const listUnsubscribeUrl = input.listUnsubscribeUrl?.trim() || undefined;
+  const messageId =
+    sender.provider === "gmail" ? createOutboundMessageId() : undefined;
 
   if (sender.provider === "sendgrid" && sender.apiKey) {
     await sendWithSendgrid(sender.apiKey, {
@@ -495,7 +506,7 @@ async function deliverWithSender(
       replyTo,
       listUnsubscribeUrl,
     });
-    return;
+    return {};
   }
 
   if (sender.provider === "resend" && sender.apiKey) {
@@ -507,7 +518,7 @@ async function deliverWithSender(
       replyTo,
       listUnsubscribeUrl,
     });
-    return;
+    return {};
   }
 
   if (sender.provider === "cloudflare") {
@@ -540,12 +551,13 @@ async function deliverWithSender(
     auth: { user, pass },
   });
 
-  await transporter.sendMail({
+  const info = await transporter.sendMail({
     from,
     to: input.to,
     subject,
     html,
     replyTo,
+    messageId,
     ...(listUnsubscribeUrl
       ? {
           headers: {
@@ -555,6 +567,10 @@ async function deliverWithSender(
         }
       : {}),
   });
+
+  return {
+    messageId: messageId || info.messageId || undefined,
+  };
 }
 
 async function sendWithSendgrid(

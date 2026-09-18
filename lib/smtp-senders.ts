@@ -57,6 +57,8 @@ export type SenderDoc = {
   cloudflareEmailApiToken?: string;
   /** Skip SPF / DKIM / DMARC checks (outbound-only / no inbox). */
   noInbox?: boolean;
+  /** Gmail only: max emails this sender may send per UTC day. */
+  dailyLimit?: number;
   verification?: SenderAuthVerification;
   createdBy: ObjectId | null;
   createdAt: Date;
@@ -79,6 +81,7 @@ export type SmtpSender = {
   cloudflareAccountId?: string;
   cloudflareEmailApiToken?: string;
   noInbox?: boolean;
+  dailyLimit?: number;
   verification?: SenderAuthVerification;
   createdAt: string;
   updatedAt: string;
@@ -256,6 +259,22 @@ export function getSmtpProvider(id: SmtpProviderId) {
   return SMTP_PROVIDERS.find((provider) => provider.id === id) ?? null;
 }
 
+/** Default / max daily send caps for Gmail SMTP senders. */
+export const GMAIL_DAILY_LIMIT_DEFAULT = 80;
+export const GMAIL_DAILY_LIMIT_MAX = 140;
+export const GMAIL_DAILY_LIMIT_MIN = 1;
+
+export function normalizeGmailDailyLimit(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) {
+    return GMAIL_DAILY_LIMIT_DEFAULT;
+  }
+  return Math.min(
+    GMAIL_DAILY_LIMIT_MAX,
+    Math.max(GMAIL_DAILY_LIMIT_MIN, Math.floor(parsed)),
+  );
+}
+
 function maskSecret(value: string | undefined) {
   if (!value) {
     return undefined;
@@ -282,6 +301,10 @@ export function mapSender(doc: SenderDoc): SmtpSender {
     cloudflareAccountId: doc.cloudflareAccountId,
     cloudflareEmailApiToken: maskSecret(doc.cloudflareEmailApiToken),
     noInbox: Boolean(doc.noInbox),
+    dailyLimit:
+      doc.provider === "gmail"
+        ? normalizeGmailDailyLimit(doc.dailyLimit ?? GMAIL_DAILY_LIMIT_DEFAULT)
+        : undefined,
     verification: doc.verification,
     trackingDomain: doc.trackingDomain,
     pendingTrackingDomain: doc.pendingTrackingDomain,
@@ -355,6 +378,13 @@ export function parseSenderInput(
       cloudflareAccountId: values.cloudflareAccountId,
       cloudflareEmailApiToken: values.cloudflareEmailApiToken,
       noInbox: Boolean(body.noInbox),
+      ...(providerId === "gmail"
+        ? {
+            dailyLimit: normalizeGmailDailyLimit(
+              body.dailyLimit ?? GMAIL_DAILY_LIMIT_DEFAULT,
+            ),
+          }
+        : {}),
     },
   };
 }

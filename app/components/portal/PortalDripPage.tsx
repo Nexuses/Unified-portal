@@ -60,6 +60,23 @@ function DuplicateIcon() {
   );
 }
 
+function PauseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="6.5" y="5" width="3.5" height="14" rx="1" />
+      <rect x="14" y="5" width="3.5" height="14" rx="1" />
+    </svg>
+  );
+}
+
+function ResumeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M8 5.5v13l11-6.5-11-6.5Z" />
+    </svg>
+  );
+}
+
 function MetricColumn({
   label,
   value,
@@ -110,6 +127,7 @@ export default function PortalDripPage({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+  const [pausingId, setPausingId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -275,6 +293,44 @@ export default function PortalDripPage({
       );
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handlePauseToggle(campaign: DripCampaign) {
+    if (kind !== "oneone") {
+      return;
+    }
+    const resuming = campaign.status === "paused";
+    const nextStatus = resuming ? "sending" : "paused";
+    if (
+      !resuming &&
+      campaign.status !== "sending" &&
+      campaign.status !== "scheduled"
+    ) {
+      return;
+    }
+    setPausingId(campaign.id);
+    setOpenMenuId(null);
+    try {
+      const updated = await patchDripCampaign(
+        campaign.id,
+        { status: nextStatus },
+        "oneone",
+      );
+      if (resuming) {
+        await fetch("/api/campaigns/process-due", { method: "POST" }).catch(
+          () => undefined,
+        );
+      }
+      setCampaigns((current) =>
+        current.map((item) => (item.id === campaign.id ? updated : item)),
+      );
+    } catch (error) {
+      window.alert(
+        error instanceof Error ? error.message : "Failed to update campaign",
+      );
+    } finally {
+      setPausingId(null);
     }
   }
 
@@ -604,6 +660,13 @@ export default function PortalDripPage({
                             <RowStatusSpinner />
                             Running
                           </span>
+                        ) : campaign.status === "paused" ? (
+                          <span
+                            className="drip-row-status drip-row-status-paused"
+                            aria-label="Campaign is paused"
+                          >
+                            Paused
+                          </span>
                         ) : campaign.status === "sent" ? (
                           <span className="drip-row-status drip-row-status-complete">
                             Complete
@@ -645,6 +708,34 @@ export default function PortalDripPage({
                         </button>
                         {openMenuId === campaign.id ? (
                           <div className="drip-more-menu" role="menu">
+                            {kind === "oneone" &&
+                            (campaign.status === "sending" ||
+                              campaign.status === "scheduled" ||
+                              campaign.status === "paused") ? (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={
+                                  deletingId !== null ||
+                                  duplicatingId === campaign.id ||
+                                  pausingId === campaign.id
+                                }
+                                onClick={() => void handlePauseToggle(campaign)}
+                              >
+                                {campaign.status === "paused" ? (
+                                  <ResumeIcon />
+                                ) : (
+                                  <PauseIcon />
+                                )}
+                                {pausingId === campaign.id
+                                  ? campaign.status === "paused"
+                                    ? "Resuming..."
+                                    : "Pausing..."
+                                  : campaign.status === "paused"
+                                    ? "Resume campaign"
+                                    : "Pause campaign"}
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               role="menuitem"

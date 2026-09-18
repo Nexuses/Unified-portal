@@ -6,7 +6,7 @@ import {
   getProjectSender,
   updateProjectSender,
 } from "@/lib/smtp-senders-server";
-import { parseSenderInput } from "@/lib/smtp-senders";
+import { parseSenderInput, normalizeGmailDailyLimit } from "@/lib/smtp-senders";
 import {
   isSessionError,
   requirePortalSession,
@@ -37,6 +37,23 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
 
     const body = await request.json();
+
+    // Allow Gmail daily-limit-only edits from the sender details panel.
+    const bodyKeys = Object.keys(body ?? {});
+    if (
+      existing.provider === "gmail" &&
+      bodyKeys.length === 1 &&
+      bodyKeys[0] === "dailyLimit"
+    ) {
+      const sender = await updateProjectSender(projectId, senderId, {
+        dailyLimit: normalizeGmailDailyLimit(body.dailyLimit),
+      });
+      if (!sender) {
+        return NextResponse.json({ error: "Sender not found" }, { status: 404 });
+      }
+      return NextResponse.json(sender);
+    }
+
     const parsed = parseSenderInput(existing.provider, body, { mode: "update" });
     if (parsed.error) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });

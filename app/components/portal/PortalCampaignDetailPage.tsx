@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import type { SmtpSender } from "@/lib/smtp-senders";
+import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
 import type { Contact, CrmList } from "@/lib/crm";
 import {
   campaignSequences,
@@ -223,6 +224,7 @@ function SenderPanel({
   optionsLoading,
   draftSenderId,
   draftSenderName,
+  kind = "drip",
   onClose,
   onSave,
   onEmailChange,
@@ -233,17 +235,44 @@ function SenderPanel({
   optionsLoading: boolean;
   draftSenderId: string;
   draftSenderName: string;
+  kind?: "drip" | "oneone";
   onClose: () => void;
   onSave: () => void;
   onEmailChange: (senderId: string) => void;
   onNameChange: (name: string) => void;
 }) {
+  const [emailMenuOpen, setEmailMenuOpen] = useState(false);
+  const emailMenuRef = useRef<HTMLDivElement | null>(null);
   const savedSenderId = campaign.senderId ?? "";
   const savedSenderName = (campaign.senderName ?? "").trim();
   const hasChanges =
     draftSenderId !== savedSenderId ||
     draftSenderName.trim() !== savedSenderName;
   const canSave = Boolean(draftSenderId) && senders.length > 0 && hasChanges;
+  const selectedSender =
+    senders.find((sender) => sender.id === draftSenderId) ?? senders[0] ?? null;
+
+  useEffect(() => {
+    if (!emailMenuOpen) {
+      return;
+    }
+    function handlePointerDown(event: MouseEvent) {
+      if (!emailMenuRef.current?.contains(event.target as Node)) {
+        setEmailMenuOpen(false);
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setEmailMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [emailMenuOpen]);
 
   return (
     <div className="drip-sender-panel">
@@ -269,30 +298,91 @@ function SenderPanel({
           <div className="drip-picker-empty">Loading senders...</div>
         ) : senders.length === 0 ? (
           <div className="drip-picker-empty">
-            No senders configured.{" "}
-            <Link href={PORTAL_ROUTES.smtp} className="link-blue">
-              Add a sender
-            </Link>
+            {kind === "drip" ? (
+              <>
+                No senders available for drip campaigns. Gmail SMTP can only be used in 1-1.{" "}
+                <Link href={PORTAL_ROUTES.smtp} className="link-blue">
+                  Add another sender
+                </Link>
+              </>
+            ) : (
+              <>
+                No senders configured.{" "}
+                <Link href={PORTAL_ROUTES.smtp} className="link-blue">
+                  Add a sender
+                </Link>
+              </>
+            )}
           </div>
         ) : (
           <>
             <div className="drip-sender-form">
               <div className="crm-field">
-                <label htmlFor="drip-sender-email">
+                <label id="drip-sender-email-label">
                   Email address
                   <InfoIcon />
                 </label>
-                <select
-                  id="drip-sender-email"
-                  value={draftSenderId}
-                  onChange={(event) => onEmailChange(event.target.value)}
-                >
-                  {senders.map((sender) => (
-                    <option key={sender.id} value={sender.id}>
-                      {sender.fromEmail}
-                    </option>
-                  ))}
-                </select>
+                <div className="drip-sender-select" ref={emailMenuRef}>
+                  <button
+                    type="button"
+                    id="drip-sender-email"
+                    className={`drip-sender-select-trigger${emailMenuOpen ? " open" : ""}`}
+                    aria-haspopup="listbox"
+                    aria-expanded={emailMenuOpen}
+                    aria-labelledby="drip-sender-email-label"
+                    onClick={() => setEmailMenuOpen((open) => !open)}
+                  >
+                    <span className="drip-sender-select-value">
+                      <SmtpProviderBadge iconOnly providerId={selectedSender?.provider} />
+                      <span>{selectedSender?.fromEmail || "Select a sender"}</span>
+                    </span>
+                    <svg
+                      className="drip-sender-select-caret"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      aria-hidden="true"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </button>
+                  {emailMenuOpen ? (
+                    <div className="drip-sender-select-menu" role="listbox">
+                      {senders.map((sender) => {
+                        const selected = sender.id === draftSenderId;
+                        return (
+                          <button
+                            key={sender.id}
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            className={`drip-sender-select-option${selected ? " selected" : ""}`}
+                            onClick={() => {
+                              onEmailChange(sender.id);
+                              setEmailMenuOpen(false);
+                            }}
+                          >
+                            <SmtpProviderBadge iconOnly providerId={sender.provider} />
+                            <span>{sender.fromEmail}</span>
+                            {selected ? (
+                              <svg
+                                className="drip-sender-select-check"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.5"
+                                aria-hidden="true"
+                              >
+                                <path d="M20 6 9 17l-5-5" />
+                              </svg>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
               <div className="crm-field">
@@ -2902,6 +2992,17 @@ function senderDisplayName(sender: SmtpSender) {
   return match?.[1]?.trim() || sender.providerName;
 }
 
+/** Drip campaigns cannot use Gmail SMTP senders (1-1 can). */
+function sendersAllowedForKind(
+  senders: SmtpSender[],
+  kind: "drip" | "oneone" | undefined,
+) {
+  if (kind === "oneone") {
+    return senders;
+  }
+  return senders.filter((sender) => sender.provider !== "gmail");
+}
+
 const SCHEDULE_TIMEZONES = [
   "Asia/Kolkata",
   "UTC",
@@ -3502,10 +3603,16 @@ function SequencesPanel({
 function buildSteps(
   campaign: DripCampaign,
   remainingEmails?: number,
-  options?: { automationFollowUp?: boolean },
+  options?: {
+    automationFollowUp?: boolean;
+    senderProviderId?: SmtpSender["provider"] | null;
+    senderAllowed?: boolean;
+  },
 ): SetupStep[] {
   const followUp = Boolean(options?.automationFollowUp);
-  const senderDone = Boolean(campaign.senderId && campaign.senderEmail);
+  const senderDone =
+    Boolean(campaign.senderId && campaign.senderEmail) &&
+    options?.senderAllowed !== false;
   const recipientsCount =
     campaign.recipientMode === "individual"
       ? campaign.individualContacts?.length ?? 0
@@ -3559,11 +3666,12 @@ function buildSteps(
       id: "sender",
       title: "Sender",
       subtitle: senderDone ? (
-        <>
+        <span className="drip-step-sender-line">
           <strong>{campaign.senderName ?? "Sender"}</strong>
-          {` · ${campaign.senderEmail}`}
-          {followUp ? " · same as step 1" : ""}
-        </>
+          <span>{` · ${campaign.senderEmail}`}</span>
+          <SmtpProviderBadge providerId={options?.senderProviderId} />
+          {followUp ? <span> · same as step 1</span> : null}
+        </span>
       ) : (
         "Select a verified sender for this campaign."
       ),
@@ -3966,14 +4074,39 @@ export default function PortalCampaignDetailPage({
   }, [senderPanelOpen, recipientsPanelOpen]);
 
   useEffect(() => {
-    if (!senderPanelOpen || senders.length === 0) {
+    let cancelled = false;
+    async function loadSendersForBadge() {
+      try {
+        const response = await fetch("/api/smtp/senders", { cache: "no-store" });
+        const data = await response.json();
+        if (cancelled || !response.ok || !Array.isArray(data)) {
+          return;
+        }
+        setSenders((current) => (current.length > 0 ? current : data));
+      } catch {
+        // Badge is optional; ignore.
+      }
+    }
+    void loadSendersForBadge();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectableSenders = useMemo(
+    () => sendersAllowedForKind(senders, kind),
+    [senders, kind],
+  );
+
+  useEffect(() => {
+    if (!senderPanelOpen || selectableSenders.length === 0) {
       return;
     }
 
     const existing =
-      senders.find((sender) => sender.id === campaign?.senderId) ??
-      senders.find((sender) => sender.id === draftSenderId) ??
-      senders[0];
+      selectableSenders.find((sender) => sender.id === campaign?.senderId) ??
+      selectableSenders.find((sender) => sender.id === draftSenderId) ??
+      selectableSenders[0];
 
     if (!existing) {
       return;
@@ -3985,7 +4118,7 @@ export default function PortalCampaignDetailPage({
         ? campaign.senderName
         : senderDisplayName(existing),
     );
-  }, [senderPanelOpen, senders, campaign?.senderId, campaign?.senderName]);
+  }, [senderPanelOpen, selectableSenders, campaign?.senderId, campaign?.senderName]);
 
   useEffect(() => {
     if (!recipientsPanelOpen) {
@@ -4012,15 +4145,27 @@ export default function PortalCampaignDetailPage({
   }, [nameEditing]);
 
   const automationFollowUp = isAutomationFollowUpCampaign(campaign, queryFollowUp);
+  const selectedSenderProviderId =
+    selectableSenders.find((sender) => sender.id === campaign?.senderId)?.provider ??
+    (kind === "oneone"
+      ? senders.find((sender) => sender.id === campaign?.senderId)?.provider ?? null
+      : null);
+  const senderAllowed =
+    kind === "oneone" ||
+    !campaign?.senderId ||
+    !senders.some((sender) => sender.id === campaign.senderId) ||
+    selectableSenders.some((sender) => sender.id === campaign.senderId);
 
   const steps = useMemo(
     () =>
       campaign
         ? buildSteps(campaign, remainingEmails, {
             automationFollowUp,
+            senderProviderId: selectedSenderProviderId,
+            senderAllowed,
           })
         : [],
-    [campaign, remainingEmails, automationFollowUp],
+    [campaign, remainingEmails, automationFollowUp, selectedSenderProviderId, senderAllowed],
   );
   const requiredStepsComplete = steps.filter((step) => !step.noIcon).every((step) => step.done);
 
@@ -4107,7 +4252,7 @@ export default function PortalCampaignDetailPage({
     }
 
     if (senderPanelOpen && draftSenderId) {
-      const selected = senders.find((sender) => sender.id === draftSenderId);
+      const selected = selectableSenders.find((sender) => sender.id === draftSenderId);
       if (selected) {
         patch.senderId = selected.id;
         patch.senderName = draftSenderName.trim() || senderDisplayName(selected);
@@ -4207,7 +4352,7 @@ export default function PortalCampaignDetailPage({
   }
 
   async function handleSaveSender() {
-    const selected = senders.find((sender) => sender.id === draftSenderId);
+    const selected = selectableSenders.find((sender) => sender.id === draftSenderId);
     if (!selected) {
       return;
     }
@@ -4227,7 +4372,7 @@ export default function PortalCampaignDetailPage({
   }
 
   function handleSenderEmailChange(senderId: string) {
-    const selected = senders.find((sender) => sender.id === senderId);
+    const selected = selectableSenders.find((sender) => sender.id === senderId);
     setDraftSenderId(senderId);
     if (selected) {
       setDraftSenderName(senderDisplayName(selected));
@@ -4830,10 +4975,11 @@ export default function PortalCampaignDetailPage({
               {step.id === "sender" && senderPanelOpen ? (
                 <SenderPanel
                   campaign={campaign}
-                  senders={senders}
+                  senders={selectableSenders}
                   optionsLoading={optionsLoading}
                   draftSenderId={draftSenderId}
                   draftSenderName={draftSenderName}
+                  kind={kind}
                   onClose={closeSenderPanel}
                   onSave={handleSaveSender}
                   onEmailChange={handleSenderEmailChange}

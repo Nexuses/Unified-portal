@@ -3,15 +3,19 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
+  campaignSequences,
   formatCampaignClock,
   formatMetric,
   formatSequenceProgress,
   mergeBlastReport,
+  patchDripCampaign,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { PORTAL_ROUTES, portalContactRoute, portalListRoute, publicAnalyticsPath, publicCampaignReportPath } from "@/lib/portal-nav";
+import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
+import type { SmtpProviderId } from "@/lib/smtp-senders";
 
-type PeopleView = "delivered" | "opens" | "clicks" | "unsubscribes" | "audience";
+type PeopleView = "delivered" | "opens" | "clicks" | "bounces" | "replies" | "unsubscribes" | "audience";
 
 type SendRecipient = {
   id: string;
@@ -19,11 +23,13 @@ type SendRecipient = {
   fullName: string;
   companyName: string;
   contactId?: string;
+  error?: string;
   sentAt?: string;
   openedAt?: string;
   clickedAt?: string;
   clickedUrl?: string;
   unsubscribedAt?: string;
+  repliedAt?: string;
   sequenceIndex?: number;
   sequenceNumber?: number;
 };
@@ -32,6 +38,8 @@ const PEOPLE_TITLES: Record<PeopleView, string> = {
   delivered: "Delivered",
   opens: "Opens",
   clicks: "Clicks",
+  bounces: "Bounces",
+  replies: "Replies",
   unsubscribes: "Unsubscribes",
   audience: "Campaign audience",
 };
@@ -41,7 +49,8 @@ const TAB_TO_PEOPLE: Record<string, PeopleView | null> = {
   deliverability: "delivered",
   opens: "opens",
   clicks: "clicks",
-  conversions: null,
+  bounces: "bounces",
+  replies: "replies",
   unsubscribes: "unsubscribes",
 };
 
@@ -62,6 +71,23 @@ function HelpIcon() {
       <circle cx="12" cy="12" r="9" />
       <path d="M9.6 9.4a2.4 2.4 0 1 1 3.3 2.2c-.7.4-1.1.8-1.1 1.6" />
       <circle cx="12" cy="16.6" r="0.85" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="6.5" y="5" width="3.5" height="14" rx="1" />
+      <rect x="14" y="5" width="3.5" height="14" rx="1" />
+    </svg>
+  );
+}
+
+function ResumeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M8 5.5v13l11-6.5-11-6.5Z" />
     </svg>
   );
 }
@@ -185,6 +211,10 @@ export default function PortalCampaignReport({
     variant: "success" | "error";
     message: string;
   } | null>(null);
+  const [pausing, setPausing] = useState(false);
+  const [sequencesOpen, setSequencesOpen] = useState(false);
+  const [sequencePreviewIndex, setSequencePreviewIndex] = useState(0);
+  const [senderProviderId, setSenderProviderId] = useState<SmtpProviderId | null>(null);
   const isPublic = Boolean(publicToken);
 
   useEffect(() => {
@@ -205,7 +235,10 @@ export default function PortalCampaignReport({
           return;
         }
 
-        await fetch("/api/campaigns/process-due", { method: "POST" });
+        // Don't advance sends while the campaign is intentionally paused
+        if (campaign.status !== "paused") {
+          await fetch("/api/campaigns/process-due", { method: "POST" });
+        }
         const response = await fetch("/api/campaigns/stats");
         const data = await response.json();
         if (cancelled || !response.ok) {
@@ -219,7 +252,12 @@ export default function PortalCampaignReport({
             (item.kind || "drip") === (campaign.kind || "drip"),
         );
         if (report && onCampaignChange) {
-          onCampaignChange(mergeBlastReport(campaign, report));
+          const merged = mergeBlastReport(campaign, report);
+          onCampaignChange(
+            campaign.status === "paused"
+              ? { ...merged, status: "paused" }
+              : merged,
+          );
         }
       } catch {
         // Keep showing the last known stats.
@@ -235,6 +273,51 @@ export default function PortalCampaignReport({
       window.clearInterval(timer);
     };
   }, [campaign.id, campaign.status, publicToken]);
+
+  useEffect(() => {
+    if (isPublic || !campaign.senderId) {
+      setSenderProviderId(null);
+      return;
+    }
+    let cancelled = false;
+    async function loadSenderProvider() {
+      try {
+        const response = await fetch("/api/smtp/senders", { cache: "no-store" });
+        const data = await response.json().catch(() => null);
+        if (cancelled || !response.ok) {
+          return;
+        }
+        const senders = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.senders)
+            ? data.senders
+            : [];
+        const match = senders.find(
+          (item: { id?: string; provider?: string }) => item.id === campaign.senderId,
+        );
+        if (
+          match?.provider === "aws_ses" ||
+          match?.provider === "gmail" ||
+          match?.provider === "outlook" ||
+          match?.provider === "sendgrid" ||
+          match?.provider === "cloudflare" ||
+          match?.provider === "resend"
+        ) {
+          setSenderProviderId(match.provider);
+        } else {
+          setSenderProviderId(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setSenderProviderId(null);
+        }
+      }
+    }
+    void loadSenderProvider();
+    return () => {
+      cancelled = true;
+    };
+  }, [campaign.senderId, isPublic]);
 
   useEffect(() => {
     if (!peopleView) {
@@ -423,7 +506,50 @@ export default function PortalCampaignReport({
 
   const timezone = campaign.timezone || "Asia/Kolkata";
   const progress = formatSequenceProgress(campaign.sequenceProgress);
+  const isOneOne = campaign.kind === "oneone";
   const isRunning = campaign.status === "sending";
+  const isPaused = campaign.status === "paused";
+  const canPause =
+    !isPublic &&
+    isOneOne &&
+    (campaign.status === "sending" || campaign.status === "scheduled");
+  const canResume = !isPublic && isOneOne && isPaused;
+
+  async function togglePause() {
+    if (pausing || isPublic || !isOneOne) {
+      return;
+    }
+    const resuming = canResume;
+    setPausing(true);
+    try {
+      const next = await patchDripCampaign(
+        campaign.id,
+        { status: resuming ? "sending" : "paused" },
+        "oneone",
+      );
+      if (resuming) {
+        await fetch("/api/campaigns/process-due", { method: "POST" }).catch(
+          () => undefined,
+        );
+      }
+      onCampaignChange?.(next);
+      setShareToast({
+        key: Date.now(),
+        variant: "success",
+        message: resuming ? "Campaign resumed" : "Campaign paused",
+      });
+    } catch (error) {
+      setShareToast({
+        key: Date.now(),
+        variant: "error",
+        message:
+          error instanceof Error ? error.message : "Failed to update campaign",
+      });
+    } finally {
+      setPausing(false);
+    }
+  }
+
   const sentLabel = campaign.sentAt
     ? formatCampaignClock(campaign.sentAt, timezone)
     : campaign.scheduledAt
@@ -436,42 +562,82 @@ export default function PortalCampaignReport({
     ? campaign.replyToEmail
     : campaign.senderEmail;
   const delivered = campaign.delivered ?? campaign.recipients;
-  const metrics = [
+  const sequences = campaign.kind === "oneone" ? campaignSequences(campaign) : [];
+  const metrics: Array<{
+    label: string;
+    value: number;
+    rateLabel: string;
+    rate: string;
+    view?: PeopleView;
+    onView?: () => void;
+  }> = [
+    ...(campaign.kind === "oneone"
+      ? [
+          {
+            label: "Recipients",
+            value: campaign.recipients,
+            rateLabel: "In this campaign",
+            rate: "100%",
+            view: "audience" as PeopleView,
+          },
+        ]
+      : []),
     {
       label: "Delivered",
       value: delivered,
       rateLabel: "Delivery rate",
       rate: rate(delivered, campaign.recipients || delivered),
-      view: "delivered" as PeopleView | false,
+      view: "delivered" as PeopleView,
     },
     {
       label: "Opens",
       value: campaign.opens,
       rateLabel: "Open rate",
       rate: rate(campaign.opens, campaign.recipients),
-      view: "opens" as PeopleView | false,
+      view: "opens" as PeopleView,
     },
     {
       label: "Clicks",
       value: campaign.clicks,
       rateLabel: "Click-through rate",
       rate: rate(campaign.clicks, campaign.recipients),
-      view: "clicks" as PeopleView | false,
+      view: "clicks" as PeopleView,
     },
     {
-      label: "Conversions",
-      value: campaign.conversions,
-      rateLabel: "Conversion rate",
-      rate: rate(campaign.conversions, campaign.recipients),
-      view: false as PeopleView | false,
+      label: "Bounces",
+      value: campaign.bounces ?? 0,
+      rateLabel: "Bounce rate",
+      rate: rate(campaign.bounces ?? 0, campaign.recipients),
+      view: "bounces" as PeopleView,
+    },
+    {
+      label: "Replies",
+      value: campaign.replies ?? 0,
+      rateLabel: "Reply rate",
+      rate: rate(campaign.replies ?? 0, campaign.recipients),
+      view: "replies" as PeopleView,
     },
     {
       label: "Unsubscribes",
       value: campaign.unsubscribed,
       rateLabel: "Unsubscribe rate",
       rate: rate(campaign.unsubscribed, campaign.recipients),
-      view: "unsubscribes" as PeopleView | false,
+      view: "unsubscribes" as PeopleView,
     },
+    ...(campaign.kind === "oneone"
+      ? [
+          {
+            label: "Sequences",
+            value: sequences.length,
+            rateLabel: "Emails in sequence",
+            rate: sequences.length === 1 ? "1 step" : `${sequences.length} steps`,
+            onView: () => {
+              setSequencePreviewIndex(0);
+              setSequencesOpen(true);
+            },
+          },
+        ]
+      : []),
   ];
 
   const timeline = [...(campaign.timeline ?? [])].sort(
@@ -485,9 +651,29 @@ export default function PortalCampaignReport({
       ? showSequence
         ? 7
         : 6
-      : showSequence
-        ? 6
-        : 5;
+      : peopleView === "bounces" || peopleView === "replies"
+        ? showSequence
+          ? 6
+          : 5
+        : showSequence
+          ? 6
+          : 5;
+  const activeSequenceIndex = Math.min(
+    Math.max(sequencePreviewIndex, 0),
+    Math.max(sequences.length - 1, 0),
+  );
+  const activeSequence = sequences[activeSequenceIndex];
+  const activeSequenceHtml = activeSequence
+    ? activeSequence.designHtml?.trim() ||
+      (activeSequenceIndex === 0 ? campaign.designHtml?.trim() : "") ||
+      ""
+    : "";
+  const activeSequenceDelay =
+    !activeSequence || activeSequenceIndex === 0
+      ? "Sends immediately when the campaign starts"
+      : activeSequence.delayDays === 0
+        ? "Sends the same day after the previous sequence"
+        : `Waits ${activeSequence.delayDays} day${activeSequence.delayDays === 1 ? "" : "s"} after the previous sequence`;
 
   return (
     <div className="drip-report-page">
@@ -526,11 +712,13 @@ export default function PortalCampaignReport({
             #{campaign.id}
             {isRunning
               ? " • Running"
-              : sentLabel
-                ? ` • Sent on ${sentLabel}`
-                : campaign.status === "scheduled"
-                  ? " • Scheduled"
-                  : ""}
+              : isPaused
+                ? " • Paused"
+                : sentLabel
+                  ? ` • Sent on ${sentLabel}`
+                  : campaign.status === "scheduled"
+                    ? " • Scheduled"
+                    : ""}
           </div>
           <div className="drip-report-fields">
             <div>
@@ -539,7 +727,10 @@ export default function PortalCampaignReport({
             </div>
             <div>
               <span>From</span>
-              <strong title={from}>{from || "—"}</strong>
+              <strong className="drip-report-from" title={from}>
+                <span className="drip-report-from-text">{from || "—"}</span>
+                <SmtpProviderBadge providerId={senderProviderId} />
+              </strong>
             </div>
             <div>
               <span>Reply to</span>
@@ -548,6 +739,23 @@ export default function PortalCampaignReport({
           </div>
         </div>
         <div className="drip-report-actions">
+          {canPause || canResume ? (
+            <button
+              type="button"
+              className={`drip-report-pause-action${canResume ? " btn-dark" : " btn-soft"}`}
+              disabled={pausing}
+              onClick={() => void togglePause()}
+            >
+              {canResume ? <ResumeIcon /> : <PauseIcon />}
+              {pausing
+                ? canResume
+                  ? "Resuming…"
+                  : "Pausing…"
+                : canResume
+                  ? "Resume campaign"
+                  : "Pause campaign"}
+            </button>
+          ) : null}
           <button
             type="button"
             className={`drip-report-share${shareCopied ? " copied" : ""}`}
@@ -593,11 +801,45 @@ export default function PortalCampaignReport({
                 : "Sending emails until this campaign finishes."}
             </span>
           </div>
+          {canPause ? (
+            <button
+              type="button"
+              className="btn-soft drip-report-pause-btn"
+              disabled={pausing}
+              onClick={() => void togglePause()}
+            >
+              <PauseIcon />
+              {pausing ? "Pausing…" : "Pause"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {isPaused ? (
+        <div className="drip-report-paused" role="status">
+          <div>
+            <strong>Campaign is paused</strong>
+            <span>
+              Sending is stopped. Resume whenever you want to continue the
+              sequence.
+            </span>
+          </div>
+          {canResume ? (
+            <button
+              type="button"
+              className="btn-dark drip-report-pause-btn"
+              disabled={pausing}
+              onClick={() => void togglePause()}
+            >
+              <ResumeIcon />
+              {pausing ? "Resuming…" : "Resume"}
+            </button>
+          ) : null}
         </div>
       ) : null}
 
       <div className="drip-report-tabs">
-        {["Overview", "Deliverability", "Opens", "Clicks", "Conversions", "Unsubscribes"].map(
+        {["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
           (label) => (
             <button
               key={label}
@@ -619,17 +861,32 @@ export default function PortalCampaignReport({
         </span>
       </div>
 
-      <div className="drip-report-metrics">
+      <div
+        className="drip-report-metrics"
+        style={
+          campaign.kind === "oneone"
+            ? { gridTemplateColumns: `repeat(${Math.min(metrics.length, 4)}, minmax(0, 1fr))` }
+            : undefined
+        }
+      >
         {metrics.map((metric) => (
           <div key={metric.label} className="drip-report-metric">
             <div className="drip-report-metric-k">{metric.label}</div>
             <div className="drip-report-metric-row">
               <div className="drip-report-metric-v">{metric.value}</div>
-              {metric.view ? (
+              {metric.view || metric.onView ? (
                 <button
                   type="button"
                   className="drip-report-view"
-                  onClick={() => openPeople(metric.view as PeopleView)}
+                  onClick={() => {
+                    if (metric.onView) {
+                      metric.onView();
+                      return;
+                    }
+                    if (metric.view) {
+                      openPeople(metric.view);
+                    }
+                  }}
                 >
                   <PeopleIcon />
                   View
@@ -643,6 +900,94 @@ export default function PortalCampaignReport({
           </div>
         ))}
       </div>
+
+      {sequencesOpen ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => setSequencesOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="crm-modal drip-report-sequences-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="drip-report-sequences-title"
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="drip-report-sequences-title">
+                  Sequence {sequences.length === 0 ? 0 : activeSequenceIndex + 1}
+                  {sequences.length > 0 ? ` of ${sequences.length}` : ""}
+                </h3>
+                <p>{activeSequence?.subject?.trim() || "No subject set"}</p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                onClick={() => setSequencesOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-body">
+              {sequences.length === 0 || !activeSequence ? (
+                <div className="drip-report-empty">No sequences on this campaign.</div>
+              ) : (
+                <>
+                  <div className="drip-report-sequence-step-meta">{activeSequenceDelay}</div>
+                  <div className="drip-report-sequence-preview drip-report-sequence-preview-lg">
+                    {activeSequenceHtml ? (
+                      <iframe
+                        key={activeSequence.id}
+                        title={`Sequence ${activeSequenceIndex + 1} email preview`}
+                        sandbox=""
+                        srcDoc={activeSequenceHtml}
+                      />
+                    ) : (
+                      <div className="drip-report-sequence-preview-empty">
+                        No email design for this sequence.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="crm-modal-foot drip-report-sequence-nav">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setSequencesOpen(false)}
+              >
+                Close
+              </button>
+              <div className="drip-report-sequence-nav-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={activeSequenceIndex <= 0}
+                  onClick={() => setSequencePreviewIndex((index) => Math.max(0, index - 1))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={activeSequenceIndex >= sequences.length - 1}
+                  onClick={() =>
+                    setSequencePreviewIndex((index) =>
+                      Math.min(sequences.length - 1, index + 1),
+                    )
+                  }
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {peopleView ? (
         <>
@@ -658,7 +1003,11 @@ export default function PortalCampaignReport({
                     ? campaign.kind === "oneone"
                       ? "Links clicked in this campaign, with sequence, date, and time."
                       : "Links clicked in this campaign, with date and time."
-                    : "Contacts in this campaign metric."}
+                    : peopleView === "bounces"
+                      ? "Addresses that bounced (from delivery failures or bounce emails). Replies are not counted here."
+                      : peopleView === "replies"
+                        ? "Contacts who replied to this campaign (shown in Master Inbox)."
+                        : "Contacts in this campaign metric."}
               </p>
             </div>
           </div>
@@ -707,6 +1056,8 @@ export default function PortalCampaignReport({
                     </>
                   ) : null}
                   {peopleView === "unsubscribes" ? <th>Unsubscribed</th> : null}
+                  {peopleView === "bounces" ? <th>Bounce reason</th> : null}
+                  {peopleView === "replies" ? <th>Replied</th> : null}
                   {peopleView === "audience" ? <th>Company</th> : null}
                 </tr>
               </thead>
@@ -787,6 +1138,16 @@ export default function PortalCampaignReport({
                         <td>
                           {person.unsubscribedAt
                             ? formatCampaignClock(person.unsubscribedAt, timezone)
+                            : "—"}
+                        </td>
+                      ) : null}
+                      {peopleView === "bounces" ? (
+                        <td>{person.error?.trim() || "Delivery failed"}</td>
+                      ) : null}
+                      {peopleView === "replies" ? (
+                        <td>
+                          {person.repliedAt
+                            ? formatCampaignClock(person.repliedAt, timezone)
                             : "—"}
                         </td>
                       ) : null}
