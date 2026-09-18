@@ -47,7 +47,44 @@ function isEmptyReplyHtml(html: string) {
   return !stripHtmlToText(html);
 }
 
-/** Keep pasted signatures/banners (incl. images); drop scripts and unsafe URLs. */
+const BORDER_STYLE_RE =
+  /(?:^|;)\s*(?:border(?:-(?:top|right|bottom|left))?(?:-width|-style|-color)?|outline(?:-width|-style|-color)?)\s*:[^;]*/gi;
+
+function stripBorderStyles(style: string) {
+  return style
+    .replace(BORDER_STYLE_RE, "")
+    .replace(/;;+/g, ";")
+    .replace(/^;|;$/g, "")
+    .trim();
+}
+
+function hasMeaningfulContent(el: Element) {
+  if (el.querySelector("img,svg")) {
+    return true;
+  }
+  return (el.textContent || "").replace(/\u00a0/g, " ").trim().length > 0;
+}
+
+function createSignatureRule(doc: Document) {
+  const hr = doc.createElement("hr");
+  hr.className = "inbox-sig-rule";
+  return hr;
+}
+
+function applyCleanedStyle(el: HTMLElement, style: string | null) {
+  if (!style) {
+    el.removeAttribute("style");
+    return;
+  }
+  const cleaned = stripBorderStyles(style);
+  if (cleaned) {
+    el.setAttribute("style", cleaned);
+  } else {
+    el.removeAttribute("style");
+  }
+}
+
+/** Keep pasted signatures/banners; drop scripts/unsafe URLs; kill grid borders; keep clean separators. */
 function sanitizePastedHtml(html: string) {
   const doc = new DOMParser().parseFromString(html, "text/html");
   doc
@@ -63,12 +100,147 @@ function sanitizePastedHtml(html: string) {
         continue;
       }
       if (
+        name === "border" ||
+        name === "bordercolor" ||
+        name === "frame" ||
+        name === "rules"
+      ) {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      if (
         (name === "href" || name === "src" || name === "xlink:href") &&
         /^\s*javascript:/i.test(value)
       ) {
         el.removeAttribute(attr.name);
       }
     }
+  });
+
+  // Empty bordered blocks are signature dividers — keep one clean rule instead of cell borders.
+  doc.querySelectorAll("p,div,tr,td,th,hr").forEach((el) => {
+    if (el.tagName === "HR") {
+      el.replaceWith(createSignatureRule(doc));
+      return;
+    }
+    if (hasMeaningfulContent(el)) {
+      return;
+    }
+    const style = el.getAttribute("style") || "";
+    const height = el instanceof HTMLElement ? el.style.height : "";
+    const looksLikeRule =
+      /border/i.test(style) ||
+      el.hasAttribute("bgcolor") ||
+      (/background(?:-color)?\s*:/i.test(style) &&
+        (/height\s*:\s*[12](?:\.0)?px/i.test(style) || height === "1px" || height === "2px"));
+    if (looksLikeRule) {
+      el.replaceWith(createSignatureRule(doc));
+    }
+  });
+
+  // Collapse stacked rules from Word paste.
+  doc.querySelectorAll("hr.inbox-sig-rule").forEach((hr) => {
+    const prev = hr.previousElementSibling;
+    if (prev?.matches("hr.inbox-sig-rule")) {
+      hr.remove();
+    }
+  });
+
+  // Drop rules that sit above the first real signature content (common Word paste artifact).
+  {
+    const walker = doc.createTreeWalker(
+      doc.body,
+      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+    );
+    let node = walker.nextNode();
+    while (node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if ((node.textContent || "").replace(/\u00a0/g, " ").trim()) {
+          break;
+        }
+      } else if (node instanceof Element) {
+        if (node.matches("hr.inbox-sig-rule")) {
+          const rule = node;
+          node = walker.nextNode();
+          rule.remove();
+          continue;
+        }
+        if (node.matches("img,svg")) {
+          break;
+        }
+      }
+      node = walker.nextNode();
+    }
+  }
+
+  // Drop trailing rules after the last real content.
+  {
+    const rules = [...doc.body.querySelectorAll("hr.inbox-sig-rule")];
+    for (let i = rules.length - 1; i >= 0; i -= 1) {
+      const hr = rules[i];
+      if (!hr.isConnected) {
+        continue;
+      }
+      let sawAfter = false;
+      const walker = doc.createTreeWalker(
+        doc.body,
+        NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+      );
+      let node: Node | null = walker.nextNode();
+      let pastHr = false;
+      while (node) {
+        if (node === hr) {
+          pastHr = true;
+          node = walker.nextNode();
+          continue;
+        }
+        if (pastHr) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            if ((node.textContent || "").replace(/\u00a0/g, " ").trim()) {
+              sawAfter = true;
+              break;
+            }
+          } else if (node instanceof Element) {
+            if (node.matches("hr.inbox-sig-rule")) {
+              node = walker.nextNode();
+              continue;
+            }
+            if (node.matches("img,svg")) {
+              sawAfter = true;
+              break;
+            }
+          }
+        }
+        node = walker.nextNode();
+      }
+      if (!sawAfter) {
+        hr.remove();
+      } else {
+        break;
+      }
+    }
+  }
+
+  doc.querySelectorAll("table").forEach((table) => {
+    if (!(table instanceof HTMLElement)) {
+      return;
+    }
+    const style = table.getAttribute("style");
+    const cleaned = style ? stripBorderStyles(style) : "";
+    table.setAttribute(
+      "style",
+      cleaned
+        ? `${cleaned};border:0;border-collapse:collapse;`
+        : "border:0;border-collapse:collapse;",
+    );
+  });
+
+  // Strip remaining borders on content so lines don't sit under every text row.
+  doc.querySelectorAll("td,th,p,div,span,li,tr").forEach((el) => {
+    if (!(el instanceof HTMLElement)) {
+      return;
+    }
+    applyCleanedStyle(el, el.getAttribute("style"));
   });
 
   doc.querySelectorAll("img").forEach((img) => {

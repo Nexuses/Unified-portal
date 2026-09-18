@@ -183,7 +183,30 @@ function sanitizeReplyHtml(html: string) {
     .replace(/\son[a-z]+\s*=\s*(['"]).*?\1/gi, "")
     .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, "")
     .replace(/href\s*=\s*(['"])\s*javascript:[\s\S]*?\1/gi, 'href="#"')
-    .replace(/src\s*=\s*(['"])\s*javascript:[\s\S]*?\1/gi, "");
+    .replace(/src\s*=\s*(['"])\s*javascript:[\s\S]*?\1/gi, "")
+    .replace(/<table\b([^>]*)>/gi, (_match, attrs: string) => {
+      const next = String(attrs)
+        .replace(/\sborder(?:color)?\s*=\s*(['"]).*?\1/gi, "")
+        .replace(/\sborder(?:color)?\s*=\s*[^\s>]+/gi, "")
+        .replace(/\s(?:frame|rules)\s*=\s*(['"]).*?\1/gi, "");
+      if (/\sstyle\s*=/i.test(next)) {
+        return `<table${next.replace(
+          /\sstyle\s*=\s*(['"])([\s\S]*?)\1/i,
+          (_s: string, quote: string, style: string) => {
+            const cleanedStyle = style
+              .replace(
+                /(?:^|;)\s*(?:border(?:-(?:top|right|bottom|left))?(?:-width|-style|-color)?|outline(?:-width|-style|-color)?)\s*:[^;]*/gi,
+                "",
+              )
+              .replace(/;;+/g, ";")
+              .replace(/^;|;$/g, "")
+              .trim();
+            return ` style=${quote}${cleanedStyle};border:0;border-collapse:collapse;${quote}`;
+          },
+        )}>`;
+      }
+      return `<table${next} style="border:0;border-collapse:collapse;">`;
+    });
 
   // Drop images that are not http(s) or data:image
   cleaned = cleaned.replace(/<img\b[^>]*>/gi, (tag) => {

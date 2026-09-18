@@ -3532,6 +3532,105 @@ function SettingsPanel({
   );
 }
 
+function sequenceRecipientCount(campaign: DripCampaign) {
+  if (campaign.recipientMode === "individual") {
+    return campaign.individualContacts?.length ?? 0;
+  }
+  if (campaign.listId) {
+    return Math.max(0, Number(campaign.recipients) || 0);
+  }
+  return 0;
+}
+
+function parseClockToMinutes(value: string) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim());
+  if (!match) {
+    return null;
+  }
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) {
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
+function sendWindowMinutesPerDay(windowStart: string, windowEnd: string) {
+  const start = parseClockToMinutes(windowStart);
+  const end = parseClockToMinutes(windowEnd);
+  if (start == null || end == null) {
+    return null;
+  }
+  if (end > start) {
+    return end - start;
+  }
+  if (end === start) {
+    return 24 * 60;
+  }
+  return 24 * 60 - start + end;
+}
+
+/** Wall-clock minutes to finish one sequence for all contacts at the given gap + send window. */
+function estimateSequenceDurationMinutes(
+  recipientCount: number,
+  gapMinutes: number,
+  windowStart: string,
+  windowEnd: string,
+) {
+  const count = Math.max(0, Math.floor(recipientCount));
+  if (count <= 1) {
+    return 0;
+  }
+  const gap = Math.max(0, Math.floor(gapMinutes));
+  if (gap === 0) {
+    return 0;
+  }
+
+  const dailyWindow = sendWindowMinutesPerDay(windowStart, windowEnd);
+  if (dailyWindow == null || dailyWindow <= 0) {
+    return (count - 1) * gap;
+  }
+
+  const sendsPerDay = Math.floor(dailyWindow / gap) + 1;
+  if (sendsPerDay <= 1) {
+    return (count - 1) * 24 * 60;
+  }
+
+  const intervals = count - 1;
+  const fullDays = Math.floor(intervals / sendsPerDay);
+  const remainder = intervals % sendsPerDay;
+  return fullDays * 24 * 60 + remainder * gap;
+}
+
+function formatDurationMinutes(totalMinutes: number) {
+  const minutes = Math.max(0, Math.round(totalMinutes));
+  if (minutes <= 0) {
+    return "under a minute";
+  }
+  const days = Math.floor(minutes / (24 * 60));
+  const hours = Math.floor((minutes % (24 * 60)) / 60);
+  const mins = minutes % 60;
+  const parts: string[] = [];
+  if (days > 0) {
+    parts.push(`${days} day${days === 1 ? "" : "s"}`);
+  }
+  if (hours > 0) {
+    parts.push(`${hours} hr${hours === 1 ? "" : "s"}`);
+  }
+  if (mins > 0 && days === 0) {
+    parts.push(`${mins} min`);
+  }
+  return parts.join(" ") || "under a minute";
+}
+
+function formatDelayDaysLabel(delayDays: number) {
+  const days = Math.max(0, Math.floor(delayDays));
+  if (days === 0) {
+    return "the same day as the previous email";
+  }
+  return `${days} day${days === 1 ? "" : "s"} after the previous email`;
+}
+
 function SequencesPanel({
   campaign,
   sequences,
@@ -3562,6 +3661,21 @@ function SequencesPanel({
   onPreview: (sequenceId: string) => void;
   onResetDesign: (sequenceId: string) => void;
 }) {
+  const recipientCount = sequenceRecipientCount(campaign);
+  const sequenceDurationMinutes = estimateSequenceDurationMinutes(
+    recipientCount,
+    emailGapMinutes,
+    windowStart,
+    windowEnd,
+  );
+  const sequenceDurationLabel = formatDurationMinutes(sequenceDurationMinutes);
+  const gapHint =
+    recipientCount <= 0
+      ? "Add recipients to see how long each sequence will take to finish."
+      : emailGapMinutes <= 0
+        ? `With no gap, all ${recipientCount.toLocaleString()} contacts can be emailed as fast as the send window allows.`
+        : `With ${recipientCount.toLocaleString()} contact${recipientCount === 1 ? "" : "s"} and a ${emailGapMinutes}-min gap, one sequence takes about ${sequenceDurationLabel} to complete.`;
+
   function updateSequence(id: string, patch: Partial<CampaignSequence>) {
     onChange({
       sequences: sequences.map((sequence) =>
@@ -3643,92 +3757,106 @@ function SequencesPanel({
         Emails for {campaign.name} only go out between the start and stop times, with the gap
         between each send.
       </p>
+      <p className="drip-sequences-hint drip-sequences-duration">{gapHint}</p>
 
       <div className="drip-sequence-list">
-        {sequences.map((sequence, index) => (
-          <div key={sequence.id} className="drip-sequence-card">
-            <div className="drip-sequence-card-head">
-              <strong>Sequence {index + 1}</strong>
-              {sequences.length > 1 ? (
-                <button
-                  type="button"
-                  className="btn-link-purple"
-                  onClick={() =>
-                    onChange({
-                      sequences: sequences.filter((item) => item.id !== sequence.id),
-                      windowStart,
-                      windowEnd,
-                      emailGapMinutes,
-                    })
-                  }
-                >
-                  Remove
-                </button>
+        {sequences.map((sequence, index) => {
+          const delayDays = Math.max(0, Number(sequence.delayDays) || 0);
+          const timingParts: string[] = [];
+          if (index === 0) {
+            timingParts.push("Sends first when the campaign starts.");
+          } else {
+            timingParts.push(`Starts ${formatDelayDaysLabel(delayDays)}.`);
+          }
+          if (recipientCount > 0) {
+            timingParts.push(
+              sequenceDurationMinutes <= 0
+                ? `Reaches all ${recipientCount.toLocaleString()} contacts as soon as sending begins.`
+                : `About ${sequenceDurationLabel} to reach all ${recipientCount.toLocaleString()} contacts once sending begins.`,
+            );
+          }
+
+          return (
+            <div key={sequence.id} className="drip-sequence-card">
+              <div className="drip-sequence-card-head">
+                <strong>Sequence {index + 1}</strong>
+                {sequences.length > 1 ? (
+                  <button
+                    type="button"
+                    className="btn-link-purple"
+                    onClick={() =>
+                      onChange({
+                        sequences: sequences.filter((item) => item.id !== sequence.id),
+                        windowStart,
+                        windowEnd,
+                        emailGapMinutes,
+                      })
+                    }
+                  >
+                    Remove
+                  </button>
+                ) : null}
+              </div>
+              {index > 0 ? (
+                <div className="crm-field">
+                  <label htmlFor={`seq-delay-${sequence.id}`}>Days after previous sequence</label>
+                  <input
+                    id={`seq-delay-${sequence.id}`}
+                    type="number"
+                    min={0}
+                    max={365}
+                    value={sequence.delayDays}
+                    onChange={(event) =>
+                      updateSequence(sequence.id, {
+                        delayDays: Math.max(0, Number(event.target.value) || 0),
+                      })
+                    }
+                  />
+                </div>
               ) : null}
-            </div>
-            {index > 0 ? (
+              <p className="drip-sequences-hint drip-sequence-timing">{timingParts.join(" ")}</p>
               <div className="crm-field">
-                <label htmlFor={`seq-delay-${sequence.id}`}>Days after previous sequence</label>
+                <label htmlFor={`seq-subject-${sequence.id}`}>Subject</label>
                 <input
-                  id={`seq-delay-${sequence.id}`}
-                  type="number"
-                  min={0}
-                  max={365}
-                  value={sequence.delayDays}
+                  id={`seq-subject-${sequence.id}`}
+                  type="text"
+                  value={sequence.subject ?? ""}
+                  placeholder="Add a subject line"
+                  onChange={(event) => updateSequence(sequence.id, { subject: event.target.value })}
+                />
+              </div>
+              <div className="crm-field">
+                <label htmlFor={`seq-preview-${sequence.id}`}>Preview text</label>
+                <input
+                  id={`seq-preview-${sequence.id}`}
+                  type="text"
+                  value={sequence.previewText ?? ""}
+                  placeholder="Optional preview text"
                   onChange={(event) =>
-                    updateSequence(sequence.id, {
-                      delayDays: Math.max(0, Number(event.target.value) || 0),
-                    })
+                    updateSequence(sequence.id, { previewText: event.target.value })
                   }
                 />
-                <p className="drip-sequences-hint">
-                  Use 0 to send this sequence the same day, after the previous email.
-                </p>
               </div>
-            ) : (
-              <p className="drip-sequences-hint">Sends first when the campaign starts.</p>
-            )}
-            <div className="crm-field">
-              <label htmlFor={`seq-subject-${sequence.id}`}>Subject</label>
-              <input
-                id={`seq-subject-${sequence.id}`}
-                type="text"
-                value={sequence.subject ?? ""}
-                placeholder="Add a subject line"
-                onChange={(event) => updateSequence(sequence.id, { subject: event.target.value })}
-              />
+              {sequence.hasDesign && sequence.designHtml?.trim() ? (
+                <DesignSavedCard
+                  compact
+                  html={sequence.designHtml}
+                  fileName={`${campaign.name}-sequence-${index + 1}`}
+                  onEdit={() => onDesign(sequence.id)}
+                  onPreview={() => onPreview(sequence.id)}
+                  onReset={() => onResetDesign(sequence.id)}
+                />
+              ) : (
+                <div className="drip-sequence-design">
+                  <span>No design yet.</span>
+                  <button type="button" className="btn-soft" onClick={() => onDesign(sequence.id)}>
+                    Start designing
+                  </button>
+                </div>
+              )}
             </div>
-            <div className="crm-field">
-              <label htmlFor={`seq-preview-${sequence.id}`}>Preview text</label>
-              <input
-                id={`seq-preview-${sequence.id}`}
-                type="text"
-                value={sequence.previewText ?? ""}
-                placeholder="Optional preview text"
-                onChange={(event) =>
-                  updateSequence(sequence.id, { previewText: event.target.value })
-                }
-              />
-            </div>
-            {sequence.hasDesign && sequence.designHtml?.trim() ? (
-              <DesignSavedCard
-                compact
-                html={sequence.designHtml}
-                fileName={`${campaign.name}-sequence-${index + 1}`}
-                onEdit={() => onDesign(sequence.id)}
-                onPreview={() => onPreview(sequence.id)}
-                onReset={() => onResetDesign(sequence.id)}
-              />
-            ) : (
-              <div className="drip-sequence-design">
-                <span>No design yet.</span>
-                <button type="button" className="btn-soft" onClick={() => onDesign(sequence.id)}>
-                  Start designing
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <button

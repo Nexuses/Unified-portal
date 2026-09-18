@@ -1914,6 +1914,19 @@ select.filter{
 .inbox-reply-editor img{
   max-width:100%;height:auto;display:inline-block;vertical-align:middle;
 }
+.inbox-reply-editor table,
+.inbox-reply-editor thead,
+.inbox-reply-editor tbody,
+.inbox-reply-editor tfoot,
+.inbox-reply-editor tr,
+.inbox-reply-editor th,
+.inbox-reply-editor td{
+  border:0 !important;outline:none !important;border-collapse:collapse;
+}
+.inbox-reply-editor hr.inbox-sig-rule{
+  display:block;border:none;border-top:1px solid #d1d5db;
+  margin:10px 0;height:0;background:none;
+}
 .inbox-reply-editor:focus{outline:none;border-color:var(--purple);box-shadow:0 0 0 3px rgba(124,58,237,.12);}
 .inbox-reply-editor[contenteditable="false"]{opacity:.7;cursor:default;}
 .inbox-reply-input:focus{outline:none;border-color:var(--purple);box-shadow:0 0 0 3px rgba(124,58,237,.12);}
@@ -3519,6 +3532,9 @@ select.filter{
 .drip-sequences-hint{
   margin:4px 40px 16px;font-size:14px;line-height:1.4;color:#6b7280;
 }
+.drip-sequences-duration{
+  margin-top:-8px;margin-bottom:18px;color:#4b5563;font-weight:500;
+}
 .drip-sequence-list{
   display:flex;flex-direction:column;gap:16px;padding:0 40px 8px;
 }
@@ -3533,9 +3549,10 @@ select.filter{
 }
 .drip-sequence-card .crm-field{margin-bottom:12px;}
 .drip-sequence-card .drip-sequences-hint{
-  margin:0;
+  margin:0 0 12px;
   font-size:13px;
 }
+.drip-sequence-timing{color:#4b5563;}
 .drip-sequence-design{
   display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding-top:4px;font-size:14px;color:#374151;
