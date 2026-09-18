@@ -296,10 +296,15 @@ export default function PortalDripPage({
     }
   }
 
+  function canPauseOrResume(campaign: DripCampaign) {
+    return (
+      campaign.status === "sending" ||
+      campaign.status === "scheduled" ||
+      campaign.status === "paused"
+    );
+  }
+
   async function handlePauseToggle(campaign: DripCampaign) {
-    if (kind !== "oneone") {
-      return;
-    }
     const resuming = campaign.status === "paused";
     const nextStatus = resuming ? "sending" : "paused";
     if (
@@ -315,7 +320,7 @@ export default function PortalDripPage({
       const updated = await patchDripCampaign(
         campaign.id,
         { status: nextStatus },
-        "oneone",
+        kind,
       );
       if (resuming) {
         await fetch("/api/campaigns/process-due", { method: "POST" }).catch(
@@ -681,6 +686,33 @@ export default function PortalDripPage({
                           </span>
                         ) : null}
                       </div>
+                      {canPauseOrResume(campaign) ? (
+                        <button
+                          type="button"
+                          className={`drip-row-pause-btn${
+                            campaign.status === "paused" ? " resume" : ""
+                          }`}
+                          disabled={
+                            deletingId !== null ||
+                            duplicatingId === campaign.id ||
+                            pausingId === campaign.id
+                          }
+                          onClick={() => void handlePauseToggle(campaign)}
+                        >
+                          {campaign.status === "paused" ? (
+                            <ResumeIcon />
+                          ) : (
+                            <PauseIcon />
+                          )}
+                          {pausingId === campaign.id
+                            ? campaign.status === "paused"
+                              ? "Resuming…"
+                              : "Pausing…"
+                            : campaign.status === "paused"
+                              ? "Resume"
+                              : "Pause"}
+                        </button>
+                      ) : null}
                       <div
                         className="drip-more-wrap"
                         ref={openMenuId === campaign.id ? menuRef : undefined}
@@ -708,10 +740,7 @@ export default function PortalDripPage({
                         </button>
                         {openMenuId === campaign.id ? (
                           <div className="drip-more-menu" role="menu">
-                            {kind === "oneone" &&
-                            (campaign.status === "sending" ||
-                              campaign.status === "scheduled" ||
-                              campaign.status === "paused") ? (
+                            {canPauseOrResume(campaign) ? (
                               <button
                                 type="button"
                                 role="menuitem"

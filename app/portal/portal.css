@@ -2054,6 +2054,18 @@ select.filter{
   background:#fff;color:var(--purple);display:inline-flex;align-items:center;justify-content:center;
   cursor:pointer;
 }
+.drip-row-pause-btn{
+  display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;
+  border:1.5px solid #ddd6fe;border-radius:999px;background:#fff;color:var(--purple);
+  font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;
+}
+.drip-row-pause-btn:hover{background:var(--purple-soft);}
+.drip-row-pause-btn.resume{
+  border-color:#111827;background:#111827;color:#fff;
+}
+.drip-row-pause-btn.resume:hover{background:#1f2937;border-color:#1f2937;}
+.drip-row-pause-btn:disabled{opacity:.55;cursor:default;}
+.drip-row-pause-btn svg{width:14px;height:14px;flex-shrink:0;}
 .drip-more{
   width:28px;height:36px;border:none;background:transparent;border-radius:8px;
   color:var(--purple);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
