@@ -55,6 +55,8 @@ export type DripCampaignDoc = {
   attachmentName?: string;
   timezoneEnabled?: boolean;
   timezone?: string;
+  openTrackingOff?: boolean;
+  clickTrackingOff?: boolean;
   utmEnabled?: boolean;
   utmSourceEnabled?: boolean;
   utmSource?: string;
@@ -109,6 +111,8 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     attachmentName: doc.attachmentName,
     timezoneEnabled: doc.timezoneEnabled,
     timezone: doc.timezone?.trim() || "Asia/Kolkata",
+    openTrackingOff: doc.openTrackingOff,
+    clickTrackingOff: doc.clickTrackingOff,
     utmEnabled: doc.utmEnabled,
     utmSourceEnabled: doc.utmSourceEnabled,
     utmSource: doc.utmSource,
@@ -636,6 +640,8 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "attachmentName",
   "timezoneEnabled",
   "timezone",
+  "openTrackingOff",
+  "clickTrackingOff",
   "utmEnabled",
   "utmSourceEnabled",
   "utmSource",
@@ -850,6 +856,8 @@ export async function duplicateProjectDripCampaign(
     attachmentName: existing.attachmentName,
     timezoneEnabled: existing.timezoneEnabled,
     timezone: existing.timezone,
+    openTrackingOff: existing.openTrackingOff,
+    clickTrackingOff: existing.clickTrackingOff,
     utmEnabled: existing.utmEnabled,
     utmSourceEnabled: existing.utmSourceEnabled,
     utmSource: existing.utmSource,

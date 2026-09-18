@@ -2230,6 +2230,8 @@ function PreviewTestModal({
           utmMedium: campaign.utmMedium,
           utmCampaignEnabled: campaign.utmCampaignEnabled,
           utmCampaign: campaign.utmCampaign,
+          openTrackingOff: campaign.openTrackingOff,
+          clickTrackingOff: campaign.clickTrackingOff,
         }),
       });
       const payload = (await response.json()) as { error?: string; sent?: number };
@@ -3155,6 +3157,8 @@ function SettingsSavedCard({
   attachmentName,
   timezoneEnabled,
   timezone,
+  openTrackingOff,
+  clickTrackingOff,
   utmEnabled,
   onEdit,
 }: {
@@ -3163,6 +3167,8 @@ function SettingsSavedCard({
   attachmentName?: string;
   timezoneEnabled: boolean;
   timezone?: string;
+  openTrackingOff: boolean;
+  clickTrackingOff: boolean;
   utmEnabled: boolean;
   onEdit: () => void;
 }) {
@@ -3190,6 +3196,12 @@ function SettingsSavedCard({
           {timezoneEnabled ? (
             <li>Time zone is {formatTimezoneLabel(timezone || "Asia/Kolkata")}.</li>
           ) : null}
+          {openTrackingOff ? (
+            <li>Open tracking is off — opens will not be detected.</li>
+          ) : null}
+          {clickTrackingOff ? (
+            <li>Click tracking is off — links stay naked (no click wrappers).</li>
+          ) : null}
           {utmEnabled ? (
             <li>UTM tracking is on — campaign links include UTM parameters.</li>
           ) : null}
@@ -3201,12 +3213,15 @@ function SettingsSavedCard({
 
 function HelpQuestionIcon({ help }: { help: string }) {
   return (
-    <span className="drip-help-icon" title={help} aria-label={help}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+    <span className="drip-help-icon" tabIndex={0} aria-label={help}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
         <circle cx="12" cy="12" r="9" />
         <path d="M9.6 9.4a2.4 2.4 0 1 1 3.3 2.2c-.7.4-1.1.8-1.1 1.6" />
         <circle cx="12" cy="16.6" r="0.85" fill="currentColor" stroke="none" />
       </svg>
+      <span className="drip-help-tooltip" role="tooltip">
+        {help}
+      </span>
     </span>
   );
 }
@@ -3305,6 +3320,8 @@ function SettingsPanel({
   draftAttachmentName,
   draftTimezoneEnabled,
   draftTimezone,
+  draftOpenTrackingOff,
+  draftClickTrackingOff,
   draftUtmEnabled,
   draftUtmSource,
   draftUtmMedium,
@@ -3317,6 +3334,8 @@ function SettingsPanel({
   onAttachmentNameChange,
   onTimezoneEnabledChange,
   onTimezoneChange,
+  onOpenTrackingOffChange,
+  onClickTrackingOffChange,
   onUtmEnabledChange,
   onUtmSourceChange,
   onUtmMediumChange,
@@ -3329,6 +3348,8 @@ function SettingsPanel({
   draftAttachmentName: string;
   draftTimezoneEnabled: boolean;
   draftTimezone: string;
+  draftOpenTrackingOff: boolean;
+  draftClickTrackingOff: boolean;
   draftUtmEnabled: boolean;
   draftUtmSource: string;
   draftUtmMedium: string;
@@ -3341,6 +3362,8 @@ function SettingsPanel({
   onAttachmentNameChange: (value: string) => void;
   onTimezoneEnabledChange: (value: boolean) => void;
   onTimezoneChange: (value: string) => void;
+  onOpenTrackingOffChange: (value: boolean) => void;
+  onClickTrackingOffChange: (value: boolean) => void;
   onUtmEnabledChange: (value: boolean) => void;
   onUtmSourceChange: (value: string) => void;
   onUtmMediumChange: (value: string) => void;
@@ -3354,6 +3377,8 @@ function SettingsPanel({
     draftAttachmentName !== (campaign.attachmentName ?? "") ||
     draftTimezoneEnabled !== Boolean(campaign.timezoneEnabled) ||
     draftTimezone !== (campaign.timezone || "Asia/Kolkata") ||
+    draftOpenTrackingOff !== Boolean(campaign.openTrackingOff) ||
+    draftClickTrackingOff !== Boolean(campaign.clickTrackingOff) ||
     draftUtmEnabled !== Boolean(campaign.utmEnabled) ||
     draftUtmSource.trim() !== (campaign.utmSource?.trim() || DEFAULT_UTM_SOURCE) ||
     draftUtmMedium.trim() !== (campaign.utmMedium?.trim() || DEFAULT_UTM_MEDIUM) ||
@@ -3451,9 +3476,25 @@ function SettingsPanel({
           </SettingsToggle>
 
           <SettingsToggle
+            on={draftOpenTrackingOff}
+            label="Turn off open tracking"
+            help="Do not inject the open pixel. Opens will not be detected for this campaign."
+            description="When on, emails go out without an open-tracking pixel."
+            onToggle={() => onOpenTrackingOffChange(!draftOpenTrackingOff)}
+          />
+
+          <SettingsToggle
+            on={draftClickTrackingOff}
+            label="Turn off click tracking"
+            help="Leave links as naked URLs. Clicks will not be wrapped or counted."
+            description="When on, links stay as the original URL (no click-tracking redirect)."
+            onToggle={() => onClickTrackingOffChange(!draftClickTrackingOff)}
+          />
+
+          <SettingsToggle
             on={draftUtmEnabled}
             label="Activate UTM tracking"
-            help="Adds required UTM parameters to every http(s) link, then wraps the link with our click tracker."
+            help="Adds required UTM parameters to every http(s) link. If click tracking stays on, links are also wrapped with our click tracker."
             description="Source, medium, and campaign are required. You can edit their values for this campaign."
             onToggle={() => onUtmEnabledChange(!draftUtmEnabled)}
           >
@@ -4020,6 +4061,8 @@ export default function PortalCampaignDetailPage({
   const [draftAttachmentName, setDraftAttachmentName] = useState("");
   const [draftTimezoneEnabled, setDraftTimezoneEnabled] = useState(false);
   const [draftTimezone, setDraftTimezone] = useState("Asia/Kolkata");
+  const [draftOpenTrackingOff, setDraftOpenTrackingOff] = useState(false);
+  const [draftClickTrackingOff, setDraftClickTrackingOff] = useState(false);
   const [draftUtmEnabled, setDraftUtmEnabled] = useState(false);
   const [draftUtmSource, setDraftUtmSource] = useState(DEFAULT_UTM_SOURCE);
   const [draftUtmMedium, setDraftUtmMedium] = useState(DEFAULT_UTM_MEDIUM);
@@ -4422,6 +4465,8 @@ export default function PortalCampaignDetailPage({
       patch.timezone = draftTimezoneEnabled
         ? draftTimezone.trim() || "Asia/Kolkata"
         : "Asia/Kolkata";
+      patch.openTrackingOff = draftOpenTrackingOff;
+      patch.clickTrackingOff = draftClickTrackingOff;
       patch.utmEnabled = draftUtmEnabled;
       patch.utmSourceEnabled = true;
       patch.utmSource = draftUtmSource.trim() || DEFAULT_UTM_SOURCE;
@@ -4542,6 +4587,8 @@ export default function PortalCampaignDetailPage({
     setDraftAttachmentName(campaign?.attachmentName ?? "");
     setDraftTimezoneEnabled(Boolean(campaign?.timezoneEnabled));
     setDraftTimezone(campaign?.timezone || "Asia/Kolkata");
+    setDraftOpenTrackingOff(Boolean(campaign?.openTrackingOff));
+    setDraftClickTrackingOff(Boolean(campaign?.clickTrackingOff));
     setDraftUtmEnabled(Boolean(campaign?.utmEnabled));
     setDraftUtmSource(campaign?.utmSource?.trim() || DEFAULT_UTM_SOURCE);
     setDraftUtmMedium(campaign?.utmMedium?.trim() || DEFAULT_UTM_MEDIUM);
@@ -4617,6 +4664,8 @@ export default function PortalCampaignDetailPage({
         attachmentName: draftAttachmentEnabled ? draftAttachmentName : "",
         timezoneEnabled: draftTimezoneEnabled,
         timezone: draftTimezoneEnabled ? draftTimezone : "Asia/Kolkata",
+        openTrackingOff: draftOpenTrackingOff,
+        clickTrackingOff: draftClickTrackingOff,
         utmEnabled: draftUtmEnabled,
         utmSourceEnabled: true,
         utmSource: draftUtmSource.trim() || DEFAULT_UTM_SOURCE,
@@ -5171,6 +5220,8 @@ export default function PortalCampaignDetailPage({
                   draftAttachmentName={draftAttachmentName}
                   draftTimezoneEnabled={draftTimezoneEnabled}
                   draftTimezone={draftTimezone}
+                  draftOpenTrackingOff={draftOpenTrackingOff}
+                  draftClickTrackingOff={draftClickTrackingOff}
                   draftUtmEnabled={draftUtmEnabled}
                   draftUtmSource={draftUtmSource}
                   draftUtmMedium={draftUtmMedium}
@@ -5183,6 +5234,8 @@ export default function PortalCampaignDetailPage({
                   onAttachmentNameChange={setDraftAttachmentName}
                   onTimezoneEnabledChange={setDraftTimezoneEnabled}
                   onTimezoneChange={setDraftTimezone}
+                  onOpenTrackingOffChange={setDraftOpenTrackingOff}
+                  onClickTrackingOffChange={setDraftClickTrackingOff}
                   onUtmEnabledChange={setDraftUtmEnabled}
                   onUtmSourceChange={setDraftUtmSource}
                   onUtmMediumChange={setDraftUtmMedium}
@@ -5192,6 +5245,8 @@ export default function PortalCampaignDetailPage({
                 (campaign.replyToEnabled ||
                   campaign.attachmentEnabled ||
                   campaign.timezoneEnabled ||
+                  campaign.openTrackingOff ||
+                  campaign.clickTrackingOff ||
                   campaign.utmEnabled) ? (
                 <SettingsSavedCard
                   replyToEnabled={Boolean(campaign.replyToEnabled)}
@@ -5199,6 +5254,8 @@ export default function PortalCampaignDetailPage({
                   attachmentName={campaign.attachmentName}
                   timezoneEnabled={Boolean(campaign.timezoneEnabled)}
                   timezone={campaign.timezone}
+                  openTrackingOff={Boolean(campaign.openTrackingOff)}
+                  clickTrackingOff={Boolean(campaign.clickTrackingOff)}
                   utmEnabled={Boolean(campaign.utmEnabled)}
                   onEdit={openSettingsPanel}
                 />

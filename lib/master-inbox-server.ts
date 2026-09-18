@@ -154,6 +154,78 @@ function plainTextToHtml(body: string) {
   return `<div style="font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;white-space:pre-wrap;">${escapeHtml(body)}</div>`;
 }
 
+function stripTagsToText(html: string) {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function looksLikeHtml(value: string) {
+  return /<[a-z][\s\S]*>/i.test(value);
+}
+
+/** Allow signature/banner HTML (images, tables, links); strip scripts and handlers. */
+function sanitizeReplyHtml(html: string) {
+  let cleaned = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<object[\s\S]*?<\/object>/gi, "")
+    .replace(/<embed[\s\S]*?>/gi, "")
+    .replace(/<form[\s\S]*?<\/form>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(['"]).*?\1/gi, "")
+    .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, "")
+    .replace(/href\s*=\s*(['"])\s*javascript:[\s\S]*?\1/gi, 'href="#"')
+    .replace(/src\s*=\s*(['"])\s*javascript:[\s\S]*?\1/gi, "");
+
+  // Drop images that are not http(s) or data:image
+  cleaned = cleaned.replace(/<img\b[^>]*>/gi, (tag) => {
+    const srcMatch = tag.match(/\bsrc\s*=\s*(['"])(.*?)\1/i);
+    const src = srcMatch?.[2]?.trim() ?? "";
+    if (!/^(https?:|data:image\/)/i.test(src)) {
+      return "";
+    }
+    if (/\bstyle\s*=/i.test(tag)) {
+      return tag;
+    }
+    return tag.replace(/<img\b/i, '<img style="max-width:100%;height:auto;"');
+  });
+
+  return cleaned.trim();
+}
+
+function normalizeReplyContent(input: { body?: string; html?: string }) {
+  const rawHtml = String(input.html ?? "").trim();
+  const rawBody = String(input.body ?? "").trim();
+  const source = rawHtml || rawBody;
+  if (!source) {
+    throw new Error("Reply cannot be empty");
+  }
+
+  if (looksLikeHtml(source)) {
+    const sanitized = sanitizeReplyHtml(source);
+    if (!sanitized || (!stripTagsToText(sanitized) && !/<img\b/i.test(sanitized))) {
+      throw new Error("Reply cannot be empty");
+    }
+    return {
+      html: `<div style="font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;">${sanitized}</div>`,
+      text: stripTagsToText(sanitized) || (/<img\b/i.test(sanitized) ? "(image)" : ""),
+    };
+  }
+
+  return {
+    html: plainTextToHtml(source),
+    text: source,
+  };
+}
+
 function extractAddress(
   value:
     | { text?: string; value?: Array<{ address?: string; name?: string }> }
@@ -714,12 +786,9 @@ export async function markInboxThreadRead(
 export async function replyToInboxThread(
   projectId: ObjectId,
   threadKey: string,
-  input: { body: string },
+  input: { body?: string; html?: string },
 ) {
-  const body = String(input.body ?? "").trim();
-  if (!body) {
-    throw new Error("Reply cannot be empty");
-  }
+  const content = normalizeReplyContent(input);
 
   const db = await getDb();
   const docs = await db
@@ -792,7 +861,7 @@ export async function replyToInboxThread(
   const uniqueRefs = [...new Set(referenceIds)];
   const inReplyTo = normalizeMessageId(latest.messageId);
 
-  const html = plainTextToHtml(body);
+  const html = content.html;
   const { sendProjectMail } = await import("@/lib/smtp-senders-server");
   const delivered = await sendProjectMail(projectId, sender._id.toString(), {
     to: toEmail,
@@ -818,7 +887,7 @@ export async function replyToInboxThread(
     fromName: "",
     toEmail,
     subject,
-    textBody: body,
+    textBody: content.text,
     htmlBody: html,
     messageId: outboundMessageId,
     inReplyTo: inReplyTo || undefined,

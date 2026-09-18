@@ -61,6 +61,10 @@ export type DripCampaign = {
   attachmentName?: string;
   timezoneEnabled?: boolean;
   timezone?: string;
+  /** When true, do not inject the open-tracking pixel. */
+  openTrackingOff?: boolean;
+  /** When true, leave links naked (no click-tracking wrapper). */
+  clickTrackingOff?: boolean;
   utmEnabled?: boolean;
   utmSourceEnabled?: boolean;
   utmSource?: string;

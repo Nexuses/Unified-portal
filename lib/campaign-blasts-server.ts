@@ -85,6 +85,8 @@ export type CampaignBlastDoc = {
   utmMedium?: string;
   utmCampaignEnabled?: boolean;
   utmCampaign?: string;
+  openTrackingOff?: boolean;
+  clickTrackingOff?: boolean;
 };
 
 export type CampaignSendDoc = {
@@ -818,6 +820,8 @@ async function sendPendingBatch(
       const html = injectCampaignTracking(personalized, trackingBase, send.token, {
         utm: resolveUtmConfig(blast),
         campaignName: blast.name,
+        trackOpens: blast.openTrackingOff !== true,
+        trackClicks: blast.clickTrackingOff !== true,
       });
       const mailResult = await sendProjectMail(blast.projectId, blast.senderId, {
         to: send.email,
@@ -1081,6 +1085,8 @@ export async function launchCampaignBlast(input: {
           utmCampaign: campaign.utmCampaign,
         }
       : {}),
+    ...(campaign.openTrackingOff ? { openTrackingOff: true } : {}),
+    ...(campaign.clickTrackingOff ? { clickTrackingOff: true } : {}),
   };
 
   const kindFilter = oneOne

@@ -82,12 +82,15 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
 
     const body = (await request.json().catch(() => null)) as
-      | { body?: string }
+      | { body?: string; html?: string }
       | null;
     const result = await replyToInboxThread(
       new ObjectId(session.projectId),
       threadKey,
-      { body: String(body?.body ?? "") },
+      {
+        body: String(body?.body ?? ""),
+        html: String(body?.html ?? ""),
+      },
     );
     return NextResponse.json(result);
   } catch (error) {

@@ -29,6 +29,8 @@ export async function POST(request: NextRequest) {
       utmMedium?: string;
       utmCampaignEnabled?: boolean;
       utmCampaign?: string;
+      openTrackingOff?: boolean;
+      clickTrackingOff?: boolean;
     };
 
     const to = Array.isArray(body.to) ? body.to : [];
@@ -47,6 +49,8 @@ export async function POST(request: NextRequest) {
       {
         utm: resolveUtmConfig(body),
         campaignName: body.campaignName ?? "",
+        trackOpens: body.openTrackingOff !== true,
+        trackClicks: body.clickTrackingOff !== true,
       },
     );
 

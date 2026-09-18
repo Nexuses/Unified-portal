@@ -424,16 +424,38 @@ export function injectCampaignTracking(
   html: string,
   origin: string,
   token: string,
-  options?: { utm?: CampaignUtmConfig; campaignName?: string },
+  options?: {
+    utm?: CampaignUtmConfig;
+    campaignName?: string;
+    /** Default true. When false, no open pixel is injected. */
+    trackOpens?: boolean;
+    /** Default true. When false, links stay naked (optional UTM only). */
+    trackClicks?: boolean;
+  },
 ) {
+  const trackOpens = options?.trackOpens !== false;
+  const trackClicks = options?.trackClicks !== false;
   const urls = campaignTrackingUrls(origin, token);
   const withUnsubscribe = injectUnsubscribe(html, urls.unsubscribe);
   const utm = options?.utm;
   const campaignName = options?.campaignName ?? "";
-  const withClicks = wrapTrackedLinks(withUnsubscribe, (href) => {
-    const destination =
-      utm?.enabled ? applyUtmParams(href, utm, campaignName) : href;
-    return urls.click(destination);
-  });
-  return injectOpenPixel(withClicks, urls.open);
+
+  let next = withUnsubscribe;
+  if (trackClicks) {
+    next = wrapTrackedLinks(withUnsubscribe, (href) => {
+      const destination =
+        utm?.enabled ? applyUtmParams(href, utm, campaignName) : href;
+      return urls.click(destination);
+    });
+  } else if (utm?.enabled) {
+    // Naked links with UTM params only — no /t/c/ click wrapper.
+    next = wrapTrackedLinks(withUnsubscribe, (href) =>
+      applyUtmParams(href, utm, campaignName),
+    );
+  }
+
+  if (trackOpens) {
+    next = injectOpenPixel(next, urls.open);
+  }
+  return next;
 }

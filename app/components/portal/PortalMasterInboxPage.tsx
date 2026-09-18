@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import Link from "next/link";
 import type {
   InboxAccount,
@@ -20,6 +27,174 @@ function formatWhen(iso: string) {
   }
 }
 
+function stripHtmlToText(html: string) {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isEmptyReplyHtml(html: string) {
+  if (!html.trim()) {
+    return true;
+  }
+  if (/<img\b/i.test(html)) {
+    return false;
+  }
+  return !stripHtmlToText(html);
+}
+
+/** Keep pasted signatures/banners (incl. images); drop scripts and unsafe URLs. */
+function sanitizePastedHtml(html: string) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc
+    .querySelectorAll("script,iframe,object,embed,link,meta,form,input,button")
+    .forEach((el) => el.remove());
+
+  doc.querySelectorAll("*").forEach((el) => {
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim();
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      if (
+        (name === "href" || name === "src" || name === "xlink:href") &&
+        /^\s*javascript:/i.test(value)
+      ) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+
+  doc.querySelectorAll("img").forEach((img) => {
+    const src = (img.getAttribute("src") || "").trim();
+    if (!/^(https?:|data:image\/)/i.test(src)) {
+      img.remove();
+      return;
+    }
+    img.style.maxWidth = "100%";
+    img.style.height = "auto";
+    if (!img.getAttribute("alt")) {
+      img.setAttribute("alt", "");
+    }
+  });
+
+  return doc.body.innerHTML;
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read image"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function InboxReplyEditor({
+  threadKey,
+  disabled,
+  onHtmlChange,
+  onSubmitShortcut,
+}: {
+  threadKey: string;
+  disabled?: boolean;
+  onHtmlChange: (html: string) => void;
+  onSubmitShortcut: () => void;
+}) {
+  const editorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    editor.innerHTML = "";
+    onHtmlChange("");
+  }, [threadKey, onHtmlChange]);
+
+  function syncHtml() {
+    const html = editorRef.current?.innerHTML ?? "";
+    onHtmlChange(html);
+  }
+
+  async function handlePaste(event: ReactClipboardEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const clipboard = event.clipboardData;
+    if (!clipboard) {
+      return;
+    }
+
+    const imageItems = [...clipboard.items].filter((item) =>
+      item.type.startsWith("image/"),
+    );
+    if (imageItems.length > 0) {
+      for (const item of imageItems) {
+        const file = item.getAsFile();
+        if (!file) {
+          continue;
+        }
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          document.execCommand(
+            "insertHTML",
+            false,
+            `<img src="${dataUrl}" alt="" style="max-width:100%;height:auto;" />`,
+          );
+        } catch {
+          // Ignore unreadable clipboard images.
+        }
+      }
+      syncHtml();
+      return;
+    }
+
+    const html = clipboard.getData("text/html");
+    if (html.trim()) {
+      document.execCommand("insertHTML", false, sanitizePastedHtml(html));
+      syncHtml();
+      return;
+    }
+
+    const text = clipboard.getData("text/plain");
+    if (text) {
+      document.execCommand("insertText", false, text);
+      syncHtml();
+    }
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      onSubmitShortcut();
+    }
+  }
+
+  return (
+    <div
+      ref={editorRef}
+      id="inbox-reply-body"
+      className="inbox-reply-input inbox-reply-editor"
+      contentEditable={!disabled}
+      role="textbox"
+      aria-multiline="true"
+      aria-label="Reply message"
+      data-placeholder="Write your reply… Paste signatures with images here."
+      suppressContentEditableWarning
+      onInput={syncHtml}
+      onPaste={(event) => {
+        void handlePaste(event);
+      }}
+      onKeyDown={handleKeyDown}
+    />
+  );
+}
+
 export default function PortalMasterInboxPage() {
   const [threads, setThreads] = useState<InboxThread[]>([]);
   const [inboxes, setInboxes] = useState<InboxAccount[]>([]);
@@ -29,10 +204,14 @@ export default function PortalMasterInboxPage() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
-  const [replyBody, setReplyBody] = useState("");
+  const [replyHtml, setReplyHtml] = useState("");
+  const [replyEditorKey, setReplyEditorKey] = useState(0);
   const [sendingReply, setSendingReply] = useState(false);
   const [error, setError] = useState("");
   const [syncNote, setSyncNote] = useState("");
+  const handleReplyHtmlChange = useCallback((html: string) => {
+    setReplyHtml(html);
+  }, []);
 
   const loadThreads = useCallback(async (inboxId: string) => {
     setLoading(true);
@@ -96,7 +275,7 @@ export default function PortalMasterInboxPage() {
 
   async function openThread(threadKey: string) {
     setSelectedKey(threadKey);
-    setReplyBody("");
+    setReplyHtml("");
     setLoadingThread(true);
     setError("");
     try {
@@ -124,18 +303,19 @@ export default function PortalMasterInboxPage() {
   }
 
   async function sendReply() {
-    if (!selectedKey || !replyBody.trim() || sendingReply) {
+    if (!selectedKey || isEmptyReplyHtml(replyHtml) || sendingReply) {
       return;
     }
     setSendingReply(true);
     setError("");
+    const outgoingHtml = replyHtml;
     try {
       const response = await fetch(
         `/api/inbox/${encodeURIComponent(selectedKey)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ body: replyBody }),
+          body: JSON.stringify({ html: outgoingHtml }),
         },
       );
       const data = await response.json();
@@ -144,9 +324,11 @@ export default function PortalMasterInboxPage() {
       }
       const nextMessages = Array.isArray(data.messages) ? data.messages : [];
       setMessages(nextMessages);
-      setReplyBody("");
+      setReplyHtml("");
+      setReplyEditorKey((key) => key + 1);
       const preview =
-        replyBody.replace(/\s+/g, " ").trim().slice(0, 140) || "(no preview)";
+        stripHtmlToText(outgoingHtml).slice(0, 140) ||
+        (/<img\b/i.test(outgoingHtml) ? "(image)" : "(no preview)");
       setThreads((current) => {
         const updated = current.map((thread) =>
           thread.threadKey === selectedKey
@@ -175,7 +357,7 @@ export default function PortalMasterInboxPage() {
     setSelectedInboxId(nextId);
     setSelectedKey(null);
     setMessages([]);
-    setReplyBody("");
+    setReplyHtml("");
     setSyncNote("");
   }
 
@@ -192,6 +374,7 @@ export default function PortalMasterInboxPage() {
         : `All Gmail inboxes (${inboxes.length})`
       : inboxes.find((inbox) => inbox.id === selectedInboxId)?.email ||
         "Selected inbox";
+  const canSendReply = !sendingReply && !isEmptyReplyHtml(replyHtml);
 
   return (
     <div className="crm-page inbox-page">
@@ -352,32 +535,24 @@ export default function PortalMasterInboxPage() {
                 <label className="inbox-reply-label" htmlFor="inbox-reply-body">
                   Reply to {replyToLabel}
                 </label>
-                <textarea
-                  id="inbox-reply-body"
-                  className="inbox-reply-input"
-                  rows={4}
-                  placeholder="Write your reply…"
-                  value={replyBody}
+                <InboxReplyEditor
+                  key={`${selectedKey}-${replyEditorKey}`}
+                  threadKey={selectedKey}
                   disabled={sendingReply}
-                  onChange={(event) => setReplyBody(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (
-                      (event.metaKey || event.ctrlKey) &&
-                      event.key === "Enter"
-                    ) {
-                      event.preventDefault();
-                      void sendReply();
-                    }
+                  onHtmlChange={handleReplyHtmlChange}
+                  onSubmitShortcut={() => {
+                    void sendReply();
                   }}
                 />
                 <div className="inbox-reply-actions">
                   <span className="inbox-reply-hint">
-                    Sends from {selected?.senderEmail || "your Gmail sender"}
+                    Sends from {selected?.senderEmail || "your Gmail sender"} ·
+                    paste keeps images
                   </span>
                   <button
                     type="submit"
                     className="btn-dark"
-                    disabled={sendingReply || !replyBody.trim()}
+                    disabled={!canSendReply}
                   >
                     {sendingReply ? "Sending…" : "Send reply"}
                   </button>
