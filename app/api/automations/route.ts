@@ -3,6 +3,7 @@ import { ObjectId } from "mongodb";
 import {
   createProjectAutomation,
   listProjectAutomations,
+  purgeEmptyProjectAutomations,
 } from "@/lib/automations-server";
 import {
   isSessionError,
@@ -11,16 +12,25 @@ import {
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) {
       return session;
     }
 
-    const automations = await listProjectAutomations(
-      new ObjectId(session.projectId),
-    );
+    const nonEmptyOnly =
+      request.nextUrl.searchParams.get("nonEmpty") === "1" ||
+      request.nextUrl.searchParams.get("nonEmpty") === "true";
+
+    const projectId = new ObjectId(session.projectId);
+    if (nonEmptyOnly) {
+      void purgeEmptyProjectAutomations(projectId).catch(() => undefined);
+    }
+
+    const automations = await listProjectAutomations(projectId, {
+      nonEmptyOnly,
+    });
     return NextResponse.json(automations, { headers: NO_STORE });
   } catch (error) {
     console.error("Failed to list automations:", error);

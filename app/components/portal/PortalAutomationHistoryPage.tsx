@@ -55,7 +55,10 @@ export default function PortalAutomationHistoryPage() {
   );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [page, setPage] = useState(1);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
+
+  const pageSize = 10;
 
   useEffect(() => {
     let cancelled = false;
@@ -63,14 +66,9 @@ export default function PortalAutomationHistoryPage() {
       setLoading(true);
       setError("");
       try {
-        const list = await fetchAutomations();
+        const list = await fetchAutomations({ nonEmptyOnly: true });
         if (cancelled) {
           return;
-        }
-        // Drop empty shells (never belonged in history — created before first step).
-        const empties = list.filter((item) => (item.steps?.length ?? 0) === 0);
-        if (empties.length > 0) {
-          await Promise.allSettled(empties.map((item) => deleteAutomation(item.id)));
         }
         setItems(list.filter((item) => (item.steps?.length ?? 0) > 0));
       } catch (err) {
@@ -112,10 +110,30 @@ export default function PortalAutomationHistoryPage() {
     });
   }, [visibleItems, query, statusFilter]);
 
-  const filteredIds = useMemo(() => filtered.map((item) => item.id), [filtered]);
-  const selectedOnPage = filteredIds.filter((id) => selectedIds.has(id));
+  useEffect(() => {
+    setPage(1);
+  }, [query, statusFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageItems = filtered.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
+  const rangeStart =
+    filtered.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const rangeEnd = Math.min(currentPage * pageSize, filtered.length);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
+
+  const pageIds = useMemo(() => pageItems.map((item) => item.id), [pageItems]);
+  const selectedOnPage = pageIds.filter((id) => selectedIds.has(id));
   const allVisibleSelected =
-    filteredIds.length > 0 && selectedOnPage.length === filteredIds.length;
+    pageIds.length > 0 && selectedOnPage.length === pageIds.length;
 
   useEffect(() => {
     if (selectAllRef.current) {
@@ -156,11 +174,11 @@ export default function PortalAutomationHistoryPage() {
     setSelectedIds((current) => {
       const next = new Set(current);
       if (checked) {
-        for (const id of filteredIds) {
+        for (const id of pageIds) {
           next.add(id);
         }
       } else {
-        for (const id of filteredIds) {
+        for (const id of pageIds) {
           next.delete(id);
         }
       }
@@ -258,9 +276,9 @@ export default function PortalAutomationHistoryPage() {
             type="checkbox"
             className="drip-check"
             checked={allVisibleSelected}
-            disabled={loading || filteredIds.length === 0 || deleting}
+            disabled={loading || pageIds.length === 0 || deleting}
             onChange={(event) => toggleAllVisible(event.target.checked)}
-            aria-label="Select all automations"
+            aria-label="Select all automations on this page"
           />
           {selectedIds.size > 0 ? (
             <button
@@ -300,6 +318,46 @@ export default function PortalAutomationHistoryPage() {
           </select>
         </div>
 
+        {!loading && filtered.length > pageSize ? (
+          <div className="drip-pagination">
+            <span className="drip-page-range">
+              {rangeStart}-{rangeEnd} of {filtered.length}
+            </span>
+            <div className="drip-page-controls">
+              <select
+                value={currentPage}
+                onChange={(event) => setPage(Number(event.target.value))}
+                aria-label="Page"
+              >
+                {Array.from({ length: totalPages }, (_, index) => (
+                  <option key={index + 1} value={index + 1}>
+                    {index + 1}
+                  </option>
+                ))}
+              </select>
+              <span>of {totalPages} pages</span>
+              <button
+                type="button"
+                className="drip-page-arrow"
+                disabled={currentPage <= 1}
+                onClick={() => setPage((value) => Math.max(1, value - 1))}
+                aria-label="Previous page"
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                className="drip-page-arrow"
+                disabled={currentPage >= totalPages}
+                onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+                aria-label="Next page"
+              >
+                ›
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {loading ? (
           <p className="auto-history-empty">Loading…</p>
         ) : filtered.length === 0 ? (
@@ -317,7 +375,7 @@ export default function PortalAutomationHistoryPage() {
           </div>
         ) : (
           <div className="auto-history-list">
-            {filtered.map((item) => (
+            {pageItems.map((item) => (
               <div
                 key={item.id}
                 className={`auto-history-row${

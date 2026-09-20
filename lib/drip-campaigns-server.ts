@@ -11,9 +11,11 @@ import type {
 } from "@/lib/drip-campaigns";
 import { createEmptySequence } from "@/lib/drip-campaigns";
 import {
+  getCampaignReport,
   getProjectCampaignReports,
   pauseCampaignBlast,
   resumeCampaignBlast,
+  ensureMarketingQueryIndexes,
   type CampaignReport,
 } from "@/lib/campaign-blasts-server";
 import { mergeBlastReport } from "@/lib/drip-campaigns";
@@ -132,15 +134,28 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
   };
 }
 
+/** List payloads omit large HTML bodies — detail routes still load full docs. */
+function mapCampaignListItem(doc: DripCampaignDoc): DripCampaign {
+  const campaign = mapCampaign(doc);
+  return {
+    ...campaign,
+    designHtml: undefined,
+    sequences: campaign.sequences?.map((sequence) => ({
+      ...sequence,
+      designHtml: undefined,
+    })),
+  };
+}
+
 async function withBlastReport(doc: DripCampaignDoc): Promise<DripCampaign> {
   const campaign = mapCampaign(doc);
 
   try {
-    const reports = await getProjectCampaignReports(doc.projectId);
-    const report = reports.find(
-      (item) =>
-        item.campaignId === doc.campaignId &&
-        (item.kind || "drip") === (campaign.kind || "drip"),
+    const report = await getCampaignReport(
+      doc.projectId,
+      doc.campaignId,
+      campaign.kind === "oneone" ? "oneone" : "drip",
+      { refresh: false },
     );
     if (!report) {
       return campaign;
@@ -270,10 +285,7 @@ export async function listProjectDripCampaigns(
   kind?: CampaignKind,
   options?: { updatedSince?: Date },
 ) {
-  if (kind === "oneone") {
-    await resequenceCampaignIds(projectId, "oneone");
-  }
-
+  void ensureMarketingQueryIndexes();
   const db = await getDb();
   const query: Record<string, unknown> = { projectId, ...campaignKindFilter(kind) };
   if (options?.updatedSince && !Number.isNaN(options.updatedSince.getTime())) {
@@ -281,14 +293,17 @@ export async function listProjectDripCampaigns(
   }
   const docs = await db
     .collection<DripCampaignDoc>("drip_campaigns")
-    .find(query)
+    .find(query, { projection: { designHtml: 0 } })
     .sort({ createdAt: -1 })
     .toArray();
 
-  const campaigns = docs.map(mapCampaign);
+  const campaigns = docs.map(mapCampaignListItem);
   let reports: CampaignReport[] = [];
   try {
-    reports = await getProjectCampaignReports(projectId);
+    reports = await getProjectCampaignReports(
+      projectId,
+      kind === "oneone" ? "oneone" : kind === "drip" ? "drip" : undefined,
+    );
   } catch {
     reports = [];
   }
@@ -394,16 +409,54 @@ export async function ensureCampaignShareTokens(
   items: Array<{ campaignId: string; kind: CampaignKind }>,
 ) {
   const tokens = new Map<string, string>();
+  const unique = new Map<string, { campaignId: string; kind: CampaignKind }>();
   for (const item of items) {
     const key = `${item.kind}:${item.campaignId}`;
-    if (tokens.has(key)) {
-      continue;
-    }
-    const token = await ensureCampaignShareToken(projectId, item.campaignId, item.kind);
-    if (token) {
-      tokens.set(key, token);
+    if (!unique.has(key)) {
+      unique.set(key, item);
     }
   }
+  if (unique.size === 0) {
+    return tokens;
+  }
+
+  const db = await getDb();
+  const campaignIds = [...new Set([...unique.values()].map((item) => item.campaignId))];
+  const docs = await db
+    .collection<DripCampaignDoc>("drip_campaigns")
+    .find(
+      { projectId, campaignId: { $in: campaignIds } },
+      { projection: { campaignId: 1, kind: 1, shareToken: 1 } },
+    )
+    .toArray();
+
+  const missing: Array<{ campaignId: string; kind: CampaignKind }> = [];
+  for (const [key, item] of unique) {
+    const match = docs.find((doc) => {
+      const docKind = doc.kind === "oneone" ? "oneone" : "drip";
+      return doc.campaignId === item.campaignId && docKind === item.kind;
+    });
+    if (match?.shareToken) {
+      tokens.set(key, match.shareToken);
+    } else {
+      missing.push(item);
+    }
+  }
+
+  if (missing.length > 0) {
+    const created = await Promise.all(
+      missing.map(async (item) => {
+        const token = await ensureCampaignShareToken(projectId, item.campaignId, item.kind);
+        return { key: `${item.kind}:${item.campaignId}`, token };
+      }),
+    );
+    for (const entry of created) {
+      if (entry.token) {
+        tokens.set(entry.key, entry.token);
+      }
+    }
+  }
+
   return tokens;
 }
 

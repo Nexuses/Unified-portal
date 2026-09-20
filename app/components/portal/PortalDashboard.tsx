@@ -108,23 +108,32 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
 
     async function loadContacts() {
       try {
-        const response = await fetch("/api/crm/contacts");
-        const data = (await response.json()) as Contact[] | { error?: string };
-        if (!response.ok || !Array.isArray(data)) {
+        const cutoff = new Date(Date.now() - 30 * DAY_MS).toISOString();
+        const [totalResponse, recentResponse] = await Promise.all([
+          fetch("/api/crm/contacts?page=1&pageSize=1"),
+          fetch(
+            `/api/crm/contacts?page=1&pageSize=1&createdAfter=${encodeURIComponent(cutoff)}`,
+          ),
+        ]);
+        const totalData = (await totalResponse.json()) as
+          | { total?: number; error?: string }
+          | Contact[];
+        const recentData = (await recentResponse.json()) as
+          | { total?: number; error?: string }
+          | Contact[];
+        if (!totalResponse.ok || Array.isArray(totalData) || typeof totalData.total !== "number") {
           return;
         }
         if (cancelled) {
           return;
         }
 
-        const cutoff = Date.now() - 30 * DAY_MS;
-        const recent = data.filter((contact) => {
-          const created = new Date(contact.createdAt).getTime();
-          return Number.isFinite(created) && created >= cutoff;
-        }).length;
-
-        setContactTotal(data.length);
-        setContactsLast30Days(recent);
+        setContactTotal(totalData.total);
+        setContactsLast30Days(
+          recentResponse.ok && !Array.isArray(recentData) && typeof recentData.total === "number"
+            ? recentData.total
+            : 0,
+        );
       } catch {
         // Keep placeholder zeros if the request fails.
       }

@@ -1,8 +1,10 @@
 "use client";
 
 import {
+  forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
@@ -16,6 +18,8 @@ import type {
 } from "@/lib/master-inbox-server";
 import { portalCampaignRoute } from "@/lib/portal-nav";
 
+const HTML_SIGNATURE_STORAGE_KEY = "portal-inbox-html-signature";
+
 function formatWhen(iso: string) {
   try {
     return new Date(iso).toLocaleString(undefined, {
@@ -25,6 +29,57 @@ function formatWhen(iso: string) {
   } catch {
     return iso;
   }
+}
+
+function isRichHtml(html: string) {
+  const lower = html.toLowerCase();
+  return (
+    lower.includes("<img") ||
+    lower.includes("<table") ||
+    lower.includes("<blockquote") ||
+    lower.includes("<iframe") ||
+    lower.includes("<hr") ||
+    (html.match(/<(p|div|br|span|a)\b/gi)?.length ?? 0) > 6
+  );
+}
+
+function InboxMessageHtml({ html, title }: { html: string; title: string }) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+
+  const fitHeight = useCallback(() => {
+    const frame = frameRef.current;
+    if (!frame) {
+      return;
+    }
+    try {
+      const doc = frame.contentDocument;
+      const body = doc?.body;
+      if (!body) {
+        return;
+      }
+      const height = Math.ceil(
+        Math.max(
+          body.scrollHeight,
+          body.offsetHeight,
+          doc.documentElement?.scrollHeight ?? 0,
+        ),
+      );
+      frame.style.height = `${Math.min(Math.max(height + 8, 28), 480)}px`;
+    } catch {
+      // Ignore cross-origin / sandbox read failures.
+    }
+  }, []);
+
+  return (
+    <iframe
+      ref={frameRef}
+      className="inbox-message-html"
+      title={title}
+      sandbox="allow-same-origin"
+      srcDoc={html}
+      onLoad={fitHeight}
+    />
+  );
 }
 
 function stripHtmlToText(html: string) {
@@ -65,12 +120,6 @@ function hasMeaningfulContent(el: Element) {
   return (el.textContent || "").replace(/\u00a0/g, " ").trim().length > 0;
 }
 
-function createSignatureRule(doc: Document) {
-  const hr = doc.createElement("hr");
-  hr.className = "inbox-sig-rule";
-  return hr;
-}
-
 function applyCleanedStyle(el: HTMLElement, style: string | null) {
   if (!style) {
     el.removeAttribute("style");
@@ -84,7 +133,121 @@ function applyCleanedStyle(el: HTMLElement, style: string | null) {
   }
 }
 
-/** Keep pasted signatures/banners; drop scripts/unsafe URLs; kill grid borders; keep clean separators. */
+function isUsableImageSrc(src: string) {
+  return /^(https?:|data:image\/)/i.test(src.trim());
+}
+
+function isInlineDataImageSrc(src: string) {
+  return /^data:image\//i.test(src.trim());
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read image"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function filesToDataUrls(files: File[]) {
+  const urls: string[] = [];
+  for (const file of files) {
+    try {
+      urls.push(await readFileAsDataUrl(file));
+    } catch {
+      // Skip unreadable clipboard files.
+    }
+  }
+  return urls;
+}
+
+/** Collect image files from both clipboard items and files lists. */
+function collectClipboardImages(clipboard: DataTransfer) {
+  const files: File[] = [];
+  const seen = new Set<string>();
+  const add = (file: File | null) => {
+    if (!file || !file.type.startsWith("image/")) {
+      return;
+    }
+    const key = `${file.type}:${file.size}:${file.name}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    files.push(file);
+  };
+
+  for (const item of clipboard.items) {
+    if (item.kind === "file" && item.type.startsWith("image/")) {
+      add(item.getAsFile());
+    }
+  }
+  for (const file of clipboard.files) {
+    add(file);
+  }
+  return files;
+}
+
+function stylePastedImage(img: HTMLElement) {
+  img.style.maxWidth = "100%";
+  img.style.height = "auto";
+  if (!img.getAttribute("alt")) {
+    img.setAttribute("alt", "");
+  }
+}
+
+/**
+ * Prefer clipboard image bytes for signature logos (same as pre-divider paste).
+ * Outlook/Word often put cid:/https attachment URLs that do not load in the editor.
+ */
+async function embedClipboardImages(html: string, imageFiles: File[]) {
+  const dataUrls = await filesToDataUrls(imageFiles);
+  const doc = new DOMParser().parseFromString(html || "<div></div>", "text/html");
+  const imgs = [...doc.querySelectorAll("img")];
+  let clipboardIndex = 0;
+
+  for (const img of imgs) {
+    if (!(img instanceof HTMLElement)) {
+      continue;
+    }
+    const src = (img.getAttribute("src") || "").trim();
+    // Already inlined — keep.
+    if (isInlineDataImageSrc(src)) {
+      stylePastedImage(img);
+      continue;
+    }
+    // Clipboard bytes beat remote/cid/file URLs (restores logos that worked before).
+    if (clipboardIndex < dataUrls.length) {
+      img.setAttribute("src", dataUrls[clipboardIndex]);
+      clipboardIndex += 1;
+      stylePastedImage(img);
+      continue;
+    }
+    if (!isUsableImageSrc(src)) {
+      img.remove();
+      continue;
+    }
+    stylePastedImage(img);
+  }
+
+  // No <img> tags in HTML — append clipboard images (old image-only paste path).
+  if (imgs.length === 0) {
+    for (const dataUrl of dataUrls) {
+      const img = doc.createElement("img");
+      img.setAttribute("src", dataUrl);
+      stylePastedImage(img);
+      doc.body.appendChild(img);
+    }
+  }
+
+  return doc.body.innerHTML;
+}
+
+/**
+ * Keep pasted signatures/banners; drop scripts/unsafe URLs; kill grid borders.
+ * Divider spacers are removed (no replacement line). Images are left for embedClipboardImages.
+ */
 function sanitizePastedHtml(html: string) {
   const doc = new DOMParser().parseFromString(html, "text/html");
   doc
@@ -117,12 +280,13 @@ function sanitizePastedHtml(html: string) {
     }
   });
 
-  // Empty bordered blocks are signature dividers — keep one clean rule instead of cell borders.
+  // Remove divider spacers / hrs — do not insert a replacement line.
   doc.querySelectorAll("p,div,tr,td,th,hr").forEach((el) => {
     if (el.tagName === "HR") {
-      el.replaceWith(createSignatureRule(doc));
+      el.remove();
       return;
     }
+    // Never drop nodes that still contain images.
     if (hasMeaningfulContent(el)) {
       return;
     }
@@ -132,94 +296,15 @@ function sanitizePastedHtml(html: string) {
       /border/i.test(style) ||
       el.hasAttribute("bgcolor") ||
       (/background(?:-color)?\s*:/i.test(style) &&
-        (/height\s*:\s*[12](?:\.0)?px/i.test(style) || height === "1px" || height === "2px"));
+        (/height\s*:\s*[12](?:\.0)?px/i.test(style) ||
+          height === "1px" ||
+          height === "2px"));
     if (looksLikeRule) {
-      el.replaceWith(createSignatureRule(doc));
+      el.remove();
     }
   });
 
-  // Collapse stacked rules from Word paste.
-  doc.querySelectorAll("hr.inbox-sig-rule").forEach((hr) => {
-    const prev = hr.previousElementSibling;
-    if (prev?.matches("hr.inbox-sig-rule")) {
-      hr.remove();
-    }
-  });
-
-  // Drop rules that sit above the first real signature content (common Word paste artifact).
-  {
-    const walker = doc.createTreeWalker(
-      doc.body,
-      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
-    );
-    let node = walker.nextNode();
-    while (node) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        if ((node.textContent || "").replace(/\u00a0/g, " ").trim()) {
-          break;
-        }
-      } else if (node instanceof Element) {
-        if (node.matches("hr.inbox-sig-rule")) {
-          const rule = node;
-          node = walker.nextNode();
-          rule.remove();
-          continue;
-        }
-        if (node.matches("img,svg")) {
-          break;
-        }
-      }
-      node = walker.nextNode();
-    }
-  }
-
-  // Drop trailing rules after the last real content.
-  {
-    const rules = [...doc.body.querySelectorAll("hr.inbox-sig-rule")];
-    for (let i = rules.length - 1; i >= 0; i -= 1) {
-      const hr = rules[i];
-      if (!hr.isConnected) {
-        continue;
-      }
-      let sawAfter = false;
-      const walker = doc.createTreeWalker(
-        doc.body,
-        NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
-      );
-      let node: Node | null = walker.nextNode();
-      let pastHr = false;
-      while (node) {
-        if (node === hr) {
-          pastHr = true;
-          node = walker.nextNode();
-          continue;
-        }
-        if (pastHr) {
-          if (node.nodeType === Node.TEXT_NODE) {
-            if ((node.textContent || "").replace(/\u00a0/g, " ").trim()) {
-              sawAfter = true;
-              break;
-            }
-          } else if (node instanceof Element) {
-            if (node.matches("hr.inbox-sig-rule")) {
-              node = walker.nextNode();
-              continue;
-            }
-            if (node.matches("img,svg")) {
-              sawAfter = true;
-              break;
-            }
-          }
-        }
-        node = walker.nextNode();
-      }
-      if (!sawAfter) {
-        hr.remove();
-      } else {
-        break;
-      }
-    }
-  }
+  doc.querySelectorAll("hr").forEach((hr) => hr.remove());
 
   doc.querySelectorAll("table").forEach((table) => {
     if (!(table instanceof HTMLElement)) {
@@ -235,18 +320,16 @@ function sanitizePastedHtml(html: string) {
     );
   });
 
-  // Strip remaining borders on content so lines don't sit under every text row.
-  doc.querySelectorAll("td,th,p,div,span,li,tr").forEach((el) => {
+  doc.querySelectorAll("td,th,p,div,span,li,tr,font").forEach((el) => {
     if (!(el instanceof HTMLElement)) {
       return;
     }
     applyCleanedStyle(el, el.getAttribute("style"));
   });
 
+  // Do not delete images here — embedClipboardImages handles src fixing.
   doc.querySelectorAll("img").forEach((img) => {
-    const src = (img.getAttribute("src") || "").trim();
-    if (!/^(https?:|data:image\/)/i.test(src)) {
-      img.remove();
+    if (!(img instanceof HTMLElement)) {
       return;
     }
     img.style.maxWidth = "100%";
@@ -259,26 +342,22 @@ function sanitizePastedHtml(html: string) {
   return doc.body.innerHTML;
 }
 
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error ?? new Error("Failed to read image"));
-    reader.readAsDataURL(file);
-  });
-}
+type InboxReplyEditorHandle = {
+  insertHtml: (html: string) => void;
+};
 
-function InboxReplyEditor({
-  threadKey,
-  disabled,
-  onHtmlChange,
-  onSubmitShortcut,
-}: {
-  threadKey: string;
-  disabled?: boolean;
-  onHtmlChange: (html: string) => void;
-  onSubmitShortcut: () => void;
-}) {
+const InboxReplyEditor = forwardRef<
+  InboxReplyEditorHandle,
+  {
+    threadKey: string;
+    disabled?: boolean;
+    onHtmlChange: (html: string) => void;
+    onSubmitShortcut: () => void;
+  }
+>(function InboxReplyEditor(
+  { threadKey, disabled, onHtmlChange, onSubmitShortcut },
+  ref,
+) {
   const editorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -295,6 +374,35 @@ function InboxReplyEditor({
     onHtmlChange(html);
   }
 
+  useImperativeHandle(ref, () => ({
+    insertHtml(html: string) {
+      const editor = editorRef.current;
+      if (!editor || disabled) {
+        return;
+      }
+      const cleaned = sanitizePastedHtml(html).trim();
+      if (!cleaned) {
+        return;
+      }
+      const needsBreak = Boolean(
+        editor.innerHTML.replace(/\s|&nbsp;/gi, "").length,
+      );
+      editor.focus();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      document.execCommand(
+        "insertHTML",
+        false,
+        `${needsBreak ? "<br><br>" : ""}${cleaned}`,
+      );
+      syncHtml();
+    },
+  }));
+
   async function handlePaste(event: ReactClipboardEvent<HTMLDivElement>) {
     event.preventDefault();
     const clipboard = event.clipboardData;
@@ -302,15 +410,18 @@ function InboxReplyEditor({
       return;
     }
 
-    const imageItems = [...clipboard.items].filter((item) =>
-      item.type.startsWith("image/"),
-    );
-    if (imageItems.length > 0) {
-      for (const item of imageItems) {
-        const file = item.getAsFile();
-        if (!file) {
-          continue;
-        }
+    const imageFiles = collectClipboardImages(clipboard);
+    const html = clipboard.getData("text/html").trim();
+    if (html) {
+      const cleaned = sanitizePastedHtml(html);
+      const withImages = await embedClipboardImages(cleaned, imageFiles);
+      document.execCommand("insertHTML", false, withImages);
+      syncHtml();
+      return;
+    }
+
+    if (imageFiles.length > 0) {
+      for (const file of imageFiles) {
         try {
           const dataUrl = await readFileAsDataUrl(file);
           document.execCommand(
@@ -322,13 +433,6 @@ function InboxReplyEditor({
           // Ignore unreadable clipboard images.
         }
       }
-      syncHtml();
-      return;
-    }
-
-    const html = clipboard.getData("text/html");
-    if (html.trim()) {
-      document.execCommand("insertHTML", false, sanitizePastedHtml(html));
       syncHtml();
       return;
     }
@@ -356,7 +460,7 @@ function InboxReplyEditor({
       role="textbox"
       aria-multiline="true"
       aria-label="Reply message"
-      data-placeholder="Write your reply… Paste signatures with images here."
+      data-placeholder="Write your reply…"
       suppressContentEditableWarning
       onInput={syncHtml}
       onPaste={(event) => {
@@ -365,7 +469,7 @@ function InboxReplyEditor({
       onKeyDown={handleKeyDown}
     />
   );
-}
+});
 
 export default function PortalMasterInboxPage() {
   const [threads, setThreads] = useState<InboxThread[]>([]);
@@ -381,9 +485,41 @@ export default function PortalMasterInboxPage() {
   const [sendingReply, setSendingReply] = useState(false);
   const [error, setError] = useState("");
   const [syncNote, setSyncNote] = useState("");
+  const [signatureModalOpen, setSignatureModalOpen] = useState(false);
+  const [signatureHtmlDraft, setSignatureHtmlDraft] = useState("");
+  const replyEditorRef = useRef<InboxReplyEditorHandle>(null);
   const handleReplyHtmlChange = useCallback((html: string) => {
     setReplyHtml(html);
   }, []);
+
+  function openSignatureModal() {
+    try {
+      setSignatureHtmlDraft(
+        localStorage.getItem(HTML_SIGNATURE_STORAGE_KEY) || "",
+      );
+    } catch {
+      setSignatureHtmlDraft("");
+    }
+    setSignatureModalOpen(true);
+  }
+
+  function closeSignatureModal() {
+    setSignatureModalOpen(false);
+  }
+
+  function insertHtmlSignature() {
+    const raw = signatureHtmlDraft.trim();
+    if (!raw) {
+      return;
+    }
+    try {
+      localStorage.setItem(HTML_SIGNATURE_STORAGE_KEY, raw);
+    } catch {
+      // Ignore storage failures (private mode / quota).
+    }
+    replyEditorRef.current?.insertHtml(raw);
+    setSignatureModalOpen(false);
+  }
 
   const loadThreads = useCallback(async (inboxId: string) => {
     setLoading(true);
@@ -644,27 +780,30 @@ export default function PortalMasterInboxPage() {
           ) : (
             <>
               <header className="inbox-thread-head">
-                <div>
+                <div className="inbox-thread-head-main">
                   <h3>{selected?.subject || "Conversation"}</h3>
-                  <p>
-                    {selected?.fromName || selected?.fromEmail}
+                  <div className="inbox-thread-head-meta">
+                    <span className="inbox-chip">
+                      {selected?.fromName || selected?.fromEmail || "Unknown"}
+                    </span>
                     {selected?.relatedCampaignId ? (
-                      <>
-                        {" · "}
-                        <Link
-                          href={portalCampaignRoute(selected.relatedCampaignId)}
-                          className="inbox-campaign-link"
-                        >
-                          Campaign #{selected.relatedCampaignId}
-                        </Link>
-                      </>
+                      <Link
+                        href={portalCampaignRoute(selected.relatedCampaignId)}
+                        className="inbox-chip inbox-chip-link"
+                      >
+                        Campaign #{selected.relatedCampaignId}
+                      </Link>
                     ) : null}
-                  </p>
+                  </div>
                 </div>
               </header>
               <div className="inbox-messages">
                 {messages.map((message) => {
                   const outbound = message.direction === "outbound";
+                  const html = message.htmlBody.trim();
+                  const text = message.textBody.trim();
+                  const usePlainText =
+                    Boolean(text) && (!html || !isRichHtml(html));
                   return (
                     <article
                       key={message.id}
@@ -673,24 +812,20 @@ export default function PortalMasterInboxPage() {
                       <div className="inbox-message-meta">
                         <strong>
                           {outbound
-                            ? `You · ${message.fromEmail}`
+                            ? "You"
                             : message.fromName || message.fromEmail}
                         </strong>
                         <span>{formatWhen(message.receivedAt)}</span>
                       </div>
-                      <div className="inbox-message-to">
-                        to {message.toEmail}
-                      </div>
-                      {message.htmlBody.trim() ? (
-                        <iframe
-                          className="inbox-message-html"
-                          title={message.subject}
-                          sandbox=""
-                          srcDoc={message.htmlBody}
-                        />
+                      {usePlainText ? (
+                        <pre className="inbox-message-text">
+                          {text || "(empty message)"}
+                        </pre>
+                      ) : html ? (
+                        <InboxMessageHtml html={html} title={message.subject} />
                       ) : (
                         <pre className="inbox-message-text">
-                          {message.textBody || "(empty message)"}
+                          {text || "(empty message)"}
                         </pre>
                       )}
                     </article>
@@ -704,11 +839,17 @@ export default function PortalMasterInboxPage() {
                   void sendReply();
                 }}
               >
-                <label className="inbox-reply-label" htmlFor="inbox-reply-body">
-                  Reply to {replyToLabel}
-                </label>
+                <div className="inbox-reply-top">
+                  <label className="inbox-reply-label" htmlFor="inbox-reply-body">
+                    Reply to {replyToLabel}
+                  </label>
+                  <span className="inbox-reply-hint">
+                    via {selected?.senderEmail || "Gmail"}
+                  </span>
+                </div>
                 <InboxReplyEditor
                   key={`${selectedKey}-${replyEditorKey}`}
+                  ref={replyEditorRef}
                   threadKey={selectedKey}
                   disabled={sendingReply}
                   onHtmlChange={handleReplyHtmlChange}
@@ -717,10 +858,14 @@ export default function PortalMasterInboxPage() {
                   }}
                 />
                 <div className="inbox-reply-actions">
-                  <span className="inbox-reply-hint">
-                    Sends from {selected?.senderEmail || "your Gmail sender"} ·
-                    paste keeps images
-                  </span>
+                  <button
+                    type="button"
+                    className="inbox-sig-btn"
+                    onClick={openSignatureModal}
+                    disabled={sendingReply}
+                  >
+                    Insert HTML signature
+                  </button>
                   <button
                     type="submit"
                     className="btn-dark"
@@ -734,6 +879,78 @@ export default function PortalMasterInboxPage() {
           )}
         </section>
       </div>
+
+      {signatureModalOpen ? (
+        <div className="crm-modal-backdrop" onClick={closeSignatureModal}>
+          <div
+            className="crm-modal inbox-sig-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="inbox-sig-title"
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="inbox-sig-title">HTML signature</h3>
+                <p>
+                  Paste your signature HTML below. Use{" "}
+                  <code>https://</code> or <code>data:image</code> image URLs so
+                  logos show in the reply.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                onClick={closeSignatureModal}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-body">
+              <div className="crm-field">
+                <label htmlFor="inbox-sig-html">Signature HTML</label>
+                <textarea
+                  id="inbox-sig-html"
+                  className="inbox-sig-textarea"
+                  value={signatureHtmlDraft}
+                  onChange={(event) => setSignatureHtmlDraft(event.target.value)}
+                  placeholder={`<table>\n  <tr>\n    <td>\n      <img src="https://…/logo.png" alt="Logo" width="120" />\n      <div>Your Name</div>\n    </td>\n  </tr>\n</table>`}
+                  spellCheck={false}
+                />
+              </div>
+              {signatureHtmlDraft.trim() ? (
+                <div className="crm-field">
+                  <label>Preview</label>
+                  <div
+                    className="inbox-sig-preview"
+                    dangerouslySetInnerHTML={{
+                      __html: sanitizePastedHtml(signatureHtmlDraft),
+                    }}
+                  />
+                </div>
+              ) : null}
+            </div>
+            <div className="crm-modal-foot">
+              <button
+                type="button"
+                className="btn-link-purple"
+                onClick={closeSignatureModal}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                onClick={insertHtmlSignature}
+                disabled={!signatureHtmlDraft.trim()}
+              >
+                Insert into reply
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

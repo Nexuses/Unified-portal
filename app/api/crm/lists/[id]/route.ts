@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
-import { mapContact, mapList, type ContactDoc, type ListDoc } from "@/lib/crm";
+import { mapList, type ListDoc } from "@/lib/crm";
 import { deleteLists, importContactsToList } from "@/lib/crm-import";
+import { listProjectListContacts } from "@/lib/crm-contacts-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -12,7 +13,7 @@ type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
-export async function GET(_request: NextRequest, context: RouteContext) {
+export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) {
@@ -37,23 +38,25 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "List not found" }, { status: 404 });
     }
 
-    const memberships = await db
-      .collection("list_memberships")
-      .find({ projectId, listId })
-      .toArray();
+    const params = request.nextUrl.searchParams;
+    const page = Number(params.get("page") ?? "1");
+    const pageSize = Number(params.get("pageSize") ?? "50");
+    const q = params.get("q") ?? "";
 
-    const contactIds = memberships.map((item) => item.contactId);
-    const contacts =
-      contactIds.length === 0
-        ? []
-        : await db
-            .collection<ContactDoc>("contacts")
-            .find({ _id: { $in: contactIds } })
-            .toArray();
+    const contactsPage = await listProjectListContacts(projectId, listId, {
+      page: Number.isFinite(page) ? page : 1,
+      pageSize: Number.isFinite(pageSize) ? pageSize : 50,
+      q,
+    });
 
     return NextResponse.json({
       list: mapList(list),
-      contacts: contacts.map(mapContact),
+      contacts: contactsPage.items,
+      items: contactsPage.items,
+      total: contactsPage.total,
+      page: contactsPage.page,
+      pageSize: contactsPage.pageSize,
+      totalPages: contactsPage.totalPages,
     });
   } catch (error) {
     console.error("Failed to fetch list:", error);

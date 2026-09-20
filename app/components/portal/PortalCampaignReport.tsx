@@ -201,6 +201,8 @@ export default function PortalCampaignReport({
   const [peopleLoading, setPeopleLoading] = useState(false);
   const [peopleError, setPeopleError] = useState("");
   const [peopleSearch, setPeopleSearch] = useState("");
+  const [peoplePage, setPeoplePage] = useState(1);
+  const peoplePageSize = 50;
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
   const [shareCopied, setShareCopied] = useState(false);
@@ -236,7 +238,10 @@ export default function PortalCampaignReport({
         if (campaign.status !== "paused") {
           await fetch("/api/campaigns/process-due", { method: "POST" });
         }
-        const response = await fetch("/api/campaigns/stats");
+        const kind = campaign.kind === "oneone" ? "oneone" : "drip";
+        const response = await fetch(
+          `/api/campaigns/stats?campaignId=${encodeURIComponent(campaign.id)}&kind=${kind}`,
+        );
         const data = await response.json();
         if (cancelled || !response.ok) {
           return;
@@ -276,8 +281,11 @@ export default function PortalCampaignReport({
       setPeople([]);
       setPeopleError("");
       setPeopleSearch("");
+      setPeoplePage(1);
       return;
     }
+
+    setPeoplePage(1);
 
     let cancelled = false;
     async function loadPeople() {
@@ -337,6 +345,34 @@ export default function PortalCampaignReport({
         (person.clickedUrl ?? "").toLowerCase().includes(query),
     );
   }, [people, peopleSearch]);
+
+  useEffect(() => {
+    setPeoplePage(1);
+  }, [peopleSearch]);
+
+  const peopleTotalPages = Math.max(
+    1,
+    Math.ceil(visiblePeople.length / peoplePageSize),
+  );
+  const peopleCurrentPage = Math.min(peoplePage, peopleTotalPages);
+  const pagedPeople = visiblePeople.slice(
+    (peopleCurrentPage - 1) * peoplePageSize,
+    peopleCurrentPage * peoplePageSize,
+  );
+  const peopleRangeStart =
+    visiblePeople.length === 0
+      ? 0
+      : (peopleCurrentPage - 1) * peoplePageSize + 1;
+  const peopleRangeEnd = Math.min(
+    peopleCurrentPage * peoplePageSize,
+    visiblePeople.length,
+  );
+
+  useEffect(() => {
+    if (peoplePage > peopleTotalPages) {
+      setPeoplePage(peopleTotalPages);
+    }
+  }, [peoplePage, peopleTotalPages]);
 
   function openPeople(view: PeopleView) {
     setPeopleView(view);
@@ -1029,12 +1065,12 @@ export default function PortalCampaignReport({
                     </td>
                   </tr>
                 ) : (
-                  visiblePeople.map((person) => (
+                  pagedPeople.map((person) => (
                     <tr key={person.id}>
                       <td className="chk">
                         <input type="checkbox" readOnly />
                       </td>
-                      <td>
+                      <td data-label="Contact">
                         {person.contactId && !isPublic ? (
                           <Link href={portalContactRoute(person.contactId)} className="name-link">
                             {person.fullName}
@@ -1043,23 +1079,25 @@ export default function PortalCampaignReport({
                           <span className="name-link">{person.fullName}</span>
                         )}
                       </td>
-                      <td className="email-cell">{person.email}</td>
+                      <td className="email-cell" data-label="Email">
+                        {person.email}
+                      </td>
                       {showSequence ? (
-                        <td>
+                        <td data-label="Sequence">
                           {typeof person.sequenceNumber === "number"
                             ? `Sequence ${person.sequenceNumber}`
                             : "—"}
                         </td>
                       ) : null}
                       {peopleView === "delivered" ? (
-                        <td>
+                        <td data-label="Delivered">
                           {person.sentAt
                             ? formatCampaignClock(person.sentAt, timezone)
                             : "—"}
                         </td>
                       ) : null}
                       {peopleView === "opens" ? (
-                        <td>
+                        <td data-label="Opened">
                           {person.openedAt
                             ? formatCampaignClock(person.openedAt, timezone)
                             : "—"}
@@ -1067,7 +1105,7 @@ export default function PortalCampaignReport({
                       ) : null}
                       {peopleView === "clicks" ? (
                         <>
-                          <td>
+                          <td data-label="Link clicked">
                             {person.clickedUrl ? (
                               <a
                                 href={person.clickedUrl}
@@ -1081,7 +1119,7 @@ export default function PortalCampaignReport({
                               "—"
                             )}
                           </td>
-                          <td>
+                          <td data-label="Clicked">
                             {person.clickedAt
                               ? formatCampaignClock(person.clickedAt, timezone)
                               : "—"}
@@ -1089,24 +1127,26 @@ export default function PortalCampaignReport({
                         </>
                       ) : null}
                       {peopleView === "unsubscribes" ? (
-                        <td>
+                        <td data-label="Unsubscribed">
                           {person.unsubscribedAt
                             ? formatCampaignClock(person.unsubscribedAt, timezone)
                             : "—"}
                         </td>
                       ) : null}
                       {peopleView === "bounces" ? (
-                        <td>{person.error?.trim() || "Delivery failed"}</td>
+                        <td data-label="Bounce reason">
+                          {person.error?.trim() || "Delivery failed"}
+                        </td>
                       ) : null}
                       {peopleView === "replies" ? (
-                        <td>
+                        <td data-label="Replied">
                           {person.repliedAt
                             ? formatCampaignClock(person.repliedAt, timezone)
                             : "—"}
                         </td>
                       ) : null}
                       {peopleView === "audience" ? (
-                        <td>{person.companyName || "—"}</td>
+                        <td data-label="Company">{person.companyName || "—"}</td>
                       ) : null}
                     </tr>
                   ))
@@ -1114,6 +1154,52 @@ export default function PortalCampaignReport({
               </tbody>
             </table>
           </div>
+
+          {!peopleLoading && visiblePeople.length > 0 ? (
+            <div className="drip-pagination">
+              <span className="drip-page-range">
+                {peopleRangeStart}-{peopleRangeEnd} of {visiblePeople.length}
+              </span>
+              <div className="drip-page-controls">
+                <select
+                  value={peopleCurrentPage}
+                  onChange={(event) => setPeoplePage(Number(event.target.value))}
+                  aria-label="Page"
+                >
+                  {Array.from({ length: peopleTotalPages }, (_, index) => (
+                    <option key={index + 1} value={index + 1}>
+                      {index + 1}
+                    </option>
+                  ))}
+                </select>
+                <span>of {peopleTotalPages} pages</span>
+                <button
+                  type="button"
+                  className="drip-page-arrow"
+                  disabled={peopleCurrentPage <= 1}
+                  onClick={() =>
+                    setPeoplePage((value) => Math.max(1, value - 1))
+                  }
+                  aria-label="Previous page"
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  className="drip-page-arrow"
+                  disabled={peopleCurrentPage >= peopleTotalPages}
+                  onClick={() =>
+                    setPeoplePage((value) =>
+                      Math.min(peopleTotalPages, value + 1),
+                    )
+                  }
+                  aria-label="Next page"
+                >
+                  ›
+                </button>
+              </div>
+            </div>
+          ) : null}
         </>
       ) : (
         <>

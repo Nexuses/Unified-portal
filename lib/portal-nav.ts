@@ -4,6 +4,7 @@ export type PortalPageId =
   | "lists"
   | "segments"
   | "companies"
+  | "enrich"
   | "drip"
   | "oneone"
   | "automation"
@@ -44,6 +45,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   lists: "/portal/crm/lists",
   segments: "/portal/crm/segments",
   companies: "/portal/crm/companies",
+  enrich: "/portal/crm/enrich",
   drip: "/portal/marketing/drip",
   oneone: "/portal/marketing/one-one",
   automation: "/portal/marketing/automation",
@@ -119,6 +121,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
       { id: "lists", label: "Lists", href: PORTAL_ROUTES.lists },
       { id: "segments", label: "Segments", href: PORTAL_ROUTES.segments },
       { id: "companies", label: "Companies", href: PORTAL_ROUTES.companies },
+      { id: "enrich", label: "Enrich", href: PORTAL_ROUTES.enrich },
     ],
   },
   { type: "item", id: "inbox", label: "Master Inbox", href: PORTAL_ROUTES.inbox },
@@ -168,6 +171,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   lists: "Lists",
   segments: "Segments",
   companies: "Companies",
+  enrich: "Enrich",
   drip: "Drip Campaign",
   oneone: "1-1 Campaign",
   automation: "Automation",
@@ -198,6 +202,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/crm/lists")) return "lists";
   if (pathname.startsWith("/portal/crm/segments")) return "segments";
   if (pathname.startsWith("/portal/crm/companies")) return "companies";
+  if (pathname.startsWith("/portal/crm/enrich")) return "enrich";
   if (pathname.startsWith("/portal/marketing/drip")) return "drip";
   if (pathname.startsWith("/portal/marketing/one-one")) return "oneone";
   if (pathname.startsWith("/portal/marketing/automation-history")) {

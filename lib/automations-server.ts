@@ -66,14 +66,28 @@ function parseStatus(value: unknown): AutomationStatus {
 
 export async function listProjectAutomations(
   projectId: ObjectId,
+  options?: { nonEmptyOnly?: boolean },
 ): Promise<PortalAutomation[]> {
   const db = await getDb();
+  const query: Record<string, unknown> = { projectId };
+  if (options?.nonEmptyOnly) {
+    query["steps.0"] = { $exists: true };
+  }
   const docs = await db
     .collection<AutomationDoc>("automations")
-    .find({ projectId })
+    .find(query)
     .sort({ updatedAt: -1 })
     .toArray();
   return docs.map(mapAutomation);
+}
+
+/** Best-effort cleanup of empty automation shells created before the first step. */
+export async function purgeEmptyProjectAutomations(projectId: ObjectId) {
+  const db = await getDb();
+  await db.collection<AutomationDoc>("automations").deleteMany({
+    projectId,
+    $or: [{ steps: { $exists: false } }, { steps: { $size: 0 } }],
+  });
 }
 
 export async function getProjectAutomation(

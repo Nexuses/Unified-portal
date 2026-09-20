@@ -58,6 +58,16 @@ export function IconSmtp({ className }: IconProps) {
   );
 }
 
+export function IconInbox({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" {...stroke}>
+      <path d="M4 13h3.8l1.4 2.4h5.6L16.2 13H20v5.2A1.8 1.8 0 0 1 18.2 20H5.8A1.8 1.8 0 0 1 4 18.2V13z" />
+      <path d="m4 13 2.6-7.2h10.8L20 13" />
+      <path d="M9.5 8.5h5" />
+    </svg>
+  );
+}
+
 export function IconSuppression({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
@@ -194,6 +204,8 @@ export function getNavIcon(pageId: string) {
       return IconAnalytics;
     case "smtp":
       return IconSmtp;
+    case "inbox":
+      return IconInbox;
     case "unsub":
       return IconSuppression;
     case "integrations":

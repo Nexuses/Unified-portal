@@ -28,12 +28,19 @@ export type AnalyticsShareDoc = {
   expiresAt?: Date;
 };
 
+const DASHBOARD_CACHE_TTL_MS = 45_000;
+
+type DashboardCacheEntry = {
+  expiresAt: number;
+  value: AnalyticsDashboard;
+};
+
+const dashboardCache = new Map<string, DashboardCacheEntry>();
+
+let analyticsIndexesPromise: Promise<void> | null = null;
+
 function emptyKind(): AnalyticsKindStats {
   return { delivered: 0, opens: 0, clicks: 0, unsubscribed: 0 };
-}
-
-function dayKey(date: Date) {
-  return date.toISOString().slice(0, 10);
 }
 
 function eachDay(from: Date, to: Date) {
@@ -47,16 +54,95 @@ function eachDay(from: Date, to: Date) {
   return days;
 }
 
-function wasOpened(send: CampaignSendDoc) {
-  return Boolean(send.openedAt) || (send.openCount ?? 0) > 0;
+function dashboardCacheKey(
+  projectId: ObjectId,
+  fromInput: string,
+  toInput: string,
+  withShareTokens: boolean,
+) {
+  return `${projectId.toString()}|${fromInput}|${toInput}|${withShareTokens ? "1" : "0"}`;
 }
 
-function wasClicked(send: CampaignSendDoc) {
-  if (send.clickBurstIgnored) {
-    return false;
+function readDashboardCache(key: string) {
+  const entry = dashboardCache.get(key);
+  if (!entry) {
+    return null;
   }
-  return Boolean(send.clickedAt) || (send.clickCount ?? 0) > 0;
+  if (entry.expiresAt <= Date.now()) {
+    dashboardCache.delete(key);
+    return null;
+  }
+  return entry.value;
 }
+
+function writeDashboardCache(key: string, value: AnalyticsDashboard) {
+  dashboardCache.set(key, {
+    expiresAt: Date.now() + DASHBOARD_CACHE_TTL_MS,
+    value,
+  });
+}
+
+async function ensureAnalyticsIndexes() {
+  if (!analyticsIndexesPromise) {
+    analyticsIndexesPromise = (async () => {
+      const db = await getDb();
+      await Promise.all([
+        db.collection("campaign_sends").createIndex(
+          { projectId: 1, status: 1, sentAt: 1 },
+          { name: "analytics_sends_project_status_sentAt", background: true },
+        ),
+        db.collection("campaign_sends").createIndex(
+          { projectId: 1, status: 1, updatedAt: 1 },
+          { name: "analytics_sends_project_status_updatedAt", background: true },
+        ),
+        db.collection("contacts").createIndex(
+          { projectId: 1, createdAt: 1 },
+          { name: "analytics_contacts_project_createdAt", background: true },
+        ),
+        db.collection("automations").createIndex(
+          { projectId: 1, createdAt: 1 },
+          { name: "analytics_automations_project_createdAt", background: true },
+        ),
+        db.collection("analytics_shares").createIndex(
+          { token: 1 },
+          { name: "analytics_shares_token", unique: true, background: true },
+        ),
+        db.collection("analytics_shares").createIndex(
+          { projectId: 1, from: 1, to: 1, createdAt: -1 },
+          { name: "analytics_shares_project_range", background: true },
+        ),
+      ]);
+    })().catch((error) => {
+      analyticsIndexesPromise = null;
+      console.error("Failed to ensure analytics indexes:", error);
+    });
+  }
+  await analyticsIndexesPromise;
+}
+
+type SendAggFacet = {
+  totals: Array<{
+    delivered: number;
+    opens: number;
+    clicks: number;
+    unsubscribed: number;
+  }>;
+  daily: Array<{
+    _id: string;
+    delivered: number;
+    opens: number;
+    clicks: number;
+  }>;
+  byBlast: Array<{
+    _id: ObjectId;
+    campaignId: string;
+    delivered: number;
+    opens: number;
+    clicks: number;
+    unsubscribed: number;
+    sentAt?: Date;
+  }>;
+};
 
 export async function getAnalyticsDashboard(
   projectId: ObjectId,
@@ -65,18 +151,112 @@ export async function getAnalyticsDashboard(
   projectName = "",
   options?: { withShareTokens?: boolean },
 ): Promise<AnalyticsDashboard> {
+  const withShareTokens = Boolean(options?.withShareTokens);
+  const cacheKey = dashboardCacheKey(projectId, fromInput, toInput, withShareTokens);
+  const cached = readDashboardCache(cacheKey);
+  if (cached) {
+    return {
+      ...cached,
+      projectName: projectName || cached.projectName,
+    };
+  }
+
   const { from, to } = analyticsRangeIso(fromInput, toInput);
   const db = await getDb();
+  void ensureAnalyticsIndexes();
 
-  const [sends, failed, contactsAdded, automationsCreated] = await Promise.all([
+  const sendMatch = {
+    projectId,
+    status: "sent" as const,
+    sentAt: { $gte: from, $lte: to },
+  };
+
+  const openedExpr = {
+    $or: [
+      { $ne: [{ $ifNull: ["$openedAt", null] }, null] },
+      { $gt: [{ $ifNull: ["$openCount", 0] }, 0] },
+    ],
+  };
+  const clickedExpr = {
+    $and: [
+      { $ne: [{ $ifNull: ["$clickBurstIgnored", false] }, true] },
+      {
+        $or: [
+          { $ne: [{ $ifNull: ["$clickedAt", null] }, null] },
+          { $gt: [{ $ifNull: ["$clickCount", 0] }, 0] },
+        ],
+      },
+    ],
+  };
+  const unsubscribedExpr = {
+    $ne: [{ $ifNull: ["$unsubscribedAt", null] }, null],
+  };
+
+  const [sendFacet, failed, contactsAdded, automationsCreated] = await Promise.all([
     db
       .collection<CampaignSendDoc>("campaign_sends")
-      .find({
-        projectId,
-        status: "sent",
-        sentAt: { $gte: from, $lte: to },
-      })
-      .toArray(),
+      .aggregate<SendAggFacet>(
+        [
+          { $match: sendMatch },
+          {
+            $project: {
+              blastId: 1,
+              campaignId: 1,
+              sentAt: 1,
+              opened: openedExpr,
+              clicked: clickedExpr,
+              unsubscribed: unsubscribedExpr,
+              day: {
+                $dateToString: {
+                  format: "%Y-%m-%d",
+                  date: "$sentAt",
+                  timezone: "UTC",
+                },
+              },
+            },
+          },
+          {
+            $facet: {
+              totals: [
+                {
+                  $group: {
+                    _id: null,
+                    delivered: { $sum: 1 },
+                    opens: { $sum: { $cond: ["$opened", 1, 0] } },
+                    clicks: { $sum: { $cond: ["$clicked", 1, 0] } },
+                    unsubscribed: { $sum: { $cond: ["$unsubscribed", 1, 0] } },
+                  },
+                },
+              ],
+              daily: [
+                {
+                  $group: {
+                    _id: "$day",
+                    delivered: { $sum: 1 },
+                    opens: { $sum: { $cond: ["$opened", 1, 0] } },
+                    clicks: { $sum: { $cond: ["$clicked", 1, 0] } },
+                  },
+                },
+              ],
+              byBlast: [
+                {
+                  $group: {
+                    _id: "$blastId",
+                    campaignId: { $first: "$campaignId" },
+                    delivered: { $sum: 1 },
+                    opens: { $sum: { $cond: ["$opened", 1, 0] } },
+                    clicks: { $sum: { $cond: ["$clicked", 1, 0] } },
+                    unsubscribed: { $sum: { $cond: ["$unsubscribed", 1, 0] } },
+                    sentAt: { $max: "$sentAt" },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        { allowDiskUse: true },
+      )
+      .next(),
     db.collection<CampaignSendDoc>("campaign_sends").countDocuments({
       projectId,
       status: "failed",
@@ -92,13 +272,18 @@ export async function getAnalyticsDashboard(
     }),
   ]);
 
-  const blastIds = [...new Set(sends.map((send) => send.blastId.toString()))].map(
-    (id) => new ObjectId(id),
-  );
+  const facet = sendFacet ?? { totals: [], daily: [], byBlast: [] };
+  const totalRow = facet.totals[0];
+  const byBlast = facet.byBlast;
+
+  const blastIds = byBlast.map((row) => row._id);
   const blasts = blastIds.length
     ? await db
         .collection<CampaignBlastDoc>("campaign_blasts")
-        .find({ _id: { $in: blastIds }, projectId })
+        .find(
+          { _id: { $in: blastIds }, projectId },
+          { projection: { name: 1, kind: 1, campaignId: 1 } },
+        )
         .toArray()
     : [];
   const blastMap = new Map(blasts.map((blast) => [blast._id.toString(), blast]));
@@ -112,73 +297,60 @@ export async function getAnalyticsDashboard(
     contactsAdded,
     automationsCreated,
   };
+  if (totalRow) {
+    totals.delivered = totalRow.delivered;
+    totals.opens = totalRow.opens;
+    totals.clicks = totalRow.clicks;
+    totals.unsubscribed = totalRow.unsubscribed;
+  }
+
   const byKind = { drip: emptyKind(), oneone: emptyKind() };
   const dailyMap = new Map<string, AnalyticsDailyPoint>();
   for (const day of eachDay(from, to)) {
     dailyMap.set(day, { date: day, delivered: 0, opens: 0, clicks: 0 });
   }
+  for (const point of facet.daily) {
+    if (!point._id) {
+      continue;
+    }
+    dailyMap.set(point._id, {
+      date: point._id,
+      delivered: point.delivered,
+      opens: point.opens,
+      clicks: point.clicks,
+    });
+  }
 
   const campaignMap = new Map<string, AnalyticsCampaignRow>();
-
-  for (const send of sends) {
-    const blast = blastMap.get(send.blastId.toString());
+  for (const row of byBlast) {
+    const blast = blastMap.get(row._id.toString());
     const kind = blast?.kind === "oneone" ? "oneone" : "drip";
-    const opened = wasOpened(send);
-    const clicked = wasClicked(send);
-    const unsubscribed = Boolean(send.unsubscribedAt);
-    totals.delivered += 1;
-    byKind[kind].delivered += 1;
-    if (opened) {
-      totals.opens += 1;
-      byKind[kind].opens += 1;
-    }
-    if (clicked) {
-      totals.clicks += 1;
-      byKind[kind].clicks += 1;
-    }
-    if (unsubscribed) {
-      totals.unsubscribed += 1;
-      byKind[kind].unsubscribed += 1;
-    }
+    byKind[kind].delivered += row.delivered;
+    byKind[kind].opens += row.opens;
+    byKind[kind].clicks += row.clicks;
+    byKind[kind].unsubscribed += row.unsubscribed;
 
-    const sentDay = send.sentAt ? dayKey(send.sentAt) : "";
-    const point = sentDay ? dailyMap.get(sentDay) : undefined;
-    if (point) {
-      point.delivered += 1;
-      if (opened) {
-        point.opens += 1;
-      }
-      if (clicked) {
-        point.clicks += 1;
-      }
-    }
-
-    const key = `${kind}:${blast?.campaignId ?? send.campaignId}`;
+    const campaignId = blast?.campaignId ?? row.campaignId;
+    const key = `${kind}:${campaignId}`;
+    const sentAt = row.sentAt?.toISOString();
     const existing = campaignMap.get(key);
-    const sentAt = send.sentAt?.toISOString();
     if (!existing) {
       campaignMap.set(key, {
-        id: send.blastId.toString(),
-        campaignId: blast?.campaignId ?? send.campaignId,
-        name: blast?.name || `Campaign ${send.campaignId}`,
+        id: row._id.toString(),
+        campaignId,
+        name: blast?.name || `Campaign ${campaignId}`,
         kind,
         sentAt,
-        delivered: 1,
-        opens: opened ? 1 : 0,
-        clicks: clicked ? 1 : 0,
-        unsubscribed: unsubscribed ? 1 : 0,
+        delivered: row.delivered,
+        opens: row.opens,
+        clicks: row.clicks,
+        unsubscribed: row.unsubscribed,
       });
     } else {
-      existing.delivered += 1;
-      if (opened) {
-        existing.opens += 1;
-      }
-      if (clicked) {
-        existing.clicks += 1;
-      }
-      if (unsubscribed) {
-        existing.unsubscribed += 1;
-      }
+      existing.delivered += row.delivered;
+      existing.opens += row.opens;
+      existing.clicks += row.clicks;
+      existing.unsubscribed += row.unsubscribed;
       if (sentAt && (!existing.sentAt || sentAt > existing.sentAt)) {
         existing.sentAt = sentAt;
       }
@@ -190,7 +362,7 @@ export async function getAnalyticsDashboard(
   totals.dripCampaigns = campaigns.filter((item) => item.kind === "drip").length;
   totals.oneOneCampaigns = campaigns.filter((item) => item.kind === "oneone").length;
 
-  if (options?.withShareTokens && campaigns.length > 0) {
+  if (withShareTokens && campaigns.length > 0) {
     const tokens = await ensureCampaignShareTokens(
       projectId,
       campaigns.map((item) => ({ campaignId: item.campaignId, kind: item.kind })),
@@ -200,7 +372,7 @@ export async function getAnalyticsDashboard(
     }
   }
 
-  return {
+  const dashboard: AnalyticsDashboard = {
     from: fromInput,
     to: toInput,
     projectName,
@@ -214,6 +386,9 @@ export async function getAnalyticsDashboard(
     daily: [...dailyMap.values()],
     campaigns,
   };
+
+  writeDashboardCache(cacheKey, dashboard);
+  return dashboard;
 }
 
 export async function createAnalyticsShare(
@@ -225,6 +400,7 @@ export async function createAnalyticsShare(
 ) {
   analyticsRangeIso(from, to);
   const db = await getDb();
+  void ensureAnalyticsIndexes();
   const shares = db.collection<AnalyticsShareDoc>("analytics_shares");
   const candidates = await shares
     .find({ projectId, from, to })
@@ -245,9 +421,6 @@ export async function createAnalyticsShare(
     if (Object.keys(patch).length > 0) {
       await shares.updateOne({ _id: existing._id }, { $set: patch });
     }
-    await getAnalyticsDashboard(projectId, from, to, projectName, {
-      withShareTokens: true,
-    }).catch(() => undefined);
     return next;
   }
 
@@ -265,9 +438,6 @@ export async function createAnalyticsShare(
     expiresAt: analyticsShareExpiresAt(createdAt),
   };
   await shares.insertOne(doc);
-  await getAnalyticsDashboard(projectId, from, to, projectName, {
-    withShareTokens: true,
-  }).catch(() => undefined);
   return doc;
 }
 

@@ -310,40 +310,47 @@ export function AnalyticsDashboardView({
                       : "";
                   const name =
                     variant === "portal" ? (
-                      <Link href={portalCampaignRoute(campaign.campaignId, campaign.kind)}>
-                        {campaign.name}
+                      <Link
+                        href={portalCampaignRoute(campaign.campaignId, campaign.kind)}
+                        title={campaign.name}
+                      >
+                        <span className="an-campaign-name">{campaign.name}</span>
                       </Link>
                     ) : publicHref ? (
-                      <Link href={publicHref}>
-                        {campaign.name}
+                      <Link href={publicHref} title={campaign.name}>
+                        <span className="an-campaign-name">{campaign.name}</span>
                         <span className="an-view-report">View report</span>
                       </Link>
                     ) : (
-                      campaign.name
+                      <span className="an-campaign-name" title={campaign.name}>
+                        {campaign.name}
+                      </span>
                     );
                   return (
                     <tr key={`${campaign.kind}-${campaign.campaignId}`}>
-                      <td className="name-cell">{name}</td>
-                      <td>
+                      <td className="name-cell" data-label="Campaign">
+                        {name}
+                      </td>
+                      <td data-label="Type">
                         <span className={`an-kind-tag ${campaign.kind}`}>
                           {kindLabel(campaign.kind)}
                         </span>
                       </td>
-                      <td>{formatSentAt(campaign.sentAt)}</td>
-                      <td>{formatInt(campaign.delivered)}</td>
-                      <td>
+                      <td data-label="Last sent">{formatSentAt(campaign.sentAt)}</td>
+                      <td data-label="Delivered">{formatInt(campaign.delivered)}</td>
+                      <td data-label="Opens">
                         {formatInt(campaign.opens)}
                         <span className="an-muted">
                           {formatPercent(campaign.opens, campaign.delivered)}
                         </span>
                       </td>
-                      <td>
+                      <td data-label="Clicks">
                         {formatInt(campaign.clicks)}
                         <span className="an-muted">
                           {formatPercent(campaign.clicks, campaign.delivered)}
                         </span>
                       </td>
-                      <td>
+                      <td data-label="Unsub">
                         {formatInt(campaign.unsubscribed)}
                         <span className="an-muted">
                           {formatPercent(campaign.unsubscribed, campaign.delivered)}
@@ -402,8 +409,8 @@ export function PortalAnalyticsPage() {
         ) {
           return;
         }
-        setDashboard(null);
         setError(err instanceof Error ? err.message : "Failed to load analytics");
+        setDashboard((current) => current);
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);

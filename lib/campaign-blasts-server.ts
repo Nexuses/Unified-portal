@@ -155,7 +155,73 @@ export type CampaignReport = {
 };
 
 const SEND_BATCH = 25;
+/** Resend default is 10 req/sec; stay under that with headroom for other API calls. */
+const RESEND_SEND_BATCH = 8;
+const RESEND_MIN_GAP_MS = 150;
 const LOCKED_SEQUENCE_AT = new Date("2099-01-01T00:00:00.000Z");
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isResendRateLimitError(message: string) {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("rate_limit_exceeded") ||
+    lower.includes("too many requests") ||
+    (lower.includes("429") && lower.includes("rate"))
+  );
+}
+
+async function isResendCampaignSender(projectId: ObjectId, senderId: string) {
+  if (!ObjectId.isValid(senderId)) {
+    return false;
+  }
+  const db = await getDb();
+  const sender = await db.collection<SenderDoc>("smtp_senders").findOne(
+    { _id: new ObjectId(senderId), projectId },
+    { projection: { provider: 1 } },
+  );
+  return sender?.provider === "resend";
+}
+
+let marketingIndexesPromise: Promise<void> | null = null;
+
+export async function ensureMarketingQueryIndexes() {
+  if (!marketingIndexesPromise) {
+    marketingIndexesPromise = (async () => {
+      const db = await getDb();
+      await Promise.all([
+        db.collection("campaign_blasts").createIndex(
+          { projectId: 1, status: 1, scheduledFor: 1 },
+          { name: "blasts_project_status_scheduled", background: true },
+        ),
+        db.collection("campaign_blasts").createIndex(
+          { projectId: 1, campaignId: 1, kind: 1 },
+          { name: "blasts_project_campaign_kind", background: true },
+        ),
+        db.collection("drip_campaigns").createIndex(
+          { projectId: 1, kind: 1, createdAt: -1 },
+          { name: "drip_project_kind_created", background: true },
+        ),
+        db.collection("drip_campaigns").createIndex(
+          { projectId: 1, campaignId: 1, kind: 1 },
+          { name: "drip_project_campaign_kind", background: true },
+        ),
+        db.collection("automations").createIndex(
+          { projectId: 1, updatedAt: -1 },
+          { name: "automations_project_updated", background: true },
+        ),
+      ]);
+    })().catch((error) => {
+      marketingIndexesPromise = null;
+      console.error("Failed to ensure marketing indexes:", error);
+    });
+  }
+  await marketingIndexesPromise;
+}
 
 function blastKindFilter(kind?: string): Record<string, unknown> {
   if (kind === "oneone") {
@@ -658,6 +724,10 @@ async function sendPendingBatch(
   const db = await getDb();
   const now = new Date();
   const oneOne = blast.kind === "oneone";
+  const resendSender = await isResendCampaignSender(blast.projectId, blast.senderId);
+  if (resendSender) {
+    limit = Math.min(limit, RESEND_SEND_BATCH);
+  }
   if (
     oneOne &&
     !isWithinSendWindow(now, blast.timezone || "Asia/Kolkata", blast.windowStart, blast.windowEnd)
@@ -785,6 +855,7 @@ async function sendPendingBatch(
 
   const suppressed = await getSuppressionSets(blast.projectId);
   let lastSuccessAt: Date | null = null;
+  let sentInBatch = 0;
 
   for (const send of pending) {
     if (isSuppressedAddress(send.email, suppressed)) {
@@ -814,6 +885,10 @@ async function sendPendingBatch(
       }
     }
 
+    if (resendSender && sentInBatch > 0) {
+      await sleep(RESEND_MIN_GAP_MS);
+    }
+
     try {
       const content = sequenceContent(blast, send);
       const personalized = applyContactVariables(content.html, send, true);
@@ -833,6 +908,7 @@ async function sendPendingBatch(
       });
       const sentAt = new Date();
       lastSuccessAt = sentAt;
+      sentInBatch += 1;
       const messageId = mailResult?.messageId;
       await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
         { _id: send._id },
@@ -872,6 +948,36 @@ async function sendPendingBatch(
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Send failed";
+
+      // Resend rate limits are temporary — re-queue instead of counting as bounce.
+      if (resendSender && isResendRateLimitError(message)) {
+        const retryAt = new Date(Date.now() + 2_000);
+        await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
+          { _id: send._id },
+          {
+            $set: {
+              status: "pending",
+              availableAt: retryAt,
+            },
+            $unset: { claimedAt: "", error: "" },
+          },
+        );
+        // Put remaining claimed rows back so this tick stops hammering Resend.
+        const remainingIds = pending
+          .slice(pending.indexOf(send) + 1)
+          .map((item) => item._id);
+        if (remainingIds.length > 0) {
+          await db.collection<CampaignSendDoc>("campaign_sends").updateMany(
+            { _id: { $in: remainingIds }, status: "sending" },
+            {
+              $set: { status: "pending", availableAt: retryAt },
+              $unset: { claimedAt: "" },
+            },
+          );
+        }
+        break;
+      }
+
       await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
         { _id: send._id },
         {
@@ -1188,15 +1294,52 @@ export async function processDueCampaignBlasts(
     reports.push(...(await reportsFromBlasts([latest])));
   }
 
-  const rest = await db
-    .collection<CampaignBlastDoc>("campaign_blasts")
-    .find({
-      projectId,
-      _id: { $nin: due.map((blast) => blast._id) },
-    })
-    .toArray();
+  // Only return blasts that were processed — callers refresh lists separately.
+  // Avoid reloading every project blast (including full HTML) on each tick.
+  return reports;
+}
 
-  return [...reports, ...(await reportsFromBlasts(rest))];
+const BLAST_LIST_PROJECTION = {
+  html: 0,
+} as const;
+
+export async function getProjectCampaignReports(
+  projectId: ObjectId,
+  kind?: "drip" | "oneone",
+) {
+  const db = await getDb();
+  void ensureMarketingQueryIndexes();
+  const docs = await db
+    .collection<CampaignBlastDoc>("campaign_blasts")
+    .find(
+      { projectId, ...blastKindFilter(kind) },
+      { projection: BLAST_LIST_PROJECTION },
+    )
+    .toArray();
+  return reportsFromBlasts(
+    docs.map((doc) => ({ ...doc, html: doc.html ?? "" })),
+  );
+}
+
+export async function getCampaignReport(
+  projectId: ObjectId,
+  campaignId: string,
+  kind?: "drip" | "oneone",
+  options?: { refresh?: boolean },
+) {
+  const db = await getDb();
+  const doc = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+    projectId,
+    campaignId,
+    ...blastKindFilter(kind),
+  });
+  if (!doc) {
+    return null;
+  }
+  const refreshed =
+    options?.refresh === false ? doc : ((await refreshBlastCounts(doc._id)) ?? doc);
+  const [report] = await reportsFromBlasts([refreshed]);
+  return report;
 }
 
 export async function pauseCampaignBlast(
@@ -1269,34 +1412,6 @@ export async function resumeCampaignBlast(
   );
 
   return nextStatus;
-}
-
-export async function getProjectCampaignReports(projectId: ObjectId) {
-  const db = await getDb();
-  const docs = await db
-    .collection<CampaignBlastDoc>("campaign_blasts")
-    .find({ projectId })
-    .toArray();
-  return reportsFromBlasts(docs);
-}
-
-export async function getCampaignReport(
-  projectId: ObjectId,
-  campaignId: string,
-  kind?: "drip" | "oneone",
-) {
-  const db = await getDb();
-  const doc = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
-    projectId,
-    campaignId,
-    ...blastKindFilter(kind),
-  });
-  if (!doc) {
-    return null;
-  }
-  const refreshed = (await refreshBlastCounts(doc._id)) ?? doc;
-  const [report] = await reportsFromBlasts([refreshed]);
-  return report;
 }
 
 /** Ignore open beacons in the first 25s after send (filters most bots). */

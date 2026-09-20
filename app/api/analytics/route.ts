@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
       session.projectName,
     );
     return NextResponse.json(dashboard, {
-      headers: { "Cache-Control": "no-store" },
+      headers: { "Cache-Control": "private, max-age=30" },
     });
   } catch (error) {
     if (error instanceof AnalyticsRangeError) {

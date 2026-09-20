@@ -676,6 +676,12 @@ async function sendWithResend(
 
   if (!response.ok) {
     const detail = await response.text();
+    if (response.status === 429) {
+      throw new Error(
+        detail ||
+          "Resend rate limit exceeded (too many requests). Retrying shortly.",
+      );
+    }
     throw new Error(detail || "Resend rejected the test email.");
   }
 }

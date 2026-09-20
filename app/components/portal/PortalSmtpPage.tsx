@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_TRACKING_HOST,
   trackingDnsRecords,
@@ -293,7 +293,29 @@ export default function PortalSmtpPage() {
   const [trackingSaving, setTrackingSaving] = useState(false);
   const [trackingVerifying, setTrackingVerifying] = useState(false);
   const [trackingError, setTrackingError] = useState("");
+  const [page, setPage] = useState(1);
+  const pageSize = 15;
   const autoVerifiedRef = useRef<Set<string>>(new Set());
+
+  const totalPages = Math.max(1, Math.ceil(senders.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageSenders = useMemo(
+    () =>
+      senders.slice(
+        (currentPage - 1) * pageSize,
+        currentPage * pageSize,
+      ),
+    [senders, currentPage, pageSize],
+  );
+  const rangeStart =
+    senders.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const rangeEnd = Math.min(currentPage * pageSize, senders.length);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
 
   useEffect(() => {
     if (!menuOpenId) {
@@ -717,7 +739,7 @@ export default function PortalSmtpPage() {
           </div>
         ) : (
           <div className="vs-list">
-            {senders.map((sender) => {
+            {pageSenders.map((sender) => {
               const expanded = isExpanded(sender.id);
               const menuOpen = menuOpenId === sender.id;
               const verified = isSenderVerified(sender);
@@ -893,6 +915,47 @@ export default function PortalSmtpPage() {
             })}
           </div>
         )}
+        {!loading && senders.length > 0 ? (
+          <div className="drip-pagination">
+            <span className="drip-page-range">
+              {rangeStart}-{rangeEnd} of {senders.length}
+            </span>
+            <div className="drip-page-controls">
+              <select
+                value={currentPage}
+                onChange={(event) => setPage(Number(event.target.value))}
+                aria-label="Page"
+              >
+                {Array.from({ length: totalPages }, (_, index) => (
+                  <option key={index + 1} value={index + 1}>
+                    {index + 1}
+                  </option>
+                ))}
+              </select>
+              <span>of {totalPages} pages</span>
+              <button
+                type="button"
+                className="drip-page-arrow"
+                disabled={currentPage <= 1}
+                onClick={() => setPage((value) => Math.max(1, value - 1))}
+                aria-label="Previous page"
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                className="drip-page-arrow"
+                disabled={currentPage >= totalPages}
+                onClick={() =>
+                  setPage((value) => Math.min(totalPages, value + 1))
+                }
+                aria-label="Next page"
+              >
+                ›
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {modalOpen ? (

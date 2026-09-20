@@ -129,16 +129,23 @@ export default function PortalDripPage({
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [pausingId, setPausingId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const campaignsRef = useRef(campaigns);
+  campaignsRef.current = campaigns;
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
         const next = await fetchDripCampaigns(kind);
-        const tagged = await ensureAutomationCampaignTags(next, kind);
         if (!cancelled) {
-          setCampaigns(tagged);
+          setCampaigns(next);
         }
+        // Tag sync in background — don't block first paint.
+        void ensureAutomationCampaignTags(next, kind).then((tagged) => {
+          if (!cancelled) {
+            setCampaigns(tagged);
+          }
+        });
       } catch {
         if (!cancelled) {
           setCampaigns([]);
@@ -171,7 +178,15 @@ export default function PortalDripPage({
     let cancelled = false;
     async function syncStats() {
       try {
-        await fetch("/api/campaigns/process-due", { method: "POST" });
+        const hasActive = campaignsRef.current.some(
+          (campaign) =>
+            campaign.status === "sending" || campaign.status === "scheduled",
+        );
+        if (hasActive) {
+          await fetch("/api/campaigns/process-due", { method: "POST" }).catch(
+            () => undefined,
+          );
+        }
         const next = await fetchDripCampaigns(kind);
         if (!cancelled) {
           setCampaigns(next);
@@ -184,7 +199,7 @@ export default function PortalDripPage({
     void syncStats();
     const timer = window.setInterval(() => {
       void syncStats();
-    }, 3000);
+    }, 8000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -229,7 +244,7 @@ export default function PortalDripPage({
     });
   }, [campaigns, search, statusFilter]);
 
-  const pageSize = 25;
+  const pageSize = 10;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, totalPages);
   const pageItems = filtered.slice(
@@ -686,33 +701,6 @@ export default function PortalDripPage({
                           </span>
                         ) : null}
                       </div>
-                      {canPauseOrResume(campaign) ? (
-                        <button
-                          type="button"
-                          className={`drip-row-pause-btn${
-                            campaign.status === "paused" ? " resume" : ""
-                          }`}
-                          disabled={
-                            deletingId !== null ||
-                            duplicatingId === campaign.id ||
-                            pausingId === campaign.id
-                          }
-                          onClick={() => void handlePauseToggle(campaign)}
-                        >
-                          {campaign.status === "paused" ? (
-                            <ResumeIcon />
-                          ) : (
-                            <PauseIcon />
-                          )}
-                          {pausingId === campaign.id
-                            ? campaign.status === "paused"
-                              ? "Resuming…"
-                              : "Pausing…"
-                            : campaign.status === "paused"
-                              ? "Resume"
-                              : "Pause"}
-                        </button>
-                      ) : null}
                       <div
                         className="drip-more-wrap"
                         ref={openMenuId === campaign.id ? menuRef : undefined}

@@ -151,7 +151,7 @@ function escapeHtml(value: string) {
 }
 
 function plainTextToHtml(body: string) {
-  return `<div style="font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;white-space:pre-wrap;">${escapeHtml(body)}</div>`;
+  return `<div style="white-space:pre-wrap;line-height:1.5;">${escapeHtml(body)}</div>`;
 }
 
 function stripTagsToText(html: string) {
@@ -180,6 +180,7 @@ function sanitizeReplyHtml(html: string) {
     .replace(/<object[\s\S]*?<\/object>/gi, "")
     .replace(/<embed[\s\S]*?>/gi, "")
     .replace(/<form[\s\S]*?<\/form>/gi, "")
+    .replace(/<hr\b[^>]*>/gi, "")
     .replace(/\son[a-z]+\s*=\s*(['"]).*?\1/gi, "")
     .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, "")
     .replace(/href\s*=\s*(['"])\s*javascript:[\s\S]*?\1/gi, 'href="#"')
@@ -238,7 +239,7 @@ function normalizeReplyContent(input: { body?: string; html?: string }) {
       throw new Error("Reply cannot be empty");
     }
     return {
-      html: `<div style="font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;">${sanitized}</div>`,
+      html: sanitized,
       text: stripTagsToText(sanitized) || (/<img\b/i.test(sanitized) ? "(image)" : ""),
     };
   }

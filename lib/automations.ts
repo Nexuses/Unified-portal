@@ -52,8 +52,18 @@ export type PatchAutomationInput = {
 
 const NO_STORE = { cache: "no-store" as const };
 
-export async function fetchAutomations(): Promise<PortalAutomation[]> {
-  const response = await fetch("/api/automations", NO_STORE);
+export async function fetchAutomations(options?: {
+  nonEmptyOnly?: boolean;
+}): Promise<PortalAutomation[]> {
+  const params = new URLSearchParams();
+  if (options?.nonEmptyOnly) {
+    params.set("nonEmpty", "1");
+  }
+  const query = params.toString();
+  const response = await fetch(
+    `/api/automations${query ? `?${query}` : ""}`,
+    NO_STORE,
+  );
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(

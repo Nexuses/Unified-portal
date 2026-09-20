@@ -22,9 +22,142 @@ export async function getProjectContacts(projectId: ObjectId) {
   return db
     .collection<ContactDoc>("contacts")
     .find({ projectId })
-    .sort({ lastName: 1, firstName: 1 })
+    .sort({ lastName: 1, firstName: 1, email: 1 })
     .toArray();
 }
+
+export type ListProjectContactsOptions = {
+  page?: number;
+  pageSize?: number;
+  q?: string;
+  searchField?: "all" | "name" | "email";
+  createdAfter?: Date | string | null;
+};
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export async function listProjectContacts(
+  projectId: ObjectId,
+  options?: ListProjectContactsOptions,
+) {
+  const pageSize = Math.min(100, Math.max(1, Math.floor(options?.pageSize ?? 50)));
+  const page = Math.max(1, Math.floor(options?.page ?? 1));
+  const q = String(options?.q ?? "").trim();
+  const searchField = options?.searchField ?? "all";
+  const createdAfterRaw = options?.createdAfter;
+  const createdAfter =
+    createdAfterRaw instanceof Date
+      ? createdAfterRaw
+      : createdAfterRaw
+        ? new Date(createdAfterRaw)
+        : null;
+
+  const filter: Record<string, unknown> = { projectId };
+  if (createdAfter && !Number.isNaN(createdAfter.getTime())) {
+    filter.createdAt = { $gte: createdAfter };
+  }
+
+  if (q) {
+    const regex = { $regex: escapeRegex(q), $options: "i" };
+    if (searchField === "email") {
+      filter.email = regex;
+    } else if (searchField === "name") {
+      filter.$or = [{ firstName: regex }, { lastName: regex }];
+    } else {
+      filter.$or = [
+        { firstName: regex },
+        { lastName: regex },
+        { email: regex },
+        { companyName: regex },
+      ];
+    }
+  }
+
+  const db = await getDb();
+  const collection = db.collection<ContactDoc>("contacts");
+  const [total, docs] = await Promise.all([
+    collection.countDocuments(filter),
+    collection
+      .find(filter)
+      .sort({ lastName: 1, firstName: 1, email: 1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .toArray(),
+  ]);
+
+  return {
+    items: docs.map(mapContact),
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
+export async function listProjectListContacts(
+  projectId: ObjectId,
+  listId: ObjectId,
+  options?: { page?: number; pageSize?: number; q?: string },
+) {
+  const pageSize = Math.min(100, Math.max(1, Math.floor(options?.pageSize ?? 50)));
+  const page = Math.max(1, Math.floor(options?.page ?? 1));
+  const q = String(options?.q ?? "").trim();
+
+  const db = await getDb();
+  const memberships = await db
+    .collection<ListMembershipDoc>("list_memberships")
+    .find({ projectId, listId })
+    .project({ contactId: 1 })
+    .toArray();
+
+  const contactIds = memberships.map((item) => item.contactId);
+  if (contactIds.length === 0) {
+    return {
+      items: [],
+      total: 0,
+      page,
+      pageSize,
+      totalPages: 1,
+    };
+  }
+
+  const filter: Record<string, unknown> = {
+    projectId,
+    _id: { $in: contactIds },
+  };
+
+  if (q) {
+    const regex = { $regex: escapeRegex(q), $options: "i" };
+    filter.$or = [
+      { firstName: regex },
+      { lastName: regex },
+      { email: regex },
+      { companyName: regex },
+    ];
+  }
+
+  const collection = db.collection<ContactDoc>("contacts");
+  const [total, docs] = await Promise.all([
+    collection.countDocuments(filter),
+    collection
+      .find(filter)
+      .sort({ lastName: 1, firstName: 1, email: 1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .toArray(),
+  ]);
+
+  return {
+    items: docs.map(mapContact),
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
 
 export async function getProjectContactDetail(
   projectId: ObjectId,

@@ -1,19 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   DEFAULT_LIST_ATTRIBUTES,
   type Contact,
   type CrmList,
 } from "@/lib/crm";
-import { PORTAL_ROUTES } from "@/lib/portal-nav";
+import { PORTAL_ROUTES, portalContactRoute } from "@/lib/portal-nav";
 
 type PortalListDetailPageProps = {
   listId: string;
 };
 
 const CORE_FIELDS = new Set(["firstName", "lastName", "email", "companyName"]);
+const LIST_CONTACTS_PAGE_SIZE = 50;
 
 function emptyAttributeValues() {
   return Object.fromEntries(
@@ -21,52 +23,148 @@ function emptyAttributeValues() {
   ) as Record<string, string>;
 }
 
+function ListContactsPagination({
+  total,
+  page,
+  pageSize,
+  onPage,
+}: {
+  total: number;
+  page: number;
+  pageSize: number;
+  onPage: (next: number) => void;
+}) {
+  if (total <= pageSize) {
+    return null;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const start = (currentPage - 1) * pageSize + 1;
+  const end = Math.min(currentPage * pageSize, total);
+
+  return (
+    <div className="drip-pagination">
+      <span className="drip-page-range">
+        {start}-{end} of {total.toLocaleString()}
+      </span>
+      <div className="drip-page-controls">
+        <select
+          value={currentPage}
+          onChange={(event) => onPage(Number(event.target.value))}
+          aria-label="Page"
+        >
+          {Array.from({ length: totalPages }, (_, index) => (
+            <option key={index + 1} value={index + 1}>
+              {index + 1}
+            </option>
+          ))}
+        </select>
+        <span>of {totalPages} pages</span>
+        <button
+          type="button"
+          className="drip-page-arrow"
+          disabled={currentPage <= 1}
+          onClick={() => onPage(currentPage - 1)}
+          aria-label="Previous page"
+        >
+          ‹
+        </button>
+        <button
+          type="button"
+          className="drip-page-arrow"
+          disabled={currentPage >= totalPages}
+          onClick={() => onPage(currentPage + 1)}
+          aria-label="Next page"
+        >
+          ›
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function PortalListDetailPage({ listId }: PortalListDetailPageProps) {
   const router = useRouter();
   const [list, setList] = useState<CrmList | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
   const [error, setError] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [values, setValues] = useState<Record<string, string>>(emptyAttributeValues);
   const [modalError, setModalError] = useState("");
   const [saving, setSaving] = useState(false);
   const [successNote, setSuccessNote] = useState("");
+  const requestIdRef = useRef(0);
 
-  const loadList = useCallback(async () => {
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch]);
+
+  async function loadListPage(nextPage = page) {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/crm/lists/${listId}`);
+      const params = new URLSearchParams({
+        page: String(nextPage),
+        pageSize: String(LIST_CONTACTS_PAGE_SIZE),
+      });
+      if (debouncedSearch) {
+        params.set("q", debouncedSearch);
+      }
+      const response = await fetch(
+        `/api/crm/lists/${encodeURIComponent(listId)}?${params.toString()}`,
+      );
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || "Failed to load list");
       }
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
       setList(data.list);
-      setContacts(data.contacts);
+      setContacts(Array.isArray(data.items) ? data.items : data.contacts ?? []);
+      setTotal(Number(data.total) || 0);
+      const maxPage = Math.max(
+        1,
+        Number(data.totalPages) ||
+          Math.ceil((Number(data.total) || 0) / LIST_CONTACTS_PAGE_SIZE),
+      );
+      if (nextPage > maxPage) {
+        setPage(maxPage);
+      }
     } catch (err) {
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to load list");
+      setContacts([]);
+      setTotal(0);
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+      }
     }
-  }, [listId]);
+  }
 
   useEffect(() => {
-    void loadList();
-  }, [loadList]);
+    void loadListPage(page);
+  }, [listId, page, debouncedSearch]);
 
-  const filteredContacts = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) {
-      return contacts;
-    }
-    return contacts.filter(
-      (contact) =>
-        contact.fullName.toLowerCase().includes(query) ||
-        contact.email.toLowerCase().includes(query),
-    );
-  }, [contacts, search]);
+  const totalPages = Math.max(1, Math.ceil(total / LIST_CONTACTS_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
 
   function openAddModal() {
     setValues(emptyAttributeValues());
@@ -129,7 +227,8 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
       setModalOpen(false);
       setValues(emptyAttributeValues());
       setSuccessNote(`Added ${email} to this list.`);
-      await loadList();
+      setPage(1);
+      await loadListPage(1);
     } catch (err) {
       setModalError(err instanceof Error ? err.message : "Failed to add contact");
     } finally {
@@ -176,10 +275,7 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
       </div>
 
       <div className="crm-meta-row">
-        <div className="crm-count">
-          {loading ? "Loading..." : `${filteredContacts.length} contacts`}
-        </div>
-        <div className="crm-meta-right">
+        <div className="crm-meta-right" style={{ marginLeft: "auto" }}>
           <div className="search-input">
             <svg
               viewBox="0 0 24 24"
@@ -192,7 +288,7 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
             </svg>
             <input
               type="search"
-              placeholder="Search"
+              placeholder="Search by name or email"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               className="lists-search-input"
@@ -204,41 +300,61 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
       {error ? <div className="crm-error">{error}</div> : null}
       {successNote ? <div className="crm-summary">{successNote}</div> : null}
 
+      <ListContactsPagination
+        total={total}
+        page={currentPage}
+        pageSize={LIST_CONTACTS_PAGE_SIZE}
+        onPage={setPage}
+      />
+
       <div className="data-table-wrap">
-        <table className="data-table">
+        <table className="data-table contacts-table list-contacts-table">
           <thead>
             <tr>
               <th className="chk">
-                <input type="checkbox" readOnly />
+                <input type="checkbox" disabled aria-label="Select all" />
               </th>
-              <th>Contact</th>
-              <th>Subscribed</th>
-              <th>Email</th>
-              <th>Company</th>
+              <th className="contact-name-cell">Contact</th>
+              <th className="contact-subscribed-cell">Subscribed</th>
+              <th className="contact-email-cell">Email</th>
+              <th className="contact-company-cell">Company</th>
             </tr>
           </thead>
           <tbody>
-            {loading ? (
+            {loading && contacts.length === 0 ? (
               <tr>
                 <td colSpan={5} className="crm-empty">
                   Loading list contacts...
                 </td>
               </tr>
-            ) : filteredContacts.length === 0 ? (
+            ) : total === 0 ? (
               <tr>
                 <td colSpan={5} className="crm-empty">
-                  No contacts in this list yet. Click Add contact to add one
-                  manually.
+                  {debouncedSearch
+                    ? "No contacts match that search."
+                    : "No contacts in this list yet. Click Add contact to add one manually."}
                 </td>
               </tr>
             ) : (
-              filteredContacts.map((contact) => (
+              contacts.map((contact) => (
                 <tr key={contact.id}>
                   <td className="chk">
-                    <input type="checkbox" readOnly />
+                    <input
+                      type="checkbox"
+                      disabled
+                      aria-label={`Select ${contact.fullName}`}
+                    />
                   </td>
-                  <td>{contact.fullName}</td>
-                  <td>
+                  <td className="contact-name-cell">
+                    <Link
+                      href={portalContactRoute(contact.id)}
+                      className="contact-table-link"
+                      title={contact.fullName}
+                    >
+                      {contact.fullName}
+                    </Link>
+                  </td>
+                  <td className="contact-subscribed-cell">
                     {contact.subscribed ? (
                       <span className="sub-badge">
                         <svg
@@ -252,15 +368,30 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
                         </svg>
                         Email
                       </span>
-                    ) : null}
+                    ) : (
+                      <span className="contact-empty-dash">—</span>
+                    )}
                   </td>
-                  <td className="email-cell">{contact.email}</td>
-                  <td>{contact.companyName || "—"}</td>
+                  <td className="contact-email-cell email-cell" title={contact.email}>
+                    <span className="contact-email-text">{contact.email}</span>
+                  </td>
+                  <td className="contact-company-cell" title={contact.companyName || undefined}>
+                    <span className="contact-company-text">{contact.companyName || "—"}</span>
+                  </td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
+      </div>
+
+      <div className="crm-contacts-pager-bottom">
+        <ListContactsPagination
+          total={total}
+          page={currentPage}
+          pageSize={LIST_CONTACTS_PAGE_SIZE}
+          onPage={setPage}
+        />
       </div>
 
       {modalOpen ? (
