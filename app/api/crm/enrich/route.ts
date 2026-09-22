@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     }
 
     const page = Math.max(1, Number(body.page ?? 1) || 1);
-    const limit = Math.min(100, Math.max(1, Number(body.limit ?? 50) || 50));
+    const limit = Math.min(1000, Math.max(1, Number(body.limit ?? 200) || 200));
     const result = await searchEnrichPeople(filters, { page, limit });
 
     return NextResponse.json({
@@ -60,6 +60,7 @@ export async function POST(request: NextRequest) {
       limit: result.limit,
       total: result.total,
       matched: result.matched,
+      scanned: result.scanned,
       q: result.q,
       records: result.records,
     });

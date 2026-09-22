@@ -10,6 +10,7 @@ import {
   slugifyAttributeKey,
   type ListAttributeDef,
 } from "@/lib/crm";
+import { createListWithChunkedImport } from "@/lib/crm-client-import";
 import {
   downloadCsv,
   guessHeaderMapping,
@@ -109,6 +110,7 @@ export default function PortalCreateListPage() {
   );
   const [dragOver, setDragOver] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importProgress, setImportProgress] = useState("");
   const [error, setError] = useState("");
   const [confirmRows, setConfirmRows] = useState<ImportRow[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -210,20 +212,31 @@ export default function PortalCreateListPage() {
 
     void (async () => {
       try {
-        const response = await fetch("/api/crm/contacts/lookup-lists", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ emails: uniqueEmails }),
-        });
-        const data = await response.json();
-        if (cancelled || !response.ok) {
+        const matchMap = new Map<string, ExistingListRef[]>();
+        const LOOKUP_CHUNK = 500;
+        for (let index = 0; index < uniqueEmails.length; index += LOOKUP_CHUNK) {
+          if (cancelled) {
+            return;
+          }
+          const emailChunk = uniqueEmails.slice(index, index + LOOKUP_CHUNK);
+          const response = await fetch("/api/crm/contacts/lookup-lists", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ emails: emailChunk }),
+          });
+          const data = await response.json();
+          if (cancelled || !response.ok) {
+            return;
+          }
+          for (const match of (data.matches as
+            | Array<{ email: string; lists: ExistingListRef[] }>
+            | undefined) ?? []) {
+            matchMap.set(match.email.toLowerCase(), match.lists);
+          }
+        }
+        if (cancelled) {
           return;
         }
-        const matchMap = new Map<string, ExistingListRef[]>(
-          (data.matches as Array<{ email: string; lists: ExistingListRef[] }> | undefined)?.map(
-            (match) => [match.email.toLowerCase(), match.lists],
-          ) ?? [],
-        );
         setConfirmRows((current) =>
           current.map((row) => ({
             ...row,
@@ -402,29 +415,30 @@ export default function PortalCreateListPage() {
 
     setSaving(true);
     setError("");
+    setImportProgress("Creating list…");
     try {
-      const response = await fetch("/api/crm/lists", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: listName.trim(),
-          contacts: importableRows.map((row) => ({
-            firstName: row.firstName,
-            lastName: row.lastName,
-            email: row.email,
-            companyName: row.companyName,
-            attributes: row.attributes,
-          })),
-          importFileName,
-        }),
+      const { list } = await createListWithChunkedImport({
+        name: listName.trim(),
+        importFileName,
+        contacts: importableRows.map((row) => ({
+          firstName: row.firstName,
+          lastName: row.lastName,
+          email: row.email,
+          companyName: row.companyName,
+          attributes: row.attributes,
+        })),
+        onProgress: ({ phase, done, total }) => {
+          if (phase === "create") {
+            setImportProgress("Creating list…");
+            return;
+          }
+          setImportProgress(
+            `Importing ${Math.min(done, total).toLocaleString()} / ${total.toLocaleString()} contacts…`,
+          );
+        },
       });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to create list");
-      }
-      const listId = data.list?.id as string | undefined;
-      if (listId) {
-        router.push(portalListRoute(listId));
+      if (list?.id) {
+        router.push(portalListRoute(list.id));
         return;
       }
       router.push(PORTAL_ROUTES.lists);
@@ -432,6 +446,7 @@ export default function PortalCreateListPage() {
       setError(err instanceof Error ? err.message : "Failed to create list");
     } finally {
       setSaving(false);
+      setImportProgress("");
     }
   }
 
@@ -905,8 +920,8 @@ export default function PortalCreateListPage() {
               disabled={saving || importableRows.length === 0}
             >
               {saving
-                ? "Importing…"
-                : `Create list & import (${importableRows.length})`}
+                ? importProgress || "Importing…"
+                : `Create list & import (${importableRows.length.toLocaleString()})`}
             </button>
           </div>
         </div>

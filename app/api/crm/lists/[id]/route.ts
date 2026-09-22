@@ -9,6 +9,9 @@ import {
   requirePortalSession,
 } from "@/lib/require-portal-session";
 
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
 type RouteContext = {
   params: Promise<{ id: string }>;
 };

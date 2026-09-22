@@ -74,6 +74,14 @@ export type CrmContactInput = {
   attributes?: Record<string, string>;
 };
 
+export type ImportSummary = {
+  imported: number;
+  skipped: number;
+  companiesCreated: number;
+  contactsCreated: number;
+  contactsUpdated: number;
+};
+
 export type Contact = {
   id: string;
   firstName: string;

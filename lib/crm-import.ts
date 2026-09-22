@@ -4,6 +4,7 @@ import type {
   CompanyDoc,
   ContactDoc,
   CrmContactInput,
+  ImportSummary,
   ListDoc,
   ListMembershipDoc,
 } from "@/lib/crm";
@@ -15,13 +16,10 @@ type ImportContext = {
   userId: ObjectId | null;
 };
 
-export type ImportSummary = {
-  imported: number;
-  skipped: number;
-  companiesCreated: number;
-  contactsCreated: number;
-  contactsUpdated: number;
-};
+export type { ImportSummary };
+
+const EMAIL_LOOKUP_CHUNK = 800;
+const WRITE_CHUNK = 500;
 
 async function getNextListDisplayId(projectId: ObjectId) {
   const db = await getDb();
@@ -61,45 +59,91 @@ export async function createList(
   return { ...doc, _id: result.insertedId };
 }
 
-async function upsertCompany(
+function chunkArray<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function ensureCompanies(
   projectId: ObjectId,
-  companyName: string,
-  cache: Map<string, ObjectId>,
-) {
-  const trimmed = companyName.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const key = normalizeCompanyKey(trimmed);
-  const cached = cache.get(key);
-  if (cached) {
-    return cached;
-  }
-
+  companyNames: string[],
+): Promise<{ byKey: Map<string, ObjectId>; created: number }> {
   const db = await getDb();
-  const existing = await db.collection<CompanyDoc>("companies").findOne({
-    projectId,
-    nameKey: key,
-  });
-
-  if (existing) {
-    cache.set(key, existing._id);
-    return existing._id;
+  const unique = new Map<string, string>();
+  for (const name of companyNames) {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const key = normalizeCompanyKey(trimmed);
+    if (!unique.has(key)) {
+      unique.set(key, trimmed);
+    }
   }
 
-  const now = new Date();
-  const result = await db.collection("companies").insertOne({
-    projectId,
-    name: trimmed,
-    nameKey: key,
-    contactCount: 0,
-    createdAt: now,
-    updatedAt: now,
-  });
+  const byKey = new Map<string, ObjectId>();
+  if (unique.size === 0) {
+    return { byKey, created: 0 };
+  }
 
-  cache.set(key, result.insertedId);
-  return result.insertedId;
+  const keys = [...unique.keys()];
+  for (const keyChunk of chunkArray(keys, EMAIL_LOOKUP_CHUNK)) {
+    const existing = await db
+      .collection<CompanyDoc>("companies")
+      .find({ projectId, nameKey: { $in: keyChunk } })
+      .project({ _id: 1, nameKey: 1 })
+      .toArray();
+    for (const company of existing) {
+      byKey.set(company.nameKey, company._id);
+    }
+  }
+
+  const missing = keys.filter((key) => !byKey.has(key));
+  let created = 0;
+  const now = new Date();
+  for (const missingChunk of chunkArray(missing, WRITE_CHUNK)) {
+    if (missingChunk.length === 0) {
+      continue;
+    }
+    const docs: Array<Omit<CompanyDoc, "_id">> = missingChunk.map((key) => ({
+      projectId,
+      name: unique.get(key) ?? key,
+      nameKey: key,
+      contactCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    try {
+      const result = await db.collection("companies").insertMany(docs, {
+        ordered: false,
+      });
+      for (const [index, id] of Object.entries(result.insertedIds)) {
+        byKey.set(missingChunk[Number(index)], id);
+        created += 1;
+      }
+    } catch (error) {
+      // Parallel uploads can race on unique nameKey — reload missing keys.
+      const raced = await db
+        .collection<CompanyDoc>("companies")
+        .find({ projectId, nameKey: { $in: missingChunk } })
+        .project({ _id: 1, nameKey: 1 })
+        .toArray();
+      for (const company of raced) {
+        if (!byKey.has(company.nameKey)) {
+          byKey.set(company.nameKey, company._id);
+          created += 1;
+        }
+      }
+      if (!(error && typeof error === "object" && "code" in error)) {
+        throw error;
+      }
+    }
+  }
+
+  return { byKey, created };
 }
 
 async function refreshCompanyCounts(projectId: ObjectId, companyIds: ObjectId[]) {
@@ -108,57 +152,52 @@ async function refreshCompanyCounts(projectId: ObjectId, companyIds: ObjectId[])
   }
 
   const db = await getDb();
-  const counts = await db
-    .collection<ContactDoc>("contacts")
-    .aggregate<{ _id: ObjectId; count: number }>([
-      {
-        $match: {
-          projectId,
-          companyId: { $in: companyIds },
-        },
-      },
-      { $group: { _id: "$companyId", count: { $sum: 1 } } },
-    ])
-    .toArray();
-
-  const countMap = new Map(
-    counts.map((entry) => [entry._id.toString(), entry.count]),
-  );
-
-  await Promise.all(
-    companyIds.map((companyId) =>
-      db.collection("companies").updateOne(
-        { _id: companyId },
+  for (const idChunk of chunkArray(companyIds, EMAIL_LOOKUP_CHUNK)) {
+    const counts = await db
+      .collection<ContactDoc>("contacts")
+      .aggregate<{ _id: ObjectId; count: number }>([
         {
-          $set: {
-            contactCount: countMap.get(companyId.toString()) ?? 0,
-            updatedAt: new Date(),
+          $match: {
+            projectId,
+            companyId: { $in: idChunk },
           },
         },
+        { $group: { _id: "$companyId", count: { $sum: 1 } } },
+      ])
+      .toArray();
+
+    const countMap = new Map(
+      counts.map((entry) => [entry._id.toString(), entry.count]),
+    );
+
+    await Promise.all(
+      idChunk.map((companyId) =>
+        db.collection("companies").updateOne(
+          { _id: companyId },
+          {
+            $set: {
+              contactCount: countMap.get(companyId.toString()) ?? 0,
+              updatedAt: new Date(),
+            },
+          },
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
-export async function importContactsToList(
-  context: ImportContext,
-  rows: CrmContactInput[],
-): Promise<ImportSummary> {
-  const db = await getDb();
-  const companyCache = new Map<string, ObjectId>();
-  const affectedCompanyIds = new Set<string>();
+type NormalizedRow = {
+  firstName: string;
+  lastName: string;
+  email: string;
+  companyName: string;
+  attributes: Record<string, string>;
+};
 
-  let imported = 0;
-  let skipped = 0;
-  let companiesCreated = 0;
-  let contactsCreated = 0;
-  let contactsUpdated = 0;
-
-  const existingCompanyCount = await db
-    .collection("companies")
-    .countDocuments({ projectId: context.projectId });
-
+function normalizeRows(rows: CrmContactInput[]) {
+  const normalized: NormalizedRow[] = [];
   const seenEmails = new Set<string>();
+  let skipped = 0;
 
   for (const row of rows) {
     const firstName = row.firstName.trim();
@@ -171,104 +210,209 @@ export async function importContactsToList(
         .filter(([key, value]) => key && value),
     );
 
-    // Last Name is optional — only First Name, Email, and Company Name are required.
     if (!email || !firstName || !companyName) {
       skipped += 1;
       continue;
     }
-
     if (seenEmails.has(email)) {
       skipped += 1;
       continue;
     }
     seenEmails.add(email);
+    normalized.push({ firstName, lastName, email, companyName, attributes });
+  }
 
-    const beforeCompanies = companyCache.size;
-    const companyId = companyName
-      ? await upsertCompany(context.projectId, companyName, companyCache)
-      : null;
+  return { normalized, skipped };
+}
 
-    if (companyCache.size > beforeCompanies) {
-      companiesCreated += 1;
+/**
+ * Bulk import for large CRM uploads (thousands of rows).
+ * Uses batched lookups + bulkWrite instead of per-row round trips.
+ */
+export async function importContactsToList(
+  context: ImportContext,
+  rows: CrmContactInput[],
+): Promise<ImportSummary> {
+  const db = await getDb();
+  const { normalized, skipped: skippedInvalid } = normalizeRows(rows);
+  let skipped = skippedInvalid;
+  let contactsCreated = 0;
+  let contactsUpdated = 0;
+  let imported = 0;
+
+  if (normalized.length === 0) {
+    return {
+      imported: 0,
+      skipped,
+      companiesCreated: 0,
+      contactsCreated: 0,
+      contactsUpdated: 0,
+    };
+  }
+
+  const { byKey: companyByKey, created: companiesCreated } = await ensureCompanies(
+    context.projectId,
+    normalized.map((row) => row.companyName),
+  );
+
+  const emails = normalized.map((row) => row.email);
+  const existingByEmail = new Map<string, ContactDoc>();
+  for (const emailChunk of chunkArray(emails, EMAIL_LOOKUP_CHUNK)) {
+    const existing = await db
+      .collection<ContactDoc>("contacts")
+      .find({ projectId: context.projectId, email: { $in: emailChunk } })
+      .toArray();
+    for (const contact of existing) {
+      existingByEmail.set(contact.email.toLowerCase(), contact);
     }
+  }
 
+  const now = new Date();
+  const affectedCompanyIds = new Set<string>();
+  const membershipContactIds: ObjectId[] = [];
+  const inserts: ContactDoc[] = [];
+  const updates: Array<{
+    contactId: ObjectId;
+    firstName: string;
+    lastName: string;
+    companyId: ObjectId | null;
+    companyName: string;
+    attributes: Record<string, string>;
+  }> = [];
+
+  for (const row of normalized) {
+    const companyKey = normalizeCompanyKey(row.companyName);
+    const companyId = companyByKey.get(companyKey) ?? null;
     if (companyId) {
       affectedCompanyIds.add(companyId.toString());
     }
 
-    const now = new Date();
-    const existingContact = await db.collection<ContactDoc>("contacts").findOne({
-      projectId: context.projectId,
-      email,
-    });
-
-    let contactId: ObjectId;
-
-    if (existingContact) {
-      contactId = existingContact._id;
-      contactsUpdated += 1;
-
-      if (existingContact.blocklisted || existingContact.subscribed === false) {
+    const existing = existingByEmail.get(row.email);
+    if (existing) {
+      if (existing.blocklisted || existing.subscribed === false) {
         skipped += 1;
         continue;
       }
-
-      if (existingContact.companyId) {
-        affectedCompanyIds.add(existingContact.companyId.toString());
+      if (existing.companyId) {
+        affectedCompanyIds.add(existing.companyId.toString());
       }
-
-      await db.collection("contacts").updateOne(
-        { _id: contactId },
-        {
-          $set: {
-            firstName,
-            lastName,
-            companyId,
-            companyName,
-            attributes,
-            updatedAt: now,
-          },
-        },
-      );
-    } else {
-      const result = await db.collection("contacts").insertOne({
-        projectId: context.projectId,
-        firstName,
-        lastName,
-        email,
+      contactsUpdated += 1;
+      updates.push({
+        contactId: existing._id,
+        firstName: row.firstName,
+        lastName: row.lastName,
         companyId,
-        companyName,
-        attributes,
-        subscribed: true,
-        blocklisted: false,
-        createdBy: context.userId,
-        createdAt: now,
-        updatedAt: now,
+        companyName: row.companyName,
+        attributes: row.attributes,
       });
-      contactId = result.insertedId;
-      contactsCreated += 1;
+      membershipContactIds.push(existing._id);
+      continue;
     }
 
-    const membership = await db
-      .collection<ListMembershipDoc>("list_memberships")
-      .findOne({
-        projectId: context.projectId,
-        listId: context.listId,
-        contactId,
-      });
+    const contactId = new ObjectId();
+    inserts.push({
+      _id: contactId,
+      projectId: context.projectId,
+      firstName: row.firstName,
+      lastName: row.lastName,
+      email: row.email,
+      companyId,
+      companyName: row.companyName,
+      attributes: row.attributes,
+      subscribed: true,
+      blocklisted: false,
+      createdBy: context.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    contactsCreated += 1;
+    membershipContactIds.push(contactId);
+  }
 
-    if (!membership) {
-      await db.collection("list_memberships").insertOne({
+  for (const insertChunk of chunkArray(inserts, WRITE_CHUNK)) {
+    if (insertChunk.length === 0) {
+      continue;
+    }
+    await db.collection<ContactDoc>("contacts").insertMany(insertChunk, {
+      ordered: false,
+    });
+  }
+
+  for (const updateChunk of chunkArray(updates, WRITE_CHUNK)) {
+    if (updateChunk.length === 0) {
+      continue;
+    }
+    await db.collection<ContactDoc>("contacts").bulkWrite(
+      updateChunk.map((item) => ({
+        updateOne: {
+          filter: { _id: item.contactId },
+          update: {
+            $set: {
+              firstName: item.firstName,
+              lastName: item.lastName,
+              companyId: item.companyId,
+              companyName: item.companyName,
+              attributes: item.attributes,
+              updatedAt: now,
+            },
+          },
+        },
+      })),
+      { ordered: false },
+    );
+  }
+
+  const alreadyMember = new Set<string>();
+  for (const idChunk of chunkArray(membershipContactIds, EMAIL_LOOKUP_CHUNK)) {
+    if (idChunk.length === 0) {
+      continue;
+    }
+    const memberships = await db
+      .collection<ListMembershipDoc>("list_memberships")
+      .find({
         projectId: context.projectId,
         listId: context.listId,
-        contactId,
-        addedAt: now,
-        addedBy: context.userId,
-        source: "import",
-      });
-      imported += 1;
-    } else {
+        contactId: { $in: idChunk },
+      })
+      .project({ contactId: 1 })
+      .toArray();
+    for (const membership of memberships) {
+      alreadyMember.add(membership.contactId.toString());
+    }
+  }
+
+  const membershipDocs: ListMembershipDoc[] = [];
+  for (const contactId of membershipContactIds) {
+    if (alreadyMember.has(contactId.toString())) {
       skipped += 1;
+      continue;
+    }
+    membershipDocs.push({
+      _id: new ObjectId(),
+      projectId: context.projectId,
+      listId: context.listId,
+      contactId,
+      addedAt: now,
+      addedBy: context.userId,
+      source: "import",
+    });
+    imported += 1;
+  }
+
+  for (const membershipChunk of chunkArray(membershipDocs, WRITE_CHUNK)) {
+    if (membershipChunk.length === 0) {
+      continue;
+    }
+    try {
+      await db.collection<ListMembershipDoc>("list_memberships").insertMany(
+        membershipChunk,
+        { ordered: false },
+      );
+    } catch (error) {
+      // Duplicate membership races are safe to ignore.
+      if (!(error && typeof error === "object" && "code" in error)) {
+        throw error;
+      }
     }
   }
 
@@ -293,10 +437,6 @@ export async function importContactsToList(
     context.projectId,
     [...affectedCompanyIds].map((id) => new ObjectId(id)),
   );
-
-  if (companiesCreated === 0 && companyCache.size > existingCompanyCount) {
-    companiesCreated = companyCache.size - existingCompanyCount;
-  }
 
   return {
     imported,

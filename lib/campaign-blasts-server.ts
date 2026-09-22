@@ -1267,9 +1267,15 @@ export async function launchCampaignBlast(input: {
 export async function processDueCampaignBlasts(
   projectId: ObjectId,
   origin: string,
+  options?: { maxBatchesPerBlast?: number },
 ) {
+  void origin;
   const db = await getDb();
   const now = new Date();
+  const maxBatches = Math.max(
+    1,
+    Math.min(20, Math.floor(options?.maxBatchesPerBlast ?? 1)),
+  );
   const due = await db
     .collection<CampaignBlastDoc>("campaign_blasts")
     .find({
@@ -1290,7 +1296,24 @@ export async function processDueCampaignBlasts(
       );
       blast.status = "sending";
     }
-    const latest = (await sendPendingBatch(blast)) ?? blast;
+    let latest: CampaignBlastDoc = blast;
+    for (let batch = 0; batch < maxBatches; batch += 1) {
+      const next = (await sendPendingBatch(latest)) ?? latest;
+      latest = next;
+      if (latest.status !== "sending") {
+        break;
+      }
+      const pendingDue = await db
+        .collection<CampaignSendDoc>("campaign_sends")
+        .countDocuments({
+          blastId: latest._id,
+          status: { $in: ["pending", "sending"] },
+          $or: [{ availableAt: { $exists: false } }, { availableAt: { $lte: new Date() } }],
+        });
+      if (pendingDue === 0) {
+        break;
+      }
+    }
     reports.push(...(await reportsFromBlasts([latest])));
   }
 

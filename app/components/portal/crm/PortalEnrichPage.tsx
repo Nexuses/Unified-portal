@@ -11,13 +11,107 @@ import {
 import { useRouter } from "next/navigation";
 import {
   mapDataToolRecordToContact,
+  formatEnrichRecordField,
   ENRICH_EMPLOYEE_SIZE_LABELS,
   ENRICH_REVENUE_RANGE_LABELS,
+  ENRICH_RESULT_COLUMNS,
+  DEFAULT_ENRICH_VISIBLE_COLUMNS,
   type DataToolRecord,
+  type EnrichColumnKey,
   type EnrichOptions,
   type EnrichSearchFilters,
 } from "@/lib/datatool";
+import { createListWithChunkedImport } from "@/lib/crm-client-import";
 import { portalListRoute } from "@/lib/portal-nav";
+
+const ENRICH_HISTORY_KEY = "portal-enrich-history";
+const ENRICH_COLUMNS_KEY = "portal-enrich-columns";
+
+type EnrichHistoryEntry = {
+  id: string;
+  listName: string;
+  listId: string;
+  savedAt: string;
+  contactCount: number;
+  filtersSummary: string;
+};
+
+type ExistingListRef = {
+  id: string;
+  name: string;
+  displayId: number;
+};
+
+type DuplicateMatch = {
+  recordId: string;
+  email: string;
+  name: string;
+  lists: ExistingListRef[];
+};
+
+function loadEnrichHistory(): EnrichHistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(ENRICH_HISTORY_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as EnrichHistoryEntry[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveEnrichHistory(entries: EnrichHistoryEntry[]) {
+  try {
+    localStorage.setItem(ENRICH_HISTORY_KEY, JSON.stringify(entries.slice(0, 50)));
+  } catch {
+    // Ignore quota / private mode.
+  }
+}
+
+function loadVisibleColumns(): EnrichColumnKey[] {
+  try {
+    const raw = localStorage.getItem(ENRICH_COLUMNS_KEY);
+    if (!raw) {
+      return [...DEFAULT_ENRICH_VISIBLE_COLUMNS];
+    }
+    const parsed = JSON.parse(raw) as string[];
+    if (!Array.isArray(parsed)) {
+      return [...DEFAULT_ENRICH_VISIBLE_COLUMNS];
+    }
+    const allowed = new Set(ENRICH_RESULT_COLUMNS.map((col) => col.key));
+    const next = parsed.filter((key): key is EnrichColumnKey =>
+      allowed.has(key as EnrichColumnKey),
+    );
+    for (const col of ENRICH_RESULT_COLUMNS) {
+      if (col.alwaysOn && !next.includes(col.key)) {
+        next.unshift(col.key);
+      }
+    }
+    return next.length > 0 ? next : [...DEFAULT_ENRICH_VISIBLE_COLUMNS];
+  } catch {
+    return [...DEFAULT_ENRICH_VISIBLE_COLUMNS];
+  }
+}
+
+function summarizeFilters(filters: EnrichSearchFilters) {
+  const parts: string[] = [];
+  const push = (label: string, values?: string[]) => {
+    if (values && values.length > 0) {
+      parts.push(`${label}: ${values.slice(0, 3).join(", ")}${values.length > 3 ? "…" : ""}`);
+    }
+  };
+  push("Title", filters.titles);
+  push("Level", filters.managementLevels);
+  push("Size", filters.employeeSizes);
+  push("Industry", filters.industryKeywords);
+  push("Revenue", filters.revenueRanges);
+  push("Tech", filters.technologies);
+  push("Person", filters.personLocations);
+  push("Company", filters.companyLocations);
+  return parts.join(" · ") || "Custom enrich";
+}
 
 type FilterKey = keyof EnrichSearchFilters;
 
@@ -36,59 +130,59 @@ const WIZARD_STEPS: WizardStep[] = [
     key: "titles",
     stepLabel: "01 · Position",
     title: "Position / Job Title",
-    hint: "Only titles that exist in your Data Portal",
-    placeholder: "Search job titles…",
+    hint: "Pick from Data Portal, or type your own and press Enter",
+    placeholder: "Search or type a job title…",
   },
   {
     key: "managementLevels",
     stepLabel: "02 · Management",
     title: "Management Level",
-    hint: "Only seniority values that exist in your Data Portal",
-    placeholder: "Search management levels…",
+    hint: "Pick from Data Portal, or type your own and press Enter",
+    placeholder: "Search or type a management level…",
   },
   {
     key: "employeeSizes",
     stepLabel: "03 · Company size",
     title: "Employee Size",
-    hint: "Select one or more headcount ranges",
-    placeholder: "Search employee ranges…",
+    hint: "Select ranges, or type your own size and press Enter",
+    placeholder: "Search ranges or type your own…",
     fixedOptions: [...ENRICH_EMPLOYEE_SIZE_LABELS],
   },
   {
     key: "industryKeywords",
     stepLabel: "04 · Industry",
     title: "Industry & Keywords",
-    hint: "Only industries that exist in your Data Portal",
-    placeholder: "Search industries…",
+    hint: "Pick from Data Portal, or type your own and press Enter",
+    placeholder: "Search or type an industry…",
   },
   {
     key: "revenueRanges",
     stepLabel: "05 · Revenue",
     title: "Revenue Range",
-    hint: "Select one or more revenue ranges",
-    placeholder: "Search revenue ranges…",
+    hint: "Select ranges, or type your own revenue and press Enter",
+    placeholder: "Search ranges or type your own…",
     fixedOptions: [...ENRICH_REVENUE_RANGE_LABELS],
   },
   {
     key: "technologies",
     stepLabel: "06 · Technologies",
     title: "Technologies Used",
-    hint: "Only technologies that exist in your Data Portal",
-    placeholder: "Search technologies…",
+    hint: "Pick from Data Portal, or type your own and press Enter",
+    placeholder: "Search or type a technology…",
   },
   {
     key: "personLocations",
     stepLabel: "07 · Person location",
     title: "Person Location",
-    hint: "Only person locations that exist in your Data Portal",
-    placeholder: "Search person locations…",
+    hint: "Pick from Data Portal, or type your own and press Enter",
+    placeholder: "Search or type a person location…",
   },
   {
     key: "companyLocations",
     stepLabel: "08 · Company location",
     title: "Company / Contact Location",
-    hint: "Only company locations that exist in your Data Portal",
-    placeholder: "Search company locations…",
+    hint: "Pick from Data Portal, or type your own and press Enter",
+    placeholder: "Search or type a company location…",
   },
 ];
 
@@ -131,6 +225,7 @@ function EnrichMultiSelect({
   placeholder,
   loading,
   onSearchApi,
+  allowCustom = true,
 }: {
   options: string[];
   value: string[];
@@ -138,6 +233,7 @@ function EnrichMultiSelect({
   placeholder: string;
   loading?: boolean;
   onSearchApi?: (query: string) => void;
+  allowCustom?: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -158,7 +254,6 @@ function EnrichMultiSelect({
       return;
     }
     const trimmed = query.trim();
-    // Only hit the API once the user is actually searching.
     if (trimmed.length < 2) {
       return;
     }
@@ -168,13 +263,29 @@ function EnrichMultiSelect({
     return () => window.clearTimeout(handle);
   }, [query, onSearchApi]);
 
+  const trimmedQuery = query.trim();
+
   const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
+    const needle = trimmedQuery.toLowerCase();
     if (!needle) {
       return options;
     }
     return options.filter((option) => option.toLowerCase().includes(needle));
-  }, [options, query]);
+  }, [options, trimmedQuery]);
+
+  const canAddCustom = useMemo(() => {
+    if (!allowCustom || !trimmedQuery) {
+      return false;
+    }
+    const lower = trimmedQuery.toLowerCase();
+    if (value.some((item) => item.toLowerCase() === lower)) {
+      return false;
+    }
+    if (options.some((item) => item.toLowerCase() === lower)) {
+      return false;
+    }
+    return true;
+  }, [allowCustom, trimmedQuery, value, options]);
 
   function toggle(option: string) {
     if (value.includes(option)) {
@@ -184,11 +295,35 @@ function EnrichMultiSelect({
     onChange([...value, option]);
   }
 
+  function addCustom(raw: string) {
+    const next = raw.trim();
+    if (!next) {
+      return;
+    }
+    const lower = next.toLowerCase();
+    const existing = value.find((item) => item.toLowerCase() === lower);
+    if (existing) {
+      setQuery("");
+      return;
+    }
+    const fromOptions = options.find((item) => item.toLowerCase() === lower);
+    onChange([...value, fromOptions || next]);
+    setQuery("");
+    setOpen(true);
+  }
+
   function remove(option: string) {
     onChange(value.filter((item) => item !== option));
   }
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      if (trimmedQuery) {
+        addCustom(trimmedQuery);
+      }
+      return;
+    }
     if (event.key === "Backspace" && !query && value.length > 0) {
       onChange(value.slice(0, -1));
     }
@@ -229,19 +364,37 @@ function EnrichMultiSelect({
             }}
             onFocus={() => setOpen(true)}
             onKeyDown={onKeyDown}
-            placeholder={value.length === 0 ? placeholder : "Search more…"}
+            placeholder={
+              value.length === 0
+                ? placeholder
+                : "Type to search or add your own…"
+            }
           />
         </div>
       </div>
 
       {open ? (
         <div className="enrich-ms-menu" role="listbox" aria-multiselectable>
+          {canAddCustom ? (
+            <button
+              type="button"
+              className="enrich-ms-option enrich-ms-option-custom"
+              onClick={() => addCustom(trimmedQuery)}
+            >
+              <span className="enrich-ms-check">+</span>
+              <span>
+                Add “{trimmedQuery}”
+              </span>
+            </button>
+          ) : null}
           {loading ? (
             <div className="enrich-ms-empty">Loading options from Data Tool…</div>
           ) : filtered.length === 0 ? (
             <div className="enrich-ms-empty">
-              {query.trim()
-                ? "No matching values in Data Tool for this search."
+              {trimmedQuery
+                ? allowCustom
+                  ? "No portal match — press Enter to add your own."
+                  : "No matching values."
                 : "No values found in Data Tool yet."}
             </div>
           ) : (
@@ -275,19 +428,30 @@ export default function PortalEnrichPage() {
   const [options, setOptions] = useState<EnrichOptions>(EMPTY_OPTIONS);
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState("");
-  const [phase, setPhase] = useState<"wizard" | "results">("wizard");
+  const [phase, setPhase] = useState<"home" | "wizard" | "results">("home");
 
   const [records, setRecords] = useState<DataToolRecord[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [matched, setMatched] = useState(0);
+  const [scanned, setScanned] = useState(0);
+  const [lastQuery, setLastQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const [saveOpen, setSaveOpen] = useState(false);
   const [listName, setListName] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [selectingAll, setSelectingAll] = useState(false);
+  const [checkingDuplicates, setCheckingDuplicates] = useState(false);
+  const [duplicates, setDuplicates] = useState<DuplicateMatch[]>([]);
+  const [visibleColumns, setVisibleColumns] = useState<EnrichColumnKey[]>([
+    ...DEFAULT_ENRICH_VISIBLE_COLUMNS,
+  ]);
+  const [columnToolkitOpen, setColumnToolkitOpen] = useState(false);
+  const [history, setHistory] = useState<EnrichHistoryEntry[]>([]);
+  const columnToolkitRef = useRef<HTMLDivElement>(null);
 
   const step = WIZARD_STEPS[stepIndex];
   const selectedForStep = filters[step.key] || [];
@@ -298,8 +462,21 @@ export default function PortalEnrichPage() {
     [records, selectedIds],
   );
 
-  const allVisibleSelected =
-    records.length > 0 && records.every((record) => selectedIds.has(record.id));
+  const activeColumns = useMemo(
+    () =>
+      ENRICH_RESULT_COLUMNS.filter((column) =>
+        visibleColumns.includes(column.key),
+      ),
+    [visibleColumns],
+  );
+
+  const allResultsSelected =
+    records.length > 0 &&
+    selectedIds.size === records.length &&
+    records.every((record) => selectedIds.has(record.id));
+
+  const RESULTS_PAGE_SIZE = 200;
+  const SELECT_ALL_LIMIT = 1000;
 
   const loadOptions = useCallback(async (q?: string) => {
     setOptionsLoading(true);
@@ -382,12 +559,63 @@ export default function PortalEnrichPage() {
     void loadOptions();
   }, [loadOptions]);
 
+  useEffect(() => {
+    setHistory(loadEnrichHistory());
+    setVisibleColumns(loadVisibleColumns());
+  }, []);
+
+  useEffect(() => {
+    if (!columnToolkitOpen) {
+      return;
+    }
+    function onDocClick(event: MouseEvent) {
+      if (!columnToolkitRef.current?.contains(event.target as Node)) {
+        setColumnToolkitOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [columnToolkitOpen]);
+
   const onSearchApi = useCallback(
     (query: string) => {
       void loadOptions(query);
     },
     [loadOptions],
   );
+
+  function startNewEnrich() {
+    setPhase("wizard");
+    setStepIndex(0);
+    setFilters(EMPTY_FILTERS);
+    setRecords([]);
+    setSelectedIds(new Set());
+    setError("");
+    setSaveOpen(false);
+    setDuplicates([]);
+    setSaveError("");
+  }
+
+  function persistVisibleColumns(next: EnrichColumnKey[]) {
+    setVisibleColumns(next);
+    try {
+      localStorage.setItem(ENRICH_COLUMNS_KEY, JSON.stringify(next));
+    } catch {
+      // Ignore quota / private mode.
+    }
+  }
+
+  function toggleColumn(key: EnrichColumnKey) {
+    const meta = ENRICH_RESULT_COLUMNS.find((column) => column.key === key);
+    if (meta?.alwaysOn) {
+      return;
+    }
+    persistVisibleColumns(
+      visibleColumns.includes(key)
+        ? visibleColumns.filter((item) => item !== key)
+        : [...visibleColumns, key],
+    );
+  }
 
   function setStepValues(next: string[]) {
     setFilters((current) => ({
@@ -403,7 +631,11 @@ export default function PortalEnrichPage() {
       const response = await fetch("/api/crm/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...filters, page: nextPage, limit: 50 }),
+        body: JSON.stringify({
+          ...filters,
+          page: nextPage,
+          limit: RESULTS_PAGE_SIZE,
+        }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -416,12 +648,16 @@ export default function PortalEnrichPage() {
       setPage(Number(data.page || nextPage));
       setTotal(Number(data.total || 0));
       setMatched(Number(data.matched ?? nextRecords.length));
+      setScanned(Number(data.scanned ?? nextRecords.length));
+      setLastQuery(String(data.q || ""));
       setSelectedIds(new Set());
       setPhase("results");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
       setRecords([]);
       setSelectedIds(new Set());
+      setScanned(0);
+      setLastQuery("");
       setPhase("results");
     } finally {
       setSearching(false);
@@ -444,15 +680,50 @@ export default function PortalEnrichPage() {
     }
     if (stepIndex > 0) {
       setStepIndex((current) => current - 1);
+      return;
     }
+    setPhase("home");
   }
 
-  function toggleSelectAllVisible() {
-    if (allVisibleSelected) {
+  async function toggleSelectAllResults() {
+    if (allResultsSelected) {
       setSelectedIds(new Set());
       return;
     }
-    setSelectedIds(new Set(records.map((record) => record.id)));
+
+    setSelectingAll(true);
+    setError("");
+    try {
+      const response = await fetch("/api/crm/enrich", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...filters,
+          page: 1,
+          limit: SELECT_ALL_LIMIT,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to load all matches");
+      }
+      const nextRecords = Array.isArray(data.records)
+        ? (data.records as DataToolRecord[])
+        : [];
+      setRecords(nextRecords);
+      setPage(1);
+      setTotal(Number(data.total || 0));
+      setMatched(Number(data.matched ?? nextRecords.length));
+      setScanned(Number(data.scanned ?? nextRecords.length));
+      setLastQuery(String(data.q || ""));
+      setSelectedIds(new Set(nextRecords.map((record) => record.id)));
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to select all results",
+      );
+    } finally {
+      setSelectingAll(false);
+    }
   }
 
   function toggleOne(id: string) {
@@ -467,7 +738,28 @@ export default function PortalEnrichPage() {
     });
   }
 
-  function openSaveModal() {
+  function removeDuplicateFromSelection(recordId: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      next.delete(recordId);
+      return next;
+    });
+    setDuplicates((current) => current.filter((row) => row.recordId !== recordId));
+  }
+
+  function removeAllDuplicatesFromSelection() {
+    const dupIds = new Set(duplicates.map((row) => row.recordId));
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const id of dupIds) {
+        next.delete(id);
+      }
+      return next;
+    });
+    setDuplicates([]);
+  }
+
+  async function openSaveModal() {
     if (selectedRecords.length === 0) {
       return;
     }
@@ -477,7 +769,64 @@ export default function PortalEnrichPage() {
     });
     setListName(`Enriched ${stamp}`);
     setSaveError("");
+    setDuplicates([]);
     setSaveOpen(true);
+    setCheckingDuplicates(true);
+
+    const emails = [
+      ...new Set(
+        selectedRecords
+          .map((record) => String(record.email ?? "").trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ];
+
+    try {
+      if (emails.length === 0) {
+        return;
+      }
+      const matchMap = new Map<string, ExistingListRef[]>();
+      const LOOKUP_CHUNK = 500;
+      for (let index = 0; index < emails.length; index += LOOKUP_CHUNK) {
+        const emailChunk = emails.slice(index, index + LOOKUP_CHUNK);
+        const response = await fetch("/api/crm/contacts/lookup-lists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ emails: emailChunk }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          continue;
+        }
+        for (const match of (data.matches as
+          | Array<{ email: string; lists: ExistingListRef[] }>
+          | undefined) ?? []) {
+          matchMap.set(match.email.toLowerCase(), match.lists);
+        }
+      }
+      const nextDuplicates: DuplicateMatch[] = [];
+      for (const record of selectedRecords) {
+        const email = String(record.email ?? "").trim().toLowerCase();
+        if (!email) {
+          continue;
+        }
+        const lists = matchMap.get(email) ?? [];
+        if (lists.length === 0) {
+          continue;
+        }
+        nextDuplicates.push({
+          recordId: record.id,
+          email,
+          name: recordLabel(record),
+          lists,
+        });
+      }
+      setDuplicates(nextDuplicates);
+    } catch {
+      // Keep save usable if lookup fails.
+    } finally {
+      setCheckingDuplicates(false);
+    }
   }
 
   async function saveToList() {
@@ -499,21 +848,27 @@ export default function PortalEnrichPage() {
     setSaving(true);
     setSaveError("");
     try {
-      const response = await fetch("/api/crm/lists", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          contacts,
-          importFileName: "data-tool-enrich",
-        }),
+      const { list } = await createListWithChunkedImport({
+        name,
+        contacts,
+        importFileName: "data-tool-enrich",
       });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to save list");
+      const listId = list?.id || "";
+      if (listId) {
+        const entry: EnrichHistoryEntry = {
+          id: `${Date.now()}`,
+          listName: name,
+          listId,
+          savedAt: new Date().toISOString(),
+          contactCount: contacts.length,
+          filtersSummary: summarizeFilters(filters),
+        };
+        const nextHistory = [entry, ...history.filter((row) => row.listId !== listId)];
+        setHistory(nextHistory);
+        saveEnrichHistory(nextHistory);
       }
-      const listId = String(data.list?.id || "");
       setSaveOpen(false);
+      setDuplicates([]);
       if (listId) {
         router.push(portalListRoute(listId));
       }
@@ -524,11 +879,18 @@ export default function PortalEnrichPage() {
     }
   }
 
-  const totalPages = Math.max(1, Math.ceil(total / 50));
+  function deleteHistoryEntry(id: string) {
+    const nextHistory = history.filter((entry) => entry.id !== id);
+    setHistory(nextHistory);
+    saveEnrichHistory(nextHistory);
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / RESULTS_PAGE_SIZE));
   const hasAnyFilter = Object.values(filters).some(
     (value) => Array.isArray(value) && value.length > 0,
   );
   const isLastStep = stepIndex === WIZARD_STEPS.length - 1;
+  const remainingAfterDupRemove = selectedIds.size - duplicates.length;
 
   return (
     <div className="enrich-page">
@@ -536,11 +898,91 @@ export default function PortalEnrichPage() {
         <div>
           <h2>Enrich</h2>
           <p className="desc">
-            Step through filters from your Data Tool, multi-select values, then
-            save matches into a CRM list.
+            Search Data Tool, review matches, and save full contact details into
+            CRM lists.
           </p>
         </div>
+        {phase === "home" ? (
+          <button type="button" className="btn-dark" onClick={startNewEnrich}>
+            + Enrich
+          </button>
+        ) : null}
       </div>
+
+      {phase === "home" ? (
+        <section className="enrich-history">
+          {history.length === 0 ? (
+            <div className="enrich-empty">
+              No enrich history yet. Click <strong>+ Enrich</strong> to search
+              Data Tool and save contacts to a list.
+            </div>
+          ) : (
+            <div className="enrich-table-wrap">
+              <table className="data-table enrich-table">
+                <thead>
+                  <tr>
+                    <th>List</th>
+                    <th>Contacts</th>
+                    <th>Filters</th>
+                    <th>Saved</th>
+                    <th className="enrich-actions-col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((entry) => (
+                    <tr key={entry.id}>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn-link-purple enrich-history-link"
+                          onClick={() =>
+                            router.push(portalListRoute(entry.listId))
+                          }
+                        >
+                          {entry.listName}
+                        </button>
+                      </td>
+                      <td>{entry.contactCount.toLocaleString()}</td>
+                      <td>
+                        <span className="enrich-meta">
+                          {entry.filtersSummary}
+                        </span>
+                      </td>
+                      <td>
+                        {new Date(entry.savedAt).toLocaleString(undefined, {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </td>
+                      <td className="enrich-actions-col">
+                        <button
+                          type="button"
+                          className="btn-soft"
+                          onClick={() =>
+                            router.push(portalListRoute(entry.listId))
+                          }
+                        >
+                          Open
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-soft enrich-danger-btn"
+                          onClick={() => deleteHistoryEntry(entry.id)}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
 
       {phase === "wizard" ? (
         <section className="enrich-wizard">
@@ -590,9 +1032,9 @@ export default function PortalEnrichPage() {
                 type="button"
                 className="btn-soft"
                 onClick={goBack}
-                disabled={stepIndex === 0 || searching}
+                disabled={searching}
               >
-                Back
+                {stepIndex === 0 ? "History" : "Back"}
               </button>
               <div className="enrich-wizard-actions-right">
                 {!isLastStep ? (
@@ -621,31 +1063,72 @@ export default function PortalEnrichPage() {
             </div>
           </div>
         </section>
-      ) : (
+      ) : null}
+
+      {phase === "results" ? (
         <section className="enrich-results">
           <div className="enrich-results-head">
             <div>
               <h3>Results</h3>
               <p>
-                {matched} matched on this page
+                {matched} loaded
                 {total > 0 ? ` · ${total.toLocaleString()} in Data Tool` : ""}
-                {selectedIds.size > 0 ? ` · ${selectedIds.size} selected` : ""}
+                {selectedIds.size > 0
+                  ? ` · ${selectedIds.size} selected`
+                  : ""}
+                {selectingAll ? " · selecting all…" : ""}
               </p>
             </div>
             <div className="enrich-results-actions">
+              <div className="enrich-column-toolkit" ref={columnToolkitRef}>
+                <button
+                  type="button"
+                  className="btn-soft"
+                  onClick={() => setColumnToolkitOpen((open) => !open)}
+                  aria-expanded={columnToolkitOpen}
+                  aria-haspopup="true"
+                >
+                  Columns
+                </button>
+                {columnToolkitOpen ? (
+                  <div className="enrich-column-menu" role="menu">
+                    <div className="enrich-column-menu-head">Show columns</div>
+                    {ENRICH_RESULT_COLUMNS.map((column) => {
+                      const checked = visibleColumns.includes(column.key);
+                      return (
+                        <label
+                          key={column.key}
+                          className={`enrich-column-option${column.alwaysOn ? " locked" : ""}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={column.alwaysOn}
+                            onChange={() => toggleColumn(column.key)}
+                          />
+                          <span>{column.label}</span>
+                          {column.alwaysOn ? (
+                            <span className="enrich-column-locked">Required</span>
+                          ) : null}
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
               <button
                 type="button"
                 className="btn-soft"
                 onClick={goBack}
-                disabled={searching}
+                disabled={searching || selectingAll}
               >
                 Edit filters
               </button>
               <button
                 type="button"
                 className="btn-dark"
-                disabled={selectedIds.size === 0 || searching}
-                onClick={openSaveModal}
+                disabled={selectedIds.size === 0 || searching || selectingAll}
+                onClick={() => void openSaveModal()}
               >
                 Save to list
               </button>
@@ -656,7 +1139,17 @@ export default function PortalEnrichPage() {
 
           {records.length === 0 ? (
             <div className="enrich-empty">
-              No people matched these filters. Go back and adjust selections.
+              No people matched these filters.
+              {lastQuery ? (
+                <>
+                  {" "}
+                  Data Tool search used <code>{lastQuery}</code>
+                  {scanned > 0 ? ` and scanned ${scanned} records` : ""}.
+                </>
+              ) : scanned > 0 ? (
+                <> Scanned {scanned} records.</>
+              ) : null}{" "}
+              Try fewer filters (start with title or industry only), then narrow.
             </div>
           ) : (
             <>
@@ -667,16 +1160,18 @@ export default function PortalEnrichPage() {
                       <th className="enrich-check-col">
                         <input
                           type="checkbox"
-                          checked={allVisibleSelected}
-                          onChange={toggleSelectAllVisible}
-                          aria-label="Select all visible"
+                          checked={allResultsSelected}
+                          disabled={selectingAll || searching}
+                          onChange={() => {
+                            void toggleSelectAllResults();
+                          }}
+                          aria-label="Select all results"
+                          title="Select all matched results"
                         />
                       </th>
-                      <th>Name</th>
-                      <th>Title</th>
-                      <th>Company</th>
-                      <th>Email</th>
-                      <th>Location</th>
+                      {activeColumns.map((column) => (
+                        <th key={column.key}>{column.label}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
@@ -690,27 +1185,23 @@ export default function PortalEnrichPage() {
                             aria-label={`Select ${recordLabel(record)}`}
                           />
                         </td>
-                        <td>
-                          <div className="enrich-name">{recordLabel(record)}</div>
-                          {record.seniority ? (
-                            <div className="enrich-meta">{record.seniority}</div>
-                          ) : null}
-                        </td>
-                        <td>{record.title || "—"}</td>
-                        <td>
-                          <div>{record.company_name || "—"}</div>
-                          {record.employees ? (
-                            <div className="enrich-meta">
-                              {record.employees} employees
-                            </div>
-                          ) : null}
-                        </td>
-                        <td>{record.email || "—"}</td>
-                        <td>
-                          {record.contact_country ||
-                            record.company_country ||
-                            "—"}
-                        </td>
+                        {activeColumns.map((column) => {
+                          const value = formatEnrichRecordField(
+                            record,
+                            column.key,
+                          );
+                          return (
+                            <td key={column.key}>
+                              {column.key === "name" ? (
+                                <div className="enrich-name">
+                                  {value || "—"}
+                                </div>
+                              ) : (
+                                value || "—"
+                              )}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
                   </tbody>
@@ -743,12 +1234,19 @@ export default function PortalEnrichPage() {
             </>
           )}
         </section>
-      )}
+      ) : null}
 
       {saveOpen ? (
-        <div className="crm-modal-backdrop" onClick={() => setSaveOpen(false)}>
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => {
+            if (!saving) {
+              setSaveOpen(false);
+            }
+          }}
+        >
           <div
-            className="crm-modal"
+            className="crm-modal enrich-save-modal"
             onClick={(event) => event.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -760,7 +1258,8 @@ export default function PortalEnrichPage() {
                 <p>
                   Create a new CRM list with {selectedRecords.length} selected
                   contact
-                  {selectedRecords.length === 1 ? "" : "s"} from Data Tool.
+                  {selectedRecords.length === 1 ? "" : "s"}. All Data Tool
+                  fields are saved on each contact.
                 </p>
               </div>
               <button
@@ -785,6 +1284,71 @@ export default function PortalEnrichPage() {
                   autoFocus
                 />
               </div>
+
+              {checkingDuplicates ? (
+                <p className="enrich-dup-status">Checking for existing emails…</p>
+              ) : null}
+
+              {!checkingDuplicates && duplicates.length > 0 ? (
+                <div className="enrich-dup-panel">
+                  <div className="enrich-dup-panel-head">
+                    <div>
+                      <strong>
+                        {duplicates.length} already in your lists
+                      </strong>
+                      <p>
+                        These emails already belong to other CRM lists. Remove
+                        them before saving, or keep them to add again.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-soft enrich-danger-btn"
+                      onClick={removeAllDuplicatesFromSelection}
+                      disabled={saving}
+                    >
+                      Remove all
+                    </button>
+                  </div>
+                  <ul className="enrich-dup-list">
+                    {duplicates.map((row) => (
+                      <li key={row.recordId}>
+                        <div>
+                          <div className="enrich-name">{row.name}</div>
+                          <div className="enrich-meta">{row.email}</div>
+                          <div className="enrich-meta">
+                            In{" "}
+                            {row.lists
+                              .map(
+                                (list) => `${list.name} (#${list.displayId})`,
+                              )
+                              .join(", ")}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-soft enrich-danger-btn"
+                          onClick={() =>
+                            removeDuplicateFromSelection(row.recordId)
+                          }
+                          disabled={saving}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {!checkingDuplicates &&
+              duplicates.length === 0 &&
+              selectedRecords.length > 0 ? (
+                <p className="enrich-dup-status ok">
+                  No selected emails are already on other lists.
+                </p>
+              ) : null}
+
               {saveError ? <div className="crm-error">{saveError}</div> : null}
             </div>
             <div className="crm-modal-foot">
@@ -800,11 +1364,25 @@ export default function PortalEnrichPage() {
                 type="button"
                 className="btn-dark"
                 onClick={() => void saveToList()}
-                disabled={saving || !listName.trim()}
+                disabled={
+                  saving ||
+                  !listName.trim() ||
+                  selectedRecords.length === 0 ||
+                  checkingDuplicates
+                }
               >
-                {saving ? "Saving…" : "Save list"}
+                {saving
+                  ? "Saving…"
+                  : `Save ${selectedRecords.length} contact${selectedRecords.length === 1 ? "" : "s"}`}
               </button>
             </div>
+            {duplicates.length > 0 && remainingAfterDupRemove >= 0 ? (
+              <p className="enrich-save-hint">
+                {remainingAfterDupRemove} contact
+                {remainingAfterDupRemove === 1 ? "" : "s"} will remain after
+                removing duplicates.
+              </p>
+            ) : null}
           </div>
         </div>
       ) : null}

@@ -8,6 +8,9 @@ import {
   requirePortalSession,
 } from "@/lib/require-portal-session";
 
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
 export async function GET() {
   try {
     const session = await requirePortalSession();

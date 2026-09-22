@@ -172,44 +172,56 @@ function sortedOptions(values: Set<string>) {
   );
 }
 
-/** Build a free-text `q` for Data Tool list endpoint from enrich form fields. */
+/** Prefer one focused text term — joining every filter into `q` zeros out Data Tool results. */
 export function buildEnrichQuery(filters: EnrichSearchFilters) {
-  // Employee size + revenue are numeric range filters — do not put labels into `q`.
-  const parts = [
-    ...splitKeywords(filters.titles),
-    ...(filters.managementLevels || []),
-    ...splitKeywords(filters.industryKeywords),
-    ...splitKeywords(filters.technologies),
-    ...(filters.personLocations || []),
-    ...(filters.companyLocations || []),
-  ]
-    .map((part) => String(part ?? "").trim())
+  const titles = splitKeywords(filters.titles);
+  if (titles.length > 0) {
+    return titles[0];
+  }
+  const levels = (filters.managementLevels || []).map((v) => v.trim()).filter(Boolean);
+  if (levels.length > 0) {
+    return levels[0];
+  }
+  const industries = splitKeywords(filters.industryKeywords);
+  if (industries.length > 0) {
+    return industries[0];
+  }
+  const techs = splitKeywords(filters.technologies);
+  if (techs.length > 0) {
+    return techs[0];
+  }
+  const person = (filters.personLocations || []).map((v) => v.trim()).filter(Boolean);
+  if (person.length > 0) {
+    return person[0];
+  }
+  const company = (filters.companyLocations || [])
+    .map((v) => v.trim())
     .filter(Boolean);
-  return [...new Set(parts)].join(" ").trim();
+  if (company.length > 0) {
+    return company[0];
+  }
+  return "";
 }
 
-function matchesExact(value: string, selected: string[]) {
+function normalizeToken(value: string) {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** Match selected portal values (exact, or either side contains the other). */
+function matchesSelected(value: string, selected: string[]) {
   if (selected.length === 0) {
     return true;
   }
   if (!value) {
     return false;
   }
-  const needle = value.toLowerCase();
-  return selected.some((item) => item.toLowerCase() === needle);
-}
-
-function matchesExactOrContains(value: string, selected: string[]) {
-  if (selected.length === 0) {
-    return true;
-  }
-  if (!value) {
-    return false;
-  }
-  const hay = value.toLowerCase();
+  const hay = normalizeToken(value);
   return selected.some((item) => {
-    const needle = item.toLowerCase();
-    return hay === needle || hay.includes(needle);
+    const needle = normalizeToken(item);
+    if (!needle) {
+      return false;
+    }
+    return hay === needle || hay.includes(needle) || needle.includes(hay);
   });
 }
 
@@ -338,57 +350,94 @@ export function filterEnrichRecords(
     const companyCountry = String(record.company_country ?? "").trim();
     const companyAddress = String(record.company_address ?? "").trim();
 
-    if (titles.length > 0 && !matchesExact(title, titles)) {
-      return false;
-    }
-    if (levels.length > 0 && !matchesExact(seniority, levels)) {
+    if (titles.length > 0 && !matchesSelected(title, titles)) {
       return false;
     }
     if (
-      sizes.length > 0 &&
-      !valueInSelectedRanges(
-        parseEmployeeCount(employees),
-        sizes,
-        ENRICH_EMPLOYEE_SIZE_RANGES,
-      )
+      levels.length > 0 &&
+      !matchesSelected(seniority, levels) &&
+      !matchesSelected(title, levels)
     ) {
       return false;
+    }
+    if (sizes.length > 0) {
+      const known = sizes.filter((label) =>
+        ENRICH_EMPLOYEE_SIZE_RANGES.some((range) => range.label === label),
+      );
+      const custom = sizes.filter(
+        (label) =>
+          !ENRICH_EMPLOYEE_SIZE_RANGES.some((range) => range.label === label),
+      );
+      const count = parseEmployeeCount(employees);
+      const knownOk =
+        known.length === 0 ||
+        count == null ||
+        valueInSelectedRanges(count, known, ENRICH_EMPLOYEE_SIZE_RANGES);
+      const customOk =
+        custom.length === 0 || matchesSelected(employees, custom);
+      if (known.length > 0 && custom.length > 0) {
+        if (!knownOk && !customOk) {
+          return false;
+        }
+      } else if (known.length > 0) {
+        if (count != null && !knownOk) {
+          return false;
+        }
+      } else if (!customOk) {
+        return false;
+      }
     }
     if (industries.length > 0) {
       const industryParts = splitKeywords(industry);
       const ok =
-        industryParts.some((part) => matchesExact(part, industries)) ||
-        matchesExact(industry, industries);
+        matchesSelected(industry, industries) ||
+        industryParts.some((part) => matchesSelected(part, industries));
       if (!ok) {
         return false;
       }
     }
     if (techs.length > 0) {
       const techParts = splitKeywords(technologies);
-      if (!techParts.some((part) => matchesExact(part, techs))) {
+      const ok =
+        matchesSelected(technologies, techs) ||
+        techParts.some((part) => matchesSelected(part, techs));
+      if (!ok) {
         return false;
       }
     }
-    if (
-      revenues.length > 0 &&
-      !valueInSelectedRanges(
-        parseRevenueUsd(annualRevenue),
-        revenues,
-        ENRICH_REVENUE_RANGES,
-      )
-    ) {
-      return false;
+    if (revenues.length > 0) {
+      const known = revenues.filter((label) =>
+        ENRICH_REVENUE_RANGES.some((range) => range.label === label),
+      );
+      const custom = revenues.filter(
+        (label) => !ENRICH_REVENUE_RANGES.some((range) => range.label === label),
+      );
+      const amount = parseRevenueUsd(annualRevenue);
+      const knownOk =
+        known.length === 0 ||
+        amount == null ||
+        valueInSelectedRanges(amount, known, ENRICH_REVENUE_RANGES);
+      const customOk =
+        custom.length === 0 || matchesSelected(annualRevenue, custom);
+      if (known.length > 0 && custom.length > 0) {
+        if (!knownOk && !customOk) {
+          return false;
+        }
+      } else if (known.length > 0) {
+        if (amount != null && !knownOk) {
+          return false;
+        }
+      } else if (!customOk) {
+        return false;
+      }
     }
-    if (
-      personLocs.length > 0 &&
-      !matchesExactOrContains(contactCountry, personLocs)
-    ) {
+    if (personLocs.length > 0 && !matchesSelected(contactCountry, personLocs)) {
       return false;
     }
     if (
       companyLocs.length > 0 &&
-      !matchesExactOrContains(companyCountry, companyLocs) &&
-      !matchesExactOrContains(companyAddress, companyLocs)
+      !matchesSelected(companyCountry, companyLocs) &&
+      !matchesSelected(companyAddress, companyLocs)
     ) {
       return false;
     }
@@ -504,20 +553,109 @@ export async function searchEnrichPeople(
 ) {
   const q = buildEnrichQuery(filters);
   const page = Math.max(1, options?.page || 1);
-  const limit = Math.min(100, Math.max(1, options?.limit || 50));
-  const result = await listDataToolRecords({
-    type: "people",
-    q,
+  const limit = Math.min(1000, Math.max(1, options?.limit || 200));
+  const skip = (page - 1) * limit;
+
+  // Scan several Data Tool pages, then apply local filters.
+  const maxApiPages = q ? 15 : 20;
+  const matched: DataToolRecord[] = [];
+  let apiTotal = 0;
+  let scanned = 0;
+  let keptBeforeSkip = 0;
+
+  for (let apiPage = 1; apiPage <= maxApiPages; apiPage += 1) {
+    const result = await listDataToolRecords({
+      type: "people",
+      q: q || undefined,
+      page: apiPage,
+      limit: 200,
+    });
+    apiTotal = result.total;
+    scanned += result.records.length;
+    if (result.records.length === 0) {
+      break;
+    }
+
+    const filtered = filterEnrichRecords(result.records, filters);
+    for (const record of filtered) {
+      if (keptBeforeSkip < skip) {
+        keptBeforeSkip += 1;
+        continue;
+      }
+      matched.push(record);
+      keptBeforeSkip += 1;
+      if (matched.length >= limit) {
+        break;
+      }
+    }
+
+    if (matched.length >= limit) {
+      break;
+    }
+    if (apiPage * result.limit >= result.total) {
+      break;
+    }
+  }
+
+  return {
+    type: "people" as const,
     page,
     limit,
-  });
-  const filtered = filterEnrichRecords(result.records, filters);
-  return {
-    ...result,
+    total: apiTotal,
     q,
-    records: filtered,
-    matched: filtered.length,
+    scanned,
+    records: matched,
+    matched: matched.length,
   };
+}
+
+export const ENRICH_RESULT_COLUMNS = [
+  { key: "name", label: "Name", alwaysOn: true },
+  { key: "title", label: "Title", alwaysOn: true },
+  { key: "company_name", label: "Company", alwaysOn: true },
+  { key: "email", label: "Email", alwaysOn: true },
+  { key: "contact_country", label: "Person Location", alwaysOn: false },
+  { key: "first_name", label: "First Name", alwaysOn: false },
+  { key: "last_name", label: "Last Name", alwaysOn: false },
+  { key: "email_status", label: "Email Status", alwaysOn: false },
+  { key: "seniority", label: "Management Level", alwaysOn: false },
+  { key: "departments", label: "Departments", alwaysOn: false },
+  { key: "personal_phone", label: "Personal Phone", alwaysOn: false },
+  { key: "company_phone", label: "Company Phone", alwaysOn: false },
+  { key: "employees", label: "Employees", alwaysOn: false },
+  { key: "industry", label: "Industry", alwaysOn: false },
+  { key: "person_linkedin_url", label: "Person LinkedIn", alwaysOn: false },
+  { key: "website", label: "Website", alwaysOn: false },
+  { key: "technologies", label: "Technologies", alwaysOn: false },
+  { key: "company_address", label: "Company Address", alwaysOn: false },
+  { key: "company_linkedin_url", label: "Company LinkedIn", alwaysOn: false },
+  { key: "company_country", label: "Company Country", alwaysOn: false },
+  { key: "annual_revenue", label: "Revenue", alwaysOn: false },
+  { key: "data_date", label: "Data Date", alwaysOn: false },
+] as const;
+
+export type EnrichColumnKey = (typeof ENRICH_RESULT_COLUMNS)[number]["key"];
+
+export const DEFAULT_ENRICH_VISIBLE_COLUMNS: EnrichColumnKey[] = [
+  "name",
+  "title",
+  "company_name",
+  "email",
+  "contact_country",
+];
+
+export function formatEnrichRecordField(
+  record: DataToolRecord,
+  key: EnrichColumnKey,
+) {
+  if (key === "name") {
+    const name = [record.first_name, record.last_name]
+      .map((part) => String(part ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+    return name || String(record.email ?? "Unknown");
+  }
+  return String(record[key] ?? "").trim();
 }
 
 export function mapDataToolRecordToContact(record: DataToolRecord) {
@@ -539,24 +677,28 @@ export function mapDataToolRecordToContact(record: DataToolRecord) {
   put("website", record.website);
   put("companySourceUrl", record.company_linkedin_url);
   put("personalLinkedIn", record.person_linkedin_url);
-  put(
-    "phoneNumber",
-    record.personal_phone || record.company_phone,
-  );
+  put("phoneNumber", record.personal_phone || record.company_phone);
+  put("personalPhone", record.personal_phone);
+  put("companyPhone", record.company_phone);
   put(
     "personLocation",
-    [record.contact_country, record.company_country]
+    [record.contact_country, record.company_address, record.company_country]
       .map((part) => String(part ?? "").trim())
       .filter(Boolean)
       .join(", "),
   );
+  put("contactCountry", record.contact_country);
+  put("companyCountry", record.company_country);
+  put("companyAddress", record.company_address);
   put("seniority", record.seniority);
   put("employees", record.employees);
   put("technologies", record.technologies);
   put("annualRevenue", record.annual_revenue);
   put("departments", record.departments);
   put("emailStatus", record.email_status);
+  put("dataDate", record.data_date);
   put("dataToolId", record.id);
+  put("sourceFile", record.sourceFile);
 
   return {
     firstName: firstName || email.split("@")[0] || "Unknown",
