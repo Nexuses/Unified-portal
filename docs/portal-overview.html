@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nexuses Unified Portal — Nav Flow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --green: #0b996e;
+      --green-tint: #eaf7f2;
+      --ink: #1a1a1a;
+      --muted: #6b7280;
+      --line: #e6e9ed;
+      --bg: #ffffff;
+      --purple: #6c3ce1;
+      --purple-soft: #efe9fc;
+      --sb-bg: #f5fbf6;
+      --sb-teal: #006b52;
+      --sb-hover: #eaf9ee;
+      --active: #d7fec8;
+      --font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.45;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 248px 1fr;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      animation: fadeIn 0.45s ease forwards;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 248px;
+      background: var(--sb-bg);
+      border-right: 1px solid #9ca3af;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      border-bottom-right-radius: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      padding: 16px 16px 14px 18px;
+    }
+
+    .brand-logo {
+      display: block;
+      height: 42px;
+      width: auto;
+      max-width: 210px;
+      object-fit: contain;
+      object-position: left center;
+    }
+
+    .nav {
+      padding: 6px 10px 14px;
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    .nav-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #7a9190;
+      padding: 14px 16px 6px;
+    }
+
+    .nav-item {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      width: 100%;
+      padding: 11px 16px;
+      border-radius: 14px;
+      color: #111827;
+      font-size: 15px;
+      font-weight: 500;
+      text-decoration: none;
+      margin-bottom: 4px;
+      border: 0;
+      background: transparent;
+      font-family: inherit;
+      cursor: pointer;
+      text-align: left;
+      transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+    }
+
+    .nav-item:hover { background: var(--sb-hover); }
+
+    .nav-item.active {
+      background: var(--active);
+      font-weight: 700;
+    }
+
+    .nav-item.active::after {
+      content: "";
+      position: absolute;
+      right: -10px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 3px;
+      height: 26px;
+      border-radius: 2px 0 0 2px;
+      background: var(--sb-teal);
+    }
+
+    .nav-item.touring {
+      background: var(--active);
+      font-weight: 700;
+      box-shadow: 0 0 0 0 rgba(215, 254, 200, 0.8);
+      animation: navPulse 1.4s ease-in-out infinite;
+    }
+
+    @keyframes navPulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(11, 153, 110, 0.15); }
+      50% { box-shadow: 0 0 0 6px rgba(11, 153, 110, 0); }
+    }
+
+    .nav-item svg {
+      width: 24px;
+      height: 24px;
+      flex-shrink: 0;
+      color: #111827;
+    }
+
+    .nav-item svg [fill="none"],
+    .nav-item svg:not([fill]) {
+      fill: none;
+    }
+
+    .sidebar-foot {
+      padding: 14px 16px 18px;
+      border-top: 1px solid #dceee3;
+    }
+
+    .sidebar-foot small {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .workspace {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .workspace span {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      background: var(--active);
+      color: var(--sb-teal);
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    /* Main tour */
+    .main {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      height: 100vh;
+      overflow: hidden;
+      background:
+        radial-gradient(800px 400px at 90% 0%, rgba(215, 254, 200, 0.45), transparent 55%),
+        radial-gradient(700px 360px at 10% 100%, rgba(239, 233, 252, 0.55), transparent 50%),
+        #fff;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 22px 36px 10px;
+      flex-shrink: 0;
+    }
+
+    .topbar h1 {
+      font-size: 30px;
+      font-weight: 700;
+      letter-spacing: -0.4px;
+    }
+
+    .topbar p {
+      color: var(--muted);
+      font-size: 14px;
+      margin-top: 4px;
+      max-width: 520px;
+    }
+
+    .tour-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 16px;
+      font: inherit;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .btn:hover { transform: translateY(-1px); }
+
+    .btn-soft {
+      background: #fff;
+      border: 1px solid var(--ink);
+      color: var(--ink);
+    }
+
+    .btn-dark {
+      background: var(--ink);
+      color: #fff;
+    }
+
+    .step-chip {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--sb-teal);
+      background: var(--active);
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .flow-wrap {
+      flex: 1;
+      overflow: auto;
+      padding: 12px 36px 40px;
+      position: relative;
+    }
+
+    .flow {
+      position: relative;
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 12px 0 24px;
+    }
+
+    /* Dotted vertical spine */
+    .flow-spine {
+      position: absolute;
+      left: 27px;
+      top: 28px;
+      bottom: 40px;
+      width: 0;
+      border-left: 2px dashed #c5ddd0;
+      z-index: 0;
+    }
+
+    .flow-spine-progress {
+      position: absolute;
+      left: -1px;
+      top: 0;
+      width: 2px;
+      height: 0;
+      background: linear-gradient(180deg, var(--sb-teal), var(--green));
+      border-radius: 2px;
+      transition: height 0.65s cubic-bezier(0.22, 1, 0.36, 1);
+      box-shadow: 0 0 12px rgba(11, 153, 110, 0.35);
+    }
+
+    .flow-item {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 56px 1fr;
+      gap: 18px;
+      align-items: start;
+      margin-bottom: 22px;
+      opacity: 0.35;
+      transform: translateY(18px);
+      filter: grayscale(0.35);
+      transition:
+        opacity 0.45s ease,
+        transform 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+        filter 0.45s ease;
+    }
+
+    .flow-item.visible {
+      opacity: 1;
+      transform: translateY(0);
+      filter: none;
+    }
+
+    .flow-item.active .flow-card {
+      border-color: #9bd9b8;
+      box-shadow: 0 18px 40px rgba(0, 107, 82, 0.12);
+      transform: translateY(-2px) scale(1.01);
+    }
+
+    .flow-dot {
+      width: 56px;
+      height: 56px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: #fff;
+      border: 2px solid #c5ddd0;
+      color: var(--sb-teal);
+      font-weight: 800;
+      font-size: 14px;
+      position: relative;
+      transition: border-color 0.3s ease, background 0.3s ease, transform 0.35s ease, box-shadow 0.35s ease;
+    }
+
+    .flow-item.visible .flow-dot {
+      border-color: var(--sb-teal);
+      background: var(--active);
+    }
+
+    .flow-item.active .flow-dot {
+      background: var(--sb-teal);
+      color: #fff;
+      border-color: var(--sb-teal);
+      transform: scale(1.08);
+      box-shadow: 0 0 0 8px rgba(215, 254, 200, 0.75);
+      animation: dotPulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes dotPulse {
+      0%, 100% { box-shadow: 0 0 0 6px rgba(215, 254, 200, 0.7); }
+      50% { box-shadow: 0 0 0 12px rgba(215, 254, 200, 0.15); }
+    }
+
+    .flow-card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 20px 22px 18px;
+      transition: border-color 0.3s ease, box-shadow 0.35s ease, transform 0.35s ease;
+    }
+
+    .flow-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .flow-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .flow-title-ico {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: var(--green-tint);
+      color: var(--sb-teal);
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+
+    .flow-title-ico svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .flow-item.active .flow-title-ico {
+      background: var(--active);
+      color: var(--sb-teal);
+      box-shadow: 0 0 0 4px rgba(215, 254, 200, 0.55);
+    }
+
+    .flow-card h2 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .flow-tag {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--sb-teal);
+      background: var(--green-tint);
+      padding: 5px 9px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .flow-card p {
+      color: var(--muted);
+      font-size: 14px;
+      max-width: 62ch;
+    }
+
+    .flow-points {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 16px;
+      margin-top: 14px;
+      list-style: none;
+    }
+
+    .flow-points li {
+      font-size: 13px;
+      font-weight: 500;
+      padding-left: 0;
+      position: relative;
+      color: var(--ink);
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .flow-points li::before {
+      display: none;
+    }
+
+    .point-ico {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+      margin-top: 1px;
+      color: var(--sb-teal);
+    }
+
+    .point-ico svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .flow-item.active .flow-points li {
+      animation: pointIn 0.4s ease both;
+    }
+
+    .flow-item.active .flow-points li:nth-child(1) { animation-delay: 0.08s; }
+    .flow-item.active .flow-points li:nth-child(2) { animation-delay: 0.14s; }
+    .flow-item.active .flow-points li:nth-child(3) { animation-delay: 0.2s; }
+    .flow-item.active .flow-points li:nth-child(4) { animation-delay: 0.26s; }
+
+    @keyframes pointIn {
+      from { opacity: 0; transform: translateX(-6px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .connector-label {
+      position: absolute;
+      left: 64px;
+      top: -14px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #8aa399;
+      background: #fff;
+      padding: 0 6px;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .flow-item.visible .connector-label { opacity: 1; }
+
+    .flow-item:first-child .connector-label { display: none; }
+
+    .provider-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .provider-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px 8px 8px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fafbfa;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .provider-chip:hover {
+      border-color: #c9e8d8;
+      box-shadow: 0 6px 16px rgba(0, 107, 82, 0.08);
+    }
+
+    .provider-chip img {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      border-radius: 7px;
+      background: #f8fafc;
+      border: 1px solid #e5e7eb;
+      padding: 3px;
+    }
+
+    @media (max-width: 900px) {
+      .shell { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .flow-points { grid-template-columns: 1fr; }
+      .flow-wrap, .topbar { padding-left: 18px; padding-right: 18px; }
+      .flow-spine { left: 22px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img
+          class="brand-logo"
+          src="https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png"
+          alt="Nexuses"
+        />
+      </div>
+
+      <nav class="nav" id="sideNav">
+        <button type="button" class="nav-item" data-step="0">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 10.8 12 4l8 6.8V19a1.5 1.5 0 0 1-1.5 1.5H5.5A1.5 1.5 0 0 1 4 19V10.8z" />
+            <path d="M10 20.5V14h4v6.5" />
+          </svg>
+          Home
+        </button>
+        <button type="button" class="nav-item" data-step="2">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <circle cx="12" cy="10" r="2.6" />
+            <path d="M7.8 17.4c1-2 2.7-3.1 4.2-3.1s3.2 1.1 4.2 3.1" />
+          </svg>
+          CRM
+        </button>
+        <button type="button" class="nav-item" data-step="3">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 13h3.8l1.4 2.4h5.6L16.2 13H20v5.2A1.8 1.8 0 0 1 18.2 20H5.8A1.8 1.8 0 0 1 4 18.2V13z" />
+            <path d="m4 13 2.6-7.2h10.8L20 13" />
+            <path d="M9.5 8.5h5" />
+          </svg>
+          Master Inbox
+        </button>
+        <button type="button" class="nav-item" data-step="4">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21.5 3.5 10.8 14.2" />
+            <path d="M21.5 3.5 14.2 21l-3.4-7.4L3.5 10.2 21.5 3.5z" />
+          </svg>
+          Marketing
+        </button>
+        <button type="button" class="nav-item" data-step="5">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 3v9h9" />
+          </svg>
+          Analytics
+        </button>
+        <button type="button" class="nav-item" data-step="1">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 5.5h14A1.5 1.5 0 0 1 20.5 7v8.2A1.5 1.5 0 0 1 19 16.7H9.2L5 20.2V7A1.5 1.5 0 0 1 6.5 5.5" />
+            <circle cx="8.8" cy="11" r="1.05" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="11" r="1.05" fill="currentColor" stroke="none" />
+            <circle cx="15.2" cy="11" r="1.05" fill="currentColor" stroke="none" />
+          </svg>
+          SMTP &amp; Senders
+        </button>
+        <button type="button" class="nav-item" data-step="1">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 9V18a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 18V9" />
+            <path d="M4 9h16V7.2A1.5 1.5 0 0 0 18.5 5.7h-5L11.7 4H5.5A1.5 1.5 0 0 0 4 5.5V9z" />
+          </svg>
+          Suppression List
+        </button>
+        <button type="button" class="nav-item" data-step="1">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M16.8 7H9.5a3.5 3.5 0 0 0 0 7h.9" />
+            <path d="M7.2 17h7.3a3.5 3.5 0 0 0 0-7h-.9" />
+            <path d="m15.6 4.8 1.6 1.7-1.6 1.7M8.4 15.8 6.8 17.5l1.6 1.7" />
+          </svg>
+          Integrations
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <small>Workspace</small>
+        <div class="workspace"><span>N</span> Nexuses</div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div>
+          <h1>How the portal fits together</h1>
+          <p>Follow the dotted path — start at Home, connect senders, then build lists, send, reply, and measure.</p>
+        </div>
+        <div class="tour-controls">
+          <span class="step-chip" id="stepChip">Step 1 / 6</span>
+          <button class="btn btn-soft" type="button" id="btnPrev">Back</button>
+          <button class="btn btn-dark" type="button" id="btnNext">Next</button>
+          <button class="btn btn-soft" type="button" id="btnPlay">Play tour</button>
+        </div>
+      </header>
+
+      <div class="flow-wrap">
+        <div class="flow" id="flow">
+          <div class="flow-spine" aria-hidden="true">
+            <div class="flow-spine-progress" id="spineProgress"></div>
+          </div>
+
+          <article class="flow-item" data-step="0" id="step-0">
+            <div class="flow-dot">01</div>
+            <div class="flow-card">
+              <div class="connector-label">start</div>
+              <div class="flow-card-top">
+                <div class="flow-title">
+                  <span class="flow-title-ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M4 10.8 12 4l8 6.8V19a1.5 1.5 0 0 1-1.5 1.5H5.5A1.5 1.5 0 0 1 4 19V10.8z" />
+                      <path d="M10 20.5V14h4v6.5" />
+                    </svg>
+                  </span>
+                  <h2>Home</h2>
+                </div>
+                <span class="flow-tag">Workspace</span>
+              </div>
+              <p>Your landing view after login — a snapshot of sending volume, open rates, contacts, and inbox activity so the team sees health at a glance.</p>
+              <ul class="flow-points">
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V9l8-5 8 5v10"/><path d="M9 19v-6h6v6"/></svg></span>
+                  Emails sent &amp; open rate
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+                  Running campaign status
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13h3.8l1.4 2.4h5.6L16.2 13H20v5.2A1.8 1.8 0 0 1 18.2 20H5.8A1.8 1.8 0 0 1 4 18.2V13z"/><path d="m4 13 2.6-7.2h10.8L20 13"/></svg></span>
+                  Unread inbox replies
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 10.8 14.2"/><path d="M21.5 3.5 14.2 21l-3.4-7.4L3.5 10.2 21.5 3.5z"/></svg></span>
+                  Quick jump into create campaign
+                </li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="flow-item" data-step="1" id="step-1">
+            <div class="flow-dot">02</div>
+            <div class="flow-card">
+              <div class="connector-label">connect</div>
+              <div class="flow-card-top">
+                <div class="flow-title">
+                  <span class="flow-title-ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M5 5.5h14A1.5 1.5 0 0 1 20.5 7v8.2A1.5 1.5 0 0 1 19 16.7H9.2L5 20.2V7A1.5 1.5 0 0 1 6.5 5.5" />
+                      <circle cx="8.8" cy="11" r="1.05" fill="currentColor" stroke="none" />
+                      <circle cx="12" cy="11" r="1.05" fill="currentColor" stroke="none" />
+                      <circle cx="15.2" cy="11" r="1.05" fill="currentColor" stroke="none" />
+                    </svg>
+                  </span>
+                  <h2>Setup</h2>
+                </div>
+                <span class="flow-tag">SMTP · Suppression · Integrations</span>
+              </div>
+              <p>Connect senders, keep suppression clean, and wire integrations so mail delivery and tracking stay reliable.</p>
+              <ul class="flow-points">
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="6" width="17" height="12" rx="2"/><path d="m4 8 8 5 8-5"/></svg></span>
+                  All provider senders below
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span>
+                  Tracking domains
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V18a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 18V9"/><path d="M4 9h16V7.2A1.5 1.5 0 0 0 18.5 5.7h-5L11.7 4H5.5A1.5 1.5 0 0 0 4 5.5V9z"/></svg></span>
+                  Global suppression list
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16.8 7H9.5a3.5 3.5 0 0 0 0 7h.9"/><path d="M7.2 17h7.3a3.5 3.5 0 0 0 0-7h-.9"/><path d="m15.6 4.8 1.6 1.7-1.6 1.7M8.4 15.8 6.8 17.5l1.6 1.7"/></svg></span>
+                  API keys &amp; webhooks
+                </li>
+              </ul>
+              <div class="provider-row" aria-label="Supported senders">
+                <div class="provider-chip">
+                  <img src="https://nexuseslink2024.s3.us-east-2.amazonaws.com/66681500627b2db0acfeb833_AWS_1786699619465_yh85.png" alt="" />
+                  AWS SES
+                </div>
+                <div class="provider-chip">
+                  <img src="https://nexuseslink2024.s3.us-east-2.amazonaws.com/Gmail-logo-design-on-transparent-background-PNG_1786699619465_csio.png" alt="" />
+                  Gmail
+                </div>
+                <div class="provider-chip">
+                  <img src="https://nexuseslink2024.s3.us-east-2.amazonaws.com/images__5__1786699619465_xhir.jpeg" alt="" />
+                  Outlook
+                </div>
+                <div class="provider-chip">
+                  <img src="https://nexuseslink2024.s3.us-east-2.amazonaws.com/sendgrid-1-logo_1786699892036_wvw5.png" alt="" />
+                  SendGrid
+                </div>
+                <div class="provider-chip">
+                  <img src="https://nexuseslink2024.s3.us-east-2.amazonaws.com/Cloudflare_Logo_1786699892036_98vx.png" alt="" />
+                  Cloudflare
+                </div>
+                <div class="provider-chip">
+                  <img src="https://nexuseslink2024.s3.us-east-2.amazonaws.com/resend-icon-black_1786699892036_sqdf.svg" alt="" />
+                  Resend
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="flow-item" data-step="2" id="step-2">
+            <div class="flow-dot">03</div>
+            <div class="flow-card">
+              <div class="connector-label">build audience</div>
+              <div class="flow-card-top">
+                <div class="flow-title">
+                  <span class="flow-title-ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <circle cx="12" cy="10" r="2.6" />
+                      <path d="M7.8 17.4c1-2 2.7-3.1 4.2-3.1s3.2 1.1 4.2 3.1" />
+                    </svg>
+                  </span>
+                  <h2>CRM</h2>
+                </div>
+                <span class="flow-tag">Contacts · Lists · Enrich</span>
+              </div>
+              <p>Where people and lists live. Import large CSVs, manage companies, and enrich prospects from Data Tool into campaign-ready lists.</p>
+              <ul class="flow-points">
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c0-3 2.6-5 5.5-5s5.5 2 5.5 5"/><path d="M17 8v6M14 11h6"/></svg></span>
+                  Contacts, lists &amp; companies
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg></span>
+                  Chunked imports (any size)
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.4H19l-4.4 3.3 1.7 5.3L12 14.7 7.7 17l1.7-5.3L5 8.4h5.2z"/></svg></span>
+                  Enrich from Data Tool
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.8 2.8L16 9.5"/></svg></span>
+                  Duplicate checks on save
+                </li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="flow-item" data-step="3" id="step-3">
+            <div class="flow-dot">04</div>
+            <div class="flow-card">
+              <div class="connector-label">conversations</div>
+              <div class="flow-card-top">
+                <div class="flow-title">
+                  <span class="flow-title-ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M4 13h3.8l1.4 2.4h5.6L16.2 13H20v5.2A1.8 1.8 0 0 1 18.2 20H5.8A1.8 1.8 0 0 1 4 18.2V13z" />
+                      <path d="m4 13 2.6-7.2h10.8L20 13" />
+                      <path d="M9.5 8.5h5" />
+                    </svg>
+                  </span>
+                  <h2>Master Inbox</h2>
+                </div>
+                <span class="flow-tag">Engage</span>
+              </div>
+              <p>All campaign replies in one place. Reply with HTML signatures and pasted images without leaving the portal.</p>
+              <ul class="flow-points">
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5.5h14A1.5 1.5 0 0 1 20.5 7v8.2A1.5 1.5 0 0 1 19 16.7H9.2L5 20.2V7A1.5 1.5 0 0 1 6.5 5.5"/></svg></span>
+                  Unified reply threads
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m7 16 3-3 2 2 3-3 2 2"/></svg></span>
+                  HTML signatures &amp; images
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a4.5 4.5 0 0 0 6.4 0l2.1-2.1a4.5 4.5 0 0 0-6.4-6.4L11 5.6"/><path d="M14 11a4.5 4.5 0 0 0-6.4 0L5.5 13.1a4.5 4.5 0 0 0 6.4 6.4L13 18.4"/></svg></span>
+                  Tied to campaign context
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="2.5"/><circle cx="16" cy="9" r="2.5"/><path d="M3.5 18c.6-2.4 2.4-3.8 4.5-3.8s3.9 1.4 4.5 3.8M11.5 18c.6-2.4 2.4-3.8 4.5-3.8s3.9 1.4 4.5 3.8"/></svg></span>
+                  Shared team inbox
+                </li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="flow-item" data-step="4" id="step-4">
+            <div class="flow-dot">05</div>
+            <div class="flow-card">
+              <div class="connector-label">launch</div>
+              <div class="flow-card-top">
+                <div class="flow-title">
+                  <span class="flow-title-ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21.5 3.5 10.8 14.2" />
+                      <path d="M21.5 3.5 14.2 21l-3.4-7.4L3.5 10.2 21.5 3.5z" />
+                    </svg>
+                  </span>
+                  <h2>Marketing</h2>
+                </div>
+                <span class="flow-tag">Drip · 1-1 · Automation</span>
+              </div>
+              <p>Send list blasts, personal sequences, or multi-step automations. Ask AI helps plan waits and who gets the next email. Sending continues even if the browser closes.</p>
+              <ul class="flow-points">
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10"/><path d="m8 10 4 4 4-4"/><path d="M6 18h12"/></svg></span>
+                  Drip campaigns to lists
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M8.2 12h7.6"/><path d="M12 8v8"/></svg></span>
+                  1-1 sequences with delays
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6.5" r="2.4"/><rect x="14.8" y="15.2" width="4.8" height="4.8" rx="1.1"/><path d="M8.7 7.8c2.4 1.1 4.2 3.4 4.6 6.4"/><path d="M13.2 16.2 11.2 13.4"/></svg></span>
+                  Automation canvas + Ask AI
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 14.5-4.5"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-14.5 4.5"/><path d="M4 20v-4h4"/></svg></span>
+                  Background drip / 1-1 sending
+                </li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="flow-item" data-step="5" id="step-5">
+            <div class="flow-dot">06</div>
+            <div class="flow-card">
+              <div class="connector-label">measure</div>
+              <div class="flow-card-top">
+                <div class="flow-title">
+                  <span class="flow-title-ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M12 3v9h9" />
+                    </svg>
+                  </span>
+                  <h2>Analytics</h2>
+                </div>
+                <span class="flow-tag">Report · Kanban</span>
+              </div>
+              <p>See opens, clicks, bounces, replies, and unsubs. Move engaged leads on Kanban with a board assistant that creates stages and moves people.</p>
+              <ul class="flow-points">
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 15v-4M12 15V8M16 15v-7"/></svg></span>
+                  Campaign performance reports
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="2.6"/><path d="M4 18c.7-2.5 2.5-4 5-4s4.3 1.5 5 4"/><path d="M16 7h4M18 5v4"/></svg></span>
+                  People tabs (opens, clicks, unsubs)
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="5.5" height="16" rx="1.2"/><rect x="9.25" y="4" width="5.5" height="16" rx="1.2"/><rect x="15" y="4" width="5.5" height="16" rx="1.2"/></svg></span>
+                  Kanban lead stages
+                </li>
+                <li>
+                  <span class="point-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.4H19l-4.4 3.3 1.7 5.3L12 14.7 7.7 17l1.7-5.3L5 8.4h5.2z"/></svg></span>
+                  Board AI for moves &amp; stages
+                </li>
+              </ul>
+            </div>
+          </article>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const total = 6;
+    let step = 0;
+    let playing = false;
+    let timer = null;
+
+    const items = [...document.querySelectorAll(".flow-item")];
+    const navItems = [...document.querySelectorAll(".nav-item")];
+    const spine = document.getElementById("spineProgress");
+    const chip = document.getElementById("stepChip");
+    const flowWrap = document.querySelector(".flow-wrap");
+
+    function setStep(next, { scroll = true } = {}) {
+      step = Math.max(0, Math.min(total - 1, next));
+      chip.textContent = `Step ${step + 1} / ${total}`;
+
+      items.forEach((item, index) => {
+        item.classList.toggle("visible", index <= step);
+        item.classList.toggle("active", index === step);
+      });
+
+      navItems.forEach((item) => {
+        const s = Number(item.dataset.step);
+        item.classList.toggle("touring", s === step);
+        item.classList.toggle("active", s === step);
+      });
+
+      const pct = total <= 1 ? 100 : (step / (total - 1)) * 100;
+      spine.style.height = `${pct}%`;
+
+      if (scroll) {
+        const el = document.getElementById(`step-${step}`);
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+
+    function stopPlay() {
+      playing = false;
+      clearInterval(timer);
+      timer = null;
+      document.getElementById("btnPlay").textContent = "Play tour";
+    }
+
+    function startPlay() {
+      playing = true;
+      document.getElementById("btnPlay").textContent = "Pause";
+      clearInterval(timer);
+      timer = setInterval(() => {
+        setStep(step >= total - 1 ? 0 : step + 1);
+      }, 2600);
+    }
+
+    document.getElementById("btnNext").addEventListener("click", () => {
+      stopPlay();
+      setStep(step + 1);
+    });
+
+    document.getElementById("btnPrev").addEventListener("click", () => {
+      stopPlay();
+      setStep(step - 1);
+    });
+
+    document.getElementById("btnPlay").addEventListener("click", () => {
+      if (playing) {
+        stopPlay();
+        return;
+      }
+      startPlay();
+    });
+
+    navItems.forEach((item) => {
+      item.addEventListener("click", () => {
+        stopPlay();
+        setStep(Number(item.dataset.step));
+      });
+    });
+
+    items.forEach((item) => {
+      item.addEventListener("click", () => {
+        stopPlay();
+        setStep(Number(item.dataset.step));
+      });
+    });
+
+    // Boot sequence: reveal step 0, then auto-advance once through on load
+    setStep(0, { scroll: false });
+    setTimeout(() => startPlay(), 700);
+  </script>
+</body>
+</html>

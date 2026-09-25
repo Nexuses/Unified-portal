@@ -7,12 +7,16 @@ import {
   DEFAULT_KANBAN_STAGES,
   DEFAULT_STAGE_COLOR,
   KANBAN_DOT_COLORS,
+  companyBrandLogoUrl,
+  companyDomainFromEmail,
+  isFreeEmailHost,
   type KanbanBoard,
   type KanbanCampaignRef,
   type KanbanList,
   type KanbanPerson,
   type KanbanStage,
 } from "@/lib/analytics-kanban";
+import { deriveCompanyDomain } from "@/lib/crm";
 
 const DOT_COLOR_SET = new Set<string>(KANBAN_DOT_COLORS);
 
@@ -222,22 +226,86 @@ async function loadPeople(
             projectId,
             $expr: { $in: [{ $toLower: "$email" }, emails] },
           })
-          .project({ _id: 1, email: 1 })
+          .project({ _id: 1, email: 1, companyName: 1, companyId: 1 })
           .toArray();
-  const contactIds = new Map(
+
+  const companyIds = [
+    ...new Map(
+      contacts
+        .filter((contact) => contact.companyId)
+        .map((contact) => [contact.companyId!.toString(), contact.companyId!]),
+    ).values(),
+  ];
+
+  const companyEmails =
+    companyIds.length === 0
+      ? []
+      : await db
+          .collection<ContactDoc>("contacts")
+          .find({
+            projectId,
+            companyId: { $in: companyIds },
+          })
+          .project({ email: 1, companyId: 1 })
+          .toArray();
+
+  const emailsByCompanyId = new Map<string, string[]>();
+  for (const contact of companyEmails) {
+    if (!contact.companyId) {
+      continue;
+    }
+    const key = contact.companyId.toString();
+    const list = emailsByCompanyId.get(key) ?? [];
+    list.push(contact.email);
+    emailsByCompanyId.set(key, list);
+  }
+
+  const companyDomainById = new Map<string, string>();
+  for (const [companyId, companyMails] of emailsByCompanyId) {
+    const corporate = companyMails
+      .map((value) => companyDomainFromEmail(value))
+      .filter((value): value is string => Boolean(value));
+    const domain =
+      corporate[0] ||
+      deriveCompanyDomain(companyMails).toLowerCase() ||
+      "";
+    if (domain && !isFreeEmailHost(domain)) {
+      companyDomainById.set(companyId, domain);
+    }
+  }
+
+  const contactByEmail = new Map(
     contacts.map((contact) => [
       contact.email.trim().toLowerCase(),
-      contact._id.toString(),
+      {
+        id: contact._id.toString(),
+        companyName: String(contact.companyName ?? "").trim(),
+        companyId: contact.companyId?.toString() ?? "",
+      },
     ]),
   );
 
   return [...merged.values()]
     .sort((a, b) => a.fullName.localeCompare(b.fullName))
-    .map((person) => ({
-      ...person,
-      delivered: true,
-      contactId: contactIds.get(person.email.trim().toLowerCase()),
-    }));
+    .map((person) => {
+      const emailKey = person.email.trim().toLowerCase();
+      const contact = contactByEmail.get(emailKey);
+      const companyName = person.companyName.trim() || contact?.companyName || "";
+      const companyDomain =
+        (contact?.companyId
+          ? companyDomainById.get(contact.companyId)
+          : undefined) || companyDomainFromEmail(emailKey);
+      return {
+        ...person,
+        companyName,
+        companyDomain,
+        companyLogoUrl: companyDomain
+          ? companyBrandLogoUrl(companyDomain)
+          : undefined,
+        delivered: true,
+        contactId: contact?.id,
+      };
+    });
 }
 
 export async function listProjectKanbanBoards(

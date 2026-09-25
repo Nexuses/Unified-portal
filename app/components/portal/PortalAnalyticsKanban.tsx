@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   autoStageId,
   chatKanbanBoard,
+  companyFaviconUrl,
   DEFAULT_STAGE_COLOR,
   fetchKanbanBoard,
   KANBAN_DOT_COLORS,
@@ -46,17 +47,6 @@ function stageDotColor(stage: KanbanStage) {
   return stage.color || DEFAULT_STAGE_COLOR;
 }
 
-function cardInitials(name: string, email: string) {
-  if (name && name.toLowerCase() !== email) {
-    const parts = name.split(/\s+/).filter(Boolean);
-    const letters = `${parts[0]?.[0] || ""}${parts[1]?.[0] || ""}`.toUpperCase();
-    if (letters) {
-      return letters;
-    }
-  }
-  return (email[0] || "?").toUpperCase();
-}
-
 function StageGrip() {
   return (
     <span className="an-kanban-grip" aria-hidden>
@@ -67,6 +57,65 @@ function StageGrip() {
       <i />
       <i />
     </span>
+  );
+}
+
+function CompanyMark({
+  logoUrl,
+  domain,
+}: {
+  logoUrl?: string;
+  domain?: string;
+}) {
+  const [source, setSource] = useState<"brand" | "favicon" | "icon">(
+    logoUrl ? "brand" : domain ? "favicon" : "icon",
+  );
+
+  useEffect(() => {
+    setSource(logoUrl ? "brand" : domain ? "favicon" : "icon");
+  }, [logoUrl, domain]);
+
+  if (source === "brand" && logoUrl) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        className="an-kanban-company-logo"
+        src={logoUrl}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setSource(domain ? "favicon" : "icon")}
+      />
+    );
+  }
+
+  if (source === "favicon" && domain) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        className="an-kanban-company-logo"
+        src={companyFaviconUrl(domain)}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setSource("icon")}
+      />
+    );
+  }
+
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 21h18" />
+      <path d="M5 21V7l7-4 7 4v14" />
+      <path d="M9 21v-6h6v6" />
+    </svg>
   );
 }
 
@@ -151,12 +200,18 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
       return;
     }
     const rect = scroller.getBoundingClientRect();
-    const edge = 88;
-    const speed = 24;
+    const edge = 96;
+    const maxSpeed = 28;
+    let delta = 0;
     if (event.clientX > rect.right - edge) {
-      scroller.scrollLeft += speed;
+      const t = Math.min(1, (event.clientX - (rect.right - edge)) / edge);
+      delta = Math.ceil(maxSpeed * t);
     } else if (event.clientX < rect.left + edge) {
-      scroller.scrollLeft -= speed;
+      const t = Math.min(1, (rect.left + edge - event.clientX) / edge);
+      delta = -Math.ceil(maxSpeed * t);
+    }
+    if (delta !== 0) {
+      scroller.scrollLeft += delta;
     }
   }
 
@@ -208,6 +263,43 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
     });
     return () => window.cancelAnimationFrame(frame);
   }, [leadQuery, columns]);
+
+  // Nested column vertical scrollers steal wheel events — map horizontal
+  // trackpad / shift+wheel gestures onto the board scroller.
+  useEffect(() => {
+    const scroller = boardRef.current;
+    if (!scroller || !board) {
+      return;
+    }
+
+    const onWheel = (event: WheelEvent) => {
+      const absX = Math.abs(event.deltaX);
+      const absY = Math.abs(event.deltaY);
+      const shiftHorizontal = event.shiftKey && absY > 0 && absX < 1;
+      const trackpadHorizontal = absX > absY && absX > 0.5;
+
+      if (!shiftHorizontal && !trackpadHorizontal) {
+        return;
+      }
+
+      const delta = shiftHorizontal ? event.deltaY : event.deltaX;
+      const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+      if (maxScroll <= 0) {
+        return;
+      }
+
+      const next = Math.min(maxScroll, Math.max(0, scroller.scrollLeft + delta));
+      if (next === scroller.scrollLeft) {
+        return;
+      }
+
+      event.preventDefault();
+      scroller.scrollLeft = next;
+    };
+
+    scroller.addEventListener("wheel", onWheel, { passive: false });
+    return () => scroller.removeEventListener("wheel", onWheel);
+  }, [board]);
 
   async function persist(next: Pick<KanbanBoard, "stages" | "placements">) {
     if (!board) {
@@ -607,7 +699,8 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
                     const matched =
                       query.length > 0 &&
                       (name.toLowerCase().includes(query) ||
-                        email.includes(query));
+                        email.includes(query) ||
+                        person.companyName.toLowerCase().includes(query));
                     return (
                       <article
                         key={person.id}
@@ -622,25 +715,63 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
                         }}
                         onDragEnd={() => setDraggingPerson("")}
                       >
-                        <span className="an-kanban-avatar" aria-hidden>
-                          {cardInitials(name, email)}
-                        </span>
                         <span className="an-kanban-card-copy">
-                          {person.contactId ? (
-                            <Link
-                              className="an-kanban-card-name"
-                              href={portalContactRoute(
-                                person.contactId,
-                                portalKanbanRoute(board.id),
-                              )}
-                            >
-                              {name}
-                            </Link>
-                          ) : (
-                            <strong className="an-kanban-card-name">{name}</strong>
-                          )}
+                          <span className="an-kanban-card-row">
+                            <span className="an-kanban-row-ico" aria-hidden>
+                              <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.7"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <circle cx="12" cy="8" r="4" />
+                                <path d="M4 20c0-4 4-6 8-6s8 2 8 6" />
+                              </svg>
+                            </span>
+                            {person.contactId ? (
+                              <Link
+                                className="an-kanban-card-name is-link"
+                                href={portalContactRoute(
+                                  person.contactId,
+                                  portalKanbanRoute(board.id),
+                                )}
+                              >
+                                {name}
+                              </Link>
+                            ) : (
+                              <strong className="an-kanban-card-name">{name}</strong>
+                            )}
+                          </span>
                           {name.toLowerCase() !== email ? (
-                            <em className="an-kanban-card-email">{person.email}</em>
+                            <span className="an-kanban-card-row">
+                              <span className="an-kanban-row-ico" aria-hidden>
+                                <svg
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.7"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <rect x="3.5" y="5.5" width="17" height="13" rx="2" />
+                                  <path d="m5 8 7 5 7-5" />
+                                </svg>
+                              </span>
+                              <em className="an-kanban-card-email">{person.email}</em>
+                            </span>
+                          ) : null}
+                          {person.companyName.trim() ? (
+                            <span className="an-kanban-card-row an-kanban-card-company">
+                              <span className="an-kanban-row-ico" aria-hidden>
+                                <CompanyMark
+                                  logoUrl={person.companyLogoUrl}
+                                  domain={person.companyDomain}
+                                />
+                              </span>
+                              <em>{person.companyName.trim()}</em>
+                            </span>
                           ) : null}
                         </span>
                       </article>

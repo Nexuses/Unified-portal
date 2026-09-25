@@ -754,6 +754,29 @@ export async function updateProjectDripCampaign(
   const resolvedKind =
     kind ?? (existing.kind === "oneone" ? "oneone" : "drip");
 
+  if (updates.status === "draft" && existing.status !== "draft") {
+    if (existing.status !== "scheduled") {
+      throw new Error("Only scheduled campaigns can be returned to draft for editing");
+    }
+    const kindFilter = campaignKindFilter(resolvedKind);
+    const scheduledBlasts = await db
+      .collection("campaign_blasts")
+      .find({
+        projectId,
+        campaignId,
+        status: "scheduled",
+        ...kindFilter,
+      })
+      .project({ _id: 1 })
+      .toArray();
+    const blastIds = scheduledBlasts.map((blast) => blast._id);
+    if (blastIds.length > 0) {
+      await db.collection("campaign_sends").deleteMany({ blastId: { $in: blastIds } });
+      await db.collection("campaign_blasts").deleteMany({ _id: { $in: blastIds } });
+    }
+    delete updates.scheduledAt;
+  }
+
   if (updates.status === "paused") {
     if (
       existing.status !== "sending" &&
@@ -787,7 +810,9 @@ export async function updateProjectDripCampaign(
 
   await db.collection<DripCampaignDoc>("drip_campaigns").updateOne(
     { _id: existing._id },
-    { $set: updates },
+    updates.status === "draft" && existing.status === "scheduled"
+      ? { $set: updates, $unset: { scheduledAt: "" } }
+      : { $set: updates },
   );
 
   if (typeof updates.designHtml === "string") {

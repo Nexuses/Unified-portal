@@ -77,6 +77,15 @@ function ResumeIcon() {
   );
 }
 
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
 function MetricColumn({
   label,
   value,
@@ -128,6 +137,7 @@ export default function PortalDripPage({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [pausingId, setPausingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const campaignsRef = useRef(campaigns);
   campaignsRef.current = campaigns;
@@ -351,6 +361,33 @@ export default function PortalDripPage({
       );
     } finally {
       setPausingId(null);
+    }
+  }
+
+  async function handleEditScheduled(campaign: DripCampaign) {
+    if (campaign.status !== "scheduled") {
+      return;
+    }
+    setOpenMenuId(null);
+    setEditingId(campaign.id);
+    try {
+      const updated = await patchDripCampaign(
+        campaign.id,
+        { status: "draft" },
+        kind,
+      );
+      setCampaigns((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      router.push(`${portalCampaignRoute(updated.id, kind)}?reschedule=1`);
+    } catch (error) {
+      window.alert(
+        error instanceof Error
+          ? error.message
+          : "Failed to open campaign for editing",
+      );
+    } finally {
+      setEditingId(null);
     }
   }
 
@@ -712,7 +749,8 @@ export default function PortalDripPage({
                           aria-expanded={openMenuId === campaign.id}
                           disabled={
                             deletingId !== null ||
-                            duplicatingId === campaign.id
+                            duplicatingId === campaign.id ||
+                            editingId === campaign.id
                           }
                           onClick={() =>
                             setOpenMenuId((current) =>
@@ -728,6 +766,23 @@ export default function PortalDripPage({
                         </button>
                         {openMenuId === campaign.id ? (
                           <div className="drip-more-menu" role="menu">
+                            {campaign.status === "scheduled" ? (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={
+                                  deletingId !== null ||
+                                  duplicatingId === campaign.id ||
+                                  editingId === campaign.id
+                                }
+                                onClick={() => void handleEditScheduled(campaign)}
+                              >
+                                <EditIcon />
+                                {editingId === campaign.id
+                                  ? "Opening..."
+                                  : "Edit campaign"}
+                              </button>
+                            ) : null}
                             {canPauseOrResume(campaign) ? (
                               <button
                                 type="button"
@@ -735,7 +790,8 @@ export default function PortalDripPage({
                                 disabled={
                                   deletingId !== null ||
                                   duplicatingId === campaign.id ||
-                                  pausingId === campaign.id
+                                  pausingId === campaign.id ||
+                                  editingId === campaign.id
                                 }
                                 onClick={() => void handlePauseToggle(campaign)}
                               >

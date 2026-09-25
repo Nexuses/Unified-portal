@@ -35,10 +35,73 @@ type ImportRow = {
   companyName: string;
   attributes: Record<string, string>;
   inFileDuplicate: boolean;
+  unsubscribed: boolean;
   existingLists: ExistingListRef[];
 };
 
 const STEP_ORDER: WizardStep[] = ["name", "upload", "mapping", "confirm"];
+const CONFIRM_PAGE_SIZE = 50;
+
+function ConfirmImportPagination({
+  total,
+  page,
+  pageSize,
+  onPage,
+}: {
+  total: number;
+  page: number;
+  pageSize: number;
+  onPage: (next: number) => void;
+}) {
+  if (total <= pageSize) {
+    return null;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const start = (currentPage - 1) * pageSize + 1;
+  const end = Math.min(currentPage * pageSize, total);
+
+  return (
+    <div className="drip-pagination list-confirm-pagination">
+      <span className="drip-page-range">
+        {start}-{end} of {total.toLocaleString()}
+      </span>
+      <div className="drip-page-controls">
+        <select
+          value={currentPage}
+          onChange={(event) => onPage(Number(event.target.value))}
+          aria-label="Page"
+        >
+          {Array.from({ length: totalPages }, (_, index) => (
+            <option key={index + 1} value={index + 1}>
+              {index + 1}
+            </option>
+          ))}
+        </select>
+        <span>of {totalPages} pages</span>
+        <button
+          type="button"
+          className="drip-page-arrow"
+          disabled={currentPage <= 1}
+          onClick={() => onPage(currentPage - 1)}
+          aria-label="Previous page"
+        >
+          ‹
+        </button>
+        <button
+          type="button"
+          className="drip-page-arrow"
+          disabled={currentPage >= totalPages}
+          onClick={() => onPage(currentPage + 1)}
+          aria-label="Next page"
+        >
+          ›
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function CloudUploadIcon() {
   return (
@@ -113,8 +176,17 @@ export default function PortalCreateListPage() {
   const [importProgress, setImportProgress] = useState("");
   const [error, setError] = useState("");
   const [confirmRows, setConfirmRows] = useState<ImportRow[]>([]);
+  const [confirmPage, setConfirmPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupProgress, setLookupProgress] = useState({
+    processed: 0,
+    total: 0,
+  });
+  const [removeDialog, setRemoveDialog] = useState<{
+    ids: string[];
+    reason: "duplicates" | "other-lists" | "unsubscribed";
+  } | null>(null);
 
   function attributeLabel(key: string) {
     return (
@@ -156,6 +228,13 @@ export default function PortalCreateListPage() {
     [confirmRows],
   );
 
+  const unsubscribedCount = useMemo(
+    () =>
+      confirmRows.filter((row) => !row.inFileDuplicate && row.unsubscribed)
+        .length,
+    [confirmRows],
+  );
+
   const importableRows = useMemo(
     () =>
       confirmRows.filter(
@@ -164,14 +243,30 @@ export default function PortalCreateListPage() {
     [confirmRows, selectedIds],
   );
 
-  const selectableRows = useMemo(
-    () => confirmRows.filter((row) => !row.inFileDuplicate),
-    [confirmRows],
+  const confirmTotalPages = Math.max(
+    1,
+    Math.ceil(confirmRows.length / CONFIRM_PAGE_SIZE),
+  );
+  const safeConfirmPage = Math.min(confirmPage, confirmTotalPages);
+  const pagedConfirmRows = useMemo(() => {
+    const start = (safeConfirmPage - 1) * CONFIRM_PAGE_SIZE;
+    return confirmRows.slice(start, start + CONFIRM_PAGE_SIZE);
+  }, [confirmRows, safeConfirmPage]);
+
+  const pageSelectableRows = useMemo(
+    () => pagedConfirmRows.filter((row) => !row.inFileDuplicate),
+    [pagedConfirmRows],
   );
 
-  const allSelectableChecked =
-    selectableRows.length > 0 &&
-    selectableRows.every((row) => selectedIds.has(row.id));
+  const allPageSelectableChecked =
+    pageSelectableRows.length > 0 &&
+    pageSelectableRows.every((row) => selectedIds.has(row.id));
+
+  useEffect(() => {
+    if (confirmPage > confirmTotalPages) {
+      setConfirmPage(confirmTotalPages);
+    }
+  }, [confirmPage, confirmTotalPages]);
 
   useEffect(() => {
     if (step !== "confirm") {
@@ -193,46 +288,70 @@ export default function PortalCreateListPage() {
         companyName: row.companyName,
         attributes: row.attributes,
         inFileDuplicate,
+        unsubscribed: false,
         existingLists: [],
       };
     });
 
     setConfirmRows(rows);
+    setConfirmPage(1);
     setSelectedIds(
       new Set(rows.filter((row) => !row.inFileDuplicate).map((row) => row.id)),
     );
 
     const uniqueEmails = [...seen];
     if (uniqueEmails.length === 0) {
+      setLookupLoading(false);
+      setLookupProgress({ processed: 0, total: 0 });
       return;
     }
 
     let cancelled = false;
     setLookupLoading(true);
+    setLookupProgress({ processed: 0, total: uniqueEmails.length });
 
     void (async () => {
       try {
         const matchMap = new Map<string, ExistingListRef[]>();
+        const unsubscribedSet = new Set<string>();
         const LOOKUP_CHUNK = 500;
         for (let index = 0; index < uniqueEmails.length; index += LOOKUP_CHUNK) {
           if (cancelled) {
             return;
           }
           const emailChunk = uniqueEmails.slice(index, index + LOOKUP_CHUNK);
-          const response = await fetch("/api/crm/contacts/lookup-lists", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ emails: emailChunk }),
-          });
-          const data = await response.json();
-          if (cancelled || !response.ok) {
+          try {
+            const response = await fetch("/api/crm/contacts/lookup-lists", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ emails: emailChunk }),
+            });
+            const data = await response.json();
+            if (cancelled) {
+              return;
+            }
+            if (response.ok) {
+              for (const match of (data.matches as
+                | Array<{ email: string; lists: ExistingListRef[] }>
+                | undefined) ?? []) {
+                matchMap.set(match.email.toLowerCase(), match.lists);
+              }
+              for (const email of (data.unsubscribedEmails as
+                | string[]
+                | undefined) ?? []) {
+                unsubscribedSet.add(email.toLowerCase());
+              }
+            }
+          } catch {
+            // Continue remaining chunks so progress still completes.
+          }
+          if (cancelled) {
             return;
           }
-          for (const match of (data.matches as
-            | Array<{ email: string; lists: ExistingListRef[] }>
-            | undefined) ?? []) {
-            matchMap.set(match.email.toLowerCase(), match.lists);
-          }
+          setLookupProgress({
+            processed: Math.min(index + emailChunk.length, uniqueEmails.length),
+            total: uniqueEmails.length,
+          });
         }
         if (cancelled) {
           return;
@@ -241,12 +360,17 @@ export default function PortalCreateListPage() {
           current.map((row) => ({
             ...row,
             existingLists: matchMap.get(row.email) ?? [],
+            unsubscribed: unsubscribedSet.has(row.email),
           })),
         );
       } catch {
         // Keep confirm usable even if lookup fails.
       } finally {
         if (!cancelled) {
+          setLookupProgress({
+            processed: uniqueEmails.length,
+            total: uniqueEmails.length,
+          });
           setLookupLoading(false);
         }
       }
@@ -257,13 +381,12 @@ export default function PortalCreateListPage() {
     };
   }, [step, mappedContacts]);
 
-  const sampleForHeader = (header: string) => {
-    const index = csvHeaders.indexOf(header);
-    if (index < 0) {
+  const sampleForHeader = (columnIndex: number) => {
+    if (columnIndex < 0 || columnIndex >= csvHeaders.length) {
       return [];
     }
     return csvRows
-      .map((row) => row[index] ?? "")
+      .map((row) => row[columnIndex] ?? "")
       .filter(Boolean)
       .slice(0, 3);
   };
@@ -285,25 +408,75 @@ export default function PortalCreateListPage() {
   }
 
   function toggleAllSelectable() {
-    if (allSelectableChecked) {
-      setSelectedIds(new Set());
-      return;
-    }
-    setSelectedIds(new Set(selectableRows.map((row) => row.id)));
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (allPageSelectableChecked) {
+        for (const row of pageSelectableRows) {
+          next.delete(row.id);
+        }
+        return next;
+      }
+      for (const row of pageSelectableRows) {
+        next.add(row.id);
+      }
+      return next;
+    });
   }
 
-  function removeSelectedRows() {
-    if (selectedIds.size === 0) {
+  function openRemoveDialog(
+    ids: string[],
+    reason: "duplicates" | "other-lists" | "unsubscribed",
+  ) {
+    if (ids.length === 0) {
       return;
     }
-    setConfirmRows((current) =>
-      current.filter((row) => !selectedIds.has(row.id)),
+    setSelectedIds(new Set(ids));
+    setRemoveDialog({ ids, reason });
+  }
+
+  function requestRemoveDuplicates() {
+    openRemoveDialog(
+      confirmRows.filter((row) => row.inFileDuplicate).map((row) => row.id),
+      "duplicates",
     );
-    setSelectedIds(new Set());
   }
 
-  function removeDuplicateRows() {
-    setConfirmRows((current) => current.filter((row) => !row.inFileDuplicate));
+  function requestRemoveOnOtherLists() {
+    openRemoveDialog(
+      confirmRows
+        .filter((row) => !row.inFileDuplicate && row.existingLists.length > 0)
+        .map((row) => row.id),
+      "other-lists",
+    );
+  }
+
+  function requestRemoveUnsubscribed() {
+    openRemoveDialog(
+      confirmRows
+        .filter((row) => !row.inFileDuplicate && row.unsubscribed)
+        .map((row) => row.id),
+      "unsubscribed",
+    );
+  }
+
+  function confirmRemoveRows() {
+    if (!removeDialog) {
+      return;
+    }
+    const ids = new Set(removeDialog.ids);
+    const nextRows = confirmRows.filter((row) => !ids.has(row.id));
+    setConfirmRows(nextRows);
+    setSelectedIds(
+      new Set(
+        nextRows.filter((row) => !row.inFileDuplicate).map((row) => row.id),
+      ),
+    );
+    setRemoveDialog(null);
+    setConfirmPage(1);
+  }
+
+  function closeRemoveDialog() {
+    setRemoveDialog(null);
   }
   function addAttribute(mapToHeader?: string) {
     const label = newAttributeLabel.trim() || mapToHeader?.trim() || "";
@@ -404,6 +577,8 @@ export default function PortalCreateListPage() {
       );
       return;
     }
+    setLookupLoading(true);
+    setLookupProgress({ processed: 0, total: 0 });
     setStep("confirm");
   }
 
@@ -644,21 +819,21 @@ export default function PortalCreateListPage() {
               <span>Contact attribute</span>
               <span>Mapped</span>
             </div>
-            {csvHeaders.map((header) => {
+            {csvHeaders.map((header, columnIndex) => {
               const mappedTo = columnMapping[header] ?? "";
-              const samples = sampleForHeader(header);
+              const samples = sampleForHeader(columnIndex);
               return (
                 <div
-                  key={header}
+                  key={`map-col-${columnIndex}-${header}`}
                   className={`list-map-row${mappedTo ? " mapped" : ""}`}
                 >
-                  <strong title={header}>{header}</strong>
+                  <strong title={header}>{header || `Column ${columnIndex + 1}`}</strong>
                   <div className="list-map-samples">
                     {samples.length === 0 ? (
                       <em>—</em>
                     ) : (
                       samples.map((sample, index) => (
-                        <span key={`${header}-${index}`}>{sample}</span>
+                        <span key={`${columnIndex}-${index}`}>{sample}</span>
                       ))
                     )}
                   </div>
@@ -761,155 +936,247 @@ export default function PortalCreateListPage() {
               <h3>
                 <span>4</span> Confirm import
               </h3>
-              <p>
-                Import <strong>{importableRows.length.toLocaleString()}</strong>{" "}
-                selected contact
-                {importableRows.length === 1 ? "" : "s"} into{" "}
-                <strong>{listName.trim()}</strong>
-                {importFileName ? ` from ${importFileName}` : ""}.
-                {duplicateCount > 0 ? (
-                  <>
-                    {" "}
-                    <strong className="list-dup-count">
-                      {duplicateCount.toLocaleString()} duplicate
-                      {duplicateCount === 1 ? "" : "s"}
-                    </strong>{" "}
-                    in this file will not be added.
-                  </>
-                ) : null}
-                {alreadyInListsCount > 0 ? (
-                  <>
-                    {" "}
-                    {alreadyInListsCount.toLocaleString()} contact
-                    {alreadyInListsCount === 1 ? " is" : "s are"} already on
-                    other lists.
-                  </>
-                ) : null}
+              {lookupLoading ? (
+                <p>
+                  Checking contacts against existing lists and the unsubscribe
+                  list before import.
+                </p>
+              ) : (
+                <p>
+                  Import{" "}
+                  <strong>{importableRows.length.toLocaleString()}</strong>{" "}
+                  selected contact
+                  {importableRows.length === 1 ? "" : "s"} into{" "}
+                  <strong>{listName.trim()}</strong>
+                  {importFileName ? ` from ${importFileName}` : ""}.
+                  {duplicateCount > 0 ? (
+                    <>
+                      {" "}
+                      <strong className="list-dup-count">
+                        {duplicateCount.toLocaleString()} duplicate
+                        {duplicateCount === 1 ? "" : "s"}
+                      </strong>{" "}
+                      in this file will not be added.
+                    </>
+                  ) : null}
+                  {alreadyInListsCount > 0 ? (
+                    <>
+                      {" "}
+                      {alreadyInListsCount.toLocaleString()} contact
+                      {alreadyInListsCount === 1 ? " is" : "s are"} already on
+                      other lists.
+                    </>
+                  ) : null}
+                  {unsubscribedCount > 0 ? (
+                    <>
+                      {" "}
+                      <strong className="list-unsub-count">
+                        {unsubscribedCount.toLocaleString()}
+                      </strong>{" "}
+                      contact
+                      {unsubscribedCount === 1 ? " is" : "s are"} on the
+                      unsubscribe list.
+                    </>
+                  ) : null}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {lookupLoading ? (
+            <div
+              className="list-confirm-checking"
+              role="status"
+              aria-live="polite"
+            >
+              <div className="list-confirm-checking-spinner" aria-hidden />
+              <div className="list-confirm-checking-copy">
+                <strong>Checking contacts…</strong>
+                <p>
+                  Processed{" "}
+                  <strong>
+                    {lookupProgress.processed.toLocaleString()}
+                  </strong>{" "}
+                  of{" "}
+                  <strong>{lookupProgress.total.toLocaleString()}</strong>{" "}
+                  unique email
+                  {lookupProgress.total === 1 ? "" : "s"}.
+                </p>
+              </div>
+              <div
+                className="list-confirm-checking-bar"
+                aria-hidden={lookupProgress.total === 0}
+              >
+                <div
+                  className="list-confirm-checking-bar-fill"
+                  style={{
+                    width:
+                      lookupProgress.total > 0
+                        ? `${Math.min(
+                            100,
+                            Math.round(
+                              (lookupProgress.processed /
+                                lookupProgress.total) *
+                                100,
+                            ),
+                          )}%`
+                        : "0%",
+                  }}
+                />
+              </div>
+              <p className="list-confirm-checking-hint">
+                The contact list will appear when every email has been checked.
               </p>
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="list-confirm-toolbar">
+                <div className="list-confirm-toolbar-actions">
+                  {alreadyInListsCount > 0 ? (
+                    <button
+                      type="button"
+                      className="btn-soft"
+                      onClick={requestRemoveOnOtherLists}
+                    >
+                      Remove on other list contact (
+                      {alreadyInListsCount.toLocaleString()})
+                    </button>
+                  ) : null}
+                  {unsubscribedCount > 0 ? (
+                    <button
+                      type="button"
+                      className="btn-soft"
+                      onClick={requestRemoveUnsubscribed}
+                    >
+                      Remove contacts which are on unsubscribe (
+                      {unsubscribedCount.toLocaleString()})
+                    </button>
+                  ) : null}
+                  {duplicateCount > 0 ? (
+                    <button
+                      type="button"
+                      className="btn-soft"
+                      onClick={requestRemoveDuplicates}
+                    >
+                      Remove duplicate contact (
+                      {duplicateCount.toLocaleString()})
+                    </button>
+                  ) : null}
+                </div>
+              </div>
 
-          <div className="list-confirm-toolbar">
-            <div className="list-confirm-toolbar-actions">
-              {duplicateCount > 0 ? (
-                <button
-                  type="button"
-                  className="btn-soft"
-                  onClick={removeDuplicateRows}
-                >
-                  Hide duplicates
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="btn-soft"
-                onClick={removeSelectedRows}
-                disabled={selectedIds.size === 0}
-              >
-                Remove selected
-                {selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}
-              </button>
-            </div>
-          </div>
-
-          <div className="crm-preview list-confirm-preview">
-            <table>
-              <thead>
-                <tr>
-                  <th className="list-confirm-name-col">
-                    <label className="list-confirm-select-all">
-                      <input
-                        type="checkbox"
-                        checked={allSelectableChecked}
-                        onChange={toggleAllSelectable}
-                        disabled={selectableRows.length === 0}
-                        aria-label="Select all"
-                      />
-                      <span>First name</span>
-                    </label>
-                  </th>
-                  <th>Last name</th>
-                  <th>Email</th>
-                  <th>Company</th>
-                  <th>Already in lists</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {confirmRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={6}>No contacts left to import.</td>
-                  </tr>
-                ) : (
-                  confirmRows.map((row) => {
-                    const checked = selectedIds.has(row.id);
-                    return (
-                      <tr
-                        key={row.id}
-                        className={
-                          row.inFileDuplicate
-                            ? "list-confirm-dup"
-                            : row.existingLists.length > 0
-                              ? "list-confirm-existing"
-                              : undefined
-                        }
-                      >
-                        <td className="list-confirm-name-col">
-                          <label className="list-confirm-row-name">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              disabled={row.inFileDuplicate}
-                              onChange={() => toggleRow(row.id)}
-                              aria-label={`Select ${row.email}`}
-                            />
-                            <span>{row.firstName}</span>
-                          </label>
-                        </td>
-                        <td>{row.lastName || "—"}</td>
-                        <td>{row.email}</td>
-                        <td>{row.companyName || "—"}</td>
-                        <td>
-                          {lookupLoading && !row.inFileDuplicate ? (
-                            <span className="list-confirm-muted">Checking…</span>
-                          ) : row.existingLists.length === 0 ? (
-                            "—"
-                          ) : (
-                            <span className="list-confirm-lists">
-                              {row.existingLists
-                                .map(
-                                  (list) =>
-                                    `${list.name} (#${list.displayId})`,
-                                )
-                                .join(", ")}
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          {row.inFileDuplicate ? (
-                            <span className="list-status-pill dup">Duplicate</span>
-                          ) : row.existingLists.length > 0 ? (
-                            <span className="list-status-pill existing">
-                              On other list
-                            </span>
-                          ) : (
-                            <span className="list-status-pill new">New</span>
-                          )}
-                        </td>
+              <div className="crm-preview list-confirm-preview">
+                <table>
+                  <thead>
+                    <tr>
+                      <th className="list-confirm-name-col">
+                        <label className="list-confirm-select-all">
+                          <input
+                            type="checkbox"
+                            checked={allPageSelectableChecked}
+                            onChange={toggleAllSelectable}
+                            disabled={pageSelectableRows.length === 0}
+                            aria-label="Select all on this page"
+                          />
+                          <span>First name</span>
+                        </label>
+                      </th>
+                      <th>Last name</th>
+                      <th>Email</th>
+                      <th>Company</th>
+                      <th>Already in lists</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {confirmRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={6}>No contacts left to import.</td>
                       </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+                    ) : (
+                      pagedConfirmRows.map((row) => {
+                        const checked = selectedIds.has(row.id);
+                        return (
+                          <tr
+                            key={row.id}
+                            className={
+                              row.inFileDuplicate
+                                ? "list-confirm-dup"
+                                : row.unsubscribed
+                                  ? "list-confirm-unsub"
+                                  : row.existingLists.length > 0
+                                    ? "list-confirm-existing"
+                                    : undefined
+                            }
+                          >
+                            <td className="list-confirm-name-col">
+                              <label className="list-confirm-row-name">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleRow(row.id)}
+                                  aria-label={`Select ${row.email}`}
+                                />
+                                <span>{row.firstName}</span>
+                              </label>
+                            </td>
+                            <td>{row.lastName || "—"}</td>
+                            <td>{row.email}</td>
+                            <td>{row.companyName || "—"}</td>
+                            <td>
+                              {row.existingLists.length === 0 ? (
+                                "—"
+                              ) : (
+                                <span className="list-confirm-lists">
+                                  {row.existingLists
+                                    .map(
+                                      (list) =>
+                                        `${list.name} (#${list.displayId})`,
+                                    )
+                                    .join(", ")}
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              {row.inFileDuplicate ? (
+                                <span className="list-status-pill dup">
+                                  Duplicate
+                                </span>
+                              ) : row.unsubscribed ? (
+                                <span className="list-status-pill unsub">
+                                  Unsubscribed
+                                </span>
+                              ) : row.existingLists.length > 0 ? (
+                                <span className="list-status-pill existing">
+                                  On other list
+                                </span>
+                              ) : (
+                                <span className="list-status-pill new">New</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <ConfirmImportPagination
+                total={confirmRows.length}
+                page={safeConfirmPage}
+                pageSize={CONFIRM_PAGE_SIZE}
+                onPage={setConfirmPage}
+              />
+            </>
+          )}
 
           <div className="list-create-actions">
             <button
               type="button"
               className="btn-soft"
               onClick={() => setStep("mapping")}
-              disabled={saving}
+              disabled={saving || lookupLoading}
             >
               Back
             </button>
@@ -917,12 +1184,71 @@ export default function PortalCreateListPage() {
               type="button"
               className="btn-dark"
               onClick={() => void handleCreate()}
-              disabled={saving || importableRows.length === 0}
+              disabled={
+                saving || lookupLoading || importableRows.length === 0
+              }
             >
               {saving
                 ? importProgress || "Importing…"
-                : `Create list & import (${importableRows.length.toLocaleString()})`}
+                : lookupLoading
+                  ? `Checking… ${lookupProgress.processed.toLocaleString()}/${lookupProgress.total.toLocaleString()}`
+                  : `Create list & import (${importableRows.length.toLocaleString()})`}
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {removeDialog ? (
+        <div className="crm-modal-backdrop" onClick={closeRemoveDialog}>
+          <div
+            className="crm-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="list-remove-contacts-title"
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="list-remove-contacts-title">Remove contacts?</h3>
+                <p>
+                  {removeDialog.reason === "duplicates"
+                    ? `Remove ${removeDialog.ids.length.toLocaleString()} duplicate contact${
+                        removeDialog.ids.length === 1 ? "" : "s"
+                      } from this import? They will not be added to the list.`
+                    : removeDialog.reason === "unsubscribed"
+                      ? `Remove ${removeDialog.ids.length.toLocaleString()} unsubscribed contact${
+                          removeDialog.ids.length === 1 ? "" : "s"
+                        } from this import? They will not be added to the list.`
+                      : `Remove ${removeDialog.ids.length.toLocaleString()} contact${
+                          removeDialog.ids.length === 1 ? "" : "s"
+                        } already on other lists from this import?`}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                onClick={closeRemoveDialog}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-foot">
+              <button
+                type="button"
+                className="btn-soft"
+                onClick={closeRemoveDialog}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                onClick={confirmRemoveRows}
+              >
+                Remove ({removeDialog.ids.length.toLocaleString()})
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

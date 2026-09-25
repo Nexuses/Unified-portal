@@ -10,6 +10,10 @@ import {
   isSessionError,
   requirePortalSession,
 } from "@/lib/require-portal-session";
+import {
+  getSuppressionSets,
+  isSuppressedAddress,
+} from "@/lib/unsubscribe-server";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -32,7 +36,8 @@ function chunkArray<T>(items: T[], size: number) {
 
 /**
  * POST body: { emails: string[] }
- * Returns list memberships for contacts that already exist in the project.
+ * Returns list memberships for contacts that already exist in the project,
+ * plus which emails are on the unsubscribe / suppression list.
  * No hard cap on email count — lookups are batched server-side.
  */
 export async function POST(request: NextRequest) {
@@ -53,11 +58,15 @@ export async function POST(request: NextRequest) {
     );
 
     if (emails.length === 0) {
-      return NextResponse.json({ matches: [] });
+      return NextResponse.json({ matches: [], unsubscribedEmails: [] });
     }
 
     const projectId = new ObjectId(session.projectId);
     const db = await getDb();
+    const suppression = await getSuppressionSets(projectId);
+    const unsubscribedEmails = emails.filter((email) =>
+      isSuppressedAddress(email, suppression),
+    );
 
     const contacts: Array<Pick<ContactDoc, "_id" | "email">> = [];
     for (const emailChunk of chunkArray(emails, LOOKUP_CHUNK)) {
@@ -72,7 +81,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (contacts.length === 0) {
-      return NextResponse.json({ matches: [] });
+      return NextResponse.json({ matches: [], unsubscribedEmails });
     }
 
     const contactIds = contacts.map((contact) => contact._id);
@@ -146,7 +155,7 @@ export async function POST(request: NextRequest) {
         lists: listsByEmail.get(email) ?? [],
       }));
 
-    return NextResponse.json({ matches });
+    return NextResponse.json({ matches, unsubscribedEmails });
   } catch (error) {
     console.error("Failed to look up contact lists:", error);
     return NextResponse.json(

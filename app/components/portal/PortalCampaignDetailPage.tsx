@@ -508,14 +508,22 @@ function applyVariableMap(
   text: string,
   values: Record<string, string>,
   forHtml = false,
+  options?: {
+    /**
+     * When true, leave `{{ unsubscribe }}` alone so the send API can turn it
+     * into a real /t/u/ link (and skip the auto footer). Preview UI still uses
+     * the `#unsubscribe` placeholder.
+     */
+    preserveUnsubscribe?: boolean;
+  },
 ) {
   if (!text) {
     return "";
   }
-  const withUnsubscribe = replaceUnsubscribeVariables(
-    normalizeEmailMergeTags(text),
-    "#unsubscribe",
-  );
+  const normalized = normalizeEmailMergeTags(text);
+  const withUnsubscribe = options?.preserveUnsubscribe
+    ? normalized
+    : replaceUnsubscribeVariables(normalized, "#unsubscribe");
   return withUnsubscribe.replace(
     /\{\{\s*contact\.([A-Za-z]+)\s*\}\}/g,
     (_, key: string) => {
@@ -2206,7 +2214,11 @@ function PreviewTestModal({
     }
 
     const testSubject = applyVariableMap(campaign.subject ?? "", testVariables);
-    const testHtml = applyVariableMap(html, testVariables, true);
+    // Keep {{ unsubscribe }} so injectCampaignTracking can resolve it and
+    // avoid appending a second system Unsubscribe footer.
+    const testHtml = applyVariableMap(html, testVariables, true, {
+      preserveUnsubscribe: true,
+    });
 
     setSendingTest(true);
     setTestStatus("");
@@ -2758,12 +2770,12 @@ function CustomHtmlEditor({
 
       <div className="drip-html-editor-canvas">
         <div className="drip-html-variable-hint">
-          Unsubscribe tags already in your HTML, such as{" "}
+          If your HTML already includes{" "}
           <code>{"{{ unsubscribe }}"}</code> or{" "}
-          <code>{'<a href="{{ unsubscribe }}">Unsubscribe</a>'}</code>, are
-          turned into real unsubscribe links on send. If you omit them, a
-          footer unsubscribe link is added automatically. Other merge tags
-          become <code>{"{{ contact.FIRSTNAME }}"}</code>,{" "}
+          <code>{'<a href="{{ unsubscribe }}">Unsubscribe</a>'}</code>, that
+          link is used on send and no extra unsubscribe footer is added. Only
+          when you leave it out do we append a footer unsubscribe link. Other
+          merge tags become <code>{"{{ contact.FIRSTNAME }}"}</code>,{" "}
           <code>{"{{ contact.LASTNAME }}"}</code>,{" "}
           <code>{"{{ contact.EMAIL }}"}</code>, and{" "}
           <code>{"{{ contact.COMPANY }}"}</code>.
@@ -4152,7 +4164,9 @@ export default function PortalCampaignDetailPage({
   const automationStepId = searchParams.get("stepId");
   const queryFollowUp = searchParams.get("automationFollowUp") === "1";
   const automationRecordId = searchParams.get("automationId");
+  const showRescheduleNotice = searchParams.get("reschedule") === "1";
   const [campaign, setCampaign] = useState<DripCampaign | null>(null);
+  const [rescheduleNotice, setRescheduleNotice] = useState(showRescheduleNotice);
   const [loading, setLoading] = useState(true);
   const [senderPanelOpen, setSenderPanelOpen] = useState(false);
   const [recipientsPanelOpen, setRecipientsPanelOpen] = useState(false);
@@ -5112,7 +5126,14 @@ export default function PortalCampaignDetailPage({
       <PortalCampaignReport
         campaign={campaign}
         onCampaignChange={(next) => {
+          const wasScheduled = campaign.status === "scheduled";
           setCampaign(next);
+          if (wasScheduled && next.status === "draft") {
+            setRescheduleNotice(true);
+            router.replace(
+              `${portalCampaignRoute(next.id, next.kind === "oneone" ? "oneone" : kind)}?reschedule=1`,
+            );
+          }
         }}
       />
     );
@@ -5127,6 +5148,41 @@ export default function PortalCampaignDetailPage({
         <span>/</span>
         <span>Create an email campaign</span>
       </div>
+
+      {rescheduleNotice || showRescheduleNotice ? (
+        <div className="drip-reschedule-alert" role="status">
+          <div className="drip-reschedule-alert-body">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 8v5" />
+              <circle cx="12" cy="16.2" r=".9" fill="currentColor" stroke="none" />
+            </svg>
+            <div>
+              <strong>Reschedule required</strong>
+              <p>
+                This campaign is no longer scheduled. Make your changes, then use{" "}
+                <em>Schedule</em> again so it sends at the new time.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="drip-reschedule-alert-close"
+            aria-label="Dismiss"
+            onClick={() => {
+              setRescheduleNotice(false);
+              router.replace(
+                portalCampaignRoute(
+                  campaign.id,
+                  campaign.kind === "oneone" ? "oneone" : kind,
+                ),
+              );
+            }}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
 
       <div className="drip-detail-head">
         <div className="drip-detail-title-wrap">

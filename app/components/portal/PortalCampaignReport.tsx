@@ -212,6 +212,7 @@ export default function PortalCampaignReport({
     message: string;
   } | null>(null);
   const [pausing, setPausing] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [sequencesOpen, setSequencesOpen] = useState(false);
   const [sequencePreviewIndex, setSequencePreviewIndex] = useState(0);
   const isPublic = Boolean(publicToken);
@@ -502,6 +503,35 @@ export default function PortalCampaignReport({
     isOneOne &&
     (campaign.status === "sending" || campaign.status === "scheduled");
   const canResume = !isPublic && isOneOne && isPaused;
+  const canEditScheduled =
+    !isPublic && Boolean(onCampaignChange) && campaign.status === "scheduled";
+
+  async function editScheduledCampaign() {
+    if (!canEditScheduled || editing) {
+      return;
+    }
+    setEditing(true);
+    try {
+      const kind = campaign.kind === "oneone" ? "oneone" : "drip";
+      const updated = await patchDripCampaign(
+        campaign.id,
+        { status: "draft" },
+        kind,
+      );
+      onCampaignChange?.(updated);
+    } catch (error) {
+      setShareToast({
+        key: Date.now(),
+        variant: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Failed to open campaign for editing",
+      });
+    } finally {
+      setEditing(false);
+    }
+  }
 
   async function togglePause() {
     if (pausing || isPublic || !isOneOne) {
@@ -728,11 +758,21 @@ export default function PortalCampaignReport({
           </div>
         </div>
         <div className="drip-report-actions">
+          {canEditScheduled ? (
+            <button
+              type="button"
+              className="btn-soft drip-report-edit-action"
+              disabled={editing || pausing}
+              onClick={() => void editScheduledCampaign()}
+            >
+              {editing ? "Opening…" : "Edit campaign"}
+            </button>
+          ) : null}
           {canPause || canResume ? (
             <button
               type="button"
               className={`drip-report-pause-action${canResume ? " btn-dark" : " btn-soft"}`}
-              disabled={pausing}
+              disabled={pausing || editing}
               onClick={() => void togglePause()}
             >
               {canResume ? <ResumeIcon /> : <PauseIcon />}

@@ -376,20 +376,92 @@ function injectOpenPixel(html: string, openUrl: string) {
   return `${html}${pixel}`;
 }
 
+function isUnsubscribeMergeInner(inner: string) {
+  return /unsubscribe|unsub|optout|opt[\s_-]*out|listunsub|list[\s_-]*unsub/i.test(
+    inner.replace(/\s+/g, ""),
+  );
+}
+
+/**
+ * True when the design already includes an unsubscribe merge tag or link.
+ * Used to avoid appending a second system footer when the user provided their own.
+ */
+function htmlHasUnsubscribeIntent(html: string) {
+  if (!html) {
+    return false;
+  }
+
+  // Merge tags: {{ unsubscribe }}, {{{ unsub }}}, *|UNSUB|*, %%unsubscribe%%, [[unsubscribe]]
+  if (
+    /\{\{\{\s*[^}]+?\s*\}\}\}/i.test(html) &&
+    [...html.matchAll(/\{\{\{\s*([^}]+?)\s*\}\}\}/gi)].some((match) =>
+      isUnsubscribeMergeInner(match[1] ?? ""),
+    )
+  ) {
+    return true;
+  }
+  if (
+    [...html.matchAll(/\{\{\s*([^}]+?)\s*\}\}/gi)].some((match) =>
+      isUnsubscribeMergeInner(match[1] ?? ""),
+    )
+  ) {
+    return true;
+  }
+  if (/\*\|[^|]*UNSUB[^|]*\|\*/i.test(html)) {
+    return true;
+  }
+  if (/%%[^%]*unsub[^%]*%/i.test(html)) {
+    return true;
+  }
+  if (/\[\[[^\]]*unsub[^\]]*\]\]/i.test(html)) {
+    return true;
+  }
+
+  // Preview placeholder used by the campaign editor UI
+  if (/href\s*=\s*(["'])\s*#unsubscribe\s*\1/i.test(html)) {
+    return true;
+  }
+
+  // Any href that already points at an unsubscribe / opt-out URL (ours or theirs)
+  if (
+    /href\s*=\s*(["'])[^"']*(?:\/t\/u\/|\/unsubscribe\/|unsubscribe|opt[\s_-]*out|list-unsubscribe)[^"']*\1/i.test(
+      html,
+    )
+  ) {
+    return true;
+  }
+
+  // Linked control whose label is clearly an unsubscribe action
+  if (
+    /<a\b[^>]*\bhref\s*=\s*(["'])[^"']+\1[^>]*>[\s\S]*?(?:unsubscribe|opt[\s_-]*out|manage\s+preferences)[\s\S]*?<\/a>/i.test(
+      html,
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function hasUnsubscribeHref(html: string, unsubscribeUrl: string) {
   return (
     html.includes(unsubscribeUrl) ||
+    /href\s*=\s*(["'])\s*#unsubscribe\s*\1/i.test(html) ||
     /href\s*=\s*(["'])[^"']*\/t\/u\/[^"']+\1/i.test(html) ||
-    /href\s*=\s*(["'])[^"']*\/unsubscribe\/[^"']+\1/i.test(html)
+    /href\s*=\s*(["'])[^"']*\/unsubscribe\/[^"']+\1/i.test(html) ||
+    /href\s*=\s*(["'])[^"']*(?:unsubscribe|opt[\s_-]*out|list-unsubscribe)[^"']*\1/i.test(
+      html,
+    )
   );
 }
 
 /**
  * Replace merge tags with a real unsubscribe link.
- * Tags already inside href="…" become the raw URL; standalone tags become an <a>.
- * If the email has no unsubscribe href at all, append a footer link.
+ * If the design already has {{ unsubscribe }} (or another unsub link), use that only.
+ * Only append a footer unsubscribe when the HTML has none.
  */
 function injectUnsubscribe(html: string, unsubscribeUrl: string) {
+  const userProvided = htmlHasUnsubscribeIntent(html);
   let next = html;
 
   // href="{{ unsubscribe }}" (and aliases) → href="https://…/t/u/…"
@@ -397,27 +469,33 @@ function injectUnsubscribe(html: string, unsubscribeUrl: string) {
     /href\s*=\s*(["'])\s*(?:\{\{\{\s*([^}]+?)\s*\}\}\}|\{\{\s*([^}]+?)\s*\}\})\s*\1/gi,
     (full, quote: string, tripleInner?: string, doubleInner?: string) => {
       const inner = String(tripleInner ?? doubleInner ?? "");
-      if (!/unsubscribe|unsub|optout|listunsub/i.test(inner.replace(/\s+/g, ""))) {
+      if (!isUnsubscribeMergeInner(inner)) {
         return full;
       }
       return `href=${quote}${unsubscribeUrl}${quote}`;
     },
   );
 
+  // Preview placeholder left by the UI → real tracking URL
+  next = next.replace(
+    /href\s*=\s*(["'])\s*#unsubscribe\s*\1/gi,
+    (_full, quote: string) => `href=${quote}${unsubscribeUrl}${quote}`,
+  );
+
   // Remaining bare tags → clickable link (not plain text URL)
   const link = `<a href="${unsubscribeUrl}" target="_blank" rel="noopener noreferrer">Unsubscribe</a>`;
   next = replaceUnsubscribeVariables(next, link);
 
-  if (!hasUnsubscribeHref(next, unsubscribeUrl)) {
-    const footer = `<p style="margin:24px 0 0;font-size:12px;line-height:1.4;color:#666;">${link}</p>`;
-    if (/<\/body>/i.test(next)) {
-      next = next.replace(/<\/body>/i, `${footer}</body>`);
-    } else {
-      next = `${next}${footer}`;
-    }
+  // Respect the user's own unsub tag/link — never add a second footer.
+  if (userProvided || hasUnsubscribeHref(next, unsubscribeUrl)) {
+    return next;
   }
 
-  return next;
+  const footer = `<p style="margin:24px 0 0;font-size:12px;line-height:1.4;color:#666;">${link}</p>`;
+  if (/<\/body>/i.test(next)) {
+    return next.replace(/<\/body>/i, `${footer}</body>`);
+  }
+  return `${next}${footer}`;
 }
 
 export function injectCampaignTracking(

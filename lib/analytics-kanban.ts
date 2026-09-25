@@ -34,6 +34,10 @@ export type KanbanPerson = {
   email: string;
   fullName: string;
   companyName: string;
+  /** Corporate domain used to resolve a brand logo. */
+  companyDomain?: string;
+  /** Primary brand logo URL (Clearbit). */
+  companyLogoUrl?: string;
   contactId?: string;
   delivered: boolean;
   opened: boolean;
@@ -41,6 +45,49 @@ export type KanbanPerson = {
   campaigns: string[];
   lastActivityAt?: string;
 };
+
+const FREE_EMAIL_HOSTS = new Set([
+  "gmail.com",
+  "googlemail.com",
+  "yahoo.com",
+  "yahoo.co.in",
+  "hotmail.com",
+  "outlook.com",
+  "live.com",
+  "msn.com",
+  "icloud.com",
+  "me.com",
+  "aol.com",
+  "mail.com",
+  "proton.me",
+  "protonmail.com",
+  "pm.me",
+  "yandex.com",
+  "gmx.com",
+  "zoho.com",
+]);
+
+export function isFreeEmailHost(domain: string) {
+  return FREE_EMAIL_HOSTS.has(domain.trim().toLowerCase());
+}
+
+export function companyDomainFromEmail(email: string) {
+  const domain = email.split("@")[1]?.trim().toLowerCase();
+  if (!domain || isFreeEmailHost(domain) || !domain.includes(".")) {
+    return undefined;
+  }
+  return domain;
+}
+
+/** Real brand mark via Clearbit Logo API. */
+export function companyBrandLogoUrl(domain: string) {
+  return `https://logo.clearbit.com/${encodeURIComponent(domain)}`;
+}
+
+/** Favicon fallback when Clearbit has no mark. */
+export function companyFaviconUrl(domain: string) {
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`;
+}
 
 export type KanbanList = {
   id: string;

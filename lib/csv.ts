@@ -35,6 +35,17 @@ function parseCsvLine(line: string): string[] {
   return values;
 }
 
+/** Ensure header labels are unique for mapping UI keys (empty / duplicate columns). */
+export function uniquifyCsvHeaders(headers: string[]): string[] {
+  const seen = new Map<string, number>();
+  return headers.map((raw, index) => {
+    const base = raw.trim() || `Column ${index + 1}`;
+    const count = (seen.get(base) ?? 0) + 1;
+    seen.set(base, count);
+    return count === 1 ? base : `${base} (${count})`;
+  });
+}
+
 export function parseCsv(text: string): ParsedCsv {
   const lines = text
     .replace(/^\uFEFF/, "")
@@ -46,7 +57,7 @@ export function parseCsv(text: string): ParsedCsv {
     return { headers: [], rows: [] };
   }
 
-  const headers = parseCsvLine(lines[0]);
+  const headers = uniquifyCsvHeaders(parseCsvLine(lines[0]));
   const rows = lines.slice(1).map(parseCsvLine);
 
   return { headers, rows };
