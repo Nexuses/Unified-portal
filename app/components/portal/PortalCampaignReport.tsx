@@ -950,7 +950,13 @@ export default function PortalCampaignReport({
                   Sequence {sequences.length === 0 ? 0 : activeSequenceIndex + 1}
                   {sequences.length > 0 ? ` of ${sequences.length}` : ""}
                 </h3>
-                <p>{activeSequence?.subject?.trim() || "No subject set"}</p>
+                <p>
+                  {activeSequence?.subject?.trim()
+                    ? activeSequence.subject
+                    : activeSequenceIndex > 0
+                      ? "Same thread (no new subject)"
+                      : "No subject set"}
+                </p>
               </div>
               <button
                 type="button"

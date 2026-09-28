@@ -501,8 +501,7 @@ async function deliverWithSender(
 
   const replyTo = input.replyTo?.trim() || undefined;
   const listUnsubscribeUrl = input.listUnsubscribeUrl?.trim() || undefined;
-  const messageId =
-    sender.provider === "gmail" ? createOutboundMessageId() : undefined;
+  const messageId = createOutboundMessageId();
 
   const inReplyToRaw = String(input.inReplyTo ?? "").trim();
   const inReplyTo = inReplyToRaw
@@ -524,6 +523,13 @@ async function deliverWithSender(
   }
 
   if (sender.provider === "sendgrid" && sender.apiKey) {
+    const headers: Record<string, string> = { ...extraHeaders, "Message-ID": messageId };
+    if (inReplyTo) {
+      headers["In-Reply-To"] = inReplyTo;
+    }
+    if (referencesHeader) {
+      headers.References = referencesHeader;
+    }
     await sendWithSendgrid(sender.apiKey, {
       fromEmail,
       fromName: input.fromName?.trim(),
@@ -531,21 +537,33 @@ async function deliverWithSender(
       subject,
       html,
       replyTo,
-      listUnsubscribeUrl,
+      headers,
     });
-    return {};
+    return { messageId };
   }
 
   if (sender.provider === "resend" && sender.apiKey) {
+    const headers: Array<{ name: string; value: string }> = [
+      { name: "Message-ID", value: messageId },
+    ];
+    for (const [name, value] of Object.entries(extraHeaders)) {
+      headers.push({ name, value });
+    }
+    if (inReplyTo) {
+      headers.push({ name: "In-Reply-To", value: inReplyTo });
+    }
+    if (referencesHeader) {
+      headers.push({ name: "References", value: referencesHeader });
+    }
     await sendWithResend(sender.apiKey, {
       from,
       to: input.to,
       subject,
       html,
       replyTo,
-      listUnsubscribeUrl,
+      headers,
     });
-    return {};
+    return { messageId };
   }
 
   if (sender.provider === "cloudflare") {
@@ -604,7 +622,7 @@ async function sendWithSendgrid(
     subject: string;
     html: string;
     replyTo?: string;
-    listUnsubscribeUrl?: string;
+    headers?: Record<string, string>;
   },
 ) {
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
@@ -621,12 +639,10 @@ async function sendWithSendgrid(
       reply_to: mail.replyTo ? { email: mail.replyTo } : undefined,
       subject: mail.subject,
       content: [{ type: "text/html", value: mail.html }],
-      headers: mail.listUnsubscribeUrl
-        ? {
-            "List-Unsubscribe": `<${mail.listUnsubscribeUrl}>`,
-            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-          }
-        : undefined,
+      headers:
+        mail.headers && Object.keys(mail.headers).length > 0
+          ? mail.headers
+          : undefined,
     }),
   });
 
@@ -644,7 +660,7 @@ async function sendWithResend(
     subject: string;
     html: string;
     replyTo?: string;
-    listUnsubscribeUrl?: string;
+    headers?: Array<{ name: string; value: string }>;
   },
 ) {
   const response = await fetch("https://api.resend.com/emails", {
@@ -659,18 +675,7 @@ async function sendWithResend(
       subject: mail.subject,
       html: mail.html,
       reply_to: mail.replyTo,
-      headers: mail.listUnsubscribeUrl
-        ? [
-            {
-              name: "List-Unsubscribe",
-              value: `<${mail.listUnsubscribeUrl}>`,
-            },
-            {
-              name: "List-Unsubscribe-Post",
-              value: "List-Unsubscribe=One-Click",
-            },
-          ]
-        : undefined,
+      headers: mail.headers && mail.headers.length > 0 ? mail.headers : undefined,
     }),
   });
 

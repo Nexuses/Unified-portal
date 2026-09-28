@@ -3828,14 +3828,31 @@ function SequencesPanel({
               ) : null}
               <p className="drip-sequences-hint drip-sequence-timing">{timingParts.join(" ")}</p>
               <div className="crm-field">
-                <label htmlFor={`seq-subject-${sequence.id}`}>Subject</label>
+                <label htmlFor={`seq-subject-${sequence.id}`}>
+                  Subject
+                  {index === 0 ? (
+                    <span className="drip-required-mark"> *</span>
+                  ) : (
+                    <span className="drip-optional-mark"> (optional)</span>
+                  )}
+                </label>
                 <input
                   id={`seq-subject-${sequence.id}`}
                   type="text"
                   value={sequence.subject ?? ""}
-                  placeholder="Add a subject line"
+                  placeholder={
+                    index === 0
+                      ? "Add a subject line"
+                      : "Leave blank to stay in the same thread"
+                  }
                   onChange={(event) => updateSequence(sequence.id, { subject: event.target.value })}
                 />
+                {index > 0 ? (
+                  <p className="drip-sequences-hint drip-sequence-subject-hint">
+                    Leave this blank to send in the same thread. Add a subject
+                    to start a new thread.
+                  </p>
+                ) : null}
               </div>
               <div className="crm-field">
                 <label htmlFor={`seq-preview-${sequence.id}`}>Preview text</label>

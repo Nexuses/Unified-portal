@@ -78,7 +78,7 @@ function readinessGaps(campaign: DripCampaign, opts?: { audienceOptional?: boole
   }
   if (campaign.kind === "oneone") {
     if (!sequencesReady(campaign)) {
-      gaps.push("All sequence subjects + designs");
+      gaps.push("Sequence 1 subject + all designs");
     }
   } else if (!campaign.subject?.trim() || !campaign.designHtml?.trim()) {
     gaps.push("Subject + email design");

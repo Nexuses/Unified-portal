@@ -130,7 +130,7 @@ export function sequencesReady(campaign: DripCampaign) {
   }
   return sequences.every(
     (sequence, index) =>
-      Boolean(sequence.subject?.trim()) &&
+      (index > 0 || Boolean(sequence.subject?.trim())) &&
       Boolean(sequence.hasDesign && sequence.designHtml?.trim()) &&
       (index === 0 || Number(sequence.delayDays) >= 0),
   );

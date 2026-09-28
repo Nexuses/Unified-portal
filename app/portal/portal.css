@@ -2943,6 +2943,8 @@ select.filter{
 }
 .drip-field-info svg{width:14px;height:14px;}
 .drip-required-mark{color:#ef4444;font-weight:700;}
+.drip-optional-mark{color:#6b7280;font-weight:500;}
+.drip-sequence-subject-hint{margin:6px 0 0;font-size:13px;}
 .drip-subject-panel .drip-sender-panel-head{
   padding:32px 40px 4px;
 }

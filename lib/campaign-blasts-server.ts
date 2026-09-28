@@ -304,6 +304,59 @@ function sequenceContent(blast: CampaignBlastDoc, send: CampaignSendDoc) {
   };
 }
 
+function replySubject(subject: string) {
+  const trimmed = subject.trim();
+  if (!trimmed) {
+    return "Re:";
+  }
+  return /^re:\s/i.test(trimmed) ? trimmed : `Re: ${trimmed}`;
+}
+
+/** Follow-up with no subject stays in the previous thread. A subject starts a new one. */
+async function resolveOneOneOutbound(blast: CampaignBlastDoc, send: CampaignSendDoc) {
+  const index = typeof send.sequenceIndex === "number" ? send.sequenceIndex : 0;
+  const sequences = blast.sequences ?? [];
+  const ownSubject = sequences[index]?.subject?.trim() || "";
+
+  if (index === 0 || ownSubject) {
+    return {
+      subject: ownSubject || blast.subject,
+      inReplyTo: undefined as string | undefined,
+      references: undefined as string[] | undefined,
+    };
+  }
+
+  let threadStart = index - 1;
+  while (threadStart > 0 && !sequences[threadStart]?.subject?.trim()) {
+    threadStart -= 1;
+  }
+  const threadSubject = sequences[threadStart]?.subject?.trim() || blast.subject;
+
+  const db = await getDb();
+  const prior = await db
+    .collection<CampaignSendDoc>("campaign_sends")
+    .find({
+      blastId: blast._id,
+      email: send.email,
+      sequenceIndex: { $gte: threadStart, $lt: index },
+      status: "sent",
+    })
+    .project({ sequenceIndex: 1, messageId: 1 })
+    .sort({ sequenceIndex: 1 })
+    .toArray();
+
+  const references = prior
+    .map((item) => String(item.messageId ?? "").trim())
+    .filter(Boolean);
+  const inReplyTo = references[references.length - 1];
+
+  return {
+    subject: replySubject(threadSubject),
+    inReplyTo,
+    references: references.length > 0 ? references : undefined,
+  };
+}
+
 async function failLaterSequences(
   blastId: ObjectId,
   email: string,
@@ -891,6 +944,9 @@ async function sendPendingBatch(
 
     try {
       const content = sequenceContent(blast, send);
+      const outbound = oneOne
+        ? await resolveOneOneOutbound(blast, send)
+        : { subject: content.subject, inReplyTo: undefined, references: undefined };
       const personalized = applyContactVariables(content.html, send, true);
       const html = injectCampaignTracking(personalized, trackingBase, send.token, {
         utm: resolveUtmConfig(blast),
@@ -900,11 +956,13 @@ async function sendPendingBatch(
       });
       const mailResult = await sendProjectMail(blast.projectId, blast.senderId, {
         to: send.email,
-        subject: applyContactVariables(content.subject, send, false),
+        subject: applyContactVariables(outbound.subject, send, false),
         html,
         fromName: blast.senderName,
         replyTo: blast.replyTo,
         listUnsubscribeUrl: `${trackingBase.replace(/\/$/, "")}/api/unsubscribe/${send.token}`,
+        inReplyTo: outbound.inReplyTo,
+        references: outbound.references,
       });
       const sentAt = new Date();
       lastSuccessAt = sentAt;
@@ -1070,7 +1128,9 @@ export async function launchCampaignBlast(input: {
   const sequences = oneOne ? campaignSequences(campaign) : [];
   if (oneOne) {
     if (!sequencesReady(campaign)) {
-      throw new Error("Add a subject and design for every sequence first.");
+      throw new Error(
+        "Add a subject on the first sequence and a design for every sequence first.",
+      );
     }
   } else {
     if (!campaign.subject?.trim()) {
