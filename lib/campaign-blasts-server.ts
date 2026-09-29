@@ -393,6 +393,76 @@ export async function stopOneOneSequencesOnReply(send: {
   );
 }
 
+/** Mark campaign sends bounced from an SES notification and refresh blast counts. */
+export async function recordSesBounce(input: {
+  messageIds: string[];
+  emails: string[];
+  error: string;
+}) {
+  const messageIds = [
+    ...new Set(input.messageIds.map((value) => normalizeStoredMessageId(value)).filter(Boolean)),
+  ];
+  const emails = [
+    ...new Set(
+      input.emails
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ];
+  if (messageIds.length === 0 && emails.length === 0) {
+    return { matched: 0, updated: 0 };
+  }
+
+  const db = await getDb();
+  const sends = db.collection<CampaignSendDoc>("campaign_sends");
+  const matched: CampaignSendDoc[] = [];
+
+  if (messageIds.length > 0) {
+    matched.push(
+      ...(await sends.find({ messageIdNorm: { $in: messageIds } }).toArray()),
+    );
+  }
+
+  if (matched.length === 0) {
+    for (const email of emails) {
+      const send = await sends.findOne(
+        { email, status: "sent", bouncedAt: { $exists: false } },
+        { sort: { sentAt: -1 } },
+      );
+      if (send) {
+        matched.push(send);
+      }
+    }
+  }
+
+  const reason = input.error.trim().slice(0, 240) || "Bounced";
+  const blastIds = new Set<string>();
+  let updated = 0;
+  const now = new Date();
+
+  for (const send of matched) {
+    if (send.bouncedAt) {
+      continue;
+    }
+    await sends.updateOne(
+      { _id: send._id },
+      {
+        $set: { status: "failed", error: reason, bouncedAt: now },
+        $unset: { claimedAt: "" },
+      },
+    );
+    await failLaterSequences(send.blastId, send.email, send.sequenceIndex, "Bounced");
+    blastIds.add(send.blastId.toString());
+    updated += 1;
+  }
+
+  for (const id of blastIds) {
+    await refreshBlastCounts(new ObjectId(id));
+  }
+
+  return { matched: matched.length, updated };
+}
+
 function escapeHtml(value: string) {
   return value
     .replaceAll("&", "&amp;")
