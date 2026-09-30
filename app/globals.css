@@ -656,6 +656,53 @@ body {
   border: 1px solid #fecaca;
 }
 
+.admin-integrations {
+  max-width: 980px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.admin-secret-banner {
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-color: #86efac;
+  background: #f7fff4;
+}
+
+.admin-secret-value {
+  display: block;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #111827;
+  color: #ecfdf5;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.admin-api-list {
+  margin: 0 0 14px;
+  padding-left: 18px;
+  color: #374151;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.admin-code-sample {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #111827;
+  color: #e5e7eb;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
 .admin-table-wrap {
   width: 100%;
   overflow-x: auto;

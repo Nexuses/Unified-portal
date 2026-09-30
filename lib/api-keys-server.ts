@@ -11,13 +11,15 @@ export const API_KEY_PREFIX = "up_live_";
 
 export type ApiKeyDoc = {
   _id: ObjectId;
-  projectId: ObjectId;
+  /** Missing or "project" keys are locked to projectId. "admin" keys can target any project. */
+  kind?: "project" | "admin";
+  projectId?: ObjectId;
   createdBy: ObjectId;
   name: string;
   keyPrefix: string;
   keyLast4: string;
   keyHash: string;
-  /** Full project access: read + write on portal APIs */
+  /** Full access: read + write on portal APIs */
   scopes: Array<"read" | "write">;
   lastUsedAt?: Date;
   createdAt: Date;
@@ -40,9 +42,20 @@ export type ApiKeyPublic = {
 type ProjectDoc = {
   _id: ObjectId;
   name: string;
+  slug?: string;
   logoUrl?: string;
   sendingLimit?: number;
 };
+
+export type ApiKeyAuthFailure = {
+  ok: false;
+  status: number;
+  error: string;
+};
+
+function isAdminKey(doc: ApiKeyDoc) {
+  return doc.kind === "admin" || !doc.projectId;
+}
 
 export function hashApiKey(rawKey: string) {
   return createHash("sha256").update(rawKey).digest("hex");
@@ -100,6 +113,7 @@ export async function createProjectApiKey(input: {
   const now = new Date();
   const doc: ApiKeyDoc = {
     _id: new ObjectId(),
+    kind: "project",
     projectId: input.projectId,
     createdBy: input.createdBy,
     name,
@@ -118,6 +132,69 @@ export async function createProjectApiKey(input: {
     key: mapApiKey(doc),
     rawKey: generated.rawKey,
   };
+}
+
+export async function listAdminApiKeys() {
+  const db = await getDb();
+  const docs = await db
+    .collection<ApiKeyDoc>("api_keys")
+    .find({ kind: "admin", revokedAt: { $exists: false } })
+    .sort({ createdAt: -1 })
+    .toArray();
+  return docs.map(mapApiKey);
+}
+
+export async function createAdminApiKey(input: {
+  createdBy: ObjectId;
+  name: string;
+}) {
+  const name = input.name.trim();
+  if (!name) {
+    throw new Error("Name is required");
+  }
+  if (name.length > 80) {
+    throw new Error("Name must be 80 characters or fewer");
+  }
+
+  const generated = generateApiKey();
+  const now = new Date();
+  const doc: ApiKeyDoc = {
+    _id: new ObjectId(),
+    kind: "admin",
+    createdBy: input.createdBy,
+    name,
+    keyPrefix: generated.keyPrefix,
+    keyLast4: generated.keyLast4,
+    keyHash: generated.keyHash,
+    scopes: ["read", "write"],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const db = await getDb();
+  await db.collection<ApiKeyDoc>("api_keys").insertOne(doc);
+
+  return {
+    key: mapApiKey(doc),
+    rawKey: generated.rawKey,
+  };
+}
+
+export async function revokeAdminApiKey(keyId: string) {
+  if (!ObjectId.isValid(keyId)) {
+    return false;
+  }
+  const db = await getDb();
+  const now = new Date();
+  const result = await db.collection<ApiKeyDoc>("api_keys").updateOne(
+    {
+      _id: new ObjectId(keyId),
+      kind: "admin",
+      revokedAt: { $exists: false },
+    },
+    { $set: { revokedAt: now, updatedAt: now } },
+  );
+  return result.matchedCount > 0;
 }
 
 export async function revokeProjectApiKey(
@@ -149,9 +226,40 @@ function extractBearerToken(authorization: string | null) {
   return token || null;
 }
 
+async function findProjectForKey(projectRef: string | null) {
+  const db = await getDb();
+  const projects = db.collection<ProjectDoc>("projects");
+  const ref = projectRef?.trim() ?? "";
+  if (!ref) {
+    return null;
+  }
+  if (ObjectId.isValid(ref)) {
+    const byId = await projects.findOne({ _id: new ObjectId(ref) });
+    if (byId) {
+      return byId;
+    }
+  }
+  return projects.findOne({ slug: ref });
+}
+
+function sessionFromKey(doc: ApiKeyDoc, project: ProjectDoc): SessionUser {
+  return {
+    id: doc.createdBy.toString(),
+    fullName: doc.name,
+    email: `api-key:${doc._id.toString()}`,
+    projectId: project._id.toString(),
+    projectName: project.name || "Unknown",
+    projectLogoUrl: project.logoUrl?.trim() || "",
+    sendingLimit: normalizeSendingLimit(
+      project.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
+    ),
+  };
+}
+
 export async function getSessionUserFromApiKey(
   authorizationHeader: string | null,
-): Promise<SessionUser | null> {
+  projectRef?: string | null,
+): Promise<SessionUser | ApiKeyAuthFailure | null> {
   const rawKey = extractBearerToken(authorizationHeader);
   if (!rawKey || !rawKey.startsWith(API_KEY_PREFIX)) {
     return null;
@@ -167,10 +275,28 @@ export async function getSessionUserFromApiKey(
     return null;
   }
 
-  const project = await db.collection<ProjectDoc>("projects").findOne({
-    _id: doc.projectId,
-  });
-  if (!project) {
+  let project: ProjectDoc | null = null;
+  if (isAdminKey(doc)) {
+    if (!projectRef?.trim()) {
+      return {
+        ok: false,
+        status: 400,
+        error:
+          "Send the X-Project-Id header with the project id. This key can read and write any project.",
+      };
+    }
+    project = await findProjectForKey(projectRef);
+    if (!project) {
+      return { ok: false, status: 404, error: "Project not found" };
+    }
+  } else if (doc.projectId) {
+    project = await db.collection<ProjectDoc>("projects").findOne({
+      _id: doc.projectId,
+    });
+    if (!project) {
+      return null;
+    }
+  } else {
     return null;
   }
 
@@ -179,15 +305,5 @@ export async function getSessionUserFromApiKey(
     { $set: { lastUsedAt: new Date(), updatedAt: new Date() } },
   );
 
-  return {
-    id: doc.createdBy.toString(),
-    fullName: doc.name,
-    email: `api-key:${doc._id.toString()}`,
-    projectId: doc.projectId.toString(),
-    projectName: project.name || "Unknown",
-    projectLogoUrl: project.logoUrl?.trim() || "",
-    sendingLimit: normalizeSendingLimit(
-      project.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
-    ),
-  };
+  return sessionFromKey(doc, project);
 }

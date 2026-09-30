@@ -14,8 +14,15 @@ export async function requirePortalSession(): Promise<
   const headerStore = await headers();
   const apiUser = await getSessionUserFromApiKey(
     headerStore.get("authorization"),
+    headerStore.get("x-project-id"),
   );
-  if (apiUser) {
+  if (apiUser && "ok" in apiUser && apiUser.ok === false) {
+    return NextResponse.json(
+      { error: apiUser.error },
+      { status: apiUser.status },
+    );
+  }
+  if (apiUser && !("ok" in apiUser)) {
     return apiUser;
   }
 

@@ -8,16 +8,24 @@ const LOGO_URL =
   "https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png";
 
 const navItems = [
-  { label: "Project & User", href: "/admin/dashboard" },
+  {
+    label: "Project & User",
+    href: "/admin/dashboard",
+    meta: "Manage projects and users",
+  },
+  {
+    label: "Integrations",
+    href: "/admin/integrations",
+    meta: "API keys with read and write access",
+  },
 ];
 
 export default function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  const activeTitle =
-    navItems.find((item) => pathname.startsWith(item.href))?.label ??
-    "Project & User";
+  const active =
+    navItems.find((item) => pathname.startsWith(item.href)) ?? navItems[0];
 
   async function handleLogout() {
     await fetch("/api/auth/admin-logout", { method: "POST" });
@@ -64,9 +72,9 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
         <header className="admin-header">
           <div>
             <p className="admin-header-eyebrow">Admin Dashboard</p>
-            <h1 className="admin-header-title">{activeTitle}</h1>
+            <h1 className="admin-header-title">{active.label}</h1>
           </div>
-          <p className="admin-header-meta">Manage projects and users</p>
+          <p className="admin-header-meta">{active.meta}</p>
         </header>
 
         <div className="admin-content">{children}</div>
