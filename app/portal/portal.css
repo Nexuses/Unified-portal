@@ -4503,6 +4503,10 @@ select.filter{
 .drip-report-pause-action svg{
   width:16px;height:16px;flex-shrink:0;
 }
+.drip-report-tab-rows{
+  display:flex;flex-direction:column;margin:8px 0 22px;
+}
+.drip-report-tab-rows .drip-report-tabs{margin:0;}
 .drip-report-tabs{
   display:flex;gap:22px;border-bottom:1px solid #e5e7eb;margin:8px 0 22px;
 }

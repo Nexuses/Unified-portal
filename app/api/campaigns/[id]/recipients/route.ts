@@ -28,11 +28,25 @@ export async function GET(request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Invalid recipient filter" }, { status: 400 });
     }
 
+    const sequenceRaw = request.nextUrl.searchParams.get("sequence");
+    const sequenceIndex =
+      sequenceRaw == null || sequenceRaw === "" ? undefined : Number(sequenceRaw);
+    if (
+      sequenceIndex !== undefined &&
+      (!Number.isInteger(sequenceIndex) || sequenceIndex < 0)
+    ) {
+      return NextResponse.json({ error: "Invalid sequence" }, { status: 400 });
+    }
+
     const recipients = await listCampaignSendRecipients(
       new ObjectId(session.projectId),
       id,
       filter,
       kind,
+      {
+        sequenceIndex,
+        uniqueContacts: request.nextUrl.searchParams.get("unique") === "1",
+      },
     );
 
     return NextResponse.json(recipients, {

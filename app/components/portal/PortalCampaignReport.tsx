@@ -196,6 +196,7 @@ export default function PortalCampaignReport({
   analyticsToken?: string;
 }) {
   const [tab, setTab] = useState("overview");
+  const [sequenceScope, setSequenceScope] = useState<number | null>(null);
   const [peopleView, setPeopleView] = useState<PeopleView | null>(null);
   const [people, setPeople] = useState<SendRecipient[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(false);
@@ -278,7 +279,8 @@ export default function PortalCampaignReport({
   }, [campaign.id, campaign.status, publicToken]);
 
   useEffect(() => {
-    if (!peopleView) {
+    const activeView = peopleView;
+    if (!activeView) {
       setPeople([]);
       setPeopleError("");
       setPeopleSearch("");
@@ -293,14 +295,21 @@ export default function PortalCampaignReport({
       setPeopleLoading(true);
       setPeopleError("");
       try {
+        const params = new URLSearchParams({ filter: activeView as PeopleView });
+        if (campaign.kind === "oneone" || campaign.kind === "drip") {
+          params.set("kind", campaign.kind);
+        }
+        if (campaign.kind === "oneone") {
+          if (sequenceScope === null) {
+            params.set("unique", "1");
+          } else {
+            params.set("sequence", String(sequenceScope));
+          }
+        }
         const response = await fetch(
           publicToken
-            ? `/api/public/reports/${encodeURIComponent(publicToken)}/recipients?filter=${peopleView}`
-            : `/api/campaigns/${encodeURIComponent(campaign.id)}/recipients?filter=${peopleView}${
-                campaign.kind === "oneone" || campaign.kind === "drip"
-                  ? `&kind=${campaign.kind}`
-                  : ""
-              }`,
+            ? `/api/public/reports/${encodeURIComponent(publicToken)}/recipients?${params}`
+            : `/api/campaigns/${encodeURIComponent(campaign.id)}/recipients?${params}`,
           { cache: "no-store" },
         );
         const data = await response.json();
@@ -331,7 +340,7 @@ export default function PortalCampaignReport({
     return () => {
       cancelled = true;
     };
-  }, [campaign.id, peopleView, publicToken]);
+  }, [campaign.id, campaign.kind, peopleView, publicToken, sequenceScope]);
 
   const visiblePeople = useMemo(() => {
     const query = peopleSearch.trim().toLowerCase();
@@ -387,6 +396,12 @@ export default function PortalCampaignReport({
     const next = label.toLowerCase();
     setTab(next);
     setPeopleView(TAB_TO_PEOPLE[next] ?? null);
+  }
+
+  function selectReportScope(index: number | null) {
+    setSequenceScope(index);
+    setTab("overview");
+    setPeopleView(null);
   }
 
   async function exportReport() {
@@ -579,8 +594,30 @@ export default function PortalCampaignReport({
   const replyTo = campaign.replyToEnabled
     ? campaign.replyToEmail
     : campaign.senderEmail;
-  const delivered = campaign.delivered ?? campaign.recipients;
   const sequences = campaign.kind === "oneone" ? campaignSequences(campaign) : [];
+  const scopedStats =
+    sequenceScope === null
+      ? null
+      : (campaign.sequenceReports?.find(
+          (item) => item.sequenceIndex === sequenceScope,
+        ) ?? {
+          sequenceIndex: sequenceScope,
+          recipients: 0,
+          delivered: 0,
+          opens: 0,
+          clicks: 0,
+          bounces: 0,
+          replies: 0,
+          unsubscribed: 0,
+        });
+  const statRecipients = scopedStats?.recipients ?? campaign.recipients;
+  const delivered =
+    scopedStats?.delivered ?? campaign.delivered ?? campaign.recipients;
+  const statOpens = scopedStats?.opens ?? campaign.opens;
+  const statClicks = scopedStats?.clicks ?? campaign.clicks;
+  const statBounces = scopedStats?.bounces ?? campaign.bounces ?? 0;
+  const statReplies = scopedStats?.replies ?? campaign.replies ?? 0;
+  const statUnsubscribed = scopedStats?.unsubscribed ?? campaign.unsubscribed;
   const metrics: Array<{
     label: string;
     value: number;
@@ -588,13 +625,14 @@ export default function PortalCampaignReport({
     rate: string;
     view?: PeopleView;
     onView?: () => void;
+    htmlPreview?: boolean;
   }> = [
     ...(campaign.kind === "oneone"
       ? [
           {
             label: "Recipients",
-            value: campaign.recipients,
-            rateLabel: "In this campaign",
+            value: statRecipients,
+            rateLabel: sequenceScope === null ? "In this campaign" : "In this sequence",
             rate: "100%",
             view: "audience" as PeopleView,
           },
@@ -604,49 +642,49 @@ export default function PortalCampaignReport({
       label: "Delivered",
       value: delivered,
       rateLabel: "Delivery rate",
-      rate: rate(delivered, campaign.recipients || delivered),
+      rate: rate(delivered, statRecipients || delivered),
       view: "delivered" as PeopleView,
     },
     {
       label: "Opens",
-      value: campaign.opens,
+      value: statOpens,
       rateLabel: "Open rate",
-      rate: rate(campaign.opens, campaign.recipients),
+      rate: rate(statOpens, statRecipients),
       view: "opens" as PeopleView,
     },
     {
       label: "Clicks",
-      value: campaign.clicks,
+      value: statClicks,
       rateLabel: "Click-through rate",
-      rate: rate(campaign.clicks, campaign.recipients),
+      rate: rate(statClicks, statRecipients),
       view: "clicks" as PeopleView,
     },
     {
       label: "Bounces",
-      value: campaign.bounces ?? 0,
+      value: statBounces,
       rateLabel: "Bounce rate",
-      rate: rate(campaign.bounces ?? 0, campaign.recipients),
+      rate: rate(statBounces, statRecipients),
       view: "bounces" as PeopleView,
     },
     ...(campaign.kind === "oneone"
       ? [
           {
             label: "Replies",
-            value: campaign.replies ?? 0,
+            value: statReplies,
             rateLabel: "Reply rate",
-            rate: rate(campaign.replies ?? 0, campaign.recipients),
+            rate: rate(statReplies, statRecipients),
             view: "replies" as PeopleView,
           },
         ]
       : []),
     {
       label: "Unsubscribes",
-      value: campaign.unsubscribed,
+      value: statUnsubscribed,
       rateLabel: "Unsubscribe rate",
-      rate: rate(campaign.unsubscribed, campaign.recipients),
+      rate: rate(statUnsubscribed, statRecipients),
       view: "unsubscribes" as PeopleView,
     },
-    ...(campaign.kind === "oneone"
+    ...(campaign.kind === "oneone" && sequenceScope === null
       ? [
           {
             label: "Sequences",
@@ -660,26 +698,31 @@ export default function PortalCampaignReport({
           },
         ]
       : []),
+    ...(isOneOne && sequenceScope !== null
+      ? [
+          {
+            label: "HTML",
+            value: 0,
+            rateLabel: "Email sent in this sequence",
+            rate: "",
+            htmlPreview: true,
+            onView: () => {
+              setSequencePreviewIndex(sequenceScope);
+              setSequencesOpen(true);
+            },
+          },
+        ]
+      : []),
   ];
 
   const timeline = [...(campaign.timeline ?? [])].sort(
     (a, b) => new Date(b.at).getTime() - new Date(a.at).getTime(),
   );
-  const showSequence =
-    campaign.kind === "oneone" &&
-    (peopleView === "opens" || peopleView === "clicks");
+  const showSequence = isOneOne && sequenceScope === null && Boolean(peopleView);
   const peopleColSpan =
-    peopleView === "clicks"
-      ? showSequence
-        ? 7
-        : 6
-      : peopleView === "bounces" || peopleView === "replies"
-        ? showSequence
-          ? 6
-          : 5
-        : showSequence
-          ? 6
-          : 5;
+    3 +
+    (showSequence ? 1 : 0) +
+    (peopleView === "clicks" ? 2 : peopleView ? 1 : 0);
   const activeSequenceIndex = Math.min(
     Math.max(sequencePreviewIndex, 0),
     Math.max(sequences.length - 1, 0),
@@ -867,24 +910,65 @@ export default function PortalCampaignReport({
         </div>
       ) : null}
 
-      <div className="drip-report-tabs">
-        {(campaign.kind === "oneone"
-          ? ["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"]
-          : ["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Unsubscribes"]
-        ).map((label) => (
+      {isOneOne ? (
+        <div className="drip-report-tab-rows">
+          <div className="drip-report-tabs">
             <button
-              key={label}
               type="button"
-              className={tab === label.toLowerCase() ? "active" : ""}
-              onClick={() => handleTabChange(label)}
+              className={sequenceScope === null ? "active" : ""}
+              onClick={() => selectReportScope(null)}
             >
-              {label}
+              Overview
             </button>
-        ))}
-      </div>
+            {sequences.map((sequence, index) => (
+              <button
+                key={sequence.id}
+                type="button"
+                className={sequenceScope === index ? "active" : ""}
+                onClick={() => selectReportScope(index)}
+              >
+                Sequence {index + 1}
+              </button>
+            ))}
+          </div>
+          <div className="drip-report-tabs">
+            {["Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
+              (label) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={tab === label.toLowerCase() ? "active" : ""}
+                  onClick={() => handleTabChange(label)}
+                >
+                  {label}
+                </button>
+              ),
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="drip-report-tabs">
+          {["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Unsubscribes"].map(
+            (label) => (
+              <button
+                key={label}
+                type="button"
+                className={tab === label.toLowerCase() ? "active" : ""}
+                onClick={() => handleTabChange(label)}
+              >
+                {label}
+              </button>
+            ),
+          )}
+        </div>
+      )}
 
       <div className="drip-report-section-head">
-        <h3>Campaign performance</h3>
+        <h3>
+          {isOneOne && sequenceScope !== null
+            ? `Sequence ${sequenceScope + 1} performance`
+            : "Campaign performance"}
+        </h3>
         <span>
           • Automated opens and clicks included.
           <HelpIcon />
@@ -903,7 +987,9 @@ export default function PortalCampaignReport({
           <div key={metric.label} className="drip-report-metric">
             <div className="drip-report-metric-k">{metric.label}</div>
             <div className="drip-report-metric-row">
-              <div className="drip-report-metric-v">{metric.value}</div>
+              <div className="drip-report-metric-v">
+                {metric.htmlPreview ? "HTML" : metric.value}
+              </div>
               {metric.view || metric.onView ? (
                 <button
                   type="button"
@@ -918,14 +1004,14 @@ export default function PortalCampaignReport({
                     }
                   }}
                 >
-                  <PeopleIcon />
-                  View
+                  {metric.htmlPreview ? null : <PeopleIcon />}
+                  {metric.htmlPreview ? "View HTML" : "View"}
                 </button>
               ) : null}
             </div>
             <div className="drip-report-metric-rate">
               {metric.rateLabel}
-              <strong>{metric.rate}</strong>
+              {metric.rate ? <strong>{metric.rate}</strong> : null}
             </div>
           </div>
         ))}
@@ -1033,11 +1119,15 @@ export default function PortalCampaignReport({
               <p className="desc">
                 {peopleView === "opens"
                   ? campaign.kind === "oneone"
-                    ? "Contacts who opened this campaign, with sequence, date, and time."
+                    ? sequenceScope === null
+                      ? "Each contact is counted once, even if they opened more than one sequence."
+                      : `Contacts who opened sequence ${sequenceScope + 1}.`
                     : "Contacts who opened this campaign, with date and time."
                   : peopleView === "clicks"
                     ? campaign.kind === "oneone"
-                      ? "Links clicked in this campaign, with sequence, date, and time."
+                      ? sequenceScope === null
+                        ? "Each contact is counted once, even if they clicked in more than one sequence."
+                        : `Links clicked in sequence ${sequenceScope + 1}.`
                       : "Links clicked in this campaign, with date and time."
                     : peopleView === "bounces"
                       ? "Addresses that bounced (from delivery failures or bounce emails). Replies are not counted here."

@@ -27,6 +27,18 @@ export type CampaignSequenceProgress = {
   contacts: number;
 };
 
+/** Per-sequence counts. Overview merges these by unique contact. */
+export type SequenceReportStats = {
+  sequenceIndex: number;
+  recipients: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  bounces: number;
+  replies: number;
+  unsubscribed: number;
+};
+
 export type DripCampaign = {
   id: string;
   name: string;
@@ -75,6 +87,8 @@ export type DripCampaign = {
   listDisplayId?: number;
   shareToken?: string;
   sequences?: CampaignSequence[];
+  /** 1-1 only. Each sequence’s own counts. Overview metrics are unique contacts. */
+  sequenceReports?: SequenceReportStats[];
   windowStart?: string;
   windowEnd?: string;
   emailGapMinutes?: number;
@@ -262,6 +276,7 @@ export function mergeBlastReport(
     subject?: string;
     timeline?: DripCampaign["timeline"];
     sequenceProgress?: CampaignSequenceProgress;
+    sequenceReports?: SequenceReportStats[];
   },
 ): DripCampaign {
   const timezone = campaign.timezone || DEFAULT_CAMPAIGN_TIMEZONE;
@@ -292,6 +307,7 @@ export function mergeBlastReport(
     subject: report.subject ?? campaign.subject,
     timeline: report.timeline ?? campaign.timeline,
     sequenceProgress: report.sequenceProgress ?? campaign.sequenceProgress,
+    sequenceReports: report.sequenceReports ?? campaign.sequenceReports,
   };
 }
 

@@ -10,6 +10,7 @@ import {
   type CampaignSequence,
   type CampaignSequenceProgress,
   type DripCampaign,
+  type SequenceReportStats,
 } from "@/lib/drip-campaigns";
 import { getSuppressionSets, isSuppressedAddress } from "@/lib/unsubscribe-server";
 import {
@@ -152,6 +153,7 @@ export type CampaignReport = {
   listDisplayId?: number;
   timeline: BlastTimelineEvent[];
   sequenceProgress?: CampaignSequenceProgress;
+  sequenceReports?: SequenceReportStats[];
 };
 
 const SEND_BATCH = 25;
@@ -698,19 +700,20 @@ function sendHasCountableClick(send: Pick<CampaignSendDoc, "clickEvents" | "clic
 async function refreshBlastCounts(blastId: ObjectId) {
   const db = await getDb();
   const sends = db.collection<CampaignSendDoc>("campaign_sends");
-  const [delivered, opens, clickDocs, bounceEmails, replies] = await Promise.all([
-    sends.countDocuments({
+  const [deliveredEmails, openEmails, clickDocs, bounceEmails, replyEmails, unsubEmails] =
+    await Promise.all([
+    sends.distinct("email", {
       blastId,
       status: "sent",
       bouncedAt: { $exists: false },
     }),
-    sends.countDocuments({ blastId, openCount: { $gt: 0 } }),
+    sends.distinct("email", { blastId, openCount: { $gt: 0 } }),
     sends
       .find({
         blastId,
         $or: [{ clickCount: { $gt: 0 } }, { clickedAt: { $exists: true } }],
       })
-      .project({ clickEvents: 1, clickedAt: 1, clickedUrl: 1 })
+      .project({ email: 1, clickEvents: 1, clickedAt: 1, clickedUrl: 1 })
       .toArray(),
     sends.distinct("email", {
       blastId,
@@ -722,13 +725,29 @@ async function refreshBlastCounts(blastId: ObjectId) {
         },
       ],
     }),
-    sends.countDocuments({
+    sends.distinct("email", {
       blastId,
       repliedAt: { $exists: true },
     }),
+    sends.distinct("email", {
+      blastId,
+      unsubscribedAt: { $exists: true },
+    }),
   ]);
-  const clicks = clickDocs.filter((send) => sendHasCountableClick(send)).length;
-  const bounces = bounceEmails.length;
+  const uniqueEmailCount = (values: string[]) =>
+    new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean)).size;
+  const clickEmails = new Set(
+    clickDocs
+      .filter((send) => sendHasCountableClick(send))
+      .map((send) => send.email.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const delivered = uniqueEmailCount(deliveredEmails);
+  const opens = uniqueEmailCount(openEmails);
+  const clicks = clickEmails.size;
+  const bounces = uniqueEmailCount(bounceEmails);
+  const replies = uniqueEmailCount(replyEmails);
+  const unsubscribed = uniqueEmailCount(unsubEmails);
 
   const pending = await sends.countDocuments({
     blastId,
@@ -770,6 +789,7 @@ async function refreshBlastCounts(blastId: ObjectId) {
         clicks,
         bounces,
         replies,
+        unsubscribed,
         status: nextStatus,
         sentAt: nextStatus === "sent" ? blast.sentAt ?? now : blast.sentAt,
         timeline,
@@ -1474,6 +1494,122 @@ export async function getProjectCampaignReports(
   );
 }
 
+function emptySequenceBucket() {
+  return {
+    recipients: new Set<string>(),
+    delivered: new Set<string>(),
+    opens: new Set<string>(),
+    clicks: new Set<string>(),
+    bounces: new Set<string>(),
+    replies: new Set<string>(),
+    unsubscribed: new Set<string>(),
+  };
+}
+
+function isSendBounce(send: Pick<CampaignSendDoc, "status" | "bouncedAt" | "error">) {
+  if (send.bouncedAt) {
+    return true;
+  }
+  return (
+    send.status === "failed" &&
+    !["Unsubscribed", "Suppressed", "Replied"].includes(send.error ?? "")
+  );
+}
+
+/** Unique-contact counts per sequence, plus the merged overview sets. */
+async function loadOneOneSequenceReports(blastId: ObjectId): Promise<{
+  sequences: SequenceReportStats[];
+  overview: Omit<SequenceReportStats, "sequenceIndex">;
+}> {
+  const db = await getDb();
+  const docs = (await db
+    .collection<CampaignSendDoc>("campaign_sends")
+    .find({ blastId })
+    .project({
+      email: 1,
+      sequenceIndex: 1,
+      status: 1,
+      bouncedAt: 1,
+      error: 1,
+      openCount: 1,
+      clickCount: 1,
+      clickEvents: 1,
+      clickedAt: 1,
+      clickedUrl: 1,
+      repliedAt: 1,
+      unsubscribedAt: 1,
+    })
+    .toArray()) as CampaignSendDoc[];
+
+  const bySequence = new Map<number, ReturnType<typeof emptySequenceBucket>>();
+  const overview = emptySequenceBucket();
+
+  for (const doc of docs) {
+    const email = doc.email?.trim().toLowerCase();
+    if (!email) {
+      continue;
+    }
+    const index = typeof doc.sequenceIndex === "number" ? doc.sequenceIndex : 0;
+    let row = bySequence.get(index);
+    if (!row) {
+      row = emptySequenceBucket();
+      bySequence.set(index, row);
+    }
+    row.recipients.add(email);
+    overview.recipients.add(email);
+    if (doc.status === "sent" && !doc.bouncedAt) {
+      row.delivered.add(email);
+      overview.delivered.add(email);
+    }
+    if ((doc.openCount ?? 0) > 0) {
+      row.opens.add(email);
+      overview.opens.add(email);
+    }
+    if (sendHasCountableClick(doc)) {
+      row.clicks.add(email);
+      overview.clicks.add(email);
+    }
+    if (isSendBounce(doc)) {
+      row.bounces.add(email);
+      overview.bounces.add(email);
+    }
+    if (doc.repliedAt) {
+      row.replies.add(email);
+      overview.replies.add(email);
+    }
+    if (doc.unsubscribedAt) {
+      row.unsubscribed.add(email);
+      overview.unsubscribed.add(email);
+    }
+  }
+
+  const sequences = [...bySequence.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([sequenceIndex, row]) => ({
+      sequenceIndex,
+      recipients: row.recipients.size,
+      delivered: row.delivered.size,
+      opens: row.opens.size,
+      clicks: row.clicks.size,
+      bounces: row.bounces.size,
+      replies: row.replies.size,
+      unsubscribed: row.unsubscribed.size,
+    }));
+
+  return {
+    sequences,
+    overview: {
+      recipients: overview.recipients.size,
+      delivered: overview.delivered.size,
+      opens: overview.opens.size,
+      clicks: overview.clicks.size,
+      bounces: overview.bounces.size,
+      replies: overview.replies.size,
+      unsubscribed: overview.unsubscribed.size,
+    },
+  };
+}
+
 export async function getCampaignReport(
   projectId: ObjectId,
   campaignId: string,
@@ -1492,6 +1628,16 @@ export async function getCampaignReport(
   const refreshed =
     options?.refresh === false ? doc : ((await refreshBlastCounts(doc._id)) ?? doc);
   const [report] = await reportsFromBlasts([refreshed]);
+  if (refreshed.kind === "oneone") {
+    const breakdown = await loadOneOneSequenceReports(refreshed._id);
+    report.sequenceReports = breakdown.sequences;
+    report.delivered = breakdown.overview.delivered;
+    report.opens = breakdown.overview.opens;
+    report.clicks = breakdown.overview.clicks;
+    report.bounces = breakdown.overview.bounces;
+    report.replies = breakdown.overview.replies;
+    report.unsubscribed = breakdown.overview.unsubscribed;
+  }
   return report;
 }
 
@@ -1886,6 +2032,7 @@ export async function listCampaignSendRecipients(
   campaignId: string,
   filter: CampaignRecipientFilter,
   kind?: "drip" | "oneone",
+  options?: { sequenceIndex?: number; uniqueContacts?: boolean },
 ) {
   const db = await getDb();
   const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
@@ -1918,10 +2065,28 @@ export async function listCampaignSendRecipients(
     query.unsubscribedAt = { $exists: true, $ne: null };
   }
 
+  const sequenceIndex = options?.sequenceIndex;
+  const scopedQuery =
+    typeof sequenceIndex === "number"
+      ? {
+          $and: [
+            query,
+            sequenceIndex === 0
+              ? {
+                  $or: [
+                    { sequenceIndex: 0 },
+                    { sequenceIndex: { $exists: false } },
+                  ],
+                }
+              : { sequenceIndex },
+          ],
+        }
+      : query;
+
   const docs = await db
     .collection<CampaignSendDoc>("campaign_sends")
-    .find(query)
-    .sort({ fullName: 1, email: 1 })
+    .find(scopedQuery)
+    .sort({ sequenceIndex: 1, fullName: 1, email: 1 })
     .toArray();
 
   const emails = [...new Set(docs.map((doc) => doc.email.trim().toLowerCase()).filter(Boolean))];
@@ -1969,8 +2134,25 @@ export async function listCampaignSendRecipients(
     };
   }
 
+  function dedupeByEmail(rows: CampaignSendRecipient[]) {
+    if (!options?.uniqueContacts) {
+      return rows;
+    }
+    const seen = new Set<string>();
+    const unique: CampaignSendRecipient[] = [];
+    for (const row of rows) {
+      const key = row.email.trim().toLowerCase();
+      if (!key || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      unique.push(row);
+    }
+    return unique;
+  }
+
   if (filter === "clicks") {
-    return docs.flatMap((doc) => {
+    return dedupeByEmail(docs.flatMap((doc) => {
       const events =
         doc.clickEvents && doc.clickEvents.length > 0
           ? doc.clickEvents
@@ -1996,7 +2178,7 @@ export async function listCampaignSendRecipients(
             clickedUrl: event.url || doc.clickedUrl || "",
           }),
         );
-    });
+    }));
   }
 
   // One row per email for bounces (1-1 can create multiple failed sequence rows)
@@ -2014,7 +2196,7 @@ export async function listCampaignSendRecipients(
     return unique.map((doc) => mapRecipient(doc));
   }
 
-  return docs.map((doc) => mapRecipient(doc));
+  return dedupeByEmail(docs.map((doc) => mapRecipient(doc)));
 }
 
 export async function listCampaignSendsForExport(
