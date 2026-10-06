@@ -1,11 +1,28 @@
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | {
+      type: "image_url";
+      image_url: { url: string; detail?: "low" | "high" | "original" | "auto" };
+    };
+
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | ChatContentPart[];
 };
 
 export async function chatWithDeepSeek(input: {
   messages: ChatMessage[];
   model?: string;
+  maxTokens?: number;
+}) {
+  const result = await chatWithDeepSeekResult(input);
+  return result.content;
+}
+
+export async function chatWithDeepSeekResult(input: {
+  messages: ChatMessage[];
+  model?: string;
+  maxTokens?: number;
 }) {
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) {
@@ -24,12 +41,16 @@ export async function chatWithDeepSeek(input: {
       model: input.model || "deepseek-chat",
       messages: input.messages,
       temperature: 0.35,
+      ...(input.maxTokens ? { max_tokens: input.maxTokens } : {}),
     }),
   });
 
   const data = (await response.json().catch(() => null)) as {
     error?: { message?: string };
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      finish_reason?: string;
+      message?: { content?: string };
+    }>;
   } | null;
 
   if (!response.ok) {
@@ -38,9 +59,10 @@ export async function chatWithDeepSeek(input: {
     );
   }
 
-  const content = data?.choices?.[0]?.message?.content?.trim();
+  const choice = data?.choices?.[0];
+  const content = choice?.message?.content?.trim();
   if (!content) {
     throw new Error("DeepSeek returned an empty response");
   }
-  return content;
+  return { content, finishReason: choice?.finish_reason ?? "" };
 }

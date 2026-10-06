@@ -2875,6 +2875,26 @@ function DesignEmailModal({
         html: item.html,
       }));
 
+      let fromEdm: { id: string; name: string; subject: string; html: string }[] = [];
+      try {
+        const response = await fetch(
+          `/api/edm/templates?destination=${campaignKind}`,
+        );
+        if (response.ok) {
+          const data = (await response.json()) as {
+            templates?: { id: string; name: string; subject: string; html: string }[];
+          };
+          fromEdm = (data.templates ?? []).map((item) => ({
+            id: `edm-${item.id}`,
+            name: item.name,
+            subject: item.subject,
+            html: item.html,
+          }));
+        }
+      } catch {
+        fromEdm = [];
+      }
+
       let fromCampaigns: { id: string; name: string; subject: string; html: string }[] =
         [];
       try {
@@ -2911,7 +2931,7 @@ function DesignEmailModal({
       const seenIds = new Set<string>();
       const seenHtml = new Set<string>();
 
-      for (const item of [...current, ...fromTemplates, ...fromCampaigns]) {
+      for (const item of [...current, ...fromEdm, ...fromTemplates, ...fromCampaigns]) {
         const htmlKey = item.html.trim();
         if (seenIds.has(item.id) || (htmlKey && seenHtml.has(htmlKey))) {
           continue;
@@ -2937,6 +2957,7 @@ function DesignEmailModal({
     campaign.subject,
     campaign.designHtml,
     campaign.hasDesign,
+    campaignKind,
   ]);
 
   const filteredEmails = useMemo(() => {
@@ -2972,6 +2993,7 @@ function DesignEmailModal({
   }
 
   function templateDisplayId(id: string) {
+    if (id.startsWith("edm-")) return "EDM";
     return `#${id.replace(/^campaign-/, "")}`;
   }
 

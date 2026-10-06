@@ -52,6 +52,10 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
     return <div className="portal-loading-screen">Loading your workspace...</div>;
   }
 
+  if (pathname.startsWith("/portal/marketing/edm")) {
+    return <div className="edm-shell">{children}</div>;
+  }
+
   return (
     <div className="shell">
       <PortalSidebar

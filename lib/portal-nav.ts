@@ -9,6 +9,7 @@ export type PortalPageId =
   | "oneone"
   | "automation"
   | "automation-history"
+  | "edm"
   | "analytics"
   | "analytics-kanban"
   | "smtp"
@@ -50,6 +51,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   oneone: "/portal/marketing/one-one",
   automation: "/portal/marketing/automation",
   "automation-history": "/portal/marketing/automation-history",
+  edm: "/portal/marketing/edm",
   analytics: "/portal/analytics",
   "analytics-kanban": "/portal/analytics/kanban",
   smtp: "/portal/smtp",
@@ -139,6 +141,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
         label: "Automation history",
         href: PORTAL_ROUTES["automation-history"],
       },
+      { id: "edm", label: "EDM generation", href: PORTAL_ROUTES.edm },
     ],
   },
   {
@@ -176,6 +179,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   oneone: "1-1 Campaign",
   automation: "Automation",
   "automation-history": "Automation history",
+  edm: "EDM generation",
   analytics: "Report",
   "analytics-kanban": "Kanban",
   smtp: "SMTP & Senders",
@@ -205,6 +209,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/crm/enrich")) return "enrich";
   if (pathname.startsWith("/portal/marketing/drip")) return "drip";
   if (pathname.startsWith("/portal/marketing/one-one")) return "oneone";
+  if (pathname.startsWith("/portal/marketing/edm")) return "edm";
   if (pathname.startsWith("/portal/marketing/automation-history")) {
     return "automation-history";
   }
