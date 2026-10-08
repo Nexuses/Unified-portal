@@ -676,6 +676,118 @@ async function resolveRecipients(
     .filter((contact) => contact.email);
 }
 
+async function recipientsToEnroll(projectId: ObjectId, campaign: DripCampaign) {
+  const merged = new Map<
+    string,
+    {
+      email: string;
+      fullName: string;
+      firstName: string;
+      lastName: string;
+      companyName: string;
+    }
+  >();
+  const add = (
+    people: Array<{
+      email: string;
+      fullName: string;
+      firstName: string;
+      lastName: string;
+      companyName: string;
+    }>,
+  ) => {
+    for (const person of people) {
+      if (person.email && !merged.has(person.email)) {
+        merged.set(person.email, person);
+      }
+    }
+  };
+
+  if (campaign.recipientMode === "individual") {
+    add(await resolveRecipients(projectId, campaign));
+  } else if (campaign.listId) {
+    add(await resolveRecipients(projectId, campaign));
+  }
+
+  for (const listId of campaign.addedListIds ?? []) {
+    if (!listId || listId === campaign.listId) {
+      continue;
+    }
+    add(
+      await resolveRecipients(projectId, {
+        ...campaign,
+        recipientMode: "list",
+        individualContacts: [],
+        listId,
+      }),
+    );
+  }
+
+  return [...merged.values()];
+}
+
+async function dropPendingContactsFromRemovedLists(
+  projectId: ObjectId,
+  campaign: DripCampaign,
+  blastId: ObjectId,
+  sends: CampaignSendDoc[],
+) {
+  const db = await getDb();
+  const existing = await db.collection<{ addedListIds?: string[] }>("drip_campaigns").findOne({
+    projectId,
+    campaignId: campaign.id,
+    kind: "oneone",
+  });
+  const previousAdded = existing?.addedListIds ?? [];
+  const nextAdded = new Set(campaign.addedListIds ?? []);
+  const removedListIds = previousAdded.filter((id) => id && !nextAdded.has(id));
+  if (removedListIds.length === 0) {
+    return sends;
+  }
+
+  const keepEmails = new Set(
+    (await recipientsToEnroll(projectId, campaign)).map((contact) => contact.email),
+  );
+  const dropEmails = new Set<string>();
+  for (const listId of removedListIds) {
+    const people = await resolveRecipients(projectId, {
+      ...campaign,
+      recipientMode: "list",
+      individualContacts: [],
+      listId,
+    });
+    for (const person of people) {
+      if (person.email && !keepEmails.has(person.email)) {
+        dropEmails.add(person.email);
+      }
+    }
+  }
+
+  const dropIds: ObjectId[] = [];
+  const grouped = new Map<string, CampaignSendDoc[]>();
+  for (const send of sends) {
+    const email = send.email.trim().toLowerCase();
+    const rows = grouped.get(email) ?? [];
+    rows.push(send);
+    grouped.set(email, rows);
+  }
+  for (const email of dropEmails) {
+    const rows = grouped.get(email) ?? [];
+    if (rows.length > 0 && rows.every((row) => row.status === "pending")) {
+      dropIds.push(...rows.map((row) => row._id));
+    }
+  }
+  if (dropIds.length === 0) {
+    return sends;
+  }
+
+  await db.collection<CampaignSendDoc>("campaign_sends").deleteMany({
+    _id: { $in: dropIds },
+  });
+  const dropped = new Set(dropIds.map((id) => id.toString()));
+  return sends.filter((send) => !dropped.has(send._id.toString()));
+}
+
 function isCountableClickEvent(event: {
   url?: string;
   ignored?: boolean;
@@ -1254,6 +1366,19 @@ export async function launchCampaignBlast(input: {
   }
 
   const db = await getDb();
+  if (oneOne) {
+    if (!ObjectId.isValid(campaign.senderId)) {
+      throw new Error("Select a Gmail or Outlook SMTP sender.");
+    }
+    const sender = await db.collection("smtp_senders").findOne({
+      _id: new ObjectId(campaign.senderId),
+      projectId,
+    });
+    const provider = (sender as { provider?: string } | null)?.provider;
+    if (provider !== "gmail" && provider !== "outlook") {
+      throw new Error("1-1 campaigns can only use Gmail or Outlook SMTP senders.");
+    }
+  }
   const now = new Date();
   const scheduledFor =
     mode === "later" && input.scheduledFor ? new Date(input.scheduledFor) : undefined;
@@ -1637,6 +1762,12 @@ export async function getCampaignReport(
     report.bounces = breakdown.overview.bounces;
     report.replies = breakdown.overview.replies;
     report.unsubscribed = breakdown.overview.unsubscribed;
+    if (refreshed.clicks !== breakdown.overview.clicks) {
+      await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+        { _id: refreshed._id },
+        { $set: { clicks: breakdown.overview.clicks, updatedAt: new Date() } },
+      );
+    }
   }
   return report;
 }
@@ -1711,6 +1842,315 @@ export async function resumeCampaignBlast(
   );
 
   return nextStatus;
+}
+
+const LIVE_EDIT_DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Apply sender, added recipients, and sequence edits onto a paused 1-1 blast. */
+export async function syncPausedOneOneBlast(
+  projectId: ObjectId,
+  campaign: DripCampaign,
+) {
+  const db = await getDb();
+  const blast = await findBlastForCampaign(projectId, campaign.id, "oneone");
+  if (!blast) {
+    throw new Error("This paused campaign has no send to update.");
+  }
+  if (blast.status === "sent") {
+    throw new Error("This campaign has already finished.");
+  }
+
+  const sequences = campaignSequences(campaign);
+  if (sequences.length === 0) {
+    throw new Error("Keep at least one sequence.");
+  }
+
+  if (campaign.senderId && campaign.senderId !== blast.senderId) {
+    if (!ObjectId.isValid(campaign.senderId)) {
+      throw new Error("Select a Gmail or Outlook SMTP sender.");
+    }
+    const sender = await db.collection<SenderDoc>("smtp_senders").findOne({
+      _id: new ObjectId(campaign.senderId),
+      projectId,
+    });
+    if (!sender || (sender.provider !== "gmail" && sender.provider !== "outlook")) {
+      throw new Error("1-1 campaigns can only use Gmail or Outlook SMTP senders.");
+    }
+  }
+
+  const loadedSends = await db
+    .collection<CampaignSendDoc>("campaign_sends")
+    .find({ blastId: blast._id })
+    .toArray();
+  const sends = await dropPendingContactsFromRemovedLists(
+    projectId,
+    campaign,
+    blast._id,
+    loadedSends,
+  );
+  const previousSequences = blast.sequences ?? [];
+  const nextIds = new Set(sequences.map((sequence) => sequence.id));
+  const removed = previousSequences.filter((sequence) => !nextIds.has(sequence.id));
+
+  for (const sequence of removed) {
+    const started = sends.some(
+      (send) => send.sequenceId === sequence.id && send.status !== "pending",
+    );
+    if (started) {
+      const index = previousSequences.findIndex((item) => item.id === sequence.id);
+      throw new Error(
+        `Sequence ${index + 1} has already started and can't be removed.`,
+      );
+    }
+  }
+
+  const removedIds = removed.map((sequence) => sequence.id);
+  if (removedIds.length > 0) {
+    await db.collection<CampaignSendDoc>("campaign_sends").deleteMany({
+      blastId: blast._id,
+      sequenceId: { $in: removedIds },
+      status: "pending",
+    });
+  }
+
+  const keptSends = sends.filter(
+    (send) => !send.sequenceId || !removedIds.includes(send.sequenceId),
+  );
+
+  if (sequences.length > 0) {
+    await db.collection<CampaignSendDoc>("campaign_sends").bulkWrite(
+      sequences.map((sequence, index) => ({
+        updateMany: {
+          filter: { blastId: blast._id, sequenceId: sequence.id },
+          update: { $set: { sequenceIndex: index } },
+        },
+      })),
+    );
+  }
+
+  const existingEmails = new Set(
+    keptSends.map((send) => send.email.trim().toLowerCase()),
+  );
+  const previousIds = new Set(previousSequences.map((sequence) => sequence.id));
+  const now = new Date();
+  const addedSequences = sequences
+    .map((sequence, index) => ({ sequence, index }))
+    .filter(({ sequence }) => !previousIds.has(sequence.id));
+
+  const sampleByEmail = new Map<string, CampaignSendDoc>();
+  for (const send of keptSends) {
+    const email = send.email.trim().toLowerCase();
+    if (!sampleByEmail.has(email)) {
+      sampleByEmail.set(email, send);
+    }
+  }
+
+  const rows: CampaignSendDoc[] = [];
+  for (const contact of sampleByEmail.values()) {
+    const email = contact.email.trim().toLowerCase();
+    for (const { sequence, index } of addedSequences) {
+      rows.push(
+        pendingSendRow({
+          projectId,
+          blast,
+          campaignId: campaign.id,
+          contact: {
+            email,
+            fullName: contact.fullName,
+            firstName: contact.firstName,
+            lastName: contact.lastName,
+            companyName: contact.companyName,
+          },
+          sequenceId: sequence.id,
+          sequenceIndex: index,
+          availableAt: availableAtForNewStep(keptSends, sequences, index, email, now),
+        }),
+      );
+    }
+  }
+
+  const incoming = await recipientsToEnroll(projectId, campaign);
+  const suppressed = await getSuppressionSets(projectId);
+  const fresh = incoming.filter(
+    (contact) =>
+      contact.email &&
+      !existingEmails.has(contact.email) &&
+      !isSuppressedAddress(contact.email, suppressed),
+  );
+  if (fresh.length > 0) {
+    const { sendingLimit, used } = await getProjectSendingQuota(projectId);
+    const remaining = Math.max(0, sendingLimit - used);
+    if (fresh.length > remaining) {
+      throw new Error(
+        `Sending limit reached. Adding this list needs ${fresh.length.toLocaleString()} more contacts, but only ${remaining.toLocaleString()} remain of ${sendingLimit.toLocaleString()}.`,
+      );
+    }
+  }
+
+  for (const contact of fresh) {
+    for (let index = 0; index < sequences.length; index += 1) {
+      const sequence = sequences[index];
+      rows.push(
+        pendingSendRow({
+          projectId,
+          blast,
+          campaignId: campaign.id,
+          contact,
+          sequenceId: sequence.id,
+          sequenceIndex: index,
+          availableAt: index === 0 ? now : LOCKED_SEQUENCE_AT,
+        }),
+      );
+    }
+  }
+
+  for (let offset = 0; offset < rows.length; offset += 400) {
+    await db
+      .collection<CampaignSendDoc>("campaign_sends")
+      .insertMany(rows.slice(offset, offset + 400));
+  }
+
+  const delayWrites: Array<{
+    updateOne: {
+      filter: { _id: ObjectId };
+      update: { $set: { availableAt: Date } };
+    };
+  }> = [];
+  for (let index = 1; index < sequences.length; index += 1) {
+    const sequence = sequences[index];
+    if (!previousIds.has(sequence.id)) {
+      continue;
+    }
+    const delayDays = Math.max(0, Number(sequence.delayDays) || 0);
+    const previous = sequences[index - 1];
+    for (const send of keptSends) {
+      if (send.sequenceId !== sequence.id || send.status !== "pending") {
+        continue;
+      }
+      const email = send.email.trim().toLowerCase();
+      const previousSent = keptSends.find(
+        (item) =>
+          item.sequenceId === previous?.id &&
+          item.email.trim().toLowerCase() === email &&
+          item.status === "sent" &&
+          item.sentAt instanceof Date,
+      );
+      delayWrites.push({
+        updateOne: {
+          filter: { _id: send._id },
+          update: {
+            $set: {
+              availableAt: previousSent?.sentAt
+                ? new Date(previousSent.sentAt.getTime() + delayDays * LIVE_EDIT_DAY_MS)
+                : LOCKED_SEQUENCE_AT,
+            },
+          },
+        },
+      });
+    }
+  }
+  if (delayWrites.length > 0) {
+    await db.collection<CampaignSendDoc>("campaign_sends").bulkWrite(delayWrites);
+  }
+
+  const emails = await db
+    .collection<CampaignSendDoc>("campaign_sends")
+    .distinct("email", { blastId: blast._id });
+  const first = sequences[0];
+  let listDisplayId: number | undefined = blast.listDisplayId;
+  if (campaign.listId && ObjectId.isValid(campaign.listId)) {
+    const listDoc = await db.collection<ListDoc>("lists").findOne({
+      _id: new ObjectId(campaign.listId),
+      projectId,
+    });
+    listDisplayId = listDoc?.displayId;
+  }
+
+  await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+    { _id: blast._id },
+    {
+      $set: {
+        name: campaign.name,
+        subject: first?.subject?.trim() || campaign.subject || blast.subject,
+        previewText: first?.previewText || campaign.previewText,
+        html: first?.designHtml?.trim() || campaign.designHtml || blast.html,
+        senderId: campaign.senderId || blast.senderId,
+        senderName: campaign.senderName,
+        senderEmail: campaign.senderEmail || blast.senderEmail,
+        replyTo: campaign.replyToEnabled ? campaign.replyToEmail : undefined,
+        listId: campaign.listId || blast.listId,
+        listName: campaign.listName || blast.listName,
+        listDisplayId,
+        timezone: campaign.timezone || blast.timezone,
+        sequences,
+        windowStart: campaign.windowStart || blast.windowStart || "09:00",
+        windowEnd: campaign.windowEnd || blast.windowEnd || "18:00",
+        emailGapMinutes: Math.max(0, Number(campaign.emailGapMinutes) || 0),
+        recipients: emails.length,
+        updatedAt: now,
+      },
+    },
+  );
+}
+
+function pendingSendRow(input: {
+  projectId: ObjectId;
+  blast: CampaignBlastDoc;
+  campaignId: string;
+  contact: {
+    email: string;
+    fullName: string;
+    firstName: string;
+    lastName: string;
+    companyName: string;
+  };
+  sequenceId: string;
+  sequenceIndex: number;
+  availableAt: Date;
+}): CampaignSendDoc {
+  return {
+    _id: new ObjectId(),
+    projectId: input.projectId,
+    blastId: input.blast._id,
+    campaignId: input.campaignId,
+    email: input.contact.email,
+    fullName: input.contact.fullName,
+    firstName: input.contact.firstName,
+    lastName: input.contact.lastName,
+    companyName: input.contact.companyName,
+    token: randomBytes(18).toString("hex"),
+    status: "pending",
+    openCount: 0,
+    clickCount: 0,
+    sequenceId: input.sequenceId,
+    sequenceIndex: input.sequenceIndex,
+    availableAt: input.availableAt,
+  };
+}
+
+function availableAtForNewStep(
+  sends: CampaignSendDoc[],
+  sequences: CampaignSequence[],
+  index: number,
+  email: string,
+  now: Date,
+) {
+  if (index === 0) {
+    return now;
+  }
+  const previous = sequences[index - 1];
+  const previousSent = sends.find(
+    (send) =>
+      send.sequenceId === previous?.id &&
+      send.email.trim().toLowerCase() === email &&
+      send.status === "sent" &&
+      send.sentAt instanceof Date,
+  );
+  if (!previousSent?.sentAt) {
+    return LOCKED_SEQUENCE_AT;
+  }
+  const delayDays = Math.max(0, Number(sequences[index]?.delayDays) || 0);
+  return new Date(previousSent.sentAt.getTime() + delayDays * LIVE_EDIT_DAY_MS);
 }
 
 /** Ignore open beacons in the first 25s after send (filters most bots). */
@@ -2152,7 +2592,7 @@ export async function listCampaignSendRecipients(
   }
 
   if (filter === "clicks") {
-    return dedupeByEmail(docs.flatMap((doc) => {
+    const rows = docs.flatMap((doc) => {
       const events =
         doc.clickEvents && doc.clickEvents.length > 0
           ? doc.clickEvents
@@ -2178,7 +2618,32 @@ export async function listCampaignSendRecipients(
             clickedUrl: event.url || doc.clickedUrl || "",
           }),
         );
-    }));
+    });
+
+    const oneContactPerClick =
+      kind === "oneone" || blast?.kind === "oneone" || Boolean(options?.uniqueContacts);
+    if (!oneContactPerClick) {
+      return rows;
+    }
+
+    const byEmail = new Map<string, CampaignSendRecipient>();
+    for (const row of rows) {
+      const key = row.email.trim().toLowerCase();
+      if (!key) {
+        continue;
+      }
+      const existing = byEmail.get(key);
+      if (!existing) {
+        byEmail.set(key, row);
+        continue;
+      }
+      const existingAt = existing.clickedAt ? new Date(existing.clickedAt).getTime() : 0;
+      const nextAt = row.clickedAt ? new Date(row.clickedAt).getTime() : 0;
+      if (nextAt >= existingAt) {
+        byEmail.set(key, row);
+      }
+    }
+    return [...byEmail.values()];
   }
 
   // One row per email for bounces (1-1 can create multiple failed sequence rows)

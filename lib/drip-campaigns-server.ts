@@ -9,12 +9,13 @@ import type {
   DripCampaign,
   RecipientMode,
 } from "@/lib/drip-campaigns";
-import { createEmptySequence } from "@/lib/drip-campaigns";
+import { createEmptySequence, sequencesReady } from "@/lib/drip-campaigns";
 import {
   getCampaignReport,
   getProjectCampaignReports,
   pauseCampaignBlast,
   resumeCampaignBlast,
+  syncPausedOneOneBlast,
   ensureMarketingQueryIndexes,
   type CampaignReport,
 } from "@/lib/campaign-blasts-server";
@@ -44,6 +45,7 @@ export type DripCampaignDoc = {
   senderEmail?: string;
   listId?: string;
   listName?: string;
+  addedListIds?: string[];
   recipientMode?: RecipientMode;
   individualContacts?: CampaignIndividualContact[];
   subject?: string;
@@ -100,6 +102,7 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     senderEmail: doc.senderEmail,
     listId: doc.listId,
     listName: doc.listName,
+    addedListIds: doc.addedListIds,
     recipientMode: doc.recipientMode,
     individualContacts: doc.individualContacts,
     subject: doc.subject,
@@ -680,6 +683,7 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "senderEmail",
   "listId",
   "listName",
+  "addedListIds",
   "recipientMode",
   "individualContacts",
   "subject",
@@ -795,6 +799,16 @@ export async function updateProjectDripCampaign(
     updates.status === "sending" &&
     existing.status === "paused"
   ) {
+    if (resolvedKind === "oneone") {
+      const ready = sequencesReady(
+        mapCampaign({ ...existing, ...updates, status: existing.status }),
+      );
+      if (!ready) {
+        throw new Error(
+          "Add a subject on the first sequence and a design for every sequence before resuming.",
+        );
+      }
+    }
     const resumed = await resumeCampaignBlast(projectId, campaignId, resolvedKind);
     if (resumed === "scheduled") {
       updates.status = "scheduled";
@@ -806,6 +820,20 @@ export async function updateProjectDripCampaign(
     } else {
       updates.status = "sending";
     }
+  }
+
+  const pausedLiveEdit =
+    resolvedKind === "oneone" &&
+    existing.status === "paused" &&
+    updates.status !== "sending" &&
+    updates.status !== "sent" &&
+    updates.status !== "scheduled" &&
+    updates.status !== "draft";
+  if (pausedLiveEdit) {
+    await syncPausedOneOneBlast(
+      projectId,
+      mapCampaign({ ...existing, ...updates, status: "paused" }),
+    );
   }
 
   await db.collection<DripCampaignDoc>("drip_campaigns").updateOne(

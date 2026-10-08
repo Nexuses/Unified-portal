@@ -60,6 +60,8 @@ export type DripCampaign = {
   senderEmail?: string;
   listId?: string;
   listName?: string;
+  /** Extra lists enrolled after launch. The original list stays in listId. */
+  addedListIds?: string[];
   recipientMode?: RecipientMode;
   individualContacts?: CampaignIndividualContact[];
   subject?: string;

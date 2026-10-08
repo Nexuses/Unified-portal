@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { SmtpSender } from "@/lib/smtp-senders";
 import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
 import type { Contact, CrmList } from "@/lib/crm";
@@ -311,7 +312,7 @@ function SenderPanel({
               </>
             ) : (
               <>
-                No senders configured.{" "}
+                No Gmail or Outlook SMTP senders yet.{" "}
                 <Link href={PORTAL_ROUTES.smtp} className="link-blue">
                   Add a sender
                 </Link>
@@ -588,7 +589,9 @@ function SubjectTextareaField({
   placeholder,
   boxClassName,
   showAiButton = false,
+  showEmoji = true,
   autoFocus = false,
+  rows = 3,
 }: {
   id: string;
   label: ReactNode;
@@ -598,7 +601,9 @@ function SubjectTextareaField({
   placeholder?: string;
   boxClassName: string;
   showAiButton?: boolean;
+  showEmoji?: boolean;
   autoFocus?: boolean;
+  rows?: number;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -616,9 +621,11 @@ function SubjectTextareaField({
 
     const boxRect = boxRef.current.getBoundingClientRect();
     const buttonRect = variableButtonRef.current.getBoundingClientRect();
+    const popoverWidth = Math.min(360, boxRect.width);
+    const rawLeft = buttonRect.left - boxRect.left;
     setVariablePopoverStyle({
-      left: buttonRect.left - boxRect.left,
-      top: buttonRect.bottom - boxRect.top + 14,
+      left: Math.max(0, Math.min(rawLeft, boxRect.width - popoverWidth)),
+      top: buttonRect.bottom - boxRect.top + 8,
     });
   }
 
@@ -704,26 +711,28 @@ function SubjectTextareaField({
           onFocus={closeMenus}
           onClick={closeMenus}
           placeholder={placeholder}
-          rows={3}
+          rows={rows}
           required={required}
           autoFocus={autoFocus}
         />
 
         <div className="drip-subject-box-toolbar">
-          <button
-            type="button"
-            className={emojiOpen ? "active" : undefined}
-            aria-label="Insert emoji"
-            aria-expanded={emojiOpen}
-            onClick={() => {
-              setEmojiOpen((open) => !open);
-              setVariableOpen(false);
-              setVariableView("main");
-              setVariableSearch("");
-            }}
-          >
-            <EmojiToolbarIcon />
-          </button>
+          {showEmoji ? (
+            <button
+              type="button"
+              className={emojiOpen ? "active" : undefined}
+              aria-label="Insert emoji"
+              aria-expanded={emojiOpen}
+              onClick={() => {
+                setEmojiOpen((open) => !open);
+                setVariableOpen(false);
+                setVariableView("main");
+                setVariableSearch("");
+              }}
+            >
+              <EmojiToolbarIcon />
+            </button>
+          ) : null}
 
           <button
             ref={variableButtonRef}
@@ -1207,12 +1216,15 @@ function RecipientsPanel({
   draftListId,
   draftIndividualContacts,
   savedListId,
+  savedAddedListIds = [],
   savedIndividualContacts,
-  remainingEmails,
+  remainingEmails = 0,
+  liveAdd = false,
   onClose,
   onSave,
   onListChange,
   onClearList,
+  onRemoveAddedList,
   onIndividualContactsChange,
 }: {
   lists: CrmList[];
@@ -1221,12 +1233,15 @@ function RecipientsPanel({
   draftListId: string;
   draftIndividualContacts: CampaignIndividualContact[];
   savedListId: string;
+  savedAddedListIds?: string[];
   savedIndividualContacts: CampaignIndividualContact[];
-  remainingEmails: number;
+  remainingEmails?: number;
+  liveAdd?: boolean;
   onClose: () => void;
-  onSave: () => void;
+  onSave: (addedListId?: string) => void;
   onListChange: (listId: string) => void;
   onClearList: () => void;
+  onRemoveAddedList?: (listId: string) => void;
   onIndividualContactsChange: (contacts: CampaignIndividualContact[]) => void;
 }) {
   const [listOpen, setListOpen] = useState(false);
@@ -1234,7 +1249,17 @@ function RecipientsPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<RecipientPickerTab>("recent");
   const [addContactsOpen, setAddContactsOpen] = useState(false);
+  const [extraListId, setExtraListId] = useState("");
+  const [hiddenListIds, setHiddenListIds] = useState<string[]>([]);
   const selectedList = lists.find((list) => list.id === draftListId) ?? null;
+  const lockedListIds = liveAdd
+    ? [savedListId, ...savedAddedListIds].filter((id, index, all) => id && all.indexOf(id) === index)
+    : [];
+  const lockedLists = lockedListIds
+    .filter((id) => !hiddenListIds.includes(id))
+    .map((id) => lists.find((list) => list.id === id))
+    .filter((list): list is CrmList => Boolean(list));
+  const extraList = liveAdd ? lists.find((list) => list.id === extraListId) ?? null : null;
   const usingIndividual = draftIndividualContacts.length > 0;
   const recipientCount = usingIndividual
     ? draftIndividualContacts.length
@@ -1279,7 +1304,29 @@ function RecipientsPanel({
     return [];
   }, [lists, searchQuery, activeTab, draftListId]);
 
+  function removeLiveList(listId: string) {
+    if (listId === extraListId) {
+      setExtraListId("");
+      return;
+    }
+    setHiddenListIds((current) => (current.includes(listId) ? current : [...current, listId]));
+    if (savedAddedListIds.includes(listId)) {
+      onRemoveAddedList?.(listId);
+    }
+  }
+
   function toggleList(listId: string) {
+    if (liveAdd) {
+      if (hiddenListIds.includes(listId)) {
+        setHiddenListIds((current) => current.filter((id) => id !== listId));
+        return;
+      }
+      if (lockedListIds.includes(listId)) {
+        return;
+      }
+      setExtraListId((current) => (current === listId ? "" : listId));
+      return;
+    }
     onIndividualContactsChange([]);
     onListChange(draftListId === listId ? "" : listId);
   }
@@ -1319,15 +1366,19 @@ function RecipientsPanel({
     );
   }, [draftIndividualContacts, searchQuery]);
 
-  const hasChanges = recipientsSelectionChanged(
-    savedListId,
-    savedIndividualContacts,
-    draftListId,
-    draftIndividualContacts,
-  );
-  const hasValidSelection = usingIndividual
-    ? draftIndividualContacts.length > 0
-    : Boolean(draftListId);
+  const hasChanges = liveAdd
+    ? Boolean(extraListId)
+    : recipientsSelectionChanged(
+        savedListId,
+        savedIndividualContacts,
+        draftListId,
+        draftIndividualContacts,
+      );
+  const hasValidSelection = liveAdd
+    ? Boolean(extraList)
+    : usingIndividual
+      ? draftIndividualContacts.length > 0
+      : Boolean(draftListId);
   const canSave = hasChanges && hasValidSelection;
 
   return (
@@ -1342,8 +1393,14 @@ function RecipientsPanel({
           <div>
             <h3>Recipients</h3>
             <p>
-              <strong>{recipientCount.toLocaleString()}</strong> recipients •{" "}
-              {remainingEmails.toLocaleString()} remaining emails
+              {liveAdd
+                ? "The current list stays. Pick one more list to add its contacts."
+                : (
+                  <>
+                    <strong>{recipientCount.toLocaleString()}</strong> recipients •{" "}
+                    {remainingEmails.toLocaleString()} remaining emails
+                  </>
+                )}
             </p>
           </div>
         </div>
@@ -1382,7 +1439,37 @@ function RecipientsPanel({
                   aria-controls="drip-recipients-picker"
                 >
                   <div className="drip-send-to-chips">
-                    {usingIndividual ? (
+                    {liveAdd ? (
+                      <>
+                        {[...lockedLists, ...(extraList ? [extraList] : [])].map((list) => (
+                          <span className="drip-send-to-chip" key={list.id}>
+                            <span className="drip-send-to-chip-name">{list.name}</span>
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              className="drip-send-to-chip-remove"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                removeLiveList(list.id);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  removeLiveList(list.id);
+                                }
+                              }}
+                              aria-label={`Remove ${list.name}`}
+                            >
+                              ×
+                            </span>
+                          </span>
+                        ))}
+                        {lockedLists.length === 0 && !extraList ? (
+                          <span className="drip-send-to-placeholder">Select one more list</span>
+                        ) : null}
+                      </>
+                    ) : usingIndividual ? (
                       draftIndividualContacts.map((contact) => (
                         <span className="drip-send-to-chip" key={contact.id}>
                           {contact.email}
@@ -1597,8 +1684,8 @@ function RecipientsPanel({
                         <button
                           type="button"
                           className="drip-recipients-unselect-all"
-                          onClick={clearRecipients}
-                          disabled={selectedCount === 0}
+                          onClick={liveAdd ? () => setExtraListId("") : clearRecipients}
+                          disabled={liveAdd ? !extraListId : selectedCount === 0}
                         >
                           <span
                             className={`drip-recipient-checkbox${selectedCount > 0 ? " minus" : ""}`}
@@ -1612,7 +1699,11 @@ function RecipientsPanel({
                             <div className="drip-recipients-picker-empty">No lists match your search.</div>
                           ) : (
                             visibleLists.map((list) => {
-                              const selected = draftListId === list.id;
+                              const selected = liveAdd
+                                ? (!hiddenListIds.includes(list.id) &&
+                                    lockedListIds.includes(list.id)) ||
+                                  extraListId === list.id
+                                : draftListId === list.id;
                               return (
                                 <button
                                   type="button"
@@ -1669,7 +1760,7 @@ function RecipientsPanel({
         <button
           type="button"
           className="btn-dark"
-          onClick={onSave}
+          onClick={() => onSave(liveAdd ? extraListId : undefined)}
           disabled={!canSave}
         >
           Save
@@ -1943,14 +2034,6 @@ function DesignSavedCard({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function CrownIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M3 8l3 4 4-6 4 6 3-4 2 10H3L5 8Z" strokeLinejoin="round" />
-    </svg>
   );
 }
 
@@ -3170,13 +3253,15 @@ function senderDisplayName(sender: SmtpSender) {
   return match?.[1]?.trim() || sender.providerName;
 }
 
-/** Drip campaigns cannot use Gmail SMTP senders (1-1 can). */
+/** 1-1 uses Gmail and Outlook SMTP only. Drip cannot use Gmail SMTP. */
 function sendersAllowedForKind(
   senders: SmtpSender[],
   kind: "drip" | "oneone" | undefined,
 ) {
   if (kind === "oneone") {
-    return senders;
+    return senders.filter(
+      (sender) => sender.provider === "gmail" || sender.provider === "outlook",
+    );
   }
   return senders.filter((sender) => sender.provider !== "gmail");
 }
@@ -3710,6 +3795,10 @@ function SequencesPanel({
         ? `With no gap, all ${recipientCount.toLocaleString()} contacts can be emailed as fast as the send window allows.`
         : `With ${recipientCount.toLocaleString()} contact${recipientCount === 1 ? "" : "s"} and a ${emailGapMinutes}-min gap, one sequence takes about ${sequenceDurationLabel} to complete.`;
 
+  const [reorderOpen, setReorderOpen] = useState(false);
+  const [reorderDraft, setReorderDraft] = useState<CampaignSequence[]>([]);
+  const [reorderLabels, setReorderLabels] = useState<Record<string, number>>({});
+
   function updateSequence(id: string, patch: Partial<CampaignSequence>) {
     onChange({
       sequences: sequences.map((sequence) =>
@@ -3721,13 +3810,55 @@ function SequencesPanel({
     });
   }
 
+  function openReorder() {
+    setReorderDraft(sequences.map((sequence) => ({ ...sequence })));
+    setReorderLabels(
+      Object.fromEntries(sequences.map((sequence, index) => [sequence.id, index + 1])),
+    );
+    setReorderOpen(true);
+  }
+
+  function moveReorder(id: string, direction: -1 | 1) {
+    setReorderDraft((current) => {
+      const index = current.findIndex((sequence) => sequence.id === id);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) {
+        return current;
+      }
+      const next = current.slice();
+      const [moved] = next.splice(index, 1);
+      if (!moved) {
+        return current;
+      }
+      next.splice(nextIndex, 0, moved);
+      return next;
+    });
+  }
+
+  function applyReorder() {
+    onChange({
+      sequences: reorderDraft.map((sequence, index) => ({
+        ...sequence,
+        delayDays: index === 0 ? 0 : sequence.delayDays,
+      })),
+      windowStart,
+      windowEnd,
+      emailGapMinutes,
+    });
+    setReorderOpen(false);
+  }
+
   return (
     <div className="drip-settings-panel drip-sequences-panel">
       <div className="drip-sender-panel-head">
         <div className="drip-sender-panel-title">
           <div>
             <h3>Email sequences</h3>
-            <p>Each contact gets the next email after the wait you set.</p>
+            <p>
+              {campaign.status === "paused"
+                ? "Add a sequence, or remove one that has not started yet."
+                : "Each contact gets the next email after the wait you set."}
+            </p>
           </div>
         </div>
         <button type="button" className="crm-modal-close" onClick={onClose} aria-label="Close">
@@ -3849,33 +3980,35 @@ function SequencesPanel({
                 </div>
               ) : null}
               <p className="drip-sequences-hint drip-sequence-timing">{timingParts.join(" ")}</p>
-              <div className="crm-field">
-                <label htmlFor={`seq-subject-${sequence.id}`}>
-                  Subject
-                  {index === 0 ? (
-                    <span className="drip-required-mark"> *</span>
-                  ) : (
-                    <span className="drip-optional-mark"> (optional)</span>
-                  )}
-                </label>
-                <input
-                  id={`seq-subject-${sequence.id}`}
-                  type="text"
-                  value={sequence.subject ?? ""}
-                  placeholder={
-                    index === 0
-                      ? "Add a subject line"
-                      : "Leave blank to stay in the same thread"
-                  }
-                  onChange={(event) => updateSequence(sequence.id, { subject: event.target.value })}
-                />
-                {index > 0 ? (
-                  <p className="drip-sequences-hint drip-sequence-subject-hint">
-                    Leave this blank to send in the same thread. Add a subject
-                    to start a new thread.
-                  </p>
-                ) : null}
-              </div>
+              <SubjectTextareaField
+                id={`seq-subject-${sequence.id}`}
+                label={
+                  <>
+                    Subject
+                    {index === 0 ? (
+                      <span className="drip-required-mark"> *</span>
+                    ) : (
+                      <span className="drip-optional-mark"> (optional)</span>
+                    )}
+                  </>
+                }
+                value={sequence.subject ?? ""}
+                onChange={(value) => updateSequence(sequence.id, { subject: value })}
+                placeholder={
+                  index === 0
+                    ? "Add a subject line"
+                    : "Leave blank to stay in the same thread"
+                }
+                boxClassName="drip-subject-box-sequence"
+                showEmoji={false}
+                rows={1}
+              />
+              {index > 0 ? (
+                <p className="drip-sequences-hint drip-sequence-subject-hint">
+                  Leave this blank to send in the same thread. Add a subject
+                  to start a new thread.
+                </p>
+              ) : null}
               <div className="crm-field">
                 <label htmlFor={`seq-preview-${sequence.id}`}>Preview text</label>
                 <input
@@ -3910,21 +4043,30 @@ function SequencesPanel({
         })}
       </div>
 
-      <button
-        type="button"
-        className="btn-soft drip-sequence-add"
-        onClick={() =>
-          onChange({
-            sequences: [...sequences, createEmptySequence(sequences.length)],
-            windowStart,
-            windowEnd,
-            emailGapMinutes,
-          })
-        }
-      >
-        Add sequence
-      </button>
-
+      <div className="drip-sequence-actions">
+        <button
+          type="button"
+          className="btn-soft drip-sequence-add"
+          onClick={() =>
+            onChange({
+              sequences: [...sequences, createEmptySequence(sequences.length)],
+              windowStart,
+              windowEnd,
+              emailGapMinutes,
+            })
+          }
+        >
+          Add sequence
+        </button>
+        <button
+          type="button"
+          className="btn-soft"
+          disabled={sequences.length < 2}
+          onClick={openReorder}
+        >
+          Rearrange
+        </button>
+      </div>
       <div className="drip-sender-panel-foot">
         <button type="button" className="btn-link-purple" onClick={onClose}>
           Cancel
@@ -3933,6 +4075,100 @@ function SequencesPanel({
           Save
         </button>
       </div>
+      {reorderOpen
+        ? createPortal(
+            <div className="crm-modal-backdrop" onClick={() => setReorderOpen(false)}>
+              <div
+                className="crm-modal drip-reorder-modal"
+                role="dialog"
+                aria-labelledby="drip-reorder-title"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="crm-modal-head">
+                  <div>
+                    <h3 id="drip-reorder-title">Rearrange sequences</h3>
+                    <p>
+                      Move a step up or down. The name stays until you click Done.
+                      Sequence 4 placed under sequence 2 becomes sequence 3 then.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="crm-modal-close drip-reorder-close"
+                    aria-label="Close"
+                    onClick={() => setReorderOpen(false)}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                      <path d="M6 6l12 12M18 6 6 18" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="crm-modal-body">
+                  <ol className="drip-reorder-list">
+                    {reorderDraft.map((sequence, index) => {
+                      const subject = sequence.subject?.trim();
+                      const hasDesign = Boolean(sequence.hasDesign && sequence.designHtml?.trim());
+                      const delayDays = Math.max(0, Number(sequence.delayDays) || 0);
+                      const name = reorderLabels[sequence.id] ?? index + 1;
+                      return (
+                        <li key={sequence.id} className="drip-reorder-row">
+                          <div className="drip-reorder-copy">
+                            <strong>Sequence {name}</strong>
+                            <span>{subject || "No subject yet"}</span>
+                            <span>
+                              {name === 1
+                                ? "Sends first"
+                                : `Waits ${delayDays} day${delayDays === 1 ? "" : "s"}`}
+                              {" · "}
+                              {hasDesign ? "Design included" : "No design"}
+                            </span>
+                          </div>
+                          <div className="drip-reorder-moves">
+                            <button
+                              type="button"
+                              className="drip-reorder-arrow"
+                              aria-label={`Move sequence ${name} up`}
+                              disabled={index === 0}
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                moveReorder(sequence.id, -1);
+                              }}
+                            >
+                              <ChevronUpIcon />
+                            </button>
+                            <button
+                              type="button"
+                              className="drip-reorder-arrow"
+                              aria-label={`Move sequence ${name} down`}
+                              disabled={index === reorderDraft.length - 1}
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                moveReorder(sequence.id, 1);
+                              }}
+                            >
+                              <ChevronDownIcon />
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+                <div className="crm-modal-foot">
+                  <button type="button" className="btn-link-purple" onClick={() => setReorderOpen(false)}>
+                    Cancel
+                  </button>
+                  <button type="button" className="btn-dark" onClick={applyReorder}>
+                    Done
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
@@ -4207,6 +4443,7 @@ export default function PortalCampaignDetailPage({
   const [campaign, setCampaign] = useState<DripCampaign | null>(null);
   const [rescheduleNotice, setRescheduleNotice] = useState(showRescheduleNotice);
   const [loading, setLoading] = useState(true);
+  const [pausedEditing, setPausedEditing] = useState(false);
   const [senderPanelOpen, setSenderPanelOpen] = useState(false);
   const [recipientsPanelOpen, setRecipientsPanelOpen] = useState(false);
   const [subjectPanelOpen, setSubjectPanelOpen] = useState(false);
@@ -4492,9 +4729,7 @@ export default function PortalCampaignDetailPage({
       ? senders.find((sender) => sender.id === campaign?.senderId)?.provider ?? null
       : null);
   const senderAllowed =
-    kind === "oneone" ||
     !campaign?.senderId ||
-    !senders.some((sender) => sender.id === campaign.senderId) ||
     selectableSenders.some((sender) => sender.id === campaign.senderId);
 
   const steps = useMemo(
@@ -5030,8 +5265,38 @@ export default function PortalCampaignDetailPage({
     return undefined;
   }
 
-  async function handleSaveRecipients() {
+  async function handleRemoveAddedList(listId: string) {
+    if (!campaign) {
+      return;
+    }
     try {
+      await persistCampaign({
+        addedListIds: (campaign.addedListIds ?? []).filter((id) => id !== listId),
+      });
+    } catch (error) {
+      setPersistError(
+        error instanceof Error ? error.message : "Failed to remove that list",
+      );
+    }
+  }
+
+  async function handleSaveRecipients(addedListId?: string) {
+    try {
+      if (campaign?.status === "paused" && addedListId) {
+        const selected = lists.find((list) => list.id === addedListId);
+        const alreadyAdded =
+          addedListId === campaign.listId ||
+          (campaign.addedListIds ?? []).includes(addedListId);
+        if (!selected || alreadyAdded) {
+          return;
+        }
+        await persistCampaign({
+          addedListIds: [...(campaign.addedListIds ?? []), addedListId],
+        });
+        setRecipientsPanelOpen(false);
+        return;
+      }
+
       if (draftIndividualContacts.length > 0) {
         await persistCampaign({
           recipientMode: "individual",
@@ -5160,13 +5425,27 @@ export default function PortalCampaignDetailPage({
       )
     : campaign;
 
-  if (campaign.status === "sent" || campaign.status === "scheduled" || campaign.status === "sending" || campaign.status === "paused") {
+  const showReport =
+    campaign.status === "sent" ||
+    campaign.status === "scheduled" ||
+    campaign.status === "sending" ||
+    (campaign.status === "paused" && !pausedEditing);
+
+  if (showReport) {
     return (
       <PortalCampaignReport
         campaign={campaign}
+        onEditPaused={
+          campaign.status === "paused" && isOneOneCampaign(campaign)
+            ? () => setPausedEditing(true)
+            : undefined
+        }
         onCampaignChange={(next) => {
           const wasScheduled = campaign.status === "scheduled";
           setCampaign(next);
+          if (next.status !== "paused") {
+            setPausedEditing(false);
+          }
           if (wasScheduled && next.status === "draft") {
             setRescheduleNotice(true);
             router.replace(
@@ -5178,6 +5457,27 @@ export default function PortalCampaignDetailPage({
     );
   }
 
+  const editingPaused = campaign.status === "paused";
+  const requiredStepList = steps.filter((step) => !step.noIcon);
+  const doneStepCount = requiredStepList.filter((step) => step.done).length;
+  const setupReady =
+    !editingPaused &&
+    requiredStepList.length > 0 &&
+    doneStepCount === requiredStepList.length;
+  const nextStep = requiredStepList.find((step) => !step.done);
+  const setupTitle = editingPaused
+    ? "Campaign is paused"
+    : setupReady
+      ? "Ready to schedule"
+      : `${doneStepCount} of ${requiredStepList.length} steps done`;
+  const setupHint = editingPaused
+    ? "Change the sender, list, or sequences, then go back and resume."
+    : setupReady
+      ? "Preview the email, then choose Schedule."
+      : nextStep
+        ? `Next: ${nextStep.title}.`
+        : "";
+
   return (
     <div className="drip-detail-page">
       <div className="drip-detail-breadcrumb">
@@ -5185,7 +5485,7 @@ export default function PortalCampaignDetailPage({
           {listLabel}
         </Link>
         <span>/</span>
-        <span>Create an email campaign</span>
+        <span>{editingPaused ? "Edit campaign" : "Create an email campaign"}</span>
       </div>
 
       {rescheduleNotice || showRescheduleNotice ? (
@@ -5220,6 +5520,25 @@ export default function PortalCampaignDetailPage({
           >
             ×
           </button>
+        </div>
+      ) : null}
+
+      {editingPaused ? (
+        <div className="drip-reschedule-alert" role="status">
+          <div className="drip-reschedule-alert-body">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 8v5" />
+              <circle cx="12" cy="16.2" r=".9" fill="currentColor" stroke="none" />
+            </svg>
+            <div>
+              <strong>Campaign stays paused</strong>
+              <p>
+                Change the sender, add a list, or add and remove sequences. Sending
+                continues only after you go back and choose Resume.
+              </p>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -5332,6 +5651,14 @@ export default function PortalCampaignDetailPage({
                 ? "Return to Automation ✓"
                 : "Return to Automation"}
             </button>
+          ) : editingPaused ? (
+            <button
+              type="button"
+              className="btn-dark"
+              onClick={() => setPausedEditing(false)}
+            >
+              Back to report
+            </button>
           ) : (
             <button
               type="button"
@@ -5353,10 +5680,17 @@ export default function PortalCampaignDetailPage({
       <div
         className={`drip-setup-card${senderPanelOpen || recipientsPanelOpen || subjectPanelOpen || settingsPanelOpen || sequencesPanelOpen ? " drip-setup-card-active" : ""}`}
       >
-        <button type="button" className="drip-lang-link">
-          <CrownIcon />
-          Add languages
-        </button>
+        <div className="drip-setup-intro">
+          <div className="drip-setup-intro-copy">
+            <strong>{setupTitle}</strong>
+            {setupHint ? <span>{setupHint}</span> : null}
+          </div>
+          <div className="drip-setup-intro-meter" aria-hidden="true">
+            {requiredStepList.map((step) => (
+              <span key={step.id} className={step.done ? "done" : undefined} />
+            ))}
+          </div>
+        </div>
 
         <div className="drip-setup-list">
           {steps.map((step) => (
@@ -5382,13 +5716,16 @@ export default function PortalCampaignDetailPage({
                   draftListId={draftListId}
                   draftIndividualContacts={draftIndividualContacts}
                   savedListId={campaign.listId ?? ""}
+                  savedAddedListIds={campaign.addedListIds ?? []}
                   savedIndividualContacts={campaign.individualContacts ?? []}
                   remainingEmails={remainingEmails}
                   onClose={closeRecipientsPanel}
                   onSave={handleSaveRecipients}
+                  liveAdd={campaign.status === "paused"}
                   onListChange={setDraftListId}
                   onClearList={() => setDraftListId("")}
                   onIndividualContactsChange={setDraftIndividualContacts}
+                  onRemoveAddedList={(listId) => void handleRemoveAddedList(listId)}
                 />
               ) : step.id === "subject" && subjectPanelOpen ? (
                 <SubjectPanel

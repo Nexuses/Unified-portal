@@ -187,11 +187,13 @@ function linkLabel(url?: string) {
 export default function PortalCampaignReport({
   campaign,
   onCampaignChange,
+  onEditPaused,
   publicToken,
   analyticsToken,
 }: {
   campaign: DripCampaign;
   onCampaignChange?: (campaign: DripCampaign) => void;
+  onEditPaused?: () => void;
   publicToken?: string;
   analyticsToken?: string;
 }) {
@@ -216,6 +218,10 @@ export default function PortalCampaignReport({
   const [editing, setEditing] = useState(false);
   const [sequencesOpen, setSequencesOpen] = useState(false);
   const [sequencePreviewIndex, setSequencePreviewIndex] = useState(0);
+  const [uniqueClicks, setUniqueClicks] = useState<{
+    scope: number | null;
+    count: number;
+  } | null>(null);
   const isPublic = Boolean(publicToken);
 
   useEffect(() => {
@@ -300,9 +306,8 @@ export default function PortalCampaignReport({
           params.set("kind", campaign.kind);
         }
         if (campaign.kind === "oneone") {
-          if (sequenceScope === null) {
-            params.set("unique", "1");
-          } else {
+          params.set("unique", "1");
+          if (sequenceScope !== null) {
             params.set("sequence", String(sequenceScope));
           }
         }
@@ -340,21 +345,84 @@ export default function PortalCampaignReport({
     return () => {
       cancelled = true;
     };
-  }, [campaign.id, campaign.kind, peopleView, publicToken, sequenceScope]);
+  }, [campaign.id, campaign.kind, campaign.clicks, peopleView, publicToken, sequenceScope]);
+
+  useEffect(() => {
+    if (campaign.kind !== "oneone") {
+      setUniqueClicks(null);
+      return;
+    }
+
+    let cancelled = false;
+    async function loadUniqueClicks() {
+      try {
+        const params = new URLSearchParams({
+          filter: "clicks",
+          kind: "oneone",
+          unique: "1",
+        });
+        if (sequenceScope !== null) {
+          params.set("sequence", String(sequenceScope));
+        }
+        const response = await fetch(
+          publicToken
+            ? `/api/public/reports/${encodeURIComponent(publicToken)}/recipients?${params}`
+            : `/api/campaigns/${encodeURIComponent(campaign.id)}/recipients?${params}`,
+          { cache: "no-store" },
+        );
+        const data = await response.json();
+        if (cancelled || !response.ok || !Array.isArray(data)) {
+          return;
+        }
+        setUniqueClicks({ scope: sequenceScope, count: data.length });
+      } catch {
+        // Keep the last unique click count.
+      }
+    }
+
+    void loadUniqueClicks();
+    return () => {
+      cancelled = true;
+    };
+  }, [campaign.id, campaign.kind, campaign.clicks, publicToken, sequenceScope]);
+
+  const reportPeople = useMemo(() => {
+    if (campaign.kind !== "oneone" || peopleView !== "clicks") {
+      return people;
+    }
+    const byEmail = new Map<string, SendRecipient>();
+    for (const person of people) {
+      const key = person.email.trim().toLowerCase();
+      if (!key) {
+        continue;
+      }
+      const existing = byEmail.get(key);
+      if (!existing) {
+        byEmail.set(key, person);
+        continue;
+      }
+      const existingAt = existing.clickedAt ? new Date(existing.clickedAt).getTime() : 0;
+      const nextAt = person.clickedAt ? new Date(person.clickedAt).getTime() : 0;
+      if (nextAt >= existingAt) {
+        byEmail.set(key, person);
+      }
+    }
+    return [...byEmail.values()];
+  }, [campaign.kind, people, peopleView]);
 
   const visiblePeople = useMemo(() => {
     const query = peopleSearch.trim().toLowerCase();
     if (!query) {
-      return people;
+      return reportPeople;
     }
-    return people.filter(
+    return reportPeople.filter(
       (person) =>
         person.fullName.toLowerCase().includes(query) ||
         person.email.toLowerCase().includes(query) ||
         person.companyName.toLowerCase().includes(query) ||
         (person.clickedUrl ?? "").toLowerCase().includes(query),
     );
-  }, [people, peopleSearch]);
+  }, [reportPeople, peopleSearch]);
 
   useEffect(() => {
     setPeoplePage(1);
@@ -520,6 +588,7 @@ export default function PortalCampaignReport({
   const canResume = !isPublic && isOneOne && isPaused;
   const canEditScheduled =
     !isPublic && Boolean(onCampaignChange) && campaign.status === "scheduled";
+  const canEditPaused = !isPublic && isOneOne && isPaused && Boolean(onEditPaused);
 
   async function editScheduledCampaign() {
     if (!canEditScheduled || editing) {
@@ -614,7 +683,20 @@ export default function PortalCampaignReport({
   const delivered =
     scopedStats?.delivered ?? campaign.delivered ?? campaign.recipients;
   const statOpens = scopedStats?.opens ?? campaign.opens;
-  const statClicks = scopedStats?.clicks ?? campaign.clicks;
+  const clicksFromOpenView =
+    campaign.kind === "oneone" &&
+    peopleView === "clicks" &&
+    !peopleLoading &&
+    peopleSearch.trim() === ""
+      ? reportPeople.length
+      : null;
+  const statClicks =
+    clicksFromOpenView ??
+    (campaign.kind === "oneone" &&
+    uniqueClicks !== null &&
+    uniqueClicks.scope === sequenceScope
+      ? uniqueClicks.count
+      : scopedStats?.clicks ?? campaign.clicks);
   const statBounces = scopedStats?.bounces ?? campaign.bounces ?? 0;
   const statReplies = scopedStats?.replies ?? campaign.replies ?? 0;
   const statUnsubscribed = scopedStats?.unsubscribed ?? campaign.unsubscribed;
@@ -811,21 +893,25 @@ export default function PortalCampaignReport({
               {editing ? "Opening…" : "Edit campaign"}
             </button>
           ) : null}
-          {canPause || canResume ? (
+          {canEditPaused ? (
             <button
               type="button"
-              className={`drip-report-pause-action${canResume ? " btn-dark" : " btn-soft"}`}
+              className="btn-soft drip-report-edit-action"
+              disabled={pausing}
+              onClick={onEditPaused}
+            >
+              Edit campaign
+            </button>
+          ) : null}
+          {canPause ? (
+            <button
+              type="button"
+              className="drip-report-pause-action btn-soft"
               disabled={pausing || editing}
               onClick={() => void togglePause()}
             >
-              {canResume ? <ResumeIcon /> : <PauseIcon />}
-              {pausing
-                ? canResume
-                  ? "Resuming…"
-                  : "Pausing…"
-                : canResume
-                  ? "Resume campaign"
-                  : "Pause campaign"}
+              <PauseIcon />
+              {pausing ? "Pausing…" : "Pause campaign"}
             </button>
           ) : null}
           <button
@@ -912,7 +998,7 @@ export default function PortalCampaignReport({
 
       {isOneOne ? (
         <div className="drip-report-tab-rows">
-          <div className="drip-report-tabs">
+          <div className="drip-report-sequence-tabs">
             <button
               type="button"
               className={sequenceScope === null ? "active" : ""}
@@ -920,16 +1006,21 @@ export default function PortalCampaignReport({
             >
               Overview
             </button>
-            {sequences.map((sequence, index) => (
-              <button
-                key={sequence.id}
-                type="button"
-                className={sequenceScope === index ? "active" : ""}
-                onClick={() => selectReportScope(index)}
-              >
-                Sequence {index + 1}
-              </button>
-            ))}
+            <div
+              className={`drip-report-sequence-scroll${sequences.length > 8 ? " is-scroll" : ""}`}
+            >
+              {sequences.map((sequence, index) => (
+                <button
+                  key={sequence.id}
+                  type="button"
+                  className={sequenceScope === index ? "active" : ""}
+                  onClick={() => selectReportScope(index)}
+                >
+                  <span className="drip-report-seq-dot" aria-hidden="true" />
+                  <span className="drip-report-seq-name">Sequence {index + 1}</span>
+                </button>
+              ))}
+            </div>
           </div>
           <div className="drip-report-tabs">
             {["Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
@@ -1126,8 +1217,8 @@ export default function PortalCampaignReport({
                   : peopleView === "clicks"
                     ? campaign.kind === "oneone"
                       ? sequenceScope === null
-                        ? "Each contact is counted once, even if they clicked in more than one sequence."
-                        : `Links clicked in sequence ${sequenceScope + 1}.`
+                        ? "Each contact is counted once, even if they clicked more than one link or sequence."
+                        : `Each contact is counted once in sequence ${sequenceScope + 1}, even if they clicked more than one link.`
                       : "Links clicked in this campaign, with date and time."
                     : peopleView === "bounces"
                       ? "Addresses that bounced (from delivery failures or bounce emails). Replies are not counted here."
@@ -1142,7 +1233,9 @@ export default function PortalCampaignReport({
             <div className="crm-count">
               {peopleLoading
                 ? "Loading..."
-                : `${visiblePeople.length} ${peopleView === "clicks" ? "clicks" : "contacts"}`}
+                : `${visiblePeople.length} ${
+                    peopleView === "clicks" && campaign.kind !== "oneone" ? "clicks" : "contacts"
+                  }`}
             </div>
             <div className="crm-meta-right">
               <div className="search-input">

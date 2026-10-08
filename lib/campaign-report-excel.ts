@@ -246,7 +246,9 @@ export async function buildCampaignReportWorkbook({
   const engageRows: EngageRow[] = [];
   for (const group of byEmail.values()) {
     const opens = group.reduce((sum, item) => sum + (item.openCount || 0), 0);
-    const clicks = group.reduce((sum, item) => sum + (item.clickCount || 0), 0);
+    const clicks = group.some((item) => (item.clickCount || 0) > 0 || item.clickedAt)
+      ? 1
+      : 0;
     if (opens <= 0 && clicks <= 0) {
       continue;
     }
