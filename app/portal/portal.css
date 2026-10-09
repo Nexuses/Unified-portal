@@ -5452,6 +5452,7 @@ select.filter{
 .an-kind-row{
   display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:22px;
 }
+.an-kind-row.has-three{grid-template-columns:repeat(3,1fr);}
 .an-kind-card{
   border:1px solid #e5e7eb;border-radius:12px;background:#fff;padding:16px 18px;
 }
@@ -5545,6 +5546,7 @@ select.filter{
 }
 .an-kind-tag.drip{background:#eef2ff;color:#3730a3;}
 .an-kind-tag.oneone{background:#e8f6ee;color:#067647;}
+.an-kind-tag.personalise{background:#fff4e5;color:#b54708;}
 .an-view-tabs{margin:4px 0 8px;}
 .an-kanban-page{
   max-width:none;margin:0;flex:1;min-height:0;display:flex;flex-direction:column;
@@ -5817,7 +5819,7 @@ a.an-kanban-card-name.is-link:hover{
 .an-kanban-pick-row em{grid-column:2;font-style:normal;font-size:12px;color:#6b7280;}
 .an-kanban-pick-row:has(input:checked){border-color:#c4b5fd;background:#faf8ff;}
 @media (max-width:900px){
-  .an-stat-grid,.an-kind-row{grid-template-columns:1fr;}
+  .an-stat-grid,.an-kind-row,.an-kind-row.has-three{grid-template-columns:1fr;}
   .an-kind-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
   .an-page-head{flex-direction:column;align-items:stretch;}
 }

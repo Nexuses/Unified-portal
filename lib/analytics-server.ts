@@ -288,12 +288,35 @@ export async function getAnalyticsDashboard(
     : [];
   const blastMap = new Map(blasts.map((blast) => [blast._id.toString(), blast]));
 
+  const oneOneCampaignIds = [
+    ...new Set(
+      blasts.filter((blast) => blast.kind === "oneone").map((blast) => blast.campaignId),
+    ),
+  ];
+  const personaliseIds = new Set(
+    oneOneCampaignIds.length
+      ? (
+          await db
+            .collection("drip_campaigns")
+            .find({
+              projectId,
+              kind: "oneone",
+              campaignId: { $in: oneOneCampaignIds },
+              tags: "personalise",
+            })
+            .project<{ campaignId: string }>({ campaignId: 1 })
+            .toArray()
+        ).map((campaign) => campaign.campaignId)
+      : [],
+  );
+
   const totals = {
     ...emptyKind(),
     failed,
     campaigns: 0,
     dripCampaigns: 0,
     oneOneCampaigns: 0,
+    personaliseCampaigns: 0,
     contactsAdded,
     automationsCreated,
   };
@@ -304,7 +327,7 @@ export async function getAnalyticsDashboard(
     totals.unsubscribed = totalRow.unsubscribed;
   }
 
-  const byKind = { drip: emptyKind(), oneone: emptyKind() };
+  const byKind = { drip: emptyKind(), oneone: emptyKind(), personalise: emptyKind() };
   const dailyMap = new Map<string, AnalyticsDailyPoint>();
   for (const day of eachDay(from, to)) {
     dailyMap.set(day, { date: day, delivered: 0, opens: 0, clicks: 0 });
@@ -325,12 +348,14 @@ export async function getAnalyticsDashboard(
   for (const row of byBlast) {
     const blast = blastMap.get(row._id.toString());
     const kind = blast?.kind === "oneone" ? "oneone" : "drip";
-    byKind[kind].delivered += row.delivered;
-    byKind[kind].opens += row.opens;
-    byKind[kind].clicks += row.clicks;
-    byKind[kind].unsubscribed += row.unsubscribed;
-
     const campaignId = blast?.campaignId ?? row.campaignId;
+    const personalise = kind === "oneone" && personaliseIds.has(campaignId);
+    const bucket = byKind[personalise ? "personalise" : kind];
+    bucket.delivered += row.delivered;
+    bucket.opens += row.opens;
+    bucket.clicks += row.clicks;
+    bucket.unsubscribed += row.unsubscribed;
+
     const key = `${kind}:${campaignId}`;
     const sentAt = row.sentAt?.toISOString();
     const existing = campaignMap.get(key);
@@ -340,6 +365,7 @@ export async function getAnalyticsDashboard(
         campaignId,
         name: blast?.name || `Campaign ${campaignId}`,
         kind,
+        ...(personalise ? { personalise: true } : {}),
         sentAt,
         delivered: row.delivered,
         opens: row.opens,
@@ -360,7 +386,9 @@ export async function getAnalyticsDashboard(
   const campaigns = [...campaignMap.values()].sort((a, b) => b.delivered - a.delivered);
   totals.campaigns = campaigns.length;
   totals.dripCampaigns = campaigns.filter((item) => item.kind === "drip").length;
-  totals.oneOneCampaigns = campaigns.filter((item) => item.kind === "oneone").length;
+  totals.personaliseCampaigns = campaigns.filter((item) => item.personalise).length;
+  totals.oneOneCampaigns =
+    campaigns.filter((item) => item.kind === "oneone").length - totals.personaliseCampaigns;
 
   if (withShareTokens && campaigns.length > 0) {
     const tokens = await ensureCampaignShareTokens(

@@ -67,7 +67,10 @@ function formatSentAt(value?: string) {
   });
 }
 
-function kindLabel(kind: "drip" | "oneone") {
+function kindLabel(kind: "drip" | "oneone", personalise?: boolean) {
+  if (personalise) {
+    return "Personalise";
+  }
   return kind === "oneone" ? "1-1" : "Drip";
 }
 
@@ -185,6 +188,7 @@ export function AnalyticsDashboardView({
   analyticsToken?: string;
 }) {
   const totals = dashboard.totals;
+  const showPersonalise = (totals.personaliseCampaigns ?? 0) > 0;
   const attempted = totals.delivered + totals.failed;
   const metrics = [
     {
@@ -242,6 +246,9 @@ export function AnalyticsDashboardView({
           <strong>{formatInt(totals.campaigns)}</strong>
           <em>
             {formatInt(totals.dripCampaigns)} drip · {formatInt(totals.oneOneCampaigns)} 1-1
+            {totals.personaliseCampaigns
+              ? ` · ${formatInt(totals.personaliseCampaigns)} personalise`
+              : ""}
           </em>
         </div>
         <div className="an-stat-card">
@@ -256,9 +263,12 @@ export function AnalyticsDashboardView({
         </div>
       </div>
 
-      <div className="an-kind-row">
+      <div className={`an-kind-row${showPersonalise ? " has-three" : ""}`}>
         <KindStats title="Drip campaigns" stats={dashboard.byKind.drip} />
         <KindStats title="1-1 campaigns" stats={dashboard.byKind.oneone} />
+        {showPersonalise && dashboard.byKind.personalise ? (
+          <KindStats title="Personalise campaigns" stats={dashboard.byKind.personalise} />
+        ) : null}
       </div>
 
       <section className="an-section">
@@ -311,7 +321,11 @@ export function AnalyticsDashboardView({
                   const name =
                     variant === "portal" ? (
                       <Link
-                        href={portalCampaignRoute(campaign.campaignId, campaign.kind)}
+                        href={portalCampaignRoute(
+                          campaign.campaignId,
+                          campaign.kind,
+                          campaign.personalise ? ["personalise"] : undefined,
+                        )}
                         title={campaign.name}
                       >
                         <span className="an-campaign-name">{campaign.name}</span>
@@ -332,8 +346,10 @@ export function AnalyticsDashboardView({
                         {name}
                       </td>
                       <td data-label="Type">
-                        <span className={`an-kind-tag ${campaign.kind}`}>
-                          {kindLabel(campaign.kind)}
+                        <span
+                          className={`an-kind-tag ${campaign.personalise ? "personalise" : campaign.kind}`}
+                        >
+                          {kindLabel(campaign.kind, campaign.personalise)}
                         </span>
                       </td>
                       <td data-label="Last sent">{formatSentAt(campaign.sentAt)}</td>

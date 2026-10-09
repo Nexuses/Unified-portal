@@ -10,6 +10,7 @@ export type AnalyticsCampaignRow = {
   campaignId: string;
   name: string;
   kind: "drip" | "oneone";
+  personalise?: boolean;
   sentAt?: string;
   delivered: number;
   opens: number;
@@ -34,6 +35,7 @@ export type AnalyticsDashboard = {
     campaigns: number;
     dripCampaigns: number;
     oneOneCampaigns: number;
+    personaliseCampaigns?: number;
     contactsAdded: number;
     automationsCreated: number;
   };
@@ -45,6 +47,7 @@ export type AnalyticsDashboard = {
   byKind: {
     drip: AnalyticsKindStats;
     oneone: AnalyticsKindStats;
+    personalise?: AnalyticsKindStats;
   };
   daily: AnalyticsDailyPoint[];
   campaigns: AnalyticsCampaignRow[];
