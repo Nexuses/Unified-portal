@@ -19,6 +19,7 @@ import type {
 import { portalCampaignRoute } from "@/lib/portal-nav";
 
 const HTML_SIGNATURE_STORAGE_KEY = "portal-inbox-html-signature";
+const AUTO_REFRESH_MS = 10 * 60 * 1000;
 
 function formatWhen(iso: string) {
   try {
@@ -29,6 +30,30 @@ function formatWhen(iso: string) {
   } catch {
     return iso;
   }
+}
+
+const CAMPAIGN_TYPE_LABEL: Record<NonNullable<InboxThread["campaignType"]>, string> = {
+  drip: "Drip",
+  oneone: "1-1",
+  personalise: "Personalise",
+};
+
+function simpleHtmlToText(html: string) {
+  const doc = new DOMParser().parseFromString(
+    html.replace(/\s*\n\s*/g, " "),
+    "text/html",
+  );
+  doc.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+  doc.querySelectorAll("li").forEach((li) => li.prepend("- "));
+  doc
+    .querySelectorAll("p,div,ul,ol,li,h1,h2,h3,h4,h5,h6,blockquote,tr")
+    .forEach((el) => el.append(el.tagName === "LI" ? "\n" : "\n\n"));
+  return (doc.body.textContent || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function isRichHtml(html: string) {
@@ -344,6 +369,7 @@ function sanitizePastedHtml(html: string) {
 
 type InboxReplyEditorHandle = {
   insertHtml: (html: string) => void;
+  replaceHtml: (html: string) => void;
 };
 
 const InboxReplyEditor = forwardRef<
@@ -399,6 +425,15 @@ const InboxReplyEditor = forwardRef<
         false,
         `${needsBreak ? "<br><br>" : ""}${cleaned}`,
       );
+      syncHtml();
+    },
+    replaceHtml(html: string) {
+      const editor = editorRef.current;
+      if (!editor || disabled) {
+        return;
+      }
+      editor.innerHTML = sanitizePastedHtml(html).trim();
+      editor.focus();
       syncHtml();
     },
   }));
@@ -488,6 +523,14 @@ export default function PortalMasterInboxPage() {
   const [signatureModalOpen, setSignatureModalOpen] = useState(false);
   const [signatureHtmlDraft, setSignatureHtmlDraft] = useState("");
   const replyEditorRef = useRef<InboxReplyEditorHandle>(null);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [suggestError, setSuggestError] = useState("");
+  const selectedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedKeyRef.current = selectedKey;
+  }, [selectedKey]);
   const handleReplyHtmlChange = useCallback((html: string) => {
     setReplyHtml(html);
   }, []);
@@ -521,9 +564,11 @@ export default function PortalMasterInboxPage() {
     setSignatureModalOpen(false);
   }
 
-  const loadThreads = useCallback(async (inboxId: string) => {
-    setLoading(true);
-    setError("");
+  const loadThreads = useCallback(async (inboxId: string, options?: { silent?: boolean }) => {
+    if (!options?.silent) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const params = new URLSearchParams();
       if (inboxId && inboxId !== "all") {
@@ -538,15 +583,38 @@ export default function PortalMasterInboxPage() {
       setThreads(Array.isArray(data.threads) ? data.threads : []);
       setInboxes(Array.isArray(data.inboxes) ? data.inboxes : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load inbox");
+      if (!options?.silent) {
+        setError(err instanceof Error ? err.message : "Failed to load inbox");
+      }
     } finally {
-      setLoading(false);
+      if (!options?.silent) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     void loadThreads(selectedInboxId);
   }, [loadThreads, selectedInboxId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadThreads(selectedInboxId, { silent: true });
+    }, AUTO_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [loadThreads, selectedInboxId]);
+
+  useEffect(() => {
+    if (loading || selectedKey || threads.length === 0) {
+      return;
+    }
+    const latest = threads.reduce((best, thread) =>
+      new Date(thread.latestAt).getTime() > new Date(best.latestAt).getTime()
+        ? thread
+        : best,
+    );
+    void openThread(latest.threadKey);
+  }, [loading, selectedKey, threads]);
 
   async function syncInbox() {
     setSyncing(true);
@@ -584,6 +652,9 @@ export default function PortalMasterInboxPage() {
   async function openThread(threadKey: string) {
     setSelectedKey(threadKey);
     setReplyHtml("");
+    setComposerOpen(false);
+    setAiInstruction("");
+    setSuggestError("");
     setLoadingThread(true);
     setError("");
     try {
@@ -607,6 +678,43 @@ export default function PortalMasterInboxPage() {
       setError(err instanceof Error ? err.message : "Failed to open thread");
     } finally {
       setLoadingThread(false);
+    }
+  }
+
+  async function suggestReply() {
+    if (!selectedKey || suggesting) {
+      return;
+    }
+    const threadKey = selectedKey;
+    setSuggesting(true);
+    setSuggestError("");
+    try {
+      const response = await fetch(
+        `/api/inbox/${encodeURIComponent(threadKey)}/suggest`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ instruction: aiInstruction }),
+        },
+      );
+      const data = (await response.json().catch(() => ({}))) as { html?: string; error?: string };
+      if (!response.ok || !data.html) {
+        throw new Error(data.error || "Could not suggest a reply.");
+      }
+      if (selectedKeyRef.current === threadKey) {
+        replyEditorRef.current?.replaceHtml(data.html);
+      }
+    } catch (err) {
+      setSuggestError(err instanceof Error ? err.message : "Could not suggest a reply.");
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  function openAiReply() {
+    setComposerOpen(true);
+    if (isEmptyReplyHtml(replyHtml)) {
+      void suggestReply();
     }
   }
 
@@ -634,6 +742,7 @@ export default function PortalMasterInboxPage() {
       setMessages(nextMessages);
       setReplyHtml("");
       setReplyEditorKey((key) => key + 1);
+      setComposerOpen(false);
       const preview =
         stripHtmlToText(outgoingHtml).slice(0, 140) ||
         (/<img\b/i.test(outgoingHtml) ? "(image)" : "(no preview)");
@@ -666,6 +775,7 @@ export default function PortalMasterInboxPage() {
     setSelectedKey(null);
     setMessages([]);
     setReplyHtml("");
+    setComposerOpen(false);
     setSyncNote("");
   }
 
@@ -731,6 +841,7 @@ export default function PortalMasterInboxPage() {
 
       <div className="inbox-showing">
         Showing campaign replies from <strong>{selectedInboxLabel}</strong>
+        <span> · Syncs automatically every 10 minutes</span>
       </div>
 
       <div className="inbox-layout">
@@ -786,12 +897,31 @@ export default function PortalMasterInboxPage() {
                     <span className="inbox-chip">
                       {selected?.fromName || selected?.fromEmail || "Unknown"}
                     </span>
+                    {selected?.campaignType ? (
+                      <span
+                        className={`inbox-chip inbox-chip-type is-${selected.campaignType}`}
+                      >
+                        {CAMPAIGN_TYPE_LABEL[selected.campaignType]}
+                      </span>
+                    ) : null}
                     {selected?.relatedCampaignId ? (
                       <Link
-                        href={portalCampaignRoute(selected.relatedCampaignId)}
+                        href={portalCampaignRoute(
+                          selected.relatedCampaignId,
+                          selected.campaignType === "oneone" ||
+                            selected.campaignType === "personalise"
+                            ? "oneone"
+                            : "drip",
+                          selected.campaignType === "personalise"
+                            ? ["personalise"]
+                            : undefined,
+                        )}
                         className="inbox-chip inbox-chip-link"
+                        title={selected.campaignName || undefined}
                       >
-                        Campaign #{selected.relatedCampaignId}
+                        {selected.campaignName
+                          ? `#${selected.relatedCampaignId} · ${selected.campaignName}`
+                          : `Campaign #${selected.relatedCampaignId}`}
                       </Link>
                     ) : null}
                   </div>
@@ -801,9 +931,13 @@ export default function PortalMasterInboxPage() {
                 {messages.map((message) => {
                   const outbound = message.direction === "outbound";
                   const html = message.htmlBody.trim();
-                  const text = message.textBody.trim();
+                  const simpleHtml = Boolean(html) && !isRichHtml(html);
+                  const text =
+                    outbound && simpleHtml
+                      ? simpleHtmlToText(html)
+                      : message.textBody.trim();
                   const usePlainText =
-                    Boolean(text) && (!html || !isRichHtml(html));
+                    Boolean(text) && (!html || simpleHtml);
                   return (
                     <article
                       key={message.id}
@@ -832,8 +966,23 @@ export default function PortalMasterInboxPage() {
                   );
                 })}
               </div>
+              {!composerOpen ? (
+                <div className="inbox-reply-launch">
+                  <button
+                    type="button"
+                    className="inbox-ai-btn inbox-ai-launch-btn"
+                    onClick={openAiReply}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                      <path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8Z" />
+                      <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9Z" />
+                    </svg>
+                    AI reply
+                  </button>
+                </div>
+              ) : null}
               <form
-                className="inbox-reply"
+                className={`inbox-reply${composerOpen ? " is-open" : ""}`}
                 onSubmit={(event) => {
                   event.preventDefault();
                   void sendReply();
@@ -843,10 +992,52 @@ export default function PortalMasterInboxPage() {
                   <label className="inbox-reply-label" htmlFor="inbox-reply-body">
                     Reply to {replyToLabel}
                   </label>
-                  <span className="inbox-reply-hint">
-                    via {selected?.senderEmail || "Gmail"}
-                  </span>
+                  <div className="inbox-reply-top-right">
+                    <span className="inbox-reply-hint">
+                      via {selected?.senderEmail || "Gmail"}
+                    </span>
+                    <button
+                      type="button"
+                      className="inbox-reply-close"
+                      aria-label="Hide reply"
+                      title="Hide reply"
+                      onClick={() => setComposerOpen(false)}
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
+                <div className="inbox-ai-bar">
+                  <span className="inbox-ai-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8Z" />
+                      <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9Z" />
+                    </svg>
+                  </span>
+                  <input
+                    className="inbox-ai-input"
+                    value={aiInstruction}
+                    placeholder="Optional: tell AI what to say, e.g. propose Tuesday 3 PM"
+                    aria-label="What the AI reply should say"
+                    disabled={suggesting || sendingReply}
+                    onChange={(event) => setAiInstruction(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void suggestReply();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="inbox-ai-btn"
+                    disabled={suggesting || sendingReply}
+                    onClick={() => void suggestReply()}
+                  >
+                    {suggesting ? "Writing…" : "Suggest reply"}
+                  </button>
+                </div>
+                {suggestError ? <div className="inbox-ai-error">{suggestError}</div> : null}
                 <InboxReplyEditor
                   key={`${selectedKey}-${replyEditorKey}`}
                   ref={replyEditorRef}

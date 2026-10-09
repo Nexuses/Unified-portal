@@ -24,7 +24,11 @@ import {
   resolveUsableTrackingOrigin,
 } from "@/lib/campaign-tracking";
 import { sendProjectMail } from "@/lib/smtp-senders-server";
-import { normalizeStoredMessageId } from "@/lib/master-inbox-server";
+import { formatSenderDisplayName } from "@/lib/mxtoolbox";
+import {
+  normalizeStoredMessageId,
+  refreshSenderRepliesIfStale,
+} from "@/lib/master-inbox-server";
 import { normalizeEmailMergeTags } from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
 import {
@@ -125,6 +129,12 @@ export type CampaignSendDoc = {
   messageId?: string;
   /** Lowercased Message-ID without brackets for reply matching. */
   messageIdNorm?: string;
+  /** Personalised subject. An empty string stays on the previous thread. */
+  subjectLine?: string;
+  /** Personalised HTML. When set, this send does not use the shared sequence design. */
+  htmlBody?: string;
+  /** Days after the previous step before this send. Overrides the shared sequence delay. */
+  stepDelayDays?: number;
 };
 
 export type CampaignReport = {
@@ -187,6 +197,15 @@ async function isResendCampaignSender(projectId: ObjectId, senderId: string) {
     { projection: { provider: 1 } },
   );
   return sender?.provider === "resend";
+}
+
+/** Turn an email local part saved as a name ("greta.h") into "Greta H". */
+function readableSenderName(name?: string) {
+  const trimmed = name?.trim();
+  if (!trimmed || !/^[a-z0-9]+(?:[._-][a-z0-9]+)+$/.test(trimmed)) {
+    return trimmed || undefined;
+  }
+  return formatSenderDisplayName(`${trimmed}@x`).replace(/\s*<.*$/, "");
 }
 
 let marketingIndexesPromise: Promise<void> | null = null;
@@ -296,7 +315,20 @@ function isWithinSendWindow(
   return current >= start || current < end;
 }
 
+function explicitDelayDays(value: number | undefined, fallback: number) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, value);
+  }
+  return Math.max(0, fallback);
+}
+
 function sequenceContent(blast: CampaignBlastDoc, send: CampaignSendDoc) {
+  if (send.htmlBody?.trim()) {
+    return {
+      subject: send.subjectLine?.trim() || blast.subject,
+      html: send.htmlBody,
+    };
+  }
   const sequence =
     blast.sequences?.find((item) => item.id === send.sequenceId) ??
     (typeof send.sequenceIndex === "number" ? blast.sequences?.[send.sequenceIndex] : undefined);
@@ -318,7 +350,12 @@ function replySubject(subject: string) {
 async function resolveOneOneOutbound(blast: CampaignBlastDoc, send: CampaignSendDoc) {
   const index = typeof send.sequenceIndex === "number" ? send.sequenceIndex : 0;
   const sequences = blast.sequences ?? [];
-  const ownSubject = sequences[index]?.subject?.trim() || "";
+  const personalised = typeof send.subjectLine === "string";
+  const subjectLine = send.subjectLine;
+  const ownSubject =
+    typeof subjectLine === "string"
+      ? subjectLine.trim()
+      : sequences[index]?.subject?.trim() || "";
 
   if (index === 0 || ownSubject) {
     return {
@@ -328,26 +365,43 @@ async function resolveOneOneOutbound(blast: CampaignBlastDoc, send: CampaignSend
     };
   }
 
-  let threadStart = index - 1;
-  while (threadStart > 0 && !sequences[threadStart]?.subject?.trim()) {
-    threadStart -= 1;
-  }
-  const threadSubject = sequences[threadStart]?.subject?.trim() || blast.subject;
-
   const db = await getDb();
   const prior = await db
     .collection<CampaignSendDoc>("campaign_sends")
     .find({
       blastId: blast._id,
       email: send.email,
-      sequenceIndex: { $gte: threadStart, $lt: index },
+      sequenceIndex: { $gte: 0, $lt: index },
       status: "sent",
     })
-    .project({ sequenceIndex: 1, messageId: 1 })
+    .project({ sequenceIndex: 1, messageId: 1, subjectLine: 1 })
     .sort({ sequenceIndex: 1 })
     .toArray();
 
-  const references = prior
+  let threadStart = index - 1;
+  let threadSubject = sequences[threadStart]?.subject?.trim() || blast.subject;
+  if (personalised) {
+    threadStart = 0;
+    threadSubject = blast.subject;
+    for (const item of prior) {
+      const line = item.subjectLine?.trim();
+      if (line) {
+        threadStart = typeof item.sequenceIndex === "number" ? item.sequenceIndex : 0;
+        threadSubject = line;
+      }
+    }
+  } else {
+    while (threadStart > 0 && !sequences[threadStart]?.subject?.trim()) {
+      threadStart -= 1;
+    }
+    threadSubject = sequences[threadStart]?.subject?.trim() || blast.subject;
+  }
+
+  const threaded = prior.filter(
+    (item) => (item.sequenceIndex ?? 0) >= threadStart,
+  );
+
+  const references = threaded
     .map((item) => String(item.messageId ?? "").trim())
     .filter(Boolean);
   const inReplyTo = references[references.length - 1];
@@ -1015,6 +1069,25 @@ async function sendPendingBatch(
         })
         .project({ email: 1, sequenceIndex: 1, sentAt: 1 })
         .toArray();
+      const waitingSteps = await db
+        .collection<CampaignSendDoc>("campaign_sends")
+        .find({
+          blastId: blast._id,
+          status: "pending",
+          sequenceIndex: { $gt: 0 },
+        })
+        .project({ email: 1, sequenceIndex: 1, stepDelayDays: 1 })
+        .toArray();
+      const delayByStep = new Map<string, number | undefined>();
+      for (const row of waitingSteps) {
+        if (typeof row.sequenceIndex !== "number") {
+          continue;
+        }
+        delayByStep.set(
+          `${String(row.email ?? "").trim().toLowerCase()}|${row.sequenceIndex}`,
+          row.stepDelayDays,
+        );
+      }
       for (const sent of sentSteps) {
         if (typeof sent.sequenceIndex !== "number") {
           continue;
@@ -1023,7 +1096,12 @@ async function sendPendingBatch(
         if (!nextSequence) {
           continue;
         }
-        const delayDays = Math.max(0, Number(nextSequence.delayDays) || 0);
+        const delayDays = explicitDelayDays(
+          delayByStep.get(
+            `${String(sent.email ?? "").trim().toLowerCase()}|${sent.sequenceIndex + 1}`,
+          ),
+          Number(nextSequence.delayDays) || 0,
+        );
         const base = sent.sentAt instanceof Date ? sent.sentAt : now;
         const availableAt = new Date(base.getTime() + delayDays * 24 * 60 * 60 * 1000);
         if (availableAt.getTime() > now.getTime()) {
@@ -1081,6 +1159,21 @@ async function sendPendingBatch(
     },
     { $set: { status: "pending" }, $unset: { claimedAt: "" } },
   );
+
+  if (oneOne && blast.senderId) {
+    const followUpDue = await db.collection<CampaignSendDoc>("campaign_sends").findOne(
+      {
+        blastId: blast._id,
+        status: "pending",
+        sequenceIndex: { $gt: 0 },
+        $or: [{ availableAt: { $exists: false } }, { availableAt: { $lte: now } }],
+      },
+      { projection: { _id: 1 } },
+    );
+    if (followUpDue) {
+      await refreshSenderRepliesIfStale(blast.projectId, blast.senderId);
+    }
+  }
 
   const trackingBase = await resolveTrackingOrigin(blast.projectId, blast.senderId);
   const pending: CampaignSendDoc[] = [];
@@ -1160,7 +1253,7 @@ async function sendPendingBatch(
         to: send.email,
         subject: applyContactVariables(outbound.subject, send, false),
         html,
-        fromName: blast.senderName,
+        fromName: readableSenderName(blast.senderName),
         replyTo: blast.replyTo,
         listUnsubscribeUrl: `${trackingBase.replace(/\/$/, "")}/api/unsubscribe/${send.token}`,
         inReplyTo: outbound.inReplyTo,
@@ -1191,7 +1284,19 @@ async function sendPendingBatch(
       if (typeof send.sequenceIndex === "number" && blast.sequences) {
         const nextSequence = blast.sequences[send.sequenceIndex + 1];
         if (nextSequence) {
-          const delayDays = Math.max(0, Number(nextSequence.delayDays) || 0);
+          const nextSend = await db.collection<CampaignSendDoc>("campaign_sends").findOne(
+            {
+              blastId: blast._id,
+              email: send.email.trim().toLowerCase(),
+              sequenceIndex: send.sequenceIndex + 1,
+              status: "pending",
+            },
+            { projection: { stepDelayDays: 1 } },
+          );
+          const delayDays = explicitDelayDays(
+            nextSend?.stepDelayDays,
+            Number(nextSequence.delayDays) || 0,
+          );
           const availableAt = new Date(
             sentAt.getTime() + delayDays * 24 * 60 * 60 * 1000,
           );
@@ -1313,6 +1418,27 @@ async function getProjectSendingQuota(projectId: ObjectId) {
   }, 0);
 
   return { sendingLimit, used };
+}
+
+export async function assertProjectRecipientQuota(projectId: ObjectId, needed: number) {
+  const { sendingLimit, used } = await getProjectSendingQuota(projectId);
+  const remaining = Math.max(0, sendingLimit - used);
+  if (needed > remaining) {
+    throw new Error(
+      `Sending limit reached. This campaign needs ${needed.toLocaleString()} emails, but only ${remaining.toLocaleString()} remain of ${sendingLimit.toLocaleString()}.`,
+    );
+  }
+}
+
+export async function dispatchBlastNow(blastId: ObjectId) {
+  const db = await getDb();
+  const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
+    _id: blastId,
+  });
+  if (!blast || blast.status !== "sending") {
+    return blast;
+  }
+  return sendPendingBatch(blast);
 }
 
 export async function launchCampaignBlast(input: {
@@ -1674,6 +1800,12 @@ async function loadOneOneSequenceReports(blastId: ObjectId): Promise<{
     if (!email) {
       continue;
     }
+    if (
+      doc.status === "failed" &&
+      ["Replied", "Unsubscribed", "Suppressed"].includes(doc.error ?? "")
+    ) {
+      continue;
+    }
     const index = typeof doc.sequenceIndex === "number" ? doc.sequenceIndex : 0;
     let row = bySequence.get(index);
     if (!row) {
@@ -2021,12 +2153,15 @@ export async function syncPausedOneOneBlast(
     if (!previousIds.has(sequence.id)) {
       continue;
     }
-    const delayDays = Math.max(0, Number(sequence.delayDays) || 0);
     const previous = sequences[index - 1];
     for (const send of keptSends) {
       if (send.sequenceId !== sequence.id || send.status !== "pending") {
         continue;
       }
+      const delayDays = explicitDelayDays(
+        send.stepDelayDays,
+        Number(sequence.delayDays) || 0,
+      );
       const email = send.email.trim().toLowerCase();
       const previousSent = keptSends.find(
         (item) =>

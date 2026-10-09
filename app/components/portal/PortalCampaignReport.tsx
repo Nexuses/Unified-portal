@@ -11,7 +11,7 @@ import {
   patchDripCampaign,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
-import { PORTAL_ROUTES, portalContactRoute, portalListRoute, publicAnalyticsPath, publicCampaignReportPath } from "@/lib/portal-nav";
+import { campaignListRoute, portalContactRoute, portalListRoute, publicAnalyticsPath, publicCampaignReportPath } from "@/lib/portal-nav";
 
 type PeopleView = "delivered" | "opens" | "clicks" | "bounces" | "replies" | "unsubscribes" | "audience";
 
@@ -188,12 +188,14 @@ export default function PortalCampaignReport({
   campaign,
   onCampaignChange,
   onEditPaused,
+  onViewSetup,
   publicToken,
   analyticsToken,
 }: {
   campaign: DripCampaign;
   onCampaignChange?: (campaign: DripCampaign) => void;
   onEditPaused?: () => void;
+  onViewSetup?: () => void;
   publicToken?: string;
   analyticsToken?: string;
 }) {
@@ -579,6 +581,7 @@ export default function PortalCampaignReport({
   const timezone = campaign.timezone || "Asia/Kolkata";
   const progress = formatSequenceProgress(campaign.sequenceProgress);
   const isOneOne = campaign.kind === "oneone";
+  const isPersonalise = isOneOne && Boolean(campaign.tags?.includes("personalise"));
   const isRunning = campaign.status === "sending";
   const isPaused = campaign.status === "paused";
   const canPause =
@@ -700,6 +703,10 @@ export default function PortalCampaignReport({
   const statBounces = scopedStats?.bounces ?? campaign.bounces ?? 0;
   const statReplies = scopedStats?.replies ?? campaign.replies ?? 0;
   const statUnsubscribed = scopedStats?.unsubscribed ?? campaign.unsubscribed;
+  const personaliseTotalEmails = (campaign.sequenceReports ?? []).reduce(
+    (sum, item) => sum + (item.recipients ?? 0),
+    0,
+  );
   const metrics: Array<{
     label: string;
     value: number;
@@ -769,10 +776,14 @@ export default function PortalCampaignReport({
     ...(campaign.kind === "oneone" && sequenceScope === null
       ? [
           {
-            label: "Sequences",
-            value: sequences.length,
-            rateLabel: "Emails in sequence",
-            rate: sequences.length === 1 ? "1 step" : `${sequences.length} steps`,
+            label: isPersonalise ? "Total sequences" : "Sequences",
+            value: isPersonalise ? personaliseTotalEmails : sequences.length,
+            rateLabel: isPersonalise ? "Across all contacts" : "Emails in sequence",
+            rate: isPersonalise
+              ? ""
+              : sequences.length === 1
+                ? "1 step"
+                : `${sequences.length} steps`,
             onView: () => {
               setSequencePreviewIndex(0);
               setSequencesOpen(true);
@@ -839,7 +850,7 @@ export default function PortalCampaignReport({
           ) : null
         ) : (
           <Link
-            href={campaign.kind === "oneone" ? PORTAL_ROUTES.oneone : PORTAL_ROUTES.drip}
+            href={campaignListRoute(campaign.kind, campaign.tags)}
             className="drip-back"
             aria-label="Back to campaigns"
           >
@@ -883,6 +894,15 @@ export default function PortalCampaignReport({
           </div>
         </div>
         <div className="drip-report-actions">
+          {!isPublic && onViewSetup && !canEditPaused ? (
+            <button
+              type="button"
+              className="btn-soft drip-report-edit-action"
+              onClick={onViewSetup}
+            >
+              Campaign setup
+            </button>
+          ) : null}
           {canEditScheduled ? (
             <button
               type="button"
@@ -903,7 +923,7 @@ export default function PortalCampaignReport({
               Edit campaign
             </button>
           ) : null}
-          {canPause ? (
+          {canPause && !isRunning ? (
             <button
               type="button"
               className="drip-report-pause-action btn-soft"
@@ -996,7 +1016,22 @@ export default function PortalCampaignReport({
         </div>
       ) : null}
 
-      {isOneOne ? (
+      {isPersonalise ? (
+        <div className="drip-report-tabs">
+          {["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
+            (label) => (
+              <button
+                key={label}
+                type="button"
+                className={tab === label.toLowerCase() ? "active" : ""}
+                onClick={() => handleTabChange(label)}
+              >
+                {label}
+              </button>
+            ),
+          )}
+        </div>
+      ) : isOneOne ? (
         <div className="drip-report-tab-rows">
           <div className="drip-report-sequence-tabs">
             <button

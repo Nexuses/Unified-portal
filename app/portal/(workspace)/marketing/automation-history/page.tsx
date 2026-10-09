@@ -1,5 +1,5 @@
-import PortalAutomationHistoryPage from "@/app/components/portal/PortalAutomationHistoryPage";
+import { redirect } from "next/navigation";
 
 export default function AutomationHistoryRoutePage() {
-  return <PortalAutomationHistoryPage />;
+  redirect("/portal/marketing/automation?history=1");
 }

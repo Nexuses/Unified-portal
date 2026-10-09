@@ -59,6 +59,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
         placements: body?.placements,
         campaigns: body?.campaigns,
       },
+      { skipPeople: body?.campaigns === undefined },
     );
     if (!board) {
       return NextResponse.json({ error: "Kanban not found" }, { status: 404 });

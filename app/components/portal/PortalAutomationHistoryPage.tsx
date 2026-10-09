@@ -44,7 +44,13 @@ function statusLabel(status: PortalAutomation["status"]) {
   }
 }
 
-export default function PortalAutomationHistoryPage() {
+export default function PortalAutomationHistoryPage({
+  onBack,
+  onCreateNew,
+}: {
+  onBack?: () => void;
+  onCreateNew?: () => void;
+}) {
   const router = useRouter();
   const [items, setItems] = useState<PortalAutomation[]>([]);
   const [loading, setLoading] = useState(true);

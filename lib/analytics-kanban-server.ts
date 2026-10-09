@@ -127,6 +127,129 @@ function mapList(doc: KanbanDoc): KanbanList {
   };
 }
 
+let kanbanIndexesPromise: Promise<void> | null = null;
+
+function ensureKanbanIndexes() {
+  if (!kanbanIndexesPromise) {
+    kanbanIndexesPromise = (async () => {
+      const db = await getDb();
+      await Promise.all([
+        db.collection("contacts").createIndex(
+          { projectId: 1, email: 1 },
+          { name: "contacts_project_email", background: true },
+        ),
+        db.collection("contacts").createIndex(
+          { projectId: 1, companyId: 1 },
+          { name: "contacts_project_company", background: true },
+        ),
+        db.collection("campaign_sends").createIndex(
+          { blastId: 1, status: 1 },
+          { name: "sends_blast_status", background: true },
+        ),
+      ]);
+    })().catch((error) => {
+      console.error("Failed to ensure kanban indexes:", error);
+    });
+  }
+  return kanbanIndexesPromise;
+}
+
+const PEOPLE_FRESH_MS = 2 * 60 * 1000;
+const PEOPLE_CACHE_MAX = 40_000;
+
+type PeopleCacheEntry = { people: KanbanPerson[]; computedAt: number };
+type PeopleCacheState = {
+  memory: Map<string, PeopleCacheEntry>;
+  inflight: Map<string, Promise<KanbanPerson[]>>;
+};
+
+const peopleCacheGlobal = globalThis as typeof globalThis & {
+  __kanbanPeopleCache?: PeopleCacheState;
+};
+const peopleCache: PeopleCacheState = (peopleCacheGlobal.__kanbanPeopleCache ??= {
+  memory: new Map(),
+  inflight: new Map(),
+});
+
+function peopleCacheKey(projectId: ObjectId, campaigns: KanbanCampaignRef[]) {
+  const ids = campaigns
+    .map((campaign) => `${campaign.kind}:${campaign.campaignId}:${campaign.name}`)
+    .sort();
+  return `${projectId.toString()}|${ids.join(",")}`;
+}
+
+function rebuildPeople(
+  projectId: ObjectId,
+  campaigns: KanbanCampaignRef[],
+  key: string,
+) {
+  const running = peopleCache.inflight.get(key);
+  if (running) {
+    return running;
+  }
+  const task = (async () => {
+    const people = await loadPeople(projectId, campaigns);
+    const entry = { people, computedAt: Date.now() };
+    peopleCache.memory.delete(key);
+    peopleCache.memory.set(key, entry);
+    while (peopleCache.memory.size > 30) {
+      const oldest = peopleCache.memory.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      peopleCache.memory.delete(oldest);
+    }
+    if (people.length <= PEOPLE_CACHE_MAX) {
+      const db = await getDb();
+      await db
+        .collection<{ _id: string; people: KanbanPerson[]; computedAt: Date }>(
+          "analytics_kanban_people_cache",
+        )
+        .updateOne(
+          { _id: key },
+          { $set: { people, computedAt: new Date(entry.computedAt) } },
+          { upsert: true },
+        )
+        .catch((error) => console.error("Failed to cache kanban people:", error));
+    }
+    return people;
+  })().finally(() => {
+    peopleCache.inflight.delete(key);
+  });
+  peopleCache.inflight.set(key, task);
+  return task;
+}
+
+/** Serve cached board people; refresh in the background once stale. */
+async function loadPeopleCached(projectId: ObjectId, campaigns: KanbanCampaignRef[]) {
+  if (campaigns.length === 0) {
+    return [];
+  }
+  const key = peopleCacheKey(projectId, campaigns);
+  let entry = peopleCache.memory.get(key);
+  if (!entry) {
+    const db = await getDb();
+    const stored = await db
+      .collection<{ _id: string; people: KanbanPerson[]; computedAt: Date }>(
+        "analytics_kanban_people_cache",
+      )
+      .findOne({ _id: key });
+    if (stored && Array.isArray(stored.people)) {
+      entry = { people: stored.people, computedAt: stored.computedAt.getTime() };
+      peopleCache.memory.set(key, entry);
+    }
+  }
+  if (!entry) {
+    return rebuildPeople(projectId, campaigns, key);
+  }
+  if (Date.now() - entry.computedAt > PEOPLE_FRESH_MS) {
+    void rebuildPeople(projectId, campaigns, key).catch((error) =>
+      console.error("Failed to refresh kanban people:", error),
+    );
+  }
+  return entry.people;
+}
+
 async function loadPeople(
   projectId: ObjectId,
   campaigns: KanbanCampaignRef[],
@@ -166,21 +289,43 @@ async function loadPeople(
     return left > right ? left : right;
   }
 
-  for (const campaign of campaigns) {
-    const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
-      projectId,
-      campaignId: campaign.campaignId,
-      ...kindFilter(campaign.kind),
-    });
-    const docs = await db
-      .collection<CampaignSendDoc>("campaign_sends")
-      .find({
-        projectId,
-        status: "sent",
-        ...(blast ? { blastId: blast._id } : { campaignId: campaign.campaignId }),
-      })
-      .toArray();
+  void ensureKanbanIndexes();
+  const sendsByCampaign = await Promise.all(
+    campaigns.map(async (campaign) => {
+      const blast = await db
+        .collection<CampaignBlastDoc>("campaign_blasts")
+        .findOne(
+          {
+            projectId,
+            campaignId: campaign.campaignId,
+            ...kindFilter(campaign.kind),
+          },
+          { projection: { _id: 1 } },
+        );
+      const docs = (await db
+        .collection<CampaignSendDoc>("campaign_sends")
+        .find({
+          projectId,
+          status: "sent",
+          ...(blast ? { blastId: blast._id } : { campaignId: campaign.campaignId }),
+        })
+        .project({
+          email: 1,
+          fullName: 1,
+          companyName: 1,
+          openCount: 1,
+          openedAt: 1,
+          clickCount: 1,
+          clickedAt: 1,
+          clickBurstIgnored: 1,
+          sentAt: 1,
+        })
+        .toArray()) as CampaignSendDoc[];
+      return { campaign, docs };
+    }),
+  );
 
+  for (const { campaign, docs } of sendsByCampaign) {
     for (const doc of docs) {
       const email = String(doc.email ?? "")
         .trim()
@@ -216,23 +361,30 @@ async function loadPeople(
     }
   }
 
-  const emails = [...merged.keys()];
+  const emails = [
+    ...new Set(
+      [...merged.values()].flatMap((person) => [
+        person.email,
+        person.email.trim().toLowerCase(),
+      ]),
+    ),
+  ];
   const contacts =
     emails.length === 0
       ? []
       : await db
           .collection<ContactDoc>("contacts")
-          .find({
-            projectId,
-            $expr: { $in: [{ $toLower: "$email" }, emails] },
-          })
+          .find({ projectId, email: { $in: emails } })
           .project({ _id: 1, email: 1, companyName: 1, companyId: 1 })
           .toArray();
 
   const companyIds = [
     ...new Map(
       contacts
-        .filter((contact) => contact.companyId)
+        .filter(
+          (contact) =>
+            contact.companyId && !companyDomainFromEmail(String(contact.email ?? "")),
+        )
         .map((contact) => [contact.companyId!.toString(), contact.companyId!]),
     ).values(),
   ];
@@ -292,9 +444,8 @@ async function loadPeople(
       const contact = contactByEmail.get(emailKey);
       const companyName = person.companyName.trim() || contact?.companyName || "";
       const companyDomain =
-        (contact?.companyId
-          ? companyDomainById.get(contact.companyId)
-          : undefined) || companyDomainFromEmail(emailKey);
+        companyDomainFromEmail(emailKey) ||
+        (contact?.companyId ? companyDomainById.get(contact.companyId) : undefined);
       return {
         ...person,
         companyName,
@@ -345,7 +496,7 @@ export async function createProjectKanbanBoard(
     updatedAt: now,
   };
   await db.collection<KanbanDoc>("analytics_kanban").insertOne(doc);
-  const people = await loadPeople(projectId, campaigns);
+  const people = await loadPeopleCached(projectId, campaigns);
   return {
     ...mapList(doc),
     stages: doc.stages,
@@ -369,7 +520,7 @@ export async function getProjectKanbanBoard(
   if (!doc?.name) {
     return null;
   }
-  const people = await loadPeople(projectId, doc.campaigns || []);
+  const people = await loadPeopleCached(projectId, doc.campaigns || []);
   return {
     ...mapList(doc),
     stages: normalizeStages(doc.stages),
@@ -386,6 +537,7 @@ export async function patchProjectKanbanBoard(
     placements?: Record<string, string>;
     campaigns?: KanbanCampaignRef[];
   },
+  options?: { skipPeople?: boolean },
 ): Promise<KanbanBoard | null> {
   if (!ObjectId.isValid(id)) {
     return null;
@@ -432,7 +584,7 @@ export async function patchProjectKanbanBoard(
       },
     },
   );
-  const people = await loadPeople(projectId, campaigns);
+  const people = options?.skipPeople ? [] : await loadPeopleCached(projectId, campaigns);
   return {
     ...mapList({
       ...current,

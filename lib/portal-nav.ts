@@ -9,6 +9,7 @@ export type PortalPageId =
   | "oneone"
   | "automation"
   | "automation-history"
+  | "personalise"
   | "edm"
   | "analytics"
   | "analytics-kanban"
@@ -51,6 +52,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   oneone: "/portal/marketing/one-one",
   automation: "/portal/marketing/automation",
   "automation-history": "/portal/marketing/automation-history",
+  personalise: "/portal/marketing/personalise",
   edm: "/portal/marketing/edm",
   analytics: "/portal/analytics",
   "analytics-kanban": "/portal/analytics/kanban",
@@ -62,14 +64,21 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
 
 export const PORTAL_CAMPAIGN_EDIT_ROUTE = "/portal/marketing/campaigns/edit";
 
-export function portalCampaignRoute(id: string, kind?: string) {
-  if (kind === "oneone") {
-    return `/portal/marketing/one-one/${encodeURIComponent(id)}`;
+export function portalCampaignRoute(id: string, kind?: string, tags?: string[]) {
+  const campaignId = encodeURIComponent(id);
+  if (tags?.includes("personalise")) {
+    return `${PORTAL_ROUTES.personalise}/${campaignId}`;
   }
-  return `/portal/marketing/campaigns/${encodeURIComponent(id)}`;
+  if (kind === "oneone") {
+    return `/portal/marketing/one-one/${campaignId}`;
+  }
+  return `/portal/marketing/campaigns/${campaignId}`;
 }
 
-export function campaignListRoute(kind?: string) {
+export function campaignListRoute(kind?: string, tags?: string[]) {
+  if (tags?.includes("personalise")) {
+    return PORTAL_ROUTES.personalise;
+  }
   return kind === "oneone" ? PORTAL_ROUTES.oneone : PORTAL_ROUTES.drip;
 }
 
@@ -135,12 +144,8 @@ export const PORTAL_NAV: PortalNavItem[] = [
     children: [
       { id: "drip", label: "Drip Campaign", href: PORTAL_ROUTES.drip },
       { id: "oneone", label: "1-1 Campaign", href: PORTAL_ROUTES.oneone },
+      { id: "personalise", label: "Personalise Campaign", href: PORTAL_ROUTES.personalise },
       { id: "automation", label: "Automation", href: PORTAL_ROUTES.automation },
-      {
-        id: "automation-history",
-        label: "Automation history",
-        href: PORTAL_ROUTES["automation-history"],
-      },
       { id: "edm", label: "EDM generation", href: PORTAL_ROUTES.edm },
     ],
   },
@@ -177,6 +182,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   enrich: "Enrich",
   drip: "Drip Campaign",
   oneone: "1-1 Campaign",
+  personalise: "Personalise Campaign",
   automation: "Automation",
   "automation-history": "Automation history",
   edm: "EDM generation",
@@ -209,6 +215,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/crm/enrich")) return "enrich";
   if (pathname.startsWith("/portal/marketing/drip")) return "drip";
   if (pathname.startsWith("/portal/marketing/one-one")) return "oneone";
+  if (pathname.startsWith("/portal/marketing/personalise")) return "personalise";
   if (pathname.startsWith("/portal/marketing/edm")) return "edm";
   if (pathname.startsWith("/portal/marketing/automation-history")) {
     return "automation-history";

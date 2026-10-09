@@ -63,6 +63,9 @@ export type InboxThread = {
   unreadCount: number;
   latestAt: string;
   relatedCampaignId?: string;
+  relatedBlastId?: string;
+  campaignType?: "drip" | "oneone" | "personalise";
+  campaignName?: string;
   relatedContactEmail?: string;
   senderId: string;
   senderEmail: string;
@@ -156,15 +159,22 @@ function plainTextToHtml(body: string) {
 
 function stripTagsToText(html: string) {
   return html
+    .replace(/\r\n?/g, "\n")
+    .replace(/\s*\n\s*/g, " ")
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
+    .replace(/<li\b[^>]*>/gi, "\n- ")
+    .replace(/<\/t[dh]>/gi, " ")
+    .replace(/<\/(p|div|ul|ol|h[1-6]|blockquote|table|tr)>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
+    .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
-    .replace(/\s+/g, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -698,6 +708,99 @@ export async function syncProjectGmailInbox(
   return { senders: senders.length, imported, skipped, errors };
 }
 
+/**
+ * Pull new replies for one Gmail sender so 1-1 follow-ups can stop before they go out.
+ * Skips when the inbox was synced within `maxAgeMs`. Never throws.
+ */
+export async function refreshSenderRepliesIfStale(
+  projectId: ObjectId,
+  senderId: string,
+  maxAgeMs = 2 * 60 * 1000,
+) {
+  if (!ObjectId.isValid(senderId)) {
+    return;
+  }
+  try {
+    const db = await getDb();
+    const sender = await db.collection<SenderDoc>("smtp_senders").findOne({
+      _id: new ObjectId(senderId),
+      projectId,
+      provider: "gmail",
+      noInbox: { $ne: true },
+    });
+    if (!sender) {
+      return;
+    }
+    const syncedAt = (sender as SenderDoc & { inboxSyncedAt?: Date }).inboxSyncedAt;
+    if (syncedAt && Date.now() - new Date(syncedAt).getTime() < maxAgeMs) {
+      return;
+    }
+    await syncGmailSender(projectId, sender, { sinceDays: 30 });
+  } catch {
+    // Sending continues; the next batch tries again.
+  }
+}
+
+async function attachCampaignTypes(projectId: ObjectId, threads: InboxThread[]) {
+  const blastIds = [
+    ...new Set(threads.map((thread) => thread.relatedBlastId).filter(Boolean)),
+  ]
+    .filter((id): id is string => Boolean(id && ObjectId.isValid(id)))
+    .map((id) => new ObjectId(id));
+  const campaignIds = [
+    ...new Set(
+      threads.map((thread) => thread.relatedCampaignId).filter(Boolean),
+    ),
+  ] as string[];
+  if (campaignIds.length === 0) {
+    return;
+  }
+  const db = await getDb();
+  const [blasts, campaigns] = await Promise.all([
+    blastIds.length > 0
+      ? db
+          .collection("campaign_blasts")
+          .find({ _id: { $in: blastIds }, projectId })
+          .project<{ _id: ObjectId; kind?: string; name?: string }>({ kind: 1, name: 1 })
+          .toArray()
+      : Promise.resolve([]),
+    db
+      .collection("drip_campaigns")
+      .find({ projectId, campaignId: { $in: campaignIds } })
+      .project<{ campaignId: string; kind?: string; name?: string; tags?: string[] }>({
+        campaignId: 1,
+        kind: 1,
+        name: 1,
+        tags: 1,
+      })
+      .toArray(),
+  ]);
+  const blastById = new Map(blasts.map((blast) => [blast._id.toString(), blast]));
+
+  for (const thread of threads) {
+    const blast = thread.relatedBlastId
+      ? blastById.get(thread.relatedBlastId)
+      : undefined;
+    const matches = campaigns.filter(
+      (campaign) => campaign.campaignId === thread.relatedCampaignId,
+    );
+    const campaign =
+      (blast
+        ? matches.find(
+            (item) =>
+              (item.kind === "oneone") === (blast.kind === "oneone"),
+          )
+        : undefined) ?? matches[0];
+    const kind = blast?.kind ?? campaign?.kind;
+    thread.campaignType = campaign?.tags?.includes("personalise")
+      ? "personalise"
+      : kind === "oneone"
+        ? "oneone"
+        : "drip";
+    thread.campaignName = campaign?.name || blast?.name || undefined;
+  }
+}
+
 export async function listProjectInboxThreads(
   projectId: ObjectId,
   options?: { senderId?: string },
@@ -752,6 +855,7 @@ export async function listProjectInboxThreads(
         unreadCount: outbound || message.readAt ? 0 : 1,
         latestAt: message.receivedAt.toISOString(),
         relatedCampaignId: message.relatedCampaignId,
+        relatedBlastId: message.relatedBlastId?.toString(),
         relatedContactEmail: message.relatedContactEmail || contactEmail,
         senderId: message.senderId.toString(),
         senderEmail: message.senderEmail,
@@ -762,6 +866,9 @@ export async function listProjectInboxThreads(
     if (!outbound && !message.readAt) {
       existing.unreadCount += 1;
     }
+    if (!existing.relatedBlastId && message.relatedBlastId) {
+      existing.relatedBlastId = message.relatedBlastId.toString();
+    }
     // Keep contact identity from inbound messages when present
     if (!outbound && contactEmail) {
       existing.fromEmail = contactEmail;
@@ -771,6 +878,8 @@ export async function listProjectInboxThreads(
       }
     }
   }
+
+  await attachCampaignTypes(projectId, [...threads.values()]);
 
   return [...threads.values()].sort(
     (a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime(),

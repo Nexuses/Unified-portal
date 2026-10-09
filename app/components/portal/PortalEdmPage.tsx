@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { extractEdmResult } from "@/lib/edm-result";
 import { useRouter } from "next/navigation";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
+import { useSpeechInput } from "@/lib/use-speech-input";
 
 type EdmBucket = {
   name: string;
@@ -160,6 +161,40 @@ async function readImageFile(file: File, maxEdge: number) {
   return canvas.toDataURL("image/jpeg", 0.82);
 }
 
+function SaveToast({
+  message,
+  durationMs = 4000,
+  onDone,
+}: {
+  message: string;
+  durationMs?: number;
+  onDone: () => void;
+}) {
+  useEffect(() => {
+    const timer = window.setTimeout(onDone, durationMs);
+    return () => window.clearTimeout(timer);
+    // Toast is remounted with a new key when shown again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [durationMs]);
+
+  return (
+    <div className="drip-error-toast success" role="status">
+      <div className="drip-error-toast-body">
+        <span className="drip-error-toast-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" fill="currentColor" />
+            <path d="M7.5 12.5 10.5 15.5 16.5 9" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+        <span className="drip-error-toast-text">{message}</span>
+      </div>
+      <div className="drip-error-toast-progress" aria-hidden="true">
+        <span style={{ animationDuration: `${durationMs}ms` }} />
+      </div>
+    </div>
+  );
+}
+
 export default function PortalEdmPage() {
   const router = useRouter();
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -190,10 +225,13 @@ export default function PortalEdmPage() {
   const [saveDrip, setSaveDrip] = useState(true);
   const [saveOneone, setSaveOneone] = useState(true);
   const [saveNote, setSaveNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState<{ key: number; message: string } | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [imageBucket, setImageBucket] = useState<EdmBucket | null>(null);
   const [helloIndex, setHelloIndex] = useState(0);
   const [helloVisible, setHelloVisible] = useState(true);
+  const speech = useSpeechInput({ value: draft, onChange: setDraft });
 
   useEffect(() => {
     const history = readHistory();
@@ -470,6 +508,7 @@ export default function PortalEdmPage() {
       (hasAttachment ? "Create an email from these attachments." : "");
     if (!message || busy) return;
     const epoch = chatEpoch.current;
+    speech.stop();
     const pending: PendingEmail = {
       message,
       files,
@@ -551,6 +590,7 @@ export default function PortalEdmPage() {
     const prompt = draft.trim();
     if (!prompt || busy) return;
     const reference = files.find((file) => file.dataUrl)?.dataUrl ?? "";
+    speech.stop();
     const epoch = chatEpoch.current;
     setError("");
     setDraft("");
@@ -598,28 +638,40 @@ export default function PortalEdmPage() {
 
   async function saveTemplate() {
     setSaveNote("");
+    if (saving) return;
+    setSaveNote("");
     const destinations = [
       ...(saveDrip ? ["drip"] : []),
       ...(saveOneone ? ["oneone"] : []),
     ];
     const name = chatTitle(messages);
-    const response = await fetch("/api/edm/templates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: name === "New chat" ? "EDM template" : name,
-        subject: "",
-        html,
-        destinations,
-      }),
-    });
+    setSaving(true);
+    let response: Response;
+    try {
+      response = await fetch("/api/edm/templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name === "New chat" ? "EDM template" : name,
+          subject: "",
+          html,
+          destinations,
+        }),
+      });
+    } catch {
+      setSaving(false);
+      setSaveNote("Could not reach the server. Please try again.");
+      return;
+    }
     const data = (await response.json().catch(() => null)) as { error?: string } | null;
+    setSaving(false);
     if (!response.ok) {
       setSaveNote(data?.error || "Could not save the template.");
       return;
     }
     setSaveOpen(false);
     const where = destinations.map((item) => (item === "drip" ? "Drip" : "1-1")).join(" and ");
+    setToast({ key: Date.now(), message: `Template saved to ${where} design templates` });
     setMessages((current) => [
       ...current,
       {
@@ -894,6 +946,7 @@ export default function PortalEdmPage() {
                 </div>
               ) : null}
               {error ? <p className="edm-error">{error}</p> : null}
+              {speech.error ? <p className="edm-error">{speech.error}</p> : null}
               <textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
@@ -903,7 +956,13 @@ export default function PortalEdmPage() {
                     void send();
                   }
                 }}
-                placeholder={html.trim() ? "Ask for a change" : "Describe the email you want"}
+                placeholder={
+                  speech.listening
+                    ? "Listening… speak now"
+                    : html.trim()
+                      ? "Ask for a change"
+                      : "Describe the email you want"
+                }
                 rows={1}
               />
               <div className="edm-composer-row">
@@ -941,6 +1000,31 @@ export default function PortalEdmPage() {
                 >
                   Generate post
                 </button>
+                {speech.supported ? (
+                  <button
+                    type="button"
+                    className={`edm-mic${speech.listening ? " is-listening" : ""}`}
+                    onClick={speech.toggle}
+                    disabled={busy}
+                    aria-pressed={speech.listening}
+                    aria-label={speech.listening ? "Stop speaking" : "Speak"}
+                    title={speech.listening ? "Stop speaking" : "Speak instead of typing"}
+                  >
+                    {speech.listening ? (
+                      <span className="edm-mic-wave" aria-hidden="true">
+                        <i />
+                        <i />
+                        <i />
+                        <i />
+                      </span>
+                    ) : (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
+                        <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                      </svg>
+                    )}
+                  </button>
+                ) : null}
                 <button
                   type="submit"
                   className="edm-send"
@@ -1154,12 +1238,16 @@ export default function PortalEdmPage() {
               <button type="button" onClick={() => setSaveOpen(false)}>
                 Cancel
               </button>
-              <button type="submit" className="edm-send" disabled={!saveDrip && !saveOneone}>
-                Save
+              <button type="submit" className="edm-send" disabled={saving || (!saveDrip && !saveOneone)}>
+                {saving ? "Saving…" : "Save"}
               </button>
             </div>
           </form>
         </div>
+      ) : null}
+
+      {toast ? (
+        <SaveToast key={toast.key} message={toast.message} onDone={() => setToast(null)} />
       ) : null}
     </>
   );

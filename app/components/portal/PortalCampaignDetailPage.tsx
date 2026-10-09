@@ -6,7 +6,9 @@ import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState
 import { createPortal } from "react-dom";
 import type { SmtpSender } from "@/lib/smtp-senders";
 import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
+import SmtpSenderSelect from "@/app/components/portal/SmtpSenderSelect";
 import type { Contact, CrmList } from "@/lib/crm";
+import { fetchContactPage, useContactSearch } from "@/lib/use-contact-search";
 import {
   campaignSequences,
   createEmptySequence,
@@ -21,14 +23,13 @@ import {
   patchDripCampaign,
   sequenceCampaignPatch,
   sequencesReady,
-  zonedDateTimeToIso,
   type CampaignIndividualContact,
   type CampaignKind,
   type CampaignSequence,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
-import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
+import { PORTAL_ROUTES, campaignListRoute, portalCampaignRoute } from "@/lib/portal-nav";
 import {
   formatTimezoneLabel,
   listCampaignTimezones,
@@ -44,6 +45,8 @@ import {
   ensureAutomationCampaignTags,
 } from "@/lib/automations";
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
+import CampaignScheduleDrawer from "@/app/components/portal/CampaignScheduleDrawer";
+import PersonaliseCampaignView from "@/app/components/portal/PersonaliseCampaignView";
 import { getEmailTemplate, loadEmailTemplates } from "@/lib/email-templates";
 import { normalizeEmailMergeTags, replaceUnsubscribeVariables } from "@/lib/email-variables";
 import {
@@ -246,38 +249,12 @@ function SenderPanel({
   onEmailChange: (senderId: string) => void;
   onNameChange: (name: string) => void;
 }) {
-  const [emailMenuOpen, setEmailMenuOpen] = useState(false);
-  const emailMenuRef = useRef<HTMLDivElement | null>(null);
   const savedSenderId = campaign.senderId ?? "";
   const savedSenderName = (campaign.senderName ?? "").trim();
   const hasChanges =
     draftSenderId !== savedSenderId ||
     draftSenderName.trim() !== savedSenderName;
   const canSave = Boolean(draftSenderId) && senders.length > 0 && hasChanges;
-  const selectedSender =
-    senders.find((sender) => sender.id === draftSenderId) ?? senders[0] ?? null;
-
-  useEffect(() => {
-    if (!emailMenuOpen) {
-      return;
-    }
-    function handlePointerDown(event: MouseEvent) {
-      if (!emailMenuRef.current?.contains(event.target as Node)) {
-        setEmailMenuOpen(false);
-      }
-    }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setEmailMenuOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [emailMenuOpen]);
 
   return (
     <div className="drip-sender-panel">
@@ -327,67 +304,13 @@ function SenderPanel({
                   Email address
                   <InfoIcon />
                 </label>
-                <div className="drip-sender-select" ref={emailMenuRef}>
-                  <button
-                    type="button"
-                    id="drip-sender-email"
-                    className={`drip-sender-select-trigger${emailMenuOpen ? " open" : ""}`}
-                    aria-haspopup="listbox"
-                    aria-expanded={emailMenuOpen}
-                    aria-labelledby="drip-sender-email-label"
-                    onClick={() => setEmailMenuOpen((open) => !open)}
-                  >
-                    <span className="drip-sender-select-value">
-                      <SmtpProviderBadge iconOnly providerId={selectedSender?.provider} />
-                      <span>{selectedSender?.fromEmail || "Select a sender"}</span>
-                    </span>
-                    <svg
-                      className="drip-sender-select-caret"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      aria-hidden="true"
-                    >
-                      <path d="m6 9 6 6 6-6" />
-                    </svg>
-                  </button>
-                  {emailMenuOpen ? (
-                    <div className="drip-sender-select-menu" role="listbox">
-                      {senders.map((sender) => {
-                        const selected = sender.id === draftSenderId;
-                        return (
-                          <button
-                            key={sender.id}
-                            type="button"
-                            role="option"
-                            aria-selected={selected}
-                            className={`drip-sender-select-option${selected ? " selected" : ""}`}
-                            onClick={() => {
-                              onEmailChange(sender.id);
-                              setEmailMenuOpen(false);
-                            }}
-                          >
-                            <SmtpProviderBadge iconOnly providerId={sender.provider} />
-                            <span>{sender.fromEmail}</span>
-                            {selected ? (
-                              <svg
-                                className="drip-sender-select-check"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2.5"
-                                aria-hidden="true"
-                              >
-                                <path d="M20 6 9 17l-5-5" />
-                              </svg>
-                            ) : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                </div>
+                <SmtpSenderSelect
+                  id="drip-sender-email"
+                  labelledBy="drip-sender-email-label"
+                  senders={senders}
+                  value={draftSenderId}
+                  onChange={onEmailChange}
+                />
               </div>
 
               <div className="crm-field">
@@ -1037,20 +960,23 @@ function AddIndividualContactsModal({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [draft, setDraft] = useState<CampaignIndividualContact[]>(initialSelection);
 
+  const remoteSearch = useContactSearch(query);
   const filteredContacts = useMemo(() => {
     const needle = query.trim().toLowerCase();
+    if (!needle) {
+      return contacts.slice(0, 50);
+    }
+    if (remoteSearch.items) {
+      return remoteSearch.items.slice(0, 50);
+    }
     return contacts
-      .filter((contact) => {
-        if (!needle) {
-          return true;
-        }
-        return (
+      .filter(
+        (contact) =>
           contact.email.toLowerCase().includes(needle) ||
-          contact.fullName.toLowerCase().includes(needle)
-        );
-      })
+          contact.fullName.toLowerCase().includes(needle),
+      )
       .slice(0, 50);
-  }, [contacts, query]);
+  }, [contacts, query, remoteSearch.items]);
 
   const hasChanges = useMemo(
     () => !individualContactsEqual(draft, initialSelection),
@@ -2151,23 +2077,31 @@ function PreviewTestModal({
     [html, campaign.subject, campaign.previewText],
   );
 
+  const [pickedContact, setPickedContact] = useState<Contact | null>(null);
+  const remoteSearch = useContactSearch(contactSearch);
   const filteredContacts = useMemo(() => {
     const query = contactSearch.trim().toLowerCase();
-    const eligible = contacts.filter((contact) => !contact.blocklisted);
-    const list = !query
-      ? eligible.slice(0, 40)
-      : eligible.filter(
-          (contact) =>
-            contact.email.toLowerCase().includes(query) ||
-            contact.fullName.toLowerCase().includes(query),
-        );
+    const source = query && remoteSearch.items ? remoteSearch.items : contacts;
+    const eligible = source.filter((contact) => !contact.blocklisted);
+    const list =
+      !query || remoteSearch.items
+        ? eligible
+        : eligible.filter(
+            (contact) =>
+              contact.email.toLowerCase().includes(query) ||
+              contact.fullName.toLowerCase().includes(query),
+          );
     return list.slice(0, 40);
-  }, [contactSearch, contacts]);
+  }, [contactSearch, contacts, remoteSearch.items]);
 
   const selectedContact =
+    (pickedContact?.id === selectedContactId && !pickedContact.blocklisted
+      ? pickedContact
+      : null) ??
     contacts.find(
       (contact) => contact.id === selectedContactId && !contact.blocklisted,
-    ) ?? null;
+    ) ??
+    null;
 
   useEffect(() => {
     if (!selectedContactId) {
@@ -2248,6 +2182,7 @@ function PreviewTestModal({
   }, [recipientOpen]);
 
   function selectPreviewContact(contact: Contact) {
+    setPickedContact(contact);
     setSelectedContactId(contact.id);
     setContactSearch(contact.email);
     setContactDropdownOpen(false);
@@ -3266,10 +3201,6 @@ function sendersAllowedForKind(
   return senders.filter((sender) => sender.provider !== "gmail");
 }
 
-function padTime(value: number) {
-  return String(value).padStart(2, "0");
-}
-
 function SettingsSavedCard({
   replyToEnabled,
   attachmentEnabled,
@@ -4285,153 +4216,14 @@ function buildSteps(
   ];
 }
 
-function ScheduleModal({
-  campaign,
-  onClose,
-  onConfirm,
-}: {
-  campaign: DripCampaign;
-  onClose: () => void;
-  onConfirm: (input: { mode: "now" | "later"; scheduledFor?: string }) => Promise<void>;
-}) {
-  const now = new Date();
-  const [mode, setMode] = useState<"now" | "later">("now");
-  const [date, setDate] = useState(
-    `${now.getFullYear()}-${padTime(now.getMonth() + 1)}-${padTime(now.getDate())}`,
-  );
-  const [hour, setHour] = useState(padTime(now.getHours()));
-  const [minute, setMinute] = useState("30");
-  const timezone = campaign.timezoneEnabled
-    ? campaign.timezone || "Asia/Kolkata"
-    : "Asia/Kolkata";
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  const hours = Array.from({ length: 24 }, (_, index) => padTime(index));
-  const minutes = ["00", "15", "30", "45"];
-
-  async function handleConfirm() {
-    setSaving(true);
-    setError("");
-    try {
-      await onConfirm({
-        mode,
-        scheduledFor:
-          mode === "later"
-            ? zonedDateTimeToIso(date, hour, minute, timezone)
-            : undefined,
-      });
-    } catch (err) {
-      setSaving(false);
-      setError(err instanceof Error ? err.message : "Failed to launch campaign");
-    }
-  }
-
-  return (
-    <div className="drip-schedule-backdrop" role="presentation" onMouseDown={onClose}>
-      <div
-        className="drip-schedule-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="drip-schedule-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="drip-schedule-head">
-          <h3 id="drip-schedule-title">Schedule</h3>
-          <button type="button" className="crm-modal-close" onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </div>
-
-        <div className="drip-schedule-body">
-          <div className="drip-schedule-question">When would you like to send the campaign?</div>
-
-          <label className="drip-schedule-option">
-            <input
-              type="radio"
-              name="drip-schedule-mode"
-              checked={mode === "now"}
-              onChange={() => setMode("now")}
-            />
-            <span>Send now</span>
-          </label>
-
-          <label className="drip-schedule-option">
-            <input
-              type="radio"
-              name="drip-schedule-mode"
-              checked={mode === "later"}
-              onChange={() => setMode("later")}
-            />
-            <span>Schedule for later</span>
-          </label>
-
-          {mode === "later" ? (
-            <div className="drip-schedule-later">
-              <label className="drip-schedule-field">
-                <span>Date</span>
-                <div className="drip-schedule-select-wrap">
-                  <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
-                  <ChevronDownIcon />
-                </div>
-              </label>
-
-              <div className="drip-schedule-field">
-                <span>Time</span>
-                <div className="drip-schedule-time-row">
-                  <div className="drip-schedule-select-wrap drip-schedule-time">
-                    <select value={hour} onChange={(event) => setHour(event.target.value)}>
-                      {hours.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDownIcon />
-                  </div>
-                  <div className="drip-schedule-select-wrap drip-schedule-time">
-                    <select value={minute} onChange={(event) => setMinute(event.target.value)}>
-                      {minutes.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDownIcon />
-                  </div>
-                </div>
-                <div className="drip-schedule-tz">{formatTimezoneLabel(timezone)}</div>
-              </div>
-            </div>
-          ) : null}
-          {error ? <div className="drip-schedule-error">{error}</div> : null}
-        </div>
-
-        <div className="drip-schedule-foot">
-          <button type="button" className="btn-dark" onClick={handleConfirm} disabled={saving}>
-            {saving ? (
-              <>
-                <span className="drip-btn-spinner" aria-hidden="true" />
-                {mode === "now" ? "Sending..." : "Scheduling..."}
-              </>
-            ) : mode === "now" ? (
-              "Send now"
-            ) : (
-              "Schedule"
-            )}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function PortalCampaignDetailPage({
   campaignId,
   kind = "drip",
+  personalise = false,
 }: {
   campaignId: string;
   kind?: CampaignKind;
+  personalise?: boolean;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -4444,6 +4236,7 @@ export default function PortalCampaignDetailPage({
   const [rescheduleNotice, setRescheduleNotice] = useState(showRescheduleNotice);
   const [loading, setLoading] = useState(true);
   const [pausedEditing, setPausedEditing] = useState(false);
+  const [setupViewing, setSetupViewing] = useState(false);
   const [senderPanelOpen, setSenderPanelOpen] = useState(false);
   const [recipientsPanelOpen, setRecipientsPanelOpen] = useState(false);
   const [subjectPanelOpen, setSubjectPanelOpen] = useState(false);
@@ -4511,11 +4304,7 @@ export default function PortalCampaignDetailPage({
   useEffect(() => {
     async function loadContacts() {
       try {
-        const response = await fetch("/api/crm/contacts");
-        const data = await response.json();
-        if (response.ok) {
-          setContacts(data);
-        }
+        setContacts(await fetchContactPage());
       } catch {
         // Keep existing contacts if the request fails.
       }
@@ -4628,19 +4417,12 @@ export default function PortalCampaignDetailPage({
         }
 
         if (recipientsPanelOpen) {
-          const [listsResponse, contactsResponse] = await Promise.all([
-            fetch("/api/crm/lists"),
-            fetch("/api/crm/contacts"),
-          ]);
+          const listsResponse = await fetch("/api/crm/lists");
           const listsData = await listsResponse.json();
-          const contactsData = await contactsResponse.json();
           if (listsResponse.ok) {
             setLists(
               (listsData as CrmList[]).filter((list) => list.name !== "Unsubscribe"),
             );
-          }
-          if (contactsResponse.ok) {
-            setContacts(contactsData);
           }
         }
       } finally {
@@ -4913,9 +4695,11 @@ export default function PortalCampaignDetailPage({
       }
     }
     router.push(
-      current?.kind === "oneone" || kind === "oneone"
-        ? PORTAL_ROUTES.oneone
-        : PORTAL_ROUTES.drip,
+      personalise
+        ? PORTAL_ROUTES.personalise
+        : current?.kind === "oneone" || kind === "oneone"
+          ? PORTAL_ROUTES.oneone
+          : PORTAL_ROUTES.drip,
     );
   }
 
@@ -5392,7 +5176,13 @@ export default function PortalCampaignDetailPage({
       <div className="crm-empty">
         Campaign not found.{" "}
         <Link
-          href={kind === "oneone" ? PORTAL_ROUTES.oneone : PORTAL_ROUTES.drip}
+          href={
+            personalise
+              ? PORTAL_ROUTES.personalise
+              : kind === "oneone"
+                ? PORTAL_ROUTES.oneone
+                : PORTAL_ROUTES.drip
+          }
           className="link-blue"
         >
           Back to campaigns
@@ -5403,11 +5193,17 @@ export default function PortalCampaignDetailPage({
 
   const statusLabel =
     campaign.status.charAt(0).toUpperCase() + campaign.status.slice(1);
-  const listHref =
-    campaign.kind === "oneone" || kind === "oneone"
-      ? PORTAL_ROUTES.oneone
-      : PORTAL_ROUTES.drip;
-  const listLabel = isOneOneCampaign(campaign) ? "1-1 campaigns" : "Email campaigns";
+  const listHref = personalise
+    ? PORTAL_ROUTES.personalise
+    : campaignListRoute(
+        campaign.kind === "oneone" || kind === "oneone" ? "oneone" : "drip",
+        campaign.tags,
+      );
+  const listLabel = personalise
+    ? "Personalise campaigns"
+    : isOneOneCampaign(campaign)
+      ? "1-1 campaigns"
+      : "Email campaigns";
   const sequenceSource =
     draftSequences.length > 0 ? draftSequences : campaignSequences(campaign);
   const previewSequence = previewSequenceId
@@ -5426,15 +5222,23 @@ export default function PortalCampaignDetailPage({
     : campaign;
 
   const showReport =
-    campaign.status === "sent" ||
-    campaign.status === "scheduled" ||
-    campaign.status === "sending" ||
-    (campaign.status === "paused" && !pausedEditing);
+    !setupViewing &&
+    (campaign.status === "sent" ||
+      campaign.status === "scheduled" ||
+      campaign.status === "sending" ||
+      (campaign.status === "paused" && !pausedEditing));
+
+  if (personalise && setupViewing) {
+    return (
+      <PersonaliseCampaignView campaignId={campaign.id} onBack={() => setSetupViewing(false)} />
+    );
+  }
 
   if (showReport) {
     return (
       <PortalCampaignReport
         campaign={campaign}
+        onViewSetup={personalise ? () => setSetupViewing(true) : undefined}
         onEditPaused={
           campaign.status === "paused" && isOneOneCampaign(campaign)
             ? () => setPausedEditing(true)
@@ -5449,7 +5253,11 @@ export default function PortalCampaignDetailPage({
           if (wasScheduled && next.status === "draft") {
             setRescheduleNotice(true);
             router.replace(
-              `${portalCampaignRoute(next.id, next.kind === "oneone" ? "oneone" : kind)}?reschedule=1`,
+              `${portalCampaignRoute(
+                next.id,
+                next.kind === "oneone" ? "oneone" : kind,
+                personalise ? ["personalise"] : next.tags,
+              )}?reschedule=1`,
             );
           }
         }}
@@ -5514,6 +5322,7 @@ export default function PortalCampaignDetailPage({
                 portalCampaignRoute(
                   campaign.id,
                   campaign.kind === "oneone" ? "oneone" : kind,
+                  personalise ? ["personalise"] : campaign.tags,
                 ),
               );
             }}
@@ -5910,8 +5719,8 @@ export default function PortalCampaignDetailPage({
       ) : null}
 
       {scheduleOpen && requiredStepsComplete ? (
-        <ScheduleModal
-          campaign={campaign}
+        <CampaignScheduleDrawer
+          timezone={campaign.timezoneEnabled ? campaign.timezone || "Asia/Kolkata" : "Asia/Kolkata"}
           onClose={() => setScheduleOpen(false)}
           onConfirm={async ({ mode, scheduledFor }) => {
             const launchKind =

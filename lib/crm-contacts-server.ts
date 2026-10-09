@@ -38,6 +38,23 @@ function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+let contactIndexesPromise: Promise<void> | null = null;
+
+function ensureContactSortIndex() {
+  if (!contactIndexesPromise) {
+    contactIndexesPromise = (async () => {
+      const db = await getDb();
+      await db.collection("contacts").createIndex(
+        { projectId: 1, lastName: 1, firstName: 1, email: 1 },
+        { name: "contacts_project_name_sort", background: true },
+      );
+    })().catch((error) => {
+      console.error("Failed to ensure contact indexes:", error);
+    });
+  }
+  return contactIndexesPromise;
+}
+
 export async function listProjectContacts(
   projectId: ObjectId,
   options?: ListProjectContactsOptions,
@@ -75,6 +92,7 @@ export async function listProjectContacts(
     }
   }
 
+  void ensureContactSortIndex();
   const db = await getDb();
   const collection = db.collection<ContactDoc>("contacts");
   const [total, docs] = await Promise.all([

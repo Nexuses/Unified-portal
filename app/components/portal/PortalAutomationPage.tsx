@@ -21,7 +21,8 @@ import {
   type CampaignKind,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
-import { portalCampaignRoute } from "@/lib/portal-nav";
+import PortalAutomationHistoryPage from "@/app/components/portal/PortalAutomationHistoryPage";
+import { portalCampaignRoute, PORTAL_ROUTES } from "@/lib/portal-nav";
 
 type ChatTurn = { role: "user" | "assistant"; content: string };
 
@@ -308,6 +309,9 @@ export default function PortalAutomationPage({
   const [bootstrapping, setBootstrapping] = useState(true);
   const persistEnabledRef = useRef(false);
 
+  const [historyOpen, setHistoryOpen] = useState(
+    () => searchParams.get("history") === "1",
+  );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [kind, setKind] = useState<CampaignKind>("drip");
   const [name, setName] = useState("Untitled automation");
@@ -1307,6 +1311,25 @@ export default function PortalAutomationPage({
   const minutes = ["00", "15", "30", "45"];
   const firstGaps = firstCampaign ? readinessGaps(firstCampaign) : [];
 
+  function closeHistory() {
+    setHistoryOpen(false);
+    if (searchParams.get("history") === "1") {
+      router.replace(PORTAL_ROUTES.automation);
+    }
+  }
+
+  if (historyOpen) {
+    return (
+      <PortalAutomationHistoryPage
+        onBack={closeHistory}
+        onCreateNew={() => {
+          setHistoryOpen(false);
+          router.push(`${PORTAL_ROUTES.automation}?new=${Date.now()}`);
+        }}
+      />
+    );
+  }
+
   return (
     <div className={`auto-page${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <aside className="auto-ai">
@@ -1451,9 +1474,13 @@ export default function PortalAutomationPage({
             {automationReady && !locked ? (
               <span className="auto-ready-tick">Ready</span>
             ) : null}
-            <a className="btn-soft auto-history-link" href={portalAutomationHistoryRoute()}>
+            <button
+              type="button"
+              className="btn-soft auto-history-link"
+              onClick={() => setHistoryOpen(true)}
+            >
               History
-            </a>
+            </button>
           </div>
 
           {locked ? (

@@ -11,4 +11,7 @@ export async function register() {
     "./lib/campaign-send-worker"
   );
   startCampaignSendWorker();
+
+  const { startInboxSyncWorker } = await import("./lib/inbox-sync-worker");
+  startInboxSyncWorker();
 }

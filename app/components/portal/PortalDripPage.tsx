@@ -22,6 +22,7 @@ import {
   campaignHasAutomationTag,
   ensureAutomationCampaignTags,
 } from "@/lib/automations";
+import PortalPersonalisePage from "@/app/components/portal/PortalPersonalisePage";
 
 const STATUS_OPTIONS: Array<CampaignStatus | "all"> = [
   "all",
@@ -115,14 +116,40 @@ function MetricColumn({
   );
 }
 
+function isPersonaliseCampaign(campaign: DripCampaign) {
+  return campaign.tags?.includes("personalise") ?? false;
+}
+
 export default function PortalDripPage({
   kind = "drip",
+  personalise = false,
 }: {
   kind?: CampaignKind;
+  personalise?: boolean;
 }) {
   const router = useRouter();
-  const isOneOne = kind === "oneone";
-  const listTitle = isOneOne ? "1-1 Campaign" : "Drip Campaign";
+  const isOneOne = kind === "oneone" || personalise;
+  const listTitle = personalise
+    ? "Personalise Campaign"
+    : isOneOne
+      ? "1-1 Campaign"
+      : "Drip Campaign";
+  const fetchKind: CampaignKind = personalise ? "oneone" : kind;
+
+  function visibleCampaigns(items: DripCampaign[]) {
+    if (personalise) {
+      return items.filter(isPersonaliseCampaign);
+    }
+    if (fetchKind === "oneone") {
+      return items.filter((item) => !isPersonaliseCampaign(item));
+    }
+    return items;
+  }
+
+  function campaignPath(campaign: DripCampaign, extra?: string) {
+    const path = portalCampaignRoute(campaign.id, fetchKind, campaign.tags);
+    return extra ? `${path}${extra}` : path;
+  }
   const [campaigns, setCampaigns] = useState<DripCampaign[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [search, setSearch] = useState("");
@@ -146,14 +173,14 @@ export default function PortalDripPage({
     let cancelled = false;
     async function load() {
       try {
-        const next = await fetchDripCampaigns(kind);
+        const next = await fetchDripCampaigns(fetchKind);
         if (!cancelled) {
-          setCampaigns(next);
+          setCampaigns(visibleCampaigns(next));
         }
         // Tag sync in background — don't block first paint.
-        void ensureAutomationCampaignTags(next, kind).then((tagged) => {
+        void ensureAutomationCampaignTags(next, fetchKind).then((tagged) => {
           if (!cancelled) {
-            setCampaigns(tagged);
+            setCampaigns(visibleCampaigns(tagged));
           }
         });
       } catch {
@@ -170,7 +197,7 @@ export default function PortalDripPage({
     return () => {
       cancelled = true;
     };
-  }, [kind]);
+  }, [fetchKind, personalise]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -197,9 +224,9 @@ export default function PortalDripPage({
             () => undefined,
           );
         }
-        const next = await fetchDripCampaigns(kind);
+        const next = await fetchDripCampaigns(fetchKind);
         if (!cancelled) {
-          setCampaigns(next);
+          setCampaigns(visibleCampaigns(next));
         }
       } catch {
         // Keep current campaign rows if stats cannot refresh.
@@ -214,7 +241,7 @@ export default function PortalDripPage({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [loaded, kind]);
+  }, [loaded, fetchKind, personalise]);
 
   useEffect(() => {
     if (!openMenuId) {
@@ -305,7 +332,7 @@ export default function PortalDripPage({
     setDeletingId(campaign.id);
     setOpenMenuId(null);
     try {
-      await deleteDripCampaign(campaign.id, kind);
+      await deleteDripCampaign(campaign.id, fetchKind);
       setCampaigns((current) => current.filter((item) => item.id !== campaign.id));
       setSelectedIds((current) => {
         const next = new Set(current);
@@ -345,7 +372,7 @@ export default function PortalDripPage({
       const updated = await patchDripCampaign(
         campaign.id,
         { status: nextStatus },
-        kind,
+        fetchKind,
       );
       if (resuming) {
         await fetch("/api/campaigns/process-due", { method: "POST" }).catch(
@@ -374,12 +401,12 @@ export default function PortalDripPage({
       const updated = await patchDripCampaign(
         campaign.id,
         { status: "draft" },
-        kind,
+        fetchKind,
       );
       setCampaigns((current) =>
         current.map((item) => (item.id === updated.id ? updated : item)),
       );
-      router.push(`${portalCampaignRoute(updated.id, kind)}?reschedule=1`);
+      router.push(campaignPath(updated, "?reschedule=1"));
     } catch (error) {
       window.alert(
         error instanceof Error
@@ -408,7 +435,7 @@ export default function PortalDripPage({
     setDeletingId("bulk");
     setOpenMenuId(null);
     try {
-      await deleteDripCampaigns(ids, kind);
+      await deleteDripCampaigns(ids, fetchKind);
       const removed = new Set(ids);
       setCampaigns((current) => current.filter((item) => !removed.has(item.id)));
       setSelectedIds(new Set());
@@ -425,9 +452,9 @@ export default function PortalDripPage({
     setDuplicatingId(campaign.id);
     setOpenMenuId(null);
     try {
-      const copy = await duplicateDripCampaign(campaign.id, kind);
+      const copy = await duplicateDripCampaign(campaign.id, fetchKind);
       setCampaigns((current) => [copy, ...current]);
-      router.push(portalCampaignRoute(copy.id, kind));
+      router.push(campaignPath(copy));
     } catch (error) {
       window.alert(
         error instanceof Error ? error.message : "Failed to duplicate campaign",
@@ -447,11 +474,11 @@ export default function PortalDripPage({
 
     setCreateError("");
     try {
-      const campaign = await createDripCampaign(name, kind);
+      const campaign = await createDripCampaign(name, fetchKind);
       setCampaigns((current) => [campaign, ...current]);
       setShowCreate(false);
       setNewName("");
-      router.push(portalCampaignRoute(campaign.id, kind));
+      router.push(campaignPath(campaign));
     } catch (error) {
       setCreateError(
         error instanceof Error ? error.message : "Failed to create campaign",
@@ -505,6 +532,15 @@ export default function PortalDripPage({
       )}
 
       {showCreate ? (
+        personalise ? (
+          <PortalPersonalisePage
+            onCreated={(campaignId) =>
+              router.push(
+                portalCampaignRoute(campaignId, "oneone", ["personalise"]),
+              )
+            }
+          />
+        ) : (
         <div className="drip-create-wrap">
           <div className="drip-create-panel">
           <h3>Create an email campaign</h3>
@@ -540,6 +576,7 @@ export default function PortalDripPage({
           </form>
           </div>
         </div>
+        )
       ) : (
       <div className="drip-shell">
         <div className="drip-tabs">
@@ -674,8 +711,7 @@ export default function PortalDripPage({
                     aria-label={`Select ${campaign.name}`}
                   />
                   <div className="drip-card-inner">
-                    <Link href={portalCampaignRoute(campaign.id, kind)} className="drip-main">
-                      <div className="drip-id">#{campaign.id}</div>
+                    <Link href={campaignPath(campaign)} className="drip-main">
                       <div className="drip-title">{campaign.name}</div>
                       <div className="drip-status">
                         <span className={`dot ${campaign.status}`} />

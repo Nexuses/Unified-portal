@@ -23,6 +23,8 @@ import {
 } from "@/lib/drip-campaigns";
 import { PORTAL_ROUTES, portalContactRoute } from "@/lib/portal-nav";
 
+const CARD_BATCH = 30;
+
 function campaignKey(campaign: Pick<DripCampaign, "id" | "kind">) {
   return `${campaign.kind === "oneone" ? "oneone" : "drip"}:${campaign.id}`;
 }
@@ -142,6 +144,7 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
   const [pickedCampaigns, setPickedCampaigns] = useState<string[]>([]);
   const [savingCampaigns, setSavingCampaigns] = useState(false);
   const [campaignQuery, setCampaignQuery] = useState("");
+  const [visibleByStage, setVisibleByStage] = useState<Record<string, number>>({});
   const boardRef = useRef<HTMLDivElement | null>(null);
 
   function scrollElementIntoView(
@@ -245,14 +248,51 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
     if (!board) {
       return [];
     }
+    const byStage = new Map<string, KanbanPerson[]>(
+      board.stages.map((stage) => [stage.id, []]),
+    );
+    for (const person of board.people) {
+      byStage
+        .get(stageIdForPerson(person, board.placements, board.stages))
+        ?.push(person);
+    }
     return board.stages.map((stage) => ({
       stage,
-      people: board.people.filter(
-        (person) =>
-          stageIdForPerson(person, board.placements, board.stages) === stage.id,
-      ),
+      people: byStage.get(stage.id) ?? [],
     }));
   }, [board]);
+
+  function visibleLimit(stageId: string, people: KanbanPerson[]) {
+    const base = visibleByStage[stageId] ?? CARD_BATCH;
+    const query = leadQuery.trim().toLowerCase();
+    if (!query) {
+      return base;
+    }
+    let lastMatch = -1;
+    people.forEach((person, index) => {
+      if (
+        person.email.toLowerCase().includes(query) ||
+        displayName(person).toLowerCase().includes(query) ||
+        person.companyName.toLowerCase().includes(query)
+      ) {
+        lastMatch = index;
+      }
+    });
+    return Math.max(base, lastMatch + 1);
+  }
+
+  function loadMoreOnScroll(stageId: string, total: number, element: HTMLElement) {
+    const shown = visibleByStage[stageId] ?? CARD_BATCH;
+    if (shown >= total) {
+      return;
+    }
+    if (element.scrollTop + element.clientHeight >= element.scrollHeight - 240) {
+      setVisibleByStage((current) => ({
+        ...current,
+        [stageId]: (current[stageId] ?? CARD_BATCH) + CARD_BATCH,
+      }));
+    }
+  }
 
   useEffect(() => {
     if (!leadQuery.trim()) {
@@ -309,7 +349,7 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
     setError("");
     try {
       const saved = await patchKanbanBoard(board.id, next);
-      setBoard(saved);
+      setBoard((current) => ({ ...saved, people: current?.people ?? saved.people }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
     } finally {
@@ -691,8 +731,13 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
                     ) : null}
                   </span>
                 </header>
-                <div className="an-kanban-cards">
-                  {people.map((person) => {
+                <div
+                  className="an-kanban-cards"
+                  onScroll={(event) =>
+                    loadMoreOnScroll(stage.id, people.length, event.currentTarget)
+                  }
+                >
+                  {people.slice(0, visibleLimit(stage.id, people)).map((person) => {
                     const email = person.email.trim().toLowerCase();
                     const name = displayName(person);
                     const query = leadQuery.trim().toLowerCase();
@@ -777,6 +822,11 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
                       </article>
                     );
                   })}
+                  {people.length > visibleLimit(stage.id, people) ? (
+                    <div className="an-kanban-more">
+                      Showing {visibleLimit(stage.id, people)} of {people.length} · scroll for more
+                    </div>
+                  ) : null}
                 </div>
               </section>
             ))}
