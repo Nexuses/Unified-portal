@@ -14,6 +14,8 @@ import CampaignScheduleDrawer, {
   type CampaignScheduleInput,
 } from "@/app/components/portal/CampaignScheduleDrawer";
 
+const CONTACTS_PAGE_SIZE = 50;
+
 type SenderOption = {
   id: string;
   provider: string;
@@ -104,6 +106,7 @@ export default function PortalPersonalisePage({
   const [fileLabel, setFileLabel] = useState("");
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [suppressed, setSuppressed] = useState<Set<string>>(() => new Set());
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -222,6 +225,7 @@ export default function PortalPersonalisePage({
       }
       setPlan(data);
       setOpenIndex(0);
+      setPage(1);
     } catch (err) {
       setPlan(null);
       setError(err instanceof Error ? err.message : "Could not read that file.");
@@ -271,6 +275,60 @@ export default function PortalPersonalisePage({
     Boolean(senderId) &&
     Boolean(plan?.listName.trim()) &&
     (plan?.contacts.length ?? 0) > unsubscribedCount;
+
+  const contactCount = plan?.contacts.length ?? 0;
+  const totalPages = Math.max(1, Math.ceil(contactCount / CONTACTS_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageOffset = (currentPage - 1) * CONTACTS_PAGE_SIZE;
+  const pageContacts = plan
+    ? plan.contacts.slice(pageOffset, pageOffset + CONTACTS_PAGE_SIZE)
+    : [];
+
+  function goToPage(next: number) {
+    setPage(Math.max(1, Math.min(totalPages, next)));
+    setOpenIndex(null);
+  }
+
+  const pagination =
+    contactCount > CONTACTS_PAGE_SIZE ? (
+      <div className="drip-pagination">
+        <span className="drip-page-range">
+          {pageOffset + 1}-{pageOffset + pageContacts.length} of {contactCount.toLocaleString()}
+        </span>
+        <div className="drip-page-controls">
+          <select
+            value={currentPage}
+            onChange={(event) => goToPage(Number(event.target.value))}
+            aria-label="Page"
+          >
+            {Array.from({ length: totalPages }, (_, index) => (
+              <option key={index + 1} value={index + 1}>
+                {index + 1}
+              </option>
+            ))}
+          </select>
+          <span>of {totalPages} pages</span>
+          <button
+            type="button"
+            className="drip-page-arrow"
+            disabled={currentPage <= 1}
+            onClick={() => goToPage(currentPage - 1)}
+            aria-label="Previous page"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            className="drip-page-arrow"
+            disabled={currentPage >= totalPages}
+            onClick={() => goToPage(currentPage + 1)}
+            aria-label="Next page"
+          >
+            ›
+          </button>
+        </div>
+      </div>
+    ) : null;
 
   return (
     <div className="personalise-create">
@@ -454,8 +512,10 @@ export default function PortalPersonalisePage({
             </button>
           </div>
 
+          {pagination}
           <div className="pz-contacts">
-            {plan.contacts.map((contact, index) => {
+            {pageContacts.map((contact, pageIndex) => {
+              const index = pageOffset + pageIndex;
               const delays = stepDelayDays(contact.steps);
               const open = openIndex === index;
               const missing = contactNeedsEmail(contact);
@@ -582,7 +642,7 @@ export default function PortalPersonalisePage({
               );
             })}
           </div>
-
+          {pagination}
         </div>
       ) : null}
 
