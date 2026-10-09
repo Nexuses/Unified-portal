@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Contact } from "@/lib/crm";
 import type { CampaignStatus, DripCampaign } from "@/lib/drip-campaigns";
 import { DEFAULT_PROJECT_SENDING_LIMIT } from "@/lib/projects";
@@ -12,6 +12,89 @@ const SENDER_SOFT_LIMIT = 10;
 type PortalDashboardProps = {
   firstName: string;
 };
+
+const PLANNED_PER_VIEW = 2;
+const PLANNED_GAP = 12;
+const PLANNED_AUTOPLAY_MS = 5000;
+
+function PlannedCarousel({ children, count }: { children: ReactNode; count: number }) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [page, setPage] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const pages = Math.ceil(count / PLANNED_PER_VIEW);
+
+  function currentPage() {
+    const track = trackRef.current;
+    if (!track) {
+      return 0;
+    }
+    return Math.round(track.scrollLeft / (track.clientWidth + PLANNED_GAP));
+  }
+
+  function goTo(next: number) {
+    const track = trackRef.current;
+    if (!track) {
+      return;
+    }
+    const target = ((next % pages) + pages) % pages;
+    track.scrollTo({ left: target * (track.clientWidth + PLANNED_GAP), behavior: "smooth" });
+  }
+
+  useEffect(() => {
+    if (paused || pages < 2) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const track = trackRef.current;
+      if (!track) {
+        return;
+      }
+      const step = track.clientWidth + PLANNED_GAP;
+      const target = (Math.round(track.scrollLeft / step) + 1) % pages;
+      track.scrollTo({ left: target * step, behavior: "smooth" });
+    }, PLANNED_AUTOPLAY_MS);
+    return () => window.clearInterval(timer);
+  }, [paused, pages]);
+
+  return (
+    <div
+      className="planned-carousel"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
+    >
+      <div
+        ref={trackRef}
+        className="planned-track"
+        onScroll={() => setPage(currentPage())}
+      >
+        {children}
+      </div>
+      <div className="planned-controls">
+        <div className="planned-dots">
+          {Array.from({ length: pages }, (_, index) => (
+            <button
+              key={index}
+              type="button"
+              className={index === page ? "is-active" : ""}
+              aria-label={`Show page ${index + 1}`}
+              onClick={() => goTo(index)}
+            />
+          ))}
+        </div>
+        <div className="planned-arrows">
+          <button type="button" aria-label="Previous" onClick={() => goTo(page - 1)}>
+            ‹
+          </button>
+          <button type="button" aria-label="Next" onClick={() => goTo(page + 1)}>
+            ›
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -248,6 +331,61 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
       .sort((a, b) => campaignTimestamp(a) - campaignTimestamp(b));
   }, [allCampaigns]);
 
+  const plannedCards = plannedToday.map((campaign) => {
+    const typeLabel = campaign.tags?.includes("personalise")
+      ? "Personalise"
+      : campaign.kind === "oneone"
+        ? "1-1"
+        : "Drip";
+    return (
+      <Link
+        key={`${campaign.kind ?? "drip"}-${campaign.id}`}
+        href={portalCampaignRoute(campaign.id, campaign.kind, campaign.tags)}
+        className="tip-card planned-card"
+      >
+        <div className="tip-icon">
+          {campaign.kind === "oneone" ? (
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="8" r="3.2" />
+              <path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" />
+            </svg>
+          ) : (
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M21 3 10 14" />
+              <path d="m21 3-7 18-4-7-7-4Z" />
+            </svg>
+          )}
+        </div>
+        <h4>{campaign.name}</h4>
+        <p>
+          {STATUS_LABELS[campaign.status]}
+          {campaign.scheduledAt
+            ? ` · ${new Date(campaign.scheduledAt).toLocaleTimeString(undefined, {
+                hour: "numeric",
+                minute: "2-digit",
+              })}`
+            : ""}
+          {` · ${typeLabel}`}
+        </p>
+        <span className="link-purple">Open campaign →</span>
+      </Link>
+    );
+  });
+
   const calendarDays = useMemo(
     () => buildCalendarDays(viewDate.getFullYear(), viewDate.getMonth()),
     [viewDate],
@@ -365,30 +503,10 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
               Create campaign
             </Link>
           </div>
-          {plannedToday.length > 0 ? (
-            <div className="planned-list">
-              {plannedToday.map((campaign) => (
-                <Link
-                  key={`${campaign.kind ?? "drip"}-${campaign.id}`}
-                  href={portalCampaignRoute(campaign.id, campaign.kind)}
-                  className="planned-row"
-                >
-                  <div>
-                    <div className="planned-name">{campaign.name}</div>
-                    <div className="planned-meta">
-                      {STATUS_LABELS[campaign.status]}
-                      {campaign.scheduledAt
-                        ? ` · ${new Date(campaign.scheduledAt).toLocaleTimeString(
-                            undefined,
-                            { hour: "numeric", minute: "2-digit" },
-                          )}`
-                        : ""}
-                      {` · ${campaign.kind === "oneone" ? "1-1" : "Drip"}`}
-                    </div>
-                  </div>
-                </Link>
-              ))}
-            </div>
+          {plannedToday.length > PLANNED_PER_VIEW ? (
+            <PlannedCarousel count={plannedToday.length}>{plannedCards}</PlannedCarousel>
+          ) : plannedToday.length > 0 ? (
+            <div className="tip-row">{plannedCards}</div>
           ) : (
             <>
               <div className="planned-empty">Nothing planned for today</div>
