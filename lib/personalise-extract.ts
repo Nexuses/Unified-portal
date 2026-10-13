@@ -33,11 +33,12 @@ Schema:
 Rules:
 - Copy every subject and email body exactly. Do not rewrite, summarise, translate, or fix wording.
 - Keep line breaks in the body. Lines that start with "- " or "1. " are bullet points: keep that marker at the start of the line, one bullet per line.
+- In spreadsheets each row is one line, and a line break inside a cell is written as \\n. Keep every \\n as a line break in the body, including blank lines between paragraphs and each line of the sign-off.
 - One contact per person. Include every email that person has. People can have different numbers of emails.
 - Keep the emails in the order they appear in the file.
 - day always counts from the first email. The first email is day 0. A follow-up marked Day 2 is sent 2 days after the first email, so day is 2. Day 3 is 3 days after the first email, so day is 3. Day 18 is day 18. Copy the number as written. Do not add the numbers up.
 - If a follow-up has no day mentioned, use the same day as the email before it.
-- If a follow-up says it stays on the same thread, or has no subject, set subject to an empty string.
+- If a follow-up says it stays on the same thread, or has no subject, set subject to an empty string. Otherwise copy its subject as written, including any "Re:".
 - The first email's subject must be the subject written in the file.
 - email, position, and personalLinkedIn stay empty when the file does not contain them. Never invent an email address or a LinkedIn URL.
 - personalLinkedIn is only a URL. The word LinkedIn with no URL is an empty string.
@@ -179,6 +180,17 @@ function cellText(value: ExcelJS.CellValue) {
   return String(value);
 }
 
+/** One row per line keeps the outline line numbers stable, so in-cell line breaks become a literal "\n". */
+function flatCell(value: ExcelJS.CellValue) {
+  return cellText(value)
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .join("\\n")
+    .replace(/(?:\\n){3,}/g, "\\n\\n")
+    .replace(/^(?:\\n)+|(?:\\n)+$/g, "");
+}
+
 async function textFromXlsx(buffer: Buffer) {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
@@ -186,9 +198,7 @@ async function textFromXlsx(buffer: Buffer) {
   workbook.eachSheet((sheet) => {
     const lines: string[] = [`# ${sheet.name}`];
     sheet.eachRow({ includeEmpty: false }, (row) => {
-      const cells = (row.values as ExcelJS.CellValue[])
-        .slice(1)
-        .map((value) => cellText(value).replace(/\s+/g, " ").trim());
+      const cells = (row.values as ExcelJS.CellValue[]).slice(1).map(flatCell);
       if (cells.some(Boolean)) {
         lines.push(cells.join("\t"));
       }
@@ -444,6 +454,7 @@ Rules:
 - The sender who signs the emails is not a contact. A name in a greeting ("Dear Mohammed") or a follow-up heading is not a new section.
 - When you are given part of a file and it opens in the middle of someone's section (follow-ups with no heading for that person), do not list that person.
 - In a spreadsheet with one row per person, startLine is that person's row.
+- A spreadsheet can have several sheets, each starting with "# <sheet name>". List people from every sheet that has emails written for them, not only the first.
 - Do not add people who are not in the file. listName comes from the document title, not a person's name.`;
 
 const OUTLINE_SCHEMA = {
@@ -511,13 +522,20 @@ function alignToHeadingShape(
     (item) => headingShape(lines[item.startLine] ?? "") === topShape,
   );
   const firstLine = Math.min(...matching.map((item) => item.startLine));
+  const cellCount = (line: string) => line.split("\t").length;
+  const matchingCells = matching.map((item) => cellCount(lines[item.startLine] ?? ""));
+  const minCells = Math.min(...matchingCells);
+  const maxCells = Math.max(...matchingCells);
+  /** Spreadsheet rows: the column layout identifies a contact row, so trust it over the model's count. */
+  const tableRows = minCells >= 4;
   const candidates: number[] = [];
   for (let index = firstLine; index < lines.length; index += 1) {
-    if (lines[index].trim() && headingShape(lines[index]) === topShape) {
-      candidates.push(index);
-    }
+    const line = lines[index];
+    if (!line.trim() || headingShape(line) !== topShape) continue;
+    if (tableRows && (cellCount(line) < minCells || cellCount(line) > maxCells)) continue;
+    candidates.push(index);
   }
-  if (candidates.length > matching.length * 1.5) {
+  if (!tableRows && candidates.length > matching.length * 1.5) {
     return matching;
   }
   const nameByLine = new Map(matching.map((item) => [item.startLine, item.name]));

@@ -287,7 +287,7 @@ export function normalizePersonalisePlan(
         continue;
       }
       const step = stepItem as Record<string, unknown>;
-      const body = asText(step.body);
+      const body = asText(step.body).replace(/\\n/g, "\n");
       if (!body) {
         continue;
       }
@@ -309,6 +309,18 @@ export function normalizePersonalisePlan(
     }
     if (!steps[0].subject) {
       steps[0].subject = "Hello";
+    }
+    const squash = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
+    let threadSubject = steps[0].subject;
+    for (let index = 1; index < steps.length; index += 1) {
+      const subject = steps[index].subject;
+      if (!subject) continue;
+      const reply = subject.match(/^re:\s*(.*)$/i);
+      if (reply && squash(reply[1]) === squash(threadSubject)) {
+        steps[index].subject = "";
+      } else {
+        threadSubject = subject;
+      }
     }
     const email = cleanEmail(asText(row.email));
     if (email && seen.has(email)) {
