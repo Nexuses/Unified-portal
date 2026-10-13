@@ -84,52 +84,78 @@ function blankChat(): SavedChat {
   };
 }
 
-function readHistory(): { chats: SavedChat[]; activeId: string } {
-  if (typeof window === "undefined") {
-    const chat = { id: "pending", title: "New chat", messages: [], html: "", updatedAt: "" };
-    return { chats: [chat], activeId: chat.id };
+function hasContent(chat: Pick<SavedChat, "messages" | "html">) {
+  return chat.messages.length > 0 || Boolean(chat.html.trim());
+}
+
+function chatPayload(chat: Pick<SavedChat, "id" | "messages" | "html" | "imageBucket">) {
+  return JSON.stringify({
+    id: chat.id,
+    title: chatTitle(chat.messages),
+    messages: chat.messages.slice(-30),
+    html: chat.html,
+    imageBucket: chat.imageBucket ?? null,
+  });
+}
+
+async function putChat(payload: string) {
+  const response = await fetch("/api/edm/chats", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: payload,
+  });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(data?.error || "Could not save the chat");
   }
+  return ((await response.json()) as { chat: SavedChat }).chat;
+}
+
+/** Chats from before server storage lived only in this browser; move them into the open project once. */
+function takeBrowserChats(): SavedChat[] {
+  const found: SavedChat[] = [];
   try {
     const raw = window.localStorage.getItem(HISTORY_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as { chats?: SavedChat[]; activeId?: string };
-      const chats = Array.isArray(parsed.chats)
-        ? parsed.chats.filter((item) => item && typeof item.id === "string").slice(0, 40)
-        : [];
-      if (chats.length) {
-        const activeId = chats.some((item) => item.id === parsed.activeId)
-          ? parsed.activeId!
-          : chats[0].id;
-        return { chats, activeId };
+      const parsed = JSON.parse(raw) as { chats?: SavedChat[] };
+      if (Array.isArray(parsed.chats)) {
+        for (const item of parsed.chats) {
+          if (item && typeof item.id === "string" && Array.isArray(item.messages)) {
+            const chat = { ...item, html: typeof item.html === "string" ? item.html : "" };
+            if (hasContent(chat)) found.push(chat);
+          }
+        }
       }
     }
   } catch {
-    // Fall through to a fresh chat.
+    // Ignore a broken history entry.
   }
-
   try {
     const legacy = window.localStorage.getItem(THREAD_KEY);
     if (legacy) {
       const parsed = JSON.parse(legacy) as { messages?: ChatTurn[]; html?: string };
-      const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
-      const html = typeof parsed.html === "string" ? parsed.html : "";
-      if (messages.length || html) {
-        const chat: SavedChat = {
-          id: crypto.randomUUID(),
-          title: chatTitle(messages),
-          messages,
-          html,
-          updatedAt: new Date().toISOString(),
-        };
-        return { chats: [chat], activeId: chat.id };
-      }
+      const chat: SavedChat = {
+        id: crypto.randomUUID(),
+        title: "",
+        messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+        html: typeof parsed.html === "string" ? parsed.html : "",
+        updatedAt: new Date().toISOString(),
+      };
+      if (hasContent(chat)) found.push(chat);
     }
   } catch {
     // Ignore a broken older thread.
   }
+  return found.slice(0, 40);
+}
 
-  const chat = blankChat();
-  return { chats: [chat], activeId: chat.id };
+function forgetBrowserChats() {
+  try {
+    window.localStorage.removeItem(HISTORY_KEY);
+    window.localStorage.removeItem(THREAD_KEY);
+  } catch {
+    // Storage may be unavailable.
+  }
 }
 
 async function readImageFile(file: File, maxEdge: number) {
@@ -200,6 +226,8 @@ export default function PortalEdmPage() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const chatEpoch = useRef(0);
   const pendingEmail = useRef<PendingEmail | null>(null);
+  const savedPayloads = useRef(new Map<string, string>());
+  const pendingSave = useRef<{ id: string; payload: string; timer: number } | null>(null);
   const [ready, setReady] = useState(false);
   const [chats, setChats] = useState<SavedChat[]>([]);
   const [activeId, setActiveId] = useState("");
@@ -234,17 +262,52 @@ export default function PortalEdmPage() {
   const speech = useSpeechInput({ value: draft, onChange: setDraft });
 
   useEffect(() => {
-    const history = readHistory();
-    const fresh = blankChat();
-    const previous = history.chats.filter(
-      (chat) => chat.messages.length > 0 || chat.html.trim(),
-    );
-    setChats([fresh, ...previous].slice(0, 40));
-    setActiveId(fresh.id);
-    setMessages([]);
-    setHtml("");
-    setPreviewOpen(false);
-    setReady(true);
+    let cancelled = false;
+    void (async () => {
+      let saved: SavedChat[] = [];
+      try {
+        const response = await fetch("/api/edm/chats");
+        const data = (await response.json().catch(() => null)) as {
+          chats?: SavedChat[];
+          error?: string;
+        } | null;
+        if (!response.ok) {
+          throw new Error(data?.error || "Could not load your chats");
+        }
+        saved = Array.isArray(data?.chats) ? data.chats : [];
+        const local = takeBrowserChats();
+        if (local.length) {
+          const known = new Set(saved.map((chat) => chat.id));
+          const moved = await Promise.all(
+            local
+              .filter((chat) => !known.has(chat.id))
+              .map((chat) => putChat(chatPayload(chat)).catch(() => null)),
+          );
+          saved = [...saved, ...moved.filter((chat): chat is SavedChat => Boolean(chat))]
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+            .slice(0, 40);
+          forgetBrowserChats();
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Could not load your chats");
+        }
+      }
+      if (cancelled) return;
+      for (const chat of saved) {
+        savedPayloads.current.set(chat.id, chatPayload(chat));
+      }
+      const fresh = blankChat();
+      setChats([fresh, ...saved].slice(0, 40));
+      setActiveId(fresh.id);
+      setMessages([]);
+      setHtml("");
+      setPreviewOpen(false);
+      setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -298,17 +361,47 @@ export default function PortalEdmPage() {
           : chat,
       );
       const active = next.find((chat) => chat.id === activeId);
-      const ordered = active ? [active, ...next.filter((chat) => chat.id !== activeId)] : next;
-      try {
-        window.localStorage.setItem(
-          HISTORY_KEY,
-          JSON.stringify({ chats: ordered, activeId }),
-        );
-      } catch {
-        // Ignore quota errors.
-      }
-      return ordered;
+      return active ? [active, ...next.filter((chat) => chat.id !== activeId)] : next;
     });
+  }, [messages, html, imageBucket, ready, activeId]);
+
+  useEffect(() => {
+    const flush = () => {
+      const pending = pendingSave.current;
+      if (!pending) return;
+      window.clearTimeout(pending.timer);
+      pendingSave.current = null;
+      void putChat(pending.payload).catch(() => undefined);
+    };
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!ready || !activeId) return;
+    const previous = pendingSave.current;
+    if (previous && previous.id !== activeId) {
+      window.clearTimeout(previous.timer);
+      pendingSave.current = null;
+      void putChat(previous.payload)
+        .then(() => savedPayloads.current.set(previous.id, previous.payload))
+        .catch(() => setError("Could not save the last chat. Check your connection."));
+    }
+    if (!hasContent({ messages, html })) return;
+    const payload = chatPayload({ id: activeId, messages, html, imageBucket });
+    if (savedPayloads.current.get(activeId) === payload) return;
+    if (pendingSave.current) window.clearTimeout(pendingSave.current.timer);
+    const id = activeId;
+    const timer = window.setTimeout(() => {
+      pendingSave.current = null;
+      void putChat(payload)
+        .then(() => savedPayloads.current.set(id, payload))
+        .catch(() => setError("Could not save this chat. Check your connection."));
+    }, 700);
+    pendingSave.current = { id, payload, timer };
   }, [messages, html, imageBucket, ready, activeId]);
 
   async function attachFiles(list: FileList | null) {
@@ -388,13 +481,20 @@ export default function PortalEdmPage() {
     const next = remaining.length ? remaining : [blankChat()];
     const active = id === activeId ? next[0] : next.find((chat) => chat.id === activeId) ?? next[0];
     setChats(next);
-    try {
-      window.localStorage.setItem(
-        HISTORY_KEY,
-        JSON.stringify({ chats: next, activeId: active.id }),
+    if (pendingSave.current?.id === id) {
+      window.clearTimeout(pendingSave.current.timer);
+      pendingSave.current = null;
+    }
+    const removed = chats.find((chat) => chat.id === id);
+    if (savedPayloads.current.has(id) || (removed && hasContent(removed))) {
+      savedPayloads.current.delete(id);
+      void fetch(`/api/edm/chats?id=${encodeURIComponent(id)}`, { method: "DELETE" }).then(
+        (response) => {
+          if (!response.ok && response.status !== 404) {
+            setError("Could not delete that chat.");
+          }
+        },
       );
-    } catch {
-      // Ignore quota errors.
     }
     if (id !== activeId) return;
     chatEpoch.current += 1;
