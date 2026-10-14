@@ -147,13 +147,23 @@ export default function PortalUnsubPage() {
   const load = useCallback(async (page = 1) => {
     setLoading(true);
     setError("");
-    try {
+    const fetchPage = async (target: number) => {
       const response = await fetch(
-        `/api/crm/suppression?page=${page}&pageSize=${PAGE_SIZE}`,
+        `/api/crm/suppression?page=${target}&pageSize=${PAGE_SIZE}`,
       );
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || "Failed to load suppression list");
+      }
+      return data;
+    };
+    try {
+      let data = await fetchPage(page);
+      const total = Number(data.emailTotal ?? 0) + Number(data.domainTotal ?? 0);
+      const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      if (page > lastPage) {
+        page = lastPage;
+        data = await fetchPage(page);
       }
       setEntries(data.entries ?? []);
       setDomains(data.domains ?? []);
@@ -172,7 +182,6 @@ export default function PortalUnsubPage() {
   }, [load]);
 
   const combined = useMemo<CombinedEntry[]>(() => {
-    // Domains stay visible on every page (usually small); emails are paginated.
     const domainRows: CombinedEntry[] = domains.map((entry) => ({
       id: entry.id,
       kind: "domain",
@@ -355,26 +364,26 @@ export default function PortalUnsubPage() {
     setError("");
     try {
       const rows: string[][] = [];
-      for (const domain of domains) {
-        rows.push([
-          "Domain",
-          domain.domain,
-          "",
-          formatListDate(domain.addedAt),
-        ]);
-      }
-
+      const exportPageSize = 100;
       let page = 1;
-      let total = emailTotal;
+      let total = 0;
       do {
         const response = await fetch(
-          `/api/crm/suppression?page=${page}&pageSize=200`,
+          `/api/crm/suppression?page=${page}&pageSize=${exportPageSize}`,
         );
         const data = await response.json();
         if (!response.ok) {
           throw new Error(data.error || "Failed to export");
         }
-        total = Number(data.emailTotal ?? 0);
+        total = Number(data.emailTotal ?? 0) + Number(data.domainTotal ?? 0);
+        for (const domain of (data.domains ?? []) as SuppressionDomainEntry[]) {
+          rows.push([
+            "Domain",
+            domain.domain,
+            "",
+            formatListDate(domain.addedAt),
+          ]);
+        }
         for (const entry of (data.entries ?? []) as SuppressionEntry[]) {
           rows.push([
             "Email",
@@ -384,7 +393,7 @@ export default function PortalUnsubPage() {
           ]);
         }
         page += 1;
-      } while ((page - 1) * 200 < total);
+      } while ((page - 1) * exportPageSize < total);
 
       downloadCsv("unsubscribe-list.csv", ["Type", "Value", "Name", "Added"], rows);
     } catch (err) {

@@ -177,20 +177,39 @@ export async function getUnsubscribeListEntries(
   const page = Math.max(1, options?.page ?? 1);
   const list = await getOrCreateUnsubscribeList(projectId);
   const db = await getDb();
+  const offset = (page - 1) * pageSize;
+  const domainFilter = { projectId, kind: "domain" as const };
 
-  const [emailTotal, memberships] = await Promise.all([
+  const [emailTotal, domainTotal] = await Promise.all([
     db.collection<ListMembershipDoc>("list_memberships").countDocuments({
       projectId,
       listId: list._id,
     }),
-    db
-      .collection<ListMembershipDoc>("list_memberships")
-      .find({ projectId, listId: list._id })
-      .sort({ addedAt: -1 })
-      .skip((page - 1) * pageSize)
-      .limit(pageSize)
-      .toArray(),
+    db.collection<SuppressionEntryDoc>("suppression_entries").countDocuments(domainFilter),
   ]);
+
+  // Domains fill the first pages, emails continue after them.
+  const domainDocs =
+    offset < domainTotal
+      ? await db
+          .collection<SuppressionEntryDoc>("suppression_entries")
+          .find(domainFilter)
+          .sort({ createdAt: -1, _id: -1 })
+          .skip(offset)
+          .limit(pageSize)
+          .toArray()
+      : [];
+  const emailLimit = pageSize - domainDocs.length;
+  const memberships =
+    emailLimit > 0
+      ? await db
+          .collection<ListMembershipDoc>("list_memberships")
+          .find({ projectId, listId: list._id })
+          .sort({ addedAt: -1, _id: -1 })
+          .skip(Math.max(0, offset - domainTotal))
+          .limit(emailLimit)
+          .toArray()
+      : [];
 
   const contacts = memberships.length
     ? await db
@@ -218,7 +237,11 @@ export async function getUnsubscribeListEntries(
     ];
   });
 
-  const domains = await listSuppressionDomains(projectId);
+  const domains = domainDocs.map((doc) => ({
+    id: doc._id.toString(),
+    domain: doc.value,
+    addedAt: doc.createdAt.toISOString(),
+  })) satisfies SuppressionDomainEntry[];
 
   return {
     list: {
@@ -231,24 +254,10 @@ export async function getUnsubscribeListEntries(
     entries,
     domains,
     emailTotal,
-    domainTotal: domains.length,
+    domainTotal,
     page,
     pageSize,
   };
-}
-
-export async function listSuppressionDomains(projectId: ObjectId) {
-  const db = await getDb();
-  const docs = await db
-    .collection<SuppressionEntryDoc>("suppression_entries")
-    .find({ projectId, kind: "domain" })
-    .sort({ createdAt: -1 })
-    .toArray();
-  return docs.map((doc) => ({
-    id: doc._id.toString(),
-    domain: doc.value,
-    addedAt: doc.createdAt.toISOString(),
-  })) satisfies SuppressionDomainEntry[];
 }
 
 async function addEmailToUnsubscribeList(
