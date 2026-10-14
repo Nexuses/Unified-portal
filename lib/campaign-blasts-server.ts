@@ -852,7 +852,12 @@ function isCountableClickEvent(event: {
   return !isNonNavigationalTrackedUrl(event.url ?? "");
 }
 
-function sendHasCountableClick(send: Pick<CampaignSendDoc, "clickEvents" | "clickedAt" | "clickedUrl">) {
+function sendHasCountableClick(
+  send: Pick<CampaignSendDoc, "clickEvents" | "clickedAt" | "clickedUrl" | "clickBurstIgnored">,
+) {
+  if (send.clickBurstIgnored) {
+    return false;
+  }
   const events = send.clickEvents ?? [];
   if (events.length > 0) {
     return events.some((event) => isCountableClickEvent(event));
@@ -879,7 +884,7 @@ async function refreshBlastCounts(blastId: ObjectId) {
         blastId,
         $or: [{ clickCount: { $gt: 0 } }, { clickedAt: { $exists: true } }],
       })
-      .project({ email: 1, clickEvents: 1, clickedAt: 1, clickedUrl: 1 })
+      .project({ email: 1, clickEvents: 1, clickedAt: 1, clickedUrl: 1, clickBurstIgnored: 1 })
       .toArray(),
     sends.distinct("email", {
       blastId,
@@ -1787,6 +1792,7 @@ async function loadOneOneSequenceReports(blastId: ObjectId): Promise<{
       clickEvents: 1,
       clickedAt: 1,
       clickedUrl: 1,
+      clickBurstIgnored: 1,
       repliedAt: 1,
       unsubscribedAt: 1,
     })
@@ -2365,27 +2371,106 @@ function detectClickBurst(input: {
 }): { ignore: boolean; revokeCountedClick: boolean } {
   const nowMs = input.now.getTime();
   const nextNorm = normalizeClickUrl(input.nextUrl);
-  const withNext = [
-    ...input.events.map((event) => ({
-      url: normalizeClickUrl(event.url),
-      at: asTimeMs(event.at),
-    })),
-    { url: nextNorm, at: nowMs },
-  ].filter((event) => Number.isFinite(event.at));
+  const prior = input.events
+    .map((event) => ({ url: normalizeClickUrl(event.url), at: asTimeMs(event.at) }))
+    .filter((event) => Number.isFinite(event.at));
+  const withNext = [...prior, { url: nextNorm, at: nowMs }];
 
-  const windowStart = nowMs - CLICK_BURST_WINDOW_MS;
-  const inWindow = withNext.filter((event) => event.at >= windowStart);
+  // Simultaneous scanner requests can land slightly before or after this one.
+  const inWindow = withNext.filter(
+    (event) => Math.abs(event.at - nowMs) <= CLICK_BURST_WINDOW_MS,
+  );
   const distinct = new Set(inWindow.map((event) => event.url).filter(Boolean));
   if (distinct.size >= CLICK_BURST_DISTINCT_URLS || inWindow.length >= 3) {
     return { ignore: true, revokeCountedClick: true };
   }
 
-  const lastPrior = withNext.length >= 2 ? withNext[withNext.length - 2] : null;
-  if (lastPrior && nowMs - lastPrior.at < CLICK_MIN_GAP_MS) {
+  const lastPrior = prior
+    .filter((event) => event.at <= nowMs)
+    .reduce<number | null>((latest, event) => Math.max(latest ?? event.at, event.at), null);
+  if (lastPrior !== null && nowMs - lastPrior < CLICK_MIN_GAP_MS) {
     return { ignore: true, revokeCountedClick: false };
   }
 
   return { ignore: false, revokeCountedClick: false };
+}
+
+function clickEventsHaveBurst(events: Array<{ url: string; at: Date | string }>) {
+  const list = events
+    .map((event) => ({ url: normalizeClickUrl(event.url), at: asTimeMs(event.at) }))
+    .filter((event) => Number.isFinite(event.at))
+    .sort((left, right) => left.at - right.at);
+  for (let start = 0; start < list.length; start += 1) {
+    const window = list.filter(
+      (event) => event.at >= list[start].at && event.at - list[start].at <= CLICK_BURST_WINDOW_MS,
+    );
+    const distinct = new Set(window.map((event) => event.url).filter(Boolean));
+    if (distinct.size >= CLICK_BURST_DISTINCT_URLS || window.length >= 3) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Flag past sends whose stored clicks show a scanner burst and recount their campaigns. */
+export async function repairClickBursts(options?: { dryRun?: boolean }) {
+  const db = await getDb();
+  const sends = db.collection<CampaignSendDoc>("campaign_sends");
+  const cursor = sends
+    .find({ clickBurstIgnored: { $ne: true }, "clickEvents.1": { $exists: true } })
+    .project<Pick<CampaignSendDoc, "_id" | "blastId" | "clickEvents">>({
+      blastId: 1,
+      clickEvents: 1,
+    });
+
+  let scanned = 0;
+  const flaggedIds: ObjectId[] = [];
+  const flaggedByBlast = new Map<string, number>();
+  for await (const send of cursor) {
+    scanned += 1;
+    if (!clickEventsHaveBurst(send.clickEvents ?? [])) {
+      continue;
+    }
+    flaggedIds.push(send._id);
+    const key = send.blastId.toString();
+    flaggedByBlast.set(key, (flaggedByBlast.get(key) ?? 0) + 1);
+  }
+
+  const blasts = await db
+    .collection<CampaignBlastDoc>("campaign_blasts")
+    .find({ _id: { $in: [...flaggedByBlast.keys()].map((id) => new ObjectId(id)) } })
+    .project<Pick<CampaignBlastDoc, "_id" | "campaignId" | "name" | "clicks">>({
+      campaignId: 1,
+      name: 1,
+      clicks: 1,
+    })
+    .toArray();
+
+  if (!options?.dryRun && flaggedIds.length > 0) {
+    for (let index = 0; index < flaggedIds.length; index += 1000) {
+      await sends.updateMany(
+        { _id: { $in: flaggedIds.slice(index, index + 1000) } },
+        {
+          $set: { clickBurstIgnored: true, clickCount: 0 },
+          $unset: { clickedAt: "", clickedUrl: "" },
+        },
+      );
+    }
+  }
+
+  const campaigns = [];
+  for (const blast of blasts) {
+    const after = options?.dryRun ? null : await refreshBlastCounts(blast._id);
+    campaigns.push({
+      campaignId: blast.campaignId,
+      name: blast.name,
+      flaggedSends: flaggedByBlast.get(blast._id.toString()) ?? 0,
+      clicksBefore: blast.clicks ?? 0,
+      clicksAfter: after?.clicks,
+    });
+  }
+
+  return { scanned, flaggedSends: flaggedIds.length, campaigns };
 }
 
 export async function recordCampaignOpen(token: string) {
@@ -2468,68 +2553,91 @@ export async function recordCampaignClick(token: string, url?: string) {
     return;
   }
 
+  // Scanners fire every link at once, so save this event before judging it:
+  // whichever request saves last sees the whole burst.
+  const sends = db.collection<CampaignSendDoc>("campaign_sends");
+  const saved = clickedUrl
+    ? await sends.findOneAndUpdate(
+        { _id: send._id },
+        { $push: { clickEvents: { url: clickedUrl, at: now } } },
+        { returnDocument: "after" },
+      )
+    : send;
+  if (!saved) {
+    return;
+  }
+  const events = saved.clickEvents ?? [];
+  const ownIndex = clickedUrl
+    ? events.findIndex(
+        (event) => event.url === clickedUrl && asTimeMs(event.at) === now.getTime(),
+      )
+    : -1;
   const burst = detectClickBurst({
-    events: send.clickEvents ?? [],
+    events: events.filter((_, index) => index !== ownIndex),
     now,
     nextUrl: clickedUrl,
   });
 
+  const markOwnIgnored = async () => {
+    if (!clickedUrl) {
+      return;
+    }
+    await sends.updateOne(
+      { _id: send._id, clickEvents: { $elemMatch: { url: clickedUrl, at: now } } },
+      { $set: { "clickEvents.$.ignored": true } },
+    );
+  };
+
+  if (saved.clickBurstIgnored) {
+    await markOwnIgnored();
+    return;
+  }
+
   if (burst.ignore) {
-    const update: Record<string, unknown> = {};
-    if (clickedUrl) {
-      update.$push = {
-        clickEvents: {
-          url: clickedUrl,
-          at: now,
-          ignored: true,
+    await markOwnIgnored();
+    if (burst.revokeCountedClick) {
+      const before = await sends.findOneAndUpdate(
+        { _id: send._id, clickBurstIgnored: { $ne: true } },
+        {
+          $set: { clickBurstIgnored: true, clickCount: 0 },
+          $unset: { clickedAt: "", clickedUrl: "" },
         },
-      };
-    }
-    if (burst.revokeCountedClick && send.clickedAt) {
-      update.$unset = { clickedAt: "", clickedUrl: "" };
-      update.$set = {
-        clickBurstIgnored: true,
-        clickCount: 0,
-      };
-    } else if (burst.revokeCountedClick) {
-      update.$set = { clickBurstIgnored: true };
-    }
-
-    if (Object.keys(update).length > 0) {
-      await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
-        { _id: send._id },
-        update,
+        { returnDocument: "before" },
       );
-    }
-
-    if (burst.revokeCountedClick && send.clickedAt) {
-      await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
-        { _id: send.blastId, clicks: { $gt: 0 } },
-        { $inc: { clicks: -1 }, $set: { updatedAt: now } },
-      );
+      if (before?.clickedAt) {
+        await refreshBlastCounts(send.blastId);
+      }
     }
     return;
   }
 
-  const firstClick = !send.clickedAt;
-  await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
-    { _id: send._id },
+  const first = await sends.updateOne(
+    { _id: send._id, clickBurstIgnored: { $ne: true }, clickedAt: { $exists: false } },
     {
       $inc: { clickCount: 1 },
-      $set: {
-        clickedAt: send.clickedAt ?? now,
-        ...(clickedUrl && !send.clickedUrl ? { clickedUrl } : {}),
-      },
-      ...(clickedUrl
-        ? { $push: { clickEvents: { url: clickedUrl, at: now } } }
-        : {}),
+      $set: { clickedAt: now, ...(clickedUrl ? { clickedUrl } : {}) },
     },
   );
+  const firstClick = first.modifiedCount > 0;
+  if (!firstClick) {
+    await sends.updateOne(
+      { _id: send._id, clickBurstIgnored: { $ne: true } },
+      { $inc: { clickCount: 1 } },
+    );
+  }
   if (firstClick) {
     await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
       { _id: send.blastId },
       { $inc: { clicks: 1 }, $set: { updatedAt: now } },
     );
+    const latest = await sends.findOne(
+      { _id: send._id },
+      { projection: { clickBurstIgnored: 1 } },
+    );
+    if (latest?.clickBurstIgnored) {
+      await refreshBlastCounts(send.blastId);
+      return;
+    }
     const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
       _id: send.blastId,
     });
@@ -2626,6 +2734,7 @@ export async function listCampaignSendRecipients(
     query.openCount = { $gt: 0 };
   } else if (filter === "clicks") {
     query.clickCount = { $gt: 0 };
+    query.clickBurstIgnored = { $ne: true };
   } else if (filter === "bounces") {
     query.$or = [
       { bouncedAt: { $exists: true } },
