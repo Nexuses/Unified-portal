@@ -2,10 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import {
+  DEFAULT_PROJECT_DATA_CREDITS,
   DEFAULT_PROJECT_SENDING_LIMIT,
+  normalizeDataCredits,
   normalizeSendingLimit,
   slugify,
 } from "@/lib/projects";
+import { getDataCreditsUsedByProject } from "@/lib/data-credits-server";
 
 type ProjectDoc = {
   _id: ObjectId;
@@ -16,11 +19,12 @@ type ProjectDoc = {
   instantOpen?: boolean;
   instantClick?: boolean;
   sendingLimit?: number;
+  dataCredits?: number;
   /** @deprecated Prefer instantOpen / instantClick. */
   instantOpenClick?: boolean;
 };
 
-function mapProject(doc: ProjectDoc) {
+function mapProject(doc: ProjectDoc, dataCreditsUsed = 0) {
   const legacyBoth = Boolean(doc.instantOpenClick);
   return {
     id: doc._id.toString(),
@@ -35,6 +39,8 @@ function mapProject(doc: ProjectDoc) {
     sendingLimit: normalizeSendingLimit(
       doc.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
     ),
+    dataCredits: normalizeDataCredits(doc.dataCredits ?? DEFAULT_PROJECT_DATA_CREDITS),
+    dataCreditsUsed,
   };
 }
 
@@ -47,7 +53,10 @@ export async function GET() {
       .sort({ createdAt: -1 })
       .toArray();
 
-    return NextResponse.json(docs.map(mapProject));
+    const used = await getDataCreditsUsedByProject(docs.map((doc) => doc._id));
+    return NextResponse.json(
+      docs.map((doc) => mapProject(doc, used.get(doc._id.toString()) ?? 0)),
+    );
   } catch (error) {
     console.error("Failed to fetch projects:", error);
     return NextResponse.json(
@@ -67,6 +76,9 @@ export async function POST(request: NextRequest) {
     const instantClick = Boolean(body.instantClick);
     const sendingLimit = normalizeSendingLimit(
       body.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
+    );
+    const dataCredits = normalizeDataCredits(
+      body.dataCredits ?? DEFAULT_PROJECT_DATA_CREDITS,
     );
 
     if (!name) {
@@ -101,6 +113,7 @@ export async function POST(request: NextRequest) {
       instantOpen,
       instantClick,
       sendingLimit,
+      dataCredits,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -117,6 +130,8 @@ export async function POST(request: NextRequest) {
         instantOpen: doc.instantOpen,
         instantClick: doc.instantClick,
         sendingLimit: doc.sendingLimit,
+        dataCredits: doc.dataCredits,
+        dataCreditsUsed: 0,
       },
       { status: 201 },
     );

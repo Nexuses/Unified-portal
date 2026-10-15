@@ -111,7 +111,7 @@ export function applyKanbanChatActions(
       }
       for (const person of people) {
         const email = person.email.trim().toLowerCase();
-        if (autoStageId(person) === to.id) {
+        if (autoStageId(person, stages) === to.id) {
           delete placements[email];
         } else {
           placements[email] = to.id;

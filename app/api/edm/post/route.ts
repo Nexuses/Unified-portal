@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadKnowledgeBrand } from "@/lib/edm-brand";
-import { generateBrandedPost } from "@/lib/higgsfield";
+import {
+  generatePostImage,
+  listPostImageProviders,
+  postImageLabel,
+  resolvePostImageProvider,
+} from "@/lib/post-image-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -12,6 +17,12 @@ function clip(value: string, limit: number) {
   return value.trim().slice(0, limit);
 }
 
+export async function GET() {
+  const session = await requirePortalSession();
+  if (isSessionError(session)) return session;
+  return NextResponse.json({ providers: listPostImageProviders() });
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await requirePortalSession();
@@ -20,6 +31,7 @@ export async function POST(request: NextRequest) {
     const body = (await request.json().catch(() => null)) as {
       prompt?: unknown;
       referenceDataUrl?: unknown;
+      provider?: unknown;
     } | null;
     const prompt = typeof body?.prompt === "string" ? clip(body.prompt, 2000) : "";
     if (!prompt) {
@@ -51,11 +63,12 @@ export async function POST(request: NextRequest) {
       .filter(Boolean)
       .join("\n\n");
 
-    const imageUrl = await generateBrandedPost({
+    const provider = resolvePostImageProvider(body?.provider);
+    const imageUrl = await generatePostImage(provider, {
       prompt: branded,
       referenceDataUrl,
     });
-    return NextResponse.json({ imageUrl });
+    return NextResponse.json({ imageUrl, provider, providerLabel: postImageLabel(provider) });
   } catch (error) {
     console.error("EDM post generation failed:", error);
     const message = error instanceof Error ? error.message : "Could not generate the post";

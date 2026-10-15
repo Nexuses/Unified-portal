@@ -2,12 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import {
+  DEFAULT_PROJECT_DATA_CREDITS,
   DEFAULT_PROJECT_SENDING_LIMIT,
+  normalizeDataCredits,
   normalizeSendingLimit,
   slugify,
 } from "@/lib/projects";
+import { getDataCreditsUsedByProject } from "@/lib/data-credits-server";
 import { deleteProjectCrmData } from "@/lib/crm-import";
 import { deleteProjectSenders } from "@/lib/smtp-senders-server";
+import { restoreClickBurstsForProject } from "@/lib/campaign-blasts-server";
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -22,11 +26,20 @@ type ProjectDoc = {
   instantOpen?: boolean;
   instantClick?: boolean;
   sendingLimit?: number;
+  dataCredits?: number;
   /** @deprecated Prefer instantOpen / instantClick. */
   instantOpenClick?: boolean;
 };
 
-function mapProject(doc: ProjectDoc) {
+/** Large projects take minutes to recount, so the toggle response does not wait for it. */
+function restoreClickBurstsInBackground(projectId: ObjectId) {
+  void restoreClickBurstsForProject(projectId).catch((error) => {
+    console.error("Failed to restore burst clicks:", error);
+  });
+}
+
+async function mapProject(doc: ProjectDoc) {
+  const used = await getDataCreditsUsedByProject([doc._id]);
   const legacyBoth = Boolean(doc.instantOpenClick);
   return {
     id: doc._id.toString(),
@@ -41,6 +54,8 @@ function mapProject(doc: ProjectDoc) {
     sendingLimit: normalizeSendingLimit(
       doc.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
     ),
+    dataCredits: normalizeDataCredits(doc.dataCredits ?? DEFAULT_PROJECT_DATA_CREDITS),
+    dataCreditsUsed: used.get(doc._id.toString()) ?? 0,
   };
 }
 
@@ -64,6 +79,8 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       body.sendingLimit !== undefined
         ? normalizeSendingLimit(body.sendingLimit)
         : undefined;
+    const dataCredits =
+      body.dataCredits !== undefined ? normalizeDataCredits(body.dataCredits) : undefined;
 
     if (!name) {
       return NextResponse.json(
@@ -110,6 +127,9 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     if (typeof sendingLimit === "number") {
       $set.sendingLimit = sendingLimit;
     }
+    if (typeof dataCredits === "number") {
+      $set.dataCredits = dataCredits;
+    }
 
     const result = await db.collection("projects").findOneAndUpdate(
       { _id: objectId },
@@ -120,8 +140,11 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     if (!result) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
+    if (instantClick === true) {
+      restoreClickBurstsInBackground(objectId);
+    }
 
-    return NextResponse.json(mapProject(result as ProjectDoc));
+    return NextResponse.json(await mapProject(result as ProjectDoc));
   } catch (error) {
     console.error("Failed to update project:", error);
     return NextResponse.json(
@@ -155,12 +178,16 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       $set.sendingLimit = normalizeSendingLimit(body.sendingLimit);
       hasUpdate = true;
     }
+    if (body.dataCredits !== undefined) {
+      $set.dataCredits = normalizeDataCredits(body.dataCredits);
+      hasUpdate = true;
+    }
 
     if (!hasUpdate) {
       return NextResponse.json(
         {
           error:
-            "Provide instantOpen, instantClick, and/or sendingLimit to update",
+            "Provide instantOpen, instantClick, sendingLimit, and/or dataCredits to update",
         },
         { status: 400 },
       );
@@ -176,10 +203,13 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     if (!result) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
+    if (body.instantClick === true) {
+      restoreClickBurstsInBackground(new ObjectId(id));
+    }
 
-    return NextResponse.json(mapProject(result as ProjectDoc));
+    return NextResponse.json(await mapProject(result as ProjectDoc));
   } catch (error) {
-    console.error("Failed to patch project:", error);
+    console.error("Failed to update project:", error);
     return NextResponse.json(
       { error: "Failed to update project" },
       { status: 500 },

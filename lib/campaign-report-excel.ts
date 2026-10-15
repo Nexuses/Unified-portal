@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import type { CampaignSendDoc } from "@/lib/campaign-blasts-server";
+import { buildCampaignReportTables, REPORT_DASH } from "@/lib/campaign-report-tables";
 
 const COLORS = {
   titleNavy: "FF0B1F3A",
@@ -23,83 +24,10 @@ const COLORS = {
   white: "FFFFFFFF",
 };
 
-const DASH = "—";
+const DASH = REPORT_DASH;
 
 function solid(argb: string): ExcelJS.Fill {
   return { type: "pattern", pattern: "solid", fgColor: { argb } };
-}
-
-function asDate(value?: Date | string) {
-  if (!value) {
-    return null;
-  }
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function formatInZone(
-  value: Date | string | undefined,
-  timeZone: string,
-  kind: "date" | "time" | "long",
-) {
-  const date = asDate(value);
-  if (!date) {
-    return "";
-  }
-  if (kind === "long") {
-    return new Intl.DateTimeFormat("en-GB", {
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-      timeZone,
-    }).format(date);
-  }
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(date);
-  const pick = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((part) => part.type === type)?.value ?? "";
-  if (kind === "date") {
-    return `${pick("day")}-${pick("month")}-${pick("year")}`;
-  }
-  return `${pick("hour")}:${pick("minute")}:${pick("second")}`;
-}
-
-function emailDomain(email: string) {
-  const at = email.lastIndexOf("@");
-  return at >= 0 ? email.slice(at + 1).toLowerCase() : "";
-}
-
-function personName(send: CampaignSendDoc) {
-  return (
-    send.fullName ||
-    `${send.firstName ?? ""} ${send.lastName ?? ""}`.trim() ||
-    send.email
-  ).trim();
-}
-
-function stepLabel(send: CampaignSendDoc) {
-  if (typeof send.sequenceIndex === "number") {
-    return `Email Step ${send.sequenceIndex + 1}`;
-  }
-  return "Email Step 1";
-}
-
-function isHardBounce(error?: string) {
-  const text = String(error ?? "").toLowerCase();
-  if (!text) {
-    return false;
-  }
-  return /550|551|552|553|554|5\.1\.|permanent|does not exist|user unknown|unknown user|invalid mailbox|mailbox unavailable|recipient rejected|no such user|address rejected|unrouteable/.test(
-    text,
-  );
 }
 
 function paintCell(
@@ -167,27 +95,6 @@ function rowFill(index: number) {
   return index % 2 === 0 ? COLORS.rowWhite : COLORS.rowAlt;
 }
 
-function ctaLabel(send: CampaignSendDoc) {
-  if (send.clickedUrl?.trim()) {
-    try {
-      const parsed = new URL(send.clickedUrl);
-      const path = parsed.pathname === "/" ? "" : parsed.pathname;
-      return `${parsed.hostname}${path}${parsed.search}`.slice(0, 80);
-    } catch {
-      return send.clickedUrl.slice(0, 80);
-    }
-  }
-  if (send.clickEvents?.length) {
-    return send.clickEvents
-      .map((event) => event.url)
-      .filter(Boolean)
-      .slice(0, 2)
-      .join(" + ")
-      .slice(0, 80);
-  }
-  return DASH;
-}
-
 export function campaignReportFilename(campaignName: string) {
   const safe = campaignName
     .replace(/[\\/:*?"<>|]+/g, " ")
@@ -207,102 +114,9 @@ export async function buildCampaignReportWorkbook({
   sentAt?: string | Date;
   sends: CampaignSendDoc[];
 }) {
-  const timeZone = timezone || "Asia/Kolkata";
-  const sentDate =
-    asDate(sentAt) ??
-    sends.map((send) => asDate(send.sentAt)).find(Boolean) ??
-    null;
-  const sentLong = sentDate ? formatInZone(sentDate, timeZone, "long") : DASH;
-
-  const delivered = sends.filter((send) => send.status === "sent");
-  const bounced = sends.filter(
-    (send) => send.status === "failed" && send.error !== "Unsubscribed",
-  );
-  const unsubscribed = sends.filter(
-    (send) => Boolean(send.unsubscribedAt) || send.error === "Unsubscribed",
-  );
-
-  const byEmail = new Map<string, CampaignSendDoc[]>();
-  for (const send of delivered) {
-    const key = send.email.trim().toLowerCase();
-    const list = byEmail.get(key) ?? [];
-    list.push(send);
-    byEmail.set(key, list);
-  }
-
-  type EngageRow = {
-    name: string;
-    email: string;
-    company: string;
-    domain: string;
-    openDate: string;
-    openTime: string;
-    opens: number;
-    clicks: number;
-    cta: string;
-    openedAtMs: number;
-  };
-
-  const engageRows: EngageRow[] = [];
-  for (const group of byEmail.values()) {
-    const opens = group.reduce((sum, item) => sum + (item.openCount || 0), 0);
-    const clicks = group.some((item) => (item.clickCount || 0) > 0 || item.clickedAt)
-      ? 1
-      : 0;
-    if (opens <= 0 && clicks <= 0) {
-      continue;
-    }
-    const opened =
-      group
-        .map((item) => asDate(item.openedAt))
-        .filter((date): date is Date => Boolean(date))
-        .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
-    const primary =
-      group.find((item) => item.clickCount > 0) ??
-      group.find((item) => item.openCount > 0) ??
-      group[0];
-    engageRows.push({
-      name: personName(primary),
-      email: primary.email,
-      company: primary.companyName || "",
-      domain: emailDomain(primary.email),
-      openDate: formatInZone(opened ?? undefined, timeZone, "date"),
-      openTime: formatInZone(opened ?? undefined, timeZone, "time"),
-      opens: opens || (opened ? 1 : 0),
-      clicks,
-      cta: ctaLabel(primary),
-      openedAtMs: opened?.getTime() ?? 0,
-    });
-  }
-
-  engageRows.sort((a, b) => {
-    if (a.openedAtMs !== b.openedAtMs) {
-      return a.openedAtMs - b.openedAtMs;
-    }
-    return a.email.localeCompare(b.email);
-  });
-
-  const clickers = engageRows.filter((row) => row.clicks > 0);
-  const opensOnly = engageRows.filter((row) => row.opens > 0 && row.clicks <= 0);
-  const uniqueOpens = engageRows.filter((row) => row.opens > 0).length;
-  const uniqueClicks = clickers.length;
-  const totalSent = delivered.length;
-  const sequenceSteps = Math.max(
-    1,
-    ...delivered.map((send) =>
-      typeof send.sequenceIndex === "number" ? send.sequenceIndex + 1 : 1,
-    ),
-    1,
-  );
-  const audienceEmails = new Set(
-    sends.map((send) => send.email.trim().toLowerCase()).filter(Boolean),
-  );
-  const openRate = totalSent
-    ? `${Math.round((uniqueOpens / totalSent) * 100)}%`
-    : "0%";
-  const clickRate = totalSent
-    ? `${Math.round((uniqueClicks / totalSent) * 100)}%`
-    : "0%";
+  const tables = buildCampaignReportTables({ campaignName, timezone, sentAt, sends });
+  const { sentLong, clickers, opensOnly, bounces } = tables;
+  const { sent: totalSent, opens: uniqueOpens, clicks: uniqueClicks } = tables.totals;
 
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Unified Portal";
@@ -347,134 +161,120 @@ export async function buildCampaignReportWorkbook({
     "Send Time",
   ]);
   row += 1;
-
-  const sentRows = [...delivered].sort((a, b) => {
-    const left = asDate(a.sentAt)?.getTime() ?? 0;
-    const right = asDate(b.sentAt)?.getTime() ?? 0;
-    if (left !== right) {
-      return left - right;
-    }
-    return personName(a).localeCompare(personName(b));
+  tables.sent.forEach((send, index) => {
+    const fill = rowFill(index);
+    [index + 1, send.name, send.email, send.company, send.domain, send.step, send.date, send.time].forEach(
+      (value, col) => {
+        paintCell(main, row, col + 1, value, { fill, size: 10 });
+      },
+    );
+    row += 1;
   });
 
-  sentRows.forEach((send, index) => {
+  const engageHeaders = [
+    "#",
+    "Person Name",
+    "Email Address",
+    "Company",
+    "Domain",
+    "Open Date",
+    "Open Time",
+    "Opens",
+    "Clicks",
+    "CTA Clicked",
+    "Status",
+  ];
+  const engageSections = [
+    { title: "CLICKERS — Opened & Clicked a Link", color: COLORS.clickersGreen, rows: clickers },
+    { title: "OPENS ONLY — Opened Email, No Click", color: COLORS.opensBlue, rows: opensOnly },
+  ];
+  for (const section of engageSections) {
+    row += 1;
+    paintMergedBanner(main, row, 11, section.title, section.color, 12, 24);
+    row += 1;
+    paintHeaderRow(main, row, engageHeaders);
+    row += 1;
+    section.rows.forEach((person, index) => {
+      const fill = rowFill(index);
+      const clicked = person.status === "Clicked";
+      const values: ExcelJS.CellValue[] = [
+        index + 1,
+        person.name,
+        person.email,
+        person.company,
+        person.domain,
+        person.openDate,
+        person.openTime,
+        person.opens,
+        person.clicks,
+        person.cta,
+      ];
+      values.forEach((value, col) => {
+        paintCell(main, row, col + 1, value, { fill, size: 10 });
+      });
+      paintCell(main, row, 11, person.status, {
+        fill: clicked ? COLORS.clickedBg : COLORS.openedBg,
+        fontColor: clicked ? COLORS.clickedInk : COLORS.openedInk,
+        bold: true,
+        size: 10,
+      });
+      row += 1;
+    });
+  }
+
+  const companySheet = workbook.addWorksheet("Companies");
+  companySheet.views = [{ showGridLines: false }];
+  [5, 30, 26, 11, 9, 9, 9, 10, 13, 11, 11].forEach((width, index) => {
+    companySheet.getColumn(index + 1).width = width;
+  });
+  paintMergedBanner(
+    companySheet,
+    2,
+    11,
+    `${campaignName} · Company Engagement`,
+    COLORS.titleNavy,
+    14,
+    28,
+  );
+  paintMergedBanner(
+    companySheet,
+    3,
+    11,
+    `${campaignName} · ${tables.companies.length} Companies · ${uniqueOpens} Opens · ${uniqueClicks} Clicks`,
+    COLORS.subtitleBlue,
+    11,
+    22,
+  );
+  paintHeaderRow(companySheet, 5, [
+    "#",
+    "Company",
+    "Domain",
+    "Contacts",
+    "Sent",
+    "Opened",
+    "Clicked",
+    "Bounced",
+    "Unsubscribed",
+    "Open Rate",
+    "Click Rate",
+  ]);
+  tables.companies.forEach((company, index) => {
     const fill = rowFill(index);
-    const values = [
+    [
       index + 1,
-      personName(send),
-      send.email,
-      send.companyName || "",
-      emailDomain(send.email),
-      stepLabel(send),
-      formatInZone(send.sentAt, timeZone, "date"),
-      formatInZone(send.sentAt, timeZone, "time"),
-    ];
-    values.forEach((value, col) => {
-      paintCell(main, row, col + 1, value, { fill, size: 10 });
+      company.company,
+      company.domain,
+      company.contacts,
+      company.sent,
+      company.opened,
+      company.clicked,
+      company.bounced,
+      company.unsubscribed,
+      company.openRate,
+      company.clickRate,
+    ].forEach((value, col) => {
+      paintCell(companySheet, 6 + index, col + 1, value, { fill, size: 10 });
     });
-    row += 1;
-  });
-
-  row += 1;
-  paintMergedBanner(
-    main,
-    row,
-    11,
-    "CLICKERS — Opened & Clicked a Link",
-    COLORS.clickersGreen,
-    12,
-    24,
-  );
-  row += 1;
-  paintHeaderRow(main, row, [
-    "#",
-    "Person Name",
-    "Email Address",
-    "Company",
-    "Domain",
-    "Open Date",
-    "Open Time",
-    "Opens",
-    "Clicks",
-    "CTA Clicked",
-    "Status",
-  ]);
-  row += 1;
-  clickers.forEach((person, index) => {
-    const fill = rowFill(index);
-    const values: Array<[number, ExcelJS.CellValue, string?, string?, boolean?]> = [
-      [1, index + 1, fill],
-      [2, person.name, fill],
-      [3, person.email, fill],
-      [4, person.company, fill],
-      [5, person.domain, fill],
-      [6, person.openDate, fill],
-      [7, person.openTime, fill],
-      [8, person.opens, fill],
-      [9, person.clicks, fill],
-      [10, person.cta, fill],
-      [11, "Clicked", COLORS.clickedBg, COLORS.clickedInk, true],
-    ];
-    values.forEach(([col, value, bg, fontColor, bold]) => {
-      paintCell(main, row, col, value, {
-        fill: bg ?? fill,
-        fontColor,
-        bold,
-        size: 10,
-      });
-    });
-    row += 1;
-  });
-
-  row += 1;
-  paintMergedBanner(
-    main,
-    row,
-    11,
-    "OPENS ONLY — Opened Email, No Click",
-    COLORS.opensBlue,
-    12,
-    24,
-  );
-  row += 1;
-  paintHeaderRow(main, row, [
-    "#",
-    "Person Name",
-    "Email Address",
-    "Company",
-    "Domain",
-    "Open Date",
-    "Open Time",
-    "Opens",
-    "Clicks",
-    "CTA Clicked",
-    "Status",
-  ]);
-  row += 1;
-  opensOnly.forEach((person, index) => {
-    const fill = rowFill(index);
-    const values: Array<[number, ExcelJS.CellValue, string?, string?, boolean?]> = [
-      [1, index + 1, fill],
-      [2, person.name, fill],
-      [3, person.email, fill],
-      [4, person.company, fill],
-      [5, person.domain, fill],
-      [6, person.openDate, fill],
-      [7, person.openTime, fill],
-      [8, person.opens, fill],
-      [9, 0, fill],
-      [10, DASH, fill],
-      [11, "Opened", COLORS.openedBg, COLORS.openedInk, true],
-    ];
-    values.forEach(([col, value, bg, fontColor, bold]) => {
-      paintCell(main, row, col, value, {
-        fill: bg ?? fill,
-        fontColor,
-        bold,
-        size: 10,
-      });
-    });
-    row += 1;
   });
 
   const bounceSheet = workbook.addWorksheet("Bounces & Unsubscribes");
@@ -495,7 +295,7 @@ export async function buildCampaignReportWorkbook({
     bounceSheet,
     3,
     8,
-    `${campaignName} · ${sentLong} · ${bounced.length} Bounces · ${unsubscribed.length} Unsubscribed`,
+    `${campaignName} · ${sentLong} · ${bounces.length} Bounces · ${tables.unsubscribed} Unsubscribed`,
     COLORS.subtitleBlue,
     11,
     22,
@@ -515,27 +315,24 @@ export async function buildCampaignReportWorkbook({
     "Bounced Time",
   ]);
   row += 1;
-  if (bounced.length === 0) {
-    ["—", "No records", "", "", "", "", "", ""].forEach((value, col) => {
+  if (bounces.length === 0) {
+    [DASH, "No records", "", "", "", "", "", ""].forEach((value, col) => {
       paintCell(bounceSheet, row, col + 1, value, { fill: COLORS.rowWhite, size: 10 });
     });
     row += 1;
   } else {
-    bounced.forEach((send, index) => {
+    bounces.forEach((bounce, index) => {
       const fill = rowFill(index);
-      const eventAt = asDate(send.sentAt) ?? send._id.getTimestamp();
-      const values = [
+      [
         index + 1,
-        personName(send),
-        send.email,
-        send.companyName || "",
-        emailDomain(send.email),
-        send.error?.trim() ||
-          (isHardBounce(send.error) ? "Hard bounce" : "Delivery failed"),
-        formatInZone(eventAt, timeZone, "date"),
-        formatInZone(eventAt, timeZone, "time"),
-      ];
-      values.forEach((value, col) => {
+        bounce.name,
+        bounce.email,
+        bounce.company,
+        bounce.domain,
+        bounce.reason,
+        bounce.date,
+        bounce.time,
+      ].forEach((value, col) => {
         paintCell(bounceSheet, row, col + 1, value, { fill, size: 10 });
       });
       row += 1;
@@ -553,14 +350,8 @@ export async function buildCampaignReportWorkbook({
     24,
   );
   row += 1;
-  paintCell(bounceSheet, row, 1, "Count", {
-    fill: COLORS.rowWhite,
-    size: 10,
-  });
-  paintCell(bounceSheet, row, 2, unsubscribed.length, {
-    fill: COLORS.rowWhite,
-    size: 10,
-  });
+  paintCell(bounceSheet, row, 1, "Count", { fill: COLORS.rowWhite, size: 10 });
+  paintCell(bounceSheet, row, 2, tables.unsubscribed, { fill: COLORS.rowWhite, size: 10 });
   row += 1;
   bounceSheet.mergeCells(row, 1, row, 8);
   bounceSheet.getRow(row).height = 18;
@@ -570,60 +361,29 @@ export async function buildCampaignReportWorkbook({
       row,
       col,
       "Contacts on the unsubscribe list were excluded when the campaign launched.",
-      {
-        fill: COLORS.noteBg,
-        fontColor: COLORS.muted,
-        size: 10,
-      },
+      { fill: COLORS.noteBg, fontColor: COLORS.muted, size: 10 },
     );
   }
-
-  const generatedLong = formatInZone(new Date(), timeZone, "long");
-  const eligible = Math.max(0, audienceEmails.size - unsubscribed.length);
 
   const summary = workbook.addWorksheet("Summary");
   summary.views = [{ showGridLines: false }];
   summary.getColumn(1).width = 30;
   summary.getColumn(2).width = 42;
-  paintMergedBanner(
-    summary,
-    2,
-    2,
-    `${campaignName} · Campaign Summary`,
-    COLORS.titleNavy,
-    14,
-    28,
-  );
+  paintMergedBanner(summary, 2, 2, `${campaignName} · Campaign Summary`, COLORS.titleNavy, 14, 28);
   paintMergedBanner(
     summary,
     3,
     2,
-    `Generated · ${generatedLong}`,
+    `Generated · ${tables.summary[1][1]}`,
     COLORS.subtitleBlue,
     11,
     22,
   );
   paintHeaderRow(summary, 5, ["Metric", "Value"]);
-
-  const summaryRows: Array<[string, ExcelJS.CellValue]> = [
-    ["Campaign", campaignName],
-    ["Report Date", generatedLong],
-    ["Total Contacts (audience)", audienceEmails.size],
-    ["Eligible Recipients", eligible],
-    ["Unsubscribed at Launch", unsubscribed.length],
-    ["Total Sent", totalSent],
-    ["Unique Opens", uniqueOpens],
-    ["Unique Clicks", uniqueClicks],
-    ["Bounces", bounced.length],
-    ["Open Rate", openRate],
-    ["Click Rate", clickRate],
-    ["Sequence Steps", sequenceSteps],
-  ];
-  summaryRows.forEach(([metric, value], index) => {
+  tables.summary.forEach(([metric, value], index) => {
     const fill = rowFill(index);
-    const r = 6 + index;
-    paintCell(summary, r, 1, metric, { fill, bold: true, size: 10 });
-    paintCell(summary, r, 2, value, { fill, size: 10 });
+    paintCell(summary, 6 + index, 1, metric, { fill, bold: true, size: 10 });
+    paintCell(summary, 6 + index, 2, value, { fill, size: 10 });
   });
 
   const buffer = await workbook.xlsx.writeBuffer();

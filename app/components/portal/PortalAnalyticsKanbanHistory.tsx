@@ -7,14 +7,33 @@ import {
   createKanbanList,
   deleteKanbanList,
   fetchKanbanLists,
+  KANBAN_DOT_COLORS,
+  KANBAN_STAGE_RULES,
   portalKanbanRoute,
   type KanbanCampaignRef,
   type KanbanList,
+  type KanbanStageRule,
 } from "@/lib/analytics-kanban";
 import {
   fetchDripCampaigns,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
+
+type StageRow = { key: string; name: string; rule: KanbanStageRule };
+
+const RULE_ORDER = KANBAN_STAGE_RULES.map((item) => item.value);
+
+function stageColor(rule: KanbanStageRule) {
+  return KANBAN_DOT_COLORS[Math.max(0, RULE_ORDER.indexOf(rule))];
+}
+
+function defaultStageRows(): StageRow[] {
+  return [
+    { key: "s-delivered", name: "Prospect", rule: "delivered" },
+    { key: "s-opened", name: "Engage", rule: "opened" },
+    { key: "s-clicked", name: "Cold", rule: "clicked" },
+  ];
+}
 
 function campaignKey(campaign: Pick<DripCampaign, "id" | "kind">) {
   return `${campaign.kind === "oneone" ? "oneone" : "drip"}:${campaign.id}`;
@@ -38,8 +57,10 @@ export default function PortalAnalyticsKanbanHistory() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
+  const [stageRows, setStageRows] = useState<StageRow[]>(defaultStageRows);
   const [campaignQuery, setCampaignQuery] = useState("");
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -73,6 +94,11 @@ export default function PortalAnalyticsKanbanHistory() {
       );
     });
   }, [campaignQuery, pickableCampaigns]);
+
+  const stagesValid =
+    stageRows.length > 0 &&
+    stageRows.every((row) => row.name.trim()) &&
+    new Set(stageRows.map((row) => row.rule)).size === stageRows.length;
 
   function campaignStatusLabel(campaign: DripCampaign) {
     if (campaign.status === "sending") {
@@ -116,6 +142,13 @@ export default function PortalAnalyticsKanbanHistory() {
     };
   }, []);
 
+  function openCreate() {
+    setCampaignQuery("");
+    setStep(1);
+    setStageRows(defaultStageRows());
+    setShowCreate(true);
+  }
+
   function toggleCampaign(key: string) {
     setSelected((current) =>
       current.includes(key)
@@ -124,9 +157,25 @@ export default function PortalAnalyticsKanbanHistory() {
     );
   }
 
+  function updateStageRow(key: string, patch: Partial<Omit<StageRow, "key">>) {
+    setStageRows((rows) => rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }
+
+  function addStageRow() {
+    setStageRows((rows) => {
+      const used = new Set(rows.map((row) => row.rule));
+      const next = KANBAN_STAGE_RULES.find((item) => !used.has(item.value));
+      if (!next) {
+        return rows;
+      }
+      const added = [...rows, { key: `s-${next.value}-${Date.now()}`, name: next.label, rule: next.value }];
+      return added.sort((a, b) => RULE_ORDER.indexOf(a.rule) - RULE_ORDER.indexOf(b.rule));
+    });
+  }
+
   async function handleCreate() {
     const title = name.trim();
-    if (!title || selected.length === 0 || creating) {
+    if (!title || selected.length === 0 || !stagesValid || creating) {
       return;
     }
     setCreating(true);
@@ -139,7 +188,10 @@ export default function PortalAnalyticsKanbanHistory() {
           kind: campaign.kind === "oneone" ? "oneone" : "drip",
           name: campaign.name,
         }));
-      const board = await createKanbanList({ name: title, campaigns: picked });
+      const stages = [...stageRows]
+        .sort((a, b) => RULE_ORDER.indexOf(a.rule) - RULE_ORDER.indexOf(b.rule))
+        .map((row) => ({ name: row.name.trim(), color: stageColor(row.rule), rule: row.rule }));
+      const board = await createKanbanList({ name: title, campaigns: picked, stages });
       router.push(portalKanbanRoute(board.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create list");
@@ -183,14 +235,7 @@ export default function PortalAnalyticsKanbanHistory() {
               Cancel
             </button>
           ) : (
-            <button
-              type="button"
-              className="btn-dark"
-              onClick={() => {
-                setCampaignQuery("");
-                setShowCreate(true);
-              }}
-            >
+            <button type="button" className="btn-dark" onClick={openCreate}>
               New list
             </button>
           )}
@@ -202,74 +247,160 @@ export default function PortalAnalyticsKanbanHistory() {
       {showCreate ? (
         <div className="drip-create-wrap">
           <div className="drip-create-panel">
-            <h3>Create a kanban list</h3>
+            <span className="an-kanban-step">Step {step} of 2</span>
+            <h3>{step === 1 ? "Choose campaigns" : "Set up stages"}</h3>
             <p className="drip-create-copy">
-              Choose one or more sent or running campaigns. Delivered go to
-              Prospect, opens to Engage, clicks to Cold.
+              {step === 1
+                ? "Name the list and pick one or more sent or running campaigns."
+                : "Name each stage and pick what moves a person into it. People go to the furthest stage they reach."}
             </p>
-            <div className="crm-field">
-              <label htmlFor="kanban-name">List name</label>
-              <input
-                id="kanban-name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Q3 outreach"
-                maxLength={80}
-              />
-            </div>
-            <div className="an-kanban-pick">
-              <span>Sent and running campaigns</span>
-              {pickableCampaigns.length === 0 ? (
-                <p>No sent or running campaigns yet.</p>
-              ) : (
-                <input
-                  className="an-kanban-pick-search"
-                  value={campaignQuery}
-                  onChange={(event) => setCampaignQuery(event.target.value)}
-                  placeholder="Search campaigns…"
-                />
-              )}
-              {pickableCampaigns.length === 0 ? null : visibleCampaigns.length === 0 ? (
-                <p>No campaigns match that search.</p>
-              ) : (
-                <div className="an-kanban-pick-list">
-                  {visibleCampaigns.map((campaign) => {
-                    const key = campaignKey(campaign);
-                    return (
-                      <label key={key} className="an-kanban-pick-row">
-                        <input
-                          type="checkbox"
-                          checked={selected.includes(key)}
-                          onChange={() => toggleCampaign(key)}
-                        />
-                        <strong>{campaign.name}</strong>
-                        <em>
-                          {campaign.kind === "oneone" ? "1-1" : "Drip"} ·{" "}
-                          {campaignStatusLabel(campaign)} · {campaign.opens}{" "}
-                          opens · {campaign.clicks} clicks
-                        </em>
-                      </label>
-                    );
-                  })}
+            {step === 1 ? (
+              <>
+                <div className="crm-field">
+                  <label htmlFor="kanban-name">List name</label>
+                  <input
+                    id="kanban-name"
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="Q3 outreach"
+                    maxLength={80}
+                  />
                 </div>
-              )}
-            </div>
+                <div className="an-kanban-pick">
+                  <span>Sent and running campaigns</span>
+                  {pickableCampaigns.length === 0 ? (
+                    <p>No sent or running campaigns yet.</p>
+                  ) : (
+                    <input
+                      className="an-kanban-pick-search"
+                      value={campaignQuery}
+                      onChange={(event) => setCampaignQuery(event.target.value)}
+                      placeholder="Search campaigns…"
+                    />
+                  )}
+                  {pickableCampaigns.length === 0 ? null : visibleCampaigns.length === 0 ? (
+                    <p>No campaigns match that search.</p>
+                  ) : (
+                    <div className="an-kanban-pick-list">
+                      {visibleCampaigns.map((campaign) => {
+                        const key = campaignKey(campaign);
+                        return (
+                          <label key={key} className="an-kanban-pick-row">
+                            <input
+                              type="checkbox"
+                              checked={selected.includes(key)}
+                              onChange={() => toggleCampaign(key)}
+                            />
+                            <strong>{campaign.name}</strong>
+                            <em>
+                              {campaign.kind === "oneone" ? "1-1" : "Drip"} ·{" "}
+                              {campaignStatusLabel(campaign)} · {campaign.opens}{" "}
+                              opens · {campaign.clicks} clicks
+                            </em>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="an-kanban-stage-setup">
+                <div className="an-kanban-stage-head">
+                  <span>Stage name</span>
+                  <span>Moves in when</span>
+                </div>
+                {stageRows.map((row) => {
+                  const usedByOthers = new Set(
+                    stageRows.filter((other) => other.key !== row.key).map((other) => other.rule),
+                  );
+                  return (
+                    <div key={row.key} className="an-kanban-stage-row">
+                      <i className="an-kanban-dot" style={{ background: stageColor(row.rule) }} />
+                      <input
+                        value={row.name}
+                        onChange={(event) => updateStageRow(row.key, { name: event.target.value })}
+                        placeholder="Stage name"
+                        maxLength={40}
+                        aria-label="Stage name"
+                      />
+                      <select
+                        value={row.rule}
+                        onChange={(event) =>
+                          updateStageRow(row.key, { rule: event.target.value as KanbanStageRule })
+                        }
+                        aria-label="Moves in when"
+                      >
+                        {KANBAN_STAGE_RULES.map((item) => (
+                          <option
+                            key={item.value}
+                            value={item.value}
+                            disabled={usedByOthers.has(item.value)}
+                          >
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="an-kanban-stage-remove"
+                        disabled={stageRows.length <= 1}
+                        onClick={() =>
+                          setStageRows((rows) => rows.filter((item) => item.key !== row.key))
+                        }
+                        aria-label={`Remove ${row.name || "stage"}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+                {stageRows.length < KANBAN_STAGE_RULES.length ? (
+                  <button type="button" className="btn-link-purple" onClick={addStageRow}>
+                    + Add stage
+                  </button>
+                ) : null}
+              </div>
+            )}
             <div className="drip-create-actions">
-              <button
-                type="button"
-                className="btn-link-purple"
-                onClick={() => setShowCreate(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn-dark"
-                disabled={creating || !name.trim() || selected.length === 0}
-                onClick={() => void handleCreate()}
-              >
-                {creating ? "Creating…" : "Create list"}
-              </button>
+              {step === 1 ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn-link-purple"
+                    onClick={() => setShowCreate(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-dark"
+                    disabled={!name.trim() || selected.length === 0}
+                    onClick={() => setStep(2)}
+                  >
+                    Next
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="btn-link-purple"
+                    disabled={creating}
+                    onClick={() => setStep(1)}
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-dark"
+                    disabled={creating || !stagesValid}
+                    onClick={() => void handleCreate()}
+                  >
+                    {creating ? "Creating…" : "Create list"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -280,14 +411,7 @@ export default function PortalAnalyticsKanbanHistory() {
           ) : lists.length === 0 ? (
             <div className="auto-history-empty">
               <p>No kanban lists yet.</p>
-              <button
-                type="button"
-                className="btn-dark"
-                onClick={() => {
-                setCampaignQuery("");
-                setShowCreate(true);
-              }}
-              >
+              <button type="button" className="btn-dark" onClick={openCreate}>
                 New list
               </button>
             </div>
@@ -300,21 +424,30 @@ export default function PortalAnalyticsKanbanHistory() {
                     className="auto-history-main"
                   >
                     <span className="auto-history-name">{item.name}</span>
-                    <div className="auto-history-meta">
+                    <div className="auto-history-meta kb-list-meta">
                       <span className="auto-history-pill">
                         {item.campaigns.length} campaign
                         {item.campaigns.length === 1 ? "" : "s"}
                       </span>
-                      <span>
-                        {item.campaigns
-                          .slice(0, 3)
-                          .map((campaign) => campaign.name)
-                          .join(", ")}
-                        {item.campaigns.length > 3
-                          ? ` +${item.campaigns.length - 3}`
-                          : ""}
+                      {item.campaigns[0] ? (
+                        <span className="kb-list-campaign" title={item.campaigns[0].name}>
+                          {item.campaigns[0].name}
+                        </span>
+                      ) : null}
+                      {item.campaigns.length > 1 ? (
+                        <span
+                          className="kb-list-more"
+                          title={item.campaigns
+                            .slice(1)
+                            .map((campaign) => campaign.name)
+                            .join("\n")}
+                        >
+                          +{item.campaigns.length - 1}
+                        </span>
+                      ) : null}
+                      <span className="kb-list-updated">
+                        Updated {formatUpdated(item.updatedAt)}
                       </span>
-                      <span>Updated {formatUpdated(item.updatedAt)}</span>
                     </div>
                   </Link>
                   <div className="auto-history-actions">

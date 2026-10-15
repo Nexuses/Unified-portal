@@ -395,6 +395,7 @@ export type TestEmailInput = {
   html: string;
   fromName?: string;
   replyTo?: string;
+  cc?: string[];
 };
 
 export type ProjectMailInput = {
@@ -403,6 +404,7 @@ export type ProjectMailInput = {
   html: string;
   fromName?: string;
   replyTo?: string;
+  cc?: string[];
   listUnsubscribeUrl?: string;
   /** RFC Message-ID to set as In-Reply-To (with or without brackets). */
   inReplyTo?: string;
@@ -430,6 +432,7 @@ export async function sendProjectTestEmail(
     html: input.html,
     fromName: input.fromName,
     replyTo: input.replyTo,
+    cc: input.cc,
   });
 
   return { sent: to.length };
@@ -452,6 +455,7 @@ export async function sendProjectMail(
     html: input.html,
     fromName: input.fromName,
     replyTo: input.replyTo,
+    cc: input.cc,
     listUnsubscribeUrl: input.listUnsubscribeUrl,
     inReplyTo: input.inReplyTo,
     references: input.references,
@@ -484,6 +488,7 @@ async function deliverWithSender(
     html: string;
     fromName?: string;
     replyTo?: string;
+    cc?: string[];
     listUnsubscribeUrl?: string;
     inReplyTo?: string;
     references?: string[];
@@ -500,6 +505,11 @@ async function deliverWithSender(
   }
 
   const replyTo = input.replyTo?.trim() || undefined;
+  const toSet = new Set(input.to.map((email) => email.trim().toLowerCase()));
+  const ccList = [
+    ...new Set((input.cc ?? []).map((email) => email.trim().toLowerCase()).filter(Boolean)),
+  ].filter((email) => !toSet.has(email));
+  const cc = ccList.length > 0 ? ccList : undefined;
   const listUnsubscribeUrl = input.listUnsubscribeUrl?.trim() || undefined;
   const messageId = createOutboundMessageId();
 
@@ -534,6 +544,7 @@ async function deliverWithSender(
       fromEmail,
       fromName: input.fromName?.trim(),
       to: input.to,
+      cc,
       subject,
       html,
       replyTo,
@@ -558,6 +569,7 @@ async function deliverWithSender(
     await sendWithResend(sender.apiKey, {
       from,
       to: input.to,
+      cc,
       subject,
       html,
       replyTo,
@@ -599,6 +611,7 @@ async function deliverWithSender(
   const info = await transporter.sendMail({
     from,
     to: input.to,
+    cc,
     subject,
     html,
     replyTo,
@@ -619,6 +632,7 @@ async function sendWithSendgrid(
     fromEmail: string;
     fromName?: string;
     to: string[];
+    cc?: string[];
     subject: string;
     html: string;
     replyTo?: string;
@@ -632,7 +646,12 @@ async function sendWithSendgrid(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      personalizations: [{ to: mail.to.map((email) => ({ email })) }],
+      personalizations: [
+        {
+          to: mail.to.map((email) => ({ email })),
+          ...(mail.cc?.length ? { cc: mail.cc.map((email) => ({ email })) } : {}),
+        },
+      ],
       from: mail.fromName
         ? { email: mail.fromEmail, name: mail.fromName }
         : { email: mail.fromEmail },
@@ -657,6 +676,7 @@ async function sendWithResend(
   mail: {
     from: string;
     to: string[];
+    cc?: string[];
     subject: string;
     html: string;
     replyTo?: string;
@@ -672,6 +692,7 @@ async function sendWithResend(
     body: JSON.stringify({
       from: mail.from,
       to: mail.to,
+      cc: mail.cc,
       subject: mail.subject,
       html: mail.html,
       reply_to: mail.replyTo,

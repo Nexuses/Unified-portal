@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  searchEnrichPeople,
-  type EnrichSearchFilters,
-} from "@/lib/datatool";
+import { ObjectId } from "mongodb";
+import type { EnrichSearchFilters } from "@/lib/datatool";
+import { searchEnrichPeople } from "@/lib/datatool-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -53,21 +52,38 @@ export async function POST(request: NextRequest) {
 
     const page = Math.max(1, Number(body.page ?? 1) || 1);
     const limit = Math.min(1000, Math.max(1, Number(body.limit ?? 200) || 200));
-    const result = await searchEnrichPeople(filters, { page, limit });
+    const result = await searchEnrichPeople(filters, {
+      page,
+      limit,
+      exclude: {
+        projectId: new ObjectId(session.projectId),
+        unsubscribed: body.excludeUnsubscribed === true,
+        existing: body.excludeExisting === true,
+      },
+    });
+
+    const maxResults = Math.min(
+      1000,
+      Math.max(1, Number(body.maxResults ?? 1000) || 1000),
+    );
+    const allowedOnPage = Math.max(0, maxResults - (page - 1) * limit);
+    const records = result.records.slice(0, allowedOnPage);
 
     return NextResponse.json({
       page: result.page,
       limit: result.limit,
-      total: result.total,
-      matched: result.matched,
+      total: Math.min(result.total, maxResults),
+      available: result.total,
+      matched: records.length,
       scanned: result.scanned,
-      q: result.q,
-      records: result.records,
+      removedUnsubscribed: result.removedUnsubscribed,
+      removedExisting: result.removedExisting,
+      records,
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Failed to search Data Tool";
-    const status = /DATATOOL_API_KEY|not set/i.test(message) ? 503 : 500;
+      error instanceof Error ? error.message : "Failed to search the Enrich database";
+    const status = /not set/i.test(message) ? 503 : 500;
     console.error("CRM enrich search failed:", error);
     return NextResponse.json({ error: message }, { status });
   }

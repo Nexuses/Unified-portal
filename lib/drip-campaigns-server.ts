@@ -9,7 +9,12 @@ import type {
   DripCampaign,
   RecipientMode,
 } from "@/lib/drip-campaigns";
-import { createEmptySequence, sequencesReady } from "@/lib/drip-campaigns";
+import {
+  MAX_CAMPAIGN_CC,
+  createEmptySequence,
+  parseCcEmails,
+  sequencesReady,
+} from "@/lib/drip-campaigns";
 import {
   getCampaignReport,
   getProjectCampaignReports,
@@ -55,6 +60,8 @@ export type DripCampaignDoc = {
   designSourceCampaignId?: string;
   replyToEnabled?: boolean;
   replyToEmail?: string;
+  ccEnabled?: boolean;
+  ccEmails?: string;
   attachmentEnabled?: boolean;
   attachmentName?: string;
   timezoneEnabled?: boolean;
@@ -112,6 +119,8 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     designSourceCampaignId: doc.designSourceCampaignId,
     replyToEnabled: doc.replyToEnabled,
     replyToEmail: doc.replyToEmail,
+    ccEnabled: doc.ccEnabled,
+    ccEmails: doc.ccEmails,
     attachmentEnabled: doc.attachmentEnabled,
     attachmentName: doc.attachmentName,
     timezoneEnabled: doc.timezoneEnabled,
@@ -693,6 +702,8 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "designSourceCampaignId",
   "replyToEnabled",
   "replyToEmail",
+  "ccEnabled",
+  "ccEmails",
   "attachmentEnabled",
   "attachmentName",
   "timezoneEnabled",
@@ -739,6 +750,17 @@ export async function updateProjectDripCampaign(
     if (value !== undefined) {
       (updates as Record<string, unknown>)[key] = value;
     }
+  }
+
+  if (typeof updates.ccEmails === "string") {
+    const { valid, invalid } = parseCcEmails(updates.ccEmails);
+    if (invalid.length) {
+      throw new Error(`Not a valid CC email: ${invalid[0]}`);
+    }
+    if (valid.length > MAX_CAMPAIGN_CC) {
+      throw new Error(`Add up to ${MAX_CAMPAIGN_CC} CC emails`);
+    }
+    updates.ccEmails = valid.join(", ");
   }
 
   if (typeof updates.name === "string") {
@@ -958,6 +980,8 @@ export async function duplicateProjectDripCampaign(
     designSourceCampaignId: existing.designSourceCampaignId || existing.campaignId,
     replyToEnabled: existing.replyToEnabled,
     replyToEmail: existing.replyToEmail,
+    ccEnabled: existing.ccEnabled,
+    ccEmails: existing.ccEmails,
     attachmentEnabled: existing.attachmentEnabled,
     attachmentName: existing.attachmentName,
     timezoneEnabled: existing.timezoneEnabled,

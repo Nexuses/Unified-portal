@@ -75,6 +75,30 @@ function imageBytes(dataUrl: string) {
   return { contentType, bytes, extension };
 }
 
+/** Upload one file to a project bucket and return its public URL. */
+export async function uploadFileToBucket(
+  bucket: EdmBucket,
+  file: { name: string; type: string; bytes: Buffer },
+) {
+  const dot = file.name.lastIndexOf(".");
+  const stem = (dot > 0 ? file.name.slice(0, dot) : file.name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+  const extension = dot > 0 ? file.name.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 10) : "";
+  const key = `uploads/${stem || "file"}_${Date.now()}${extension ? `.${extension}` : ""}`;
+  await s3(bucket.region).send(
+    new PutObjectCommand({
+      Bucket: bucket.name,
+      Key: key,
+      Body: file.bytes,
+      ContentType: file.type || "application/octet-stream",
+    }),
+  );
+  return `https://${bucket.name}.s3.${bucket.region}.amazonaws.com/${key}`;
+}
+
 export async function publishHtmlImages(html: string, bucket: EdmBucket) {
   const sources = [
     ...html.matchAll(/\bsrc=(?:"(data:image\/[^"]+)"|'(data:image\/[^']+)')/g),

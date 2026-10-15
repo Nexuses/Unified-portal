@@ -14,6 +14,7 @@ export type PortalPageId =
   | "analytics"
   | "analytics-kanban"
   | "smtp"
+  | "knowledge"
   | "inbox"
   | "unsub"
   | "integrations";
@@ -57,6 +58,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   analytics: "/portal/analytics",
   "analytics-kanban": "/portal/analytics/kanban",
   smtp: "/portal/smtp",
+  knowledge: "/portal/knowledge-base",
   inbox: "/portal/inbox",
   unsub: "/portal/unsub",
   integrations: "/portal/integrations",
@@ -97,6 +99,10 @@ export function publicAnalyticsPath(token: string) {
   return `/a/${token}`;
 }
 
+export function publicKanbanPath(token: string) {
+  return `/k/${token}`;
+}
+
 export function portalListRoute(id: string) {
   return `/portal/crm/lists/${id}`;
 }
@@ -134,6 +140,12 @@ export const PORTAL_NAV: PortalNavItem[] = [
       { id: "companies", label: "Companies", href: PORTAL_ROUTES.companies },
       { id: "enrich", label: "Enrich", href: PORTAL_ROUTES.enrich },
     ],
+  },
+  {
+    type: "item",
+    id: "knowledge",
+    label: "Knowledge Base",
+    href: PORTAL_ROUTES.knowledge,
   },
   { type: "item", id: "inbox", label: "Master Inbox", href: PORTAL_ROUTES.inbox },
   {
@@ -189,6 +201,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   analytics: "Report",
   "analytics-kanban": "Kanban",
   smtp: "SMTP & Senders",
+  knowledge: "Knowledge Base",
   inbox: "Master Inbox",
   unsub: "Suppression List",
   integrations: "Integrations",
@@ -225,6 +238,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/analytics/kanban")) return "analytics-kanban";
   if (pathname.startsWith("/portal/analytics")) return "analytics";
   if (pathname.startsWith("/portal/smtp")) return "smtp";
+  if (pathname.startsWith("/portal/knowledge-base")) return "knowledge";
   if (pathname.startsWith("/portal/inbox")) return "inbox";
   if (pathname.startsWith("/portal/unsub")) return "unsub";
   if (pathname.startsWith("/portal/integrations")) return "integrations";

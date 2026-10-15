@@ -1,4 +1,4 @@
-import { listEdmLinks } from "@/lib/edm-server";
+import { loadKnowledgeMarkdown } from "@/lib/knowledge-base-server";
 
 function expandHex(value: string) {
   const hex = value.toLowerCase();
@@ -32,53 +32,11 @@ function topColors(html: string) {
   return [...chromatic, ...neutrals];
 }
 
-async function readPage(url: string) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      redirect: "follow",
-      headers: { "User-Agent": "NexusesEDM/1.0" },
-    });
-    if (!response.ok) return "";
-    const type = response.headers.get("content-type") ?? "";
-    if (!type.includes("html") && !type.includes("text")) return "";
-    return (await response.text()).slice(0, 180_000);
-  } catch {
-    return "";
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function pageText(html: string) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 1800);
-}
-
 export async function loadKnowledgeBrand(projectId: string) {
-  const links = await listEdmLinks(projectId);
-  const pages = await Promise.all(
-    links.slice(0, 4).map(async (item) => {
-      const html = await readPage(item.link);
-      if (!html) {
-        return `${item.name}: ${item.link}`;
-      }
-      const colors = topColors(html);
-      return [
-        `${item.name}: ${item.link}`,
-        colors.length ? `Brand colors: ${colors.join(", ")}` : "",
-        `Page copy: ${pageText(html)}`,
-      ]
-        .filter(Boolean)
-        .join("\n");
-    }),
-  );
-  return pages.join("\n\n");
+  const markdown = await loadKnowledgeMarkdown(projectId, 9000);
+  if (!markdown) return "";
+  const colors = topColors(markdown);
+  return [colors.length ? `Brand colors: ${colors.join(", ")}` : "", markdown]
+    .filter(Boolean)
+    .join("\n\n");
 }

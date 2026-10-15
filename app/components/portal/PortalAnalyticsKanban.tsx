@@ -9,6 +9,7 @@ import {
   DEFAULT_STAGE_COLOR,
   fetchKanbanBoard,
   KANBAN_DOT_COLORS,
+  KANBAN_STAGE_RULES,
   patchKanbanBoard,
   portalKanbanRoute,
   stageIdForPerson,
@@ -22,6 +23,7 @@ import {
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { PORTAL_ROUTES, portalContactRoute } from "@/lib/portal-nav";
+import { ANALYTICS_SHARE_TTL_DAYS, formatAnalyticsExpiry } from "@/lib/analytics";
 
 const CARD_BATCH = 30;
 
@@ -43,6 +45,10 @@ function stageLabel(name: string) {
     return name;
   }
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function stageRuleLabel(rule: NonNullable<KanbanStage["rule"]>) {
+  return KANBAN_STAGE_RULES.find((item) => item.value === rule)?.label ?? rule;
 }
 
 function stageDotColor(stage: KanbanStage) {
@@ -121,9 +127,23 @@ function CompanyMark({
   );
 }
 
-export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) {
-  const [board, setBoard] = useState<KanbanBoard | null>(null);
-  const [loading, setLoading] = useState(true);
+export default function PortalAnalyticsKanban({
+  boardId,
+  sharedBoard,
+  shareToken,
+}: {
+  boardId: string;
+  /** Public view: cards can move between stages; no stage edits, chat or portal links. */
+  sharedBoard?: KanbanBoard;
+  shareToken?: string;
+}) {
+  const readOnly = Boolean(sharedBoard);
+  const [board, setBoard] = useState<KanbanBoard | null>(sharedBoard ?? null);
+  const [loading, setLoading] = useState(!sharedBoard);
+  const [sharing, setSharing] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
+  const [shareExpiresAt, setShareExpiresAt] = useState("");
+  const [shareCopied, setShareCopied] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [stageName, setStageName] = useState("");
@@ -219,6 +239,9 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
   }
 
   useEffect(() => {
+    if (readOnly) {
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError("");
@@ -242,7 +265,41 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
     return () => {
       cancelled = true;
     };
-  }, [boardId]);
+  }, [boardId, readOnly]);
+
+  async function createPublicUrl() {
+    if (!board || sharing) {
+      return;
+    }
+    setSharing(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/analytics/kanban/${encodeURIComponent(board.id)}/share`, {
+        method: "POST",
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        url?: string;
+        expiresAt?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.url) {
+        throw new Error(data.error || "Failed to create public URL");
+      }
+      setShareUrl(data.url);
+      setShareExpiresAt(data.expiresAt ?? "");
+      try {
+        await navigator.clipboard.writeText(data.url);
+        setShareCopied(true);
+        window.setTimeout(() => setShareCopied(false), 2400);
+      } catch {
+        // The link stays visible in the banner to copy by hand.
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create public URL");
+    } finally {
+      setSharing(false);
+    }
+  }
 
   const columns = useMemo(() => {
     if (!board) {
@@ -252,9 +309,10 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
       board.stages.map((stage) => [stage.id, []]),
     );
     for (const person of board.people) {
-      byStage
-        .get(stageIdForPerson(person, board.placements, board.stages))
-        ?.push(person);
+      const stageId = stageIdForPerson(person, board.placements, board.stages);
+      if (stageId) {
+        byStage.get(stageId)?.push(person);
+      }
     }
     return board.stages.map((stage) => ({
       stage,
@@ -348,6 +406,23 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
     setSaving(true);
     setError("");
     try {
+      if (shareToken) {
+        const response = await fetch(`/api/public/kanban/${encodeURIComponent(shareToken)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ placements: next.placements }),
+        });
+        const data = (await response.json().catch(() => ({}))) as {
+          placements?: Record<string, string>;
+          error?: string;
+        };
+        if (!response.ok || !data.placements) {
+          throw new Error(data.error || "Failed to save");
+        }
+        const placements = data.placements;
+        setBoard((current) => (current ? { ...current, placements } : current));
+        return;
+      }
       const saved = await patchKanbanBoard(board.id, next);
       setBoard((current) => ({ ...saved, people: current?.people ?? saved.people }));
     } catch (err) {
@@ -363,7 +438,7 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
     }
     const email = person.email.trim().toLowerCase();
     const next = { ...board.placements };
-    if (autoStageId(person) === stageId) {
+    if (autoStageId(person, board.stages) === stageId) {
       delete next[email];
     } else {
       next[email] = stageId;
@@ -541,19 +616,30 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
     <div className="an-page an-kanban-page">
       <div className="an-kanban-head">
         <div className="an-kanban-title">
-          <Link
-            href={PORTAL_ROUTES["analytics-kanban"]}
-            className="cd-back"
-            aria-label="Back to kanban lists"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="m15 18-6-6 6-6" />
-            </svg>
-          </Link>
+          {readOnly ? null : (
+            <Link
+              href={PORTAL_ROUTES["analytics-kanban"]}
+              className="cd-back"
+              aria-label="Back to kanban lists"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </Link>
+          )}
           <h2>{board?.name || "Kanban"}</h2>
         </div>
-        {board ? (
+        {board && !readOnly ? (
           <div className="an-kanban-head-actions-top">
+            <span className="an-share-note">Expires in {ANALYTICS_SHARE_TTL_DAYS} days</span>
+            <button
+              type="button"
+              className="btn-soft"
+              onClick={() => void createPublicUrl()}
+              disabled={sharing}
+            >
+              {shareCopied ? "Public URL copied" : sharing ? "Creating…" : "Create public URL"}
+            </button>
             <button
               type="button"
               className="btn-dark"
@@ -589,6 +675,16 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
               placeholder="Search a lead by name or email…"
             />
           </label>
+        </div>
+      ) : null}
+
+      {shareUrl ? (
+        <div className="an-share-banner">
+          <span>Share this board with a client:</span>
+          <input readOnly value={shareUrl} onFocus={(event) => event.currentTarget.select()} />
+          <span className="an-share-expiry">
+            Read-only. Expires on {formatAnalyticsExpiry(shareExpiresAt || new Date())}.
+          </span>
         </div>
       ) : null}
 
@@ -682,6 +778,9 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
                 }}
                 onDrop={(event) => {
                   event.preventDefault();
+                  if (readOnly && !shareToken) {
+                    return;
+                  }
                   if (draggingStage) {
                     moveStage(draggingStage, stage.id);
                     setDraggingStage("");
@@ -703,33 +802,38 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
                     style={{ background: stageDotColor(stage) }}
                   />
                   <h3>{stageLabel(stage.name)}</h3>
+                  {stage.rule && !stage.system ? (
+                    <span className="an-kanban-rule">{stageRuleLabel(stage.rule)}</span>
+                  ) : null}
                   <em>{people.length}</em>
-                  <span className="an-kanban-head-actions">
-                    <button
-                      type="button"
-                      className="an-kanban-grip-btn"
-                      draggable
-                      aria-label={`Move ${stage.name}`}
-                      onDragStart={(event) => {
-                        event.dataTransfer.setData("text/stage", stage.id);
-                        event.dataTransfer.effectAllowed = "move";
-                        setDraggingStage(stage.id);
-                      }}
-                      onDragEnd={() => setDraggingStage("")}
-                    >
-                      <StageGrip />
-                    </button>
-                    {!stage.system ? (
+                  {readOnly ? null : (
+                    <span className="an-kanban-head-actions">
                       <button
                         type="button"
-                        className="an-kanban-remove"
-                        onClick={() => removeStage(stage.id)}
-                        aria-label={`Remove ${stage.name}`}
+                        className="an-kanban-grip-btn"
+                        draggable
+                        aria-label={`Move ${stage.name}`}
+                        onDragStart={(event) => {
+                          event.dataTransfer.setData("text/stage", stage.id);
+                          event.dataTransfer.effectAllowed = "move";
+                          setDraggingStage(stage.id);
+                        }}
+                        onDragEnd={() => setDraggingStage("")}
                       >
-                        ×
+                        <StageGrip />
                       </button>
-                    ) : null}
-                  </span>
+                      {!stage.system ? (
+                        <button
+                          type="button"
+                          className="an-kanban-remove"
+                          onClick={() => removeStage(stage.id)}
+                          aria-label={`Remove ${stage.name}`}
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </span>
+                  )}
                 </header>
                 <div
                   className="an-kanban-cards"
@@ -752,7 +856,7 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
                         className={`an-kanban-card${draggingPerson === email ? " dragging" : ""}${
                           matched ? " matched" : ""
                         }`}
-                        draggable
+                        draggable={!readOnly || Boolean(shareToken)}
                         onDragStart={(event) => {
                           event.dataTransfer.setData("text/plain", email);
                           event.dataTransfer.effectAllowed = "move";
@@ -831,7 +935,7 @@ export default function PortalAnalyticsKanban({ boardId }: { boardId: string }) 
               </section>
             ))}
 
-            {adding ? (
+            {readOnly ? null : adding ? (
               <form
                 className="an-kanban-add"
                 onSubmit={(event) => {

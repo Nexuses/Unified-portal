@@ -71,6 +71,10 @@ export type DripCampaign = {
   designSourceCampaignId?: string;
   replyToEnabled?: boolean;
   replyToEmail?: string;
+  /** When true, every campaign email is CC'd to `ccEmails`. */
+  ccEnabled?: boolean;
+  /** Comma-separated CC addresses (up to MAX_CAMPAIGN_CC). */
+  ccEmails?: string;
   attachmentEnabled?: boolean;
   attachmentName?: string;
   timezoneEnabled?: boolean;
@@ -105,6 +109,30 @@ export type DripCampaign = {
   createdAt?: string;
   updatedAt?: string;
 };
+
+export const MAX_CAMPAIGN_CC = 5;
+
+/** Splits CC input on commas, semicolons or whitespace; lowercased and de-duplicated. */
+export function parseCcEmails(value: string | undefined | null) {
+  const seen = new Set<string>();
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const raw of String(value ?? "").split(/[\s,;]+/)) {
+    const email = raw.trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) valid.push(email);
+    else invalid.push(raw.trim());
+  }
+  return { valid, invalid };
+}
+
+/** CC addresses to send with, or undefined when CC is off. */
+export function campaignCcList(campaign: Pick<DripCampaign, "ccEnabled" | "ccEmails">) {
+  if (!campaign.ccEnabled) return undefined;
+  const { valid } = parseCcEmails(campaign.ccEmails);
+  return valid.length ? valid.slice(0, MAX_CAMPAIGN_CC) : undefined;
+}
 
 export function createEmptySequence(index = 0): CampaignSequence {
   return {

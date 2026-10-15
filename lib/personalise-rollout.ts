@@ -22,6 +22,7 @@ import { getDb } from "@/lib/mongodb";
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
 import {
   normalizePersonalisePlan,
+  cleanSignatureHtml,
   pitchToHtml,
   stepDelayDays,
   type PersonaliseContact,
@@ -41,7 +42,19 @@ export type PersonaliseRolloutInput = {
   emailGapMinutes?: number;
   mode?: "now" | "later";
   scheduledFor?: string;
+  signatureHtml?: string;
+  timezone?: string;
 };
+
+function timezoneOrThrow(value: unknown) {
+  const zone = String(value ?? "").trim() || "Asia/Kolkata";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+  } catch {
+    throw new Error("Choose a valid time zone.");
+  }
+  return zone;
+}
 
 function clockOrThrow(value: string, label: string) {
   if (!/^\d{2}:\d{2}$/.test(value)) {
@@ -54,7 +67,7 @@ function clockOrThrow(value: string, label: string) {
   return value;
 }
 
-function sequencesFromContacts(contacts: PersonaliseContact[]) {
+function sequencesFromContacts(contacts: PersonaliseContact[], signatureHtml: string) {
   const max = Math.max(...contacts.map((contact) => contact.steps.length));
   const donor =
     contacts.find((contact) => contact.steps.length === max) ?? contacts[0];
@@ -68,7 +81,7 @@ function sequencesFromContacts(contacts: PersonaliseContact[]) {
       delayDays: delays[index] ?? 0,
       subject: index === 0 ? step?.subject || "Hello" : step?.subject || "",
       hasDesign: true,
-      designHtml: step ? pitchToHtml(step.body) : "<p></p>",
+      designHtml: step ? pitchToHtml(step.body, signatureHtml) : "<p></p>",
     });
   }
   return sequences;
@@ -108,6 +121,7 @@ export async function rolloutPersonaliseCampaign(input: {
   if (!ObjectId.isValid(senderId)) {
     throw new Error("Select a sender.");
   }
+  const timezone = timezoneOrThrow(input.body.timezone);
   const windowStart = clockOrThrow(String(input.body.windowStart ?? "09:00"), "Start time");
   const windowEnd = clockOrThrow(String(input.body.windowEnd ?? "18:00"), "End time");
   const emailGapMinutes = Math.max(
@@ -215,7 +229,8 @@ export async function rolloutPersonaliseCampaign(input: {
     throw new Error("No contacts could be added to the list.");
   }
 
-  const sequences = sequencesFromContacts(ready);
+  const signatureHtml = cleanSignatureHtml(String(input.body.signatureHtml ?? ""));
+  const sequences = sequencesFromContacts(ready, signatureHtml);
   const campaign = await createProjectDripCampaign(
     input.projectId,
     input.userId,
@@ -258,7 +273,7 @@ export async function rolloutPersonaliseCampaign(input: {
     listId: list._id.toString(),
     listName: list.name,
     listDisplayId: list.displayId,
-    timezone: "Asia/Kolkata",
+    timezone,
     status: scheduledFor ? "scheduled" : "sending",
     scheduledFor,
     recipients: ready.length,
@@ -300,7 +315,7 @@ export async function rolloutPersonaliseCampaign(input: {
       sequenceIndex,
       availableAt: sequenceIndex === 0 ? scheduledFor ?? now : LOCKED_SEQUENCE_AT,
       subjectLine: step.subject,
-      htmlBody: pitchToHtml(step.body),
+      htmlBody: pitchToHtml(step.body, signatureHtml),
       stepDelayDays: delays[sequenceIndex] ?? 0,
     }));
   });
@@ -332,7 +347,7 @@ export async function rolloutPersonaliseCampaign(input: {
       subject: sequences[0]?.subject,
       hasDesign: true,
       designHtml: sequences[0]?.designHtml,
-      timezone: "Asia/Kolkata",
+      timezone,
       timezoneEnabled: true,
     },
     "oneone",

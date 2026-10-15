@@ -80,7 +80,7 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
       .join(", ");
     const peopleLines = board.people.slice(0, 60).map((person) => {
       const stage = stageIdForPerson(person, board.placements, board.stages);
-      return `${person.fullName} <${person.email}> in ${stage}`;
+      return `${person.fullName} <${person.email}> in ${stage ?? "no stage"}`;
     });
     const boardContext = `Board: ${board.name}. Stages: ${stageLines}. People: ${
       peopleLines.join(" | ") || "none"

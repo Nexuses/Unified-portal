@@ -3,7 +3,8 @@ import { chatWithDeepSeekResult, type ChatMessage } from "@/lib/deepseek";
 import { extractEdmResult, htmlIsComplete } from "@/lib/edm-result";
 import { loadKnowledgeBrand } from "@/lib/edm-brand";
 import { fillGeneratedImages } from "@/lib/openai-images";
-import { listProjectBuckets, publishHtmlImages } from "@/lib/s3-edm";
+import { listProjectBuckets, publishHtmlImages, type EdmBucket } from "@/lib/s3-edm";
+import { searchWeb, webResearchConfigured } from "@/lib/web-search-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -11,8 +12,26 @@ import {
 
 export const maxDuration = 180;
 
-const SYSTEM_PROMPT = `You design HTML emails (EDMs) for Nexuses.
+const SYSTEM_PROMPT = `You are the EDM assistant for Nexuses. You answer questions and you design HTML emails (EDMs).
 
+First decide what the latest request needs.
+
+1. A question, research, ideas, subject lines, copy, or advice, with no request to build or change the email:
+Answer it directly. Do not make or change an email. Return only:
+
+ANSWER:
+your answer
+
+Use the knowledge base, the client name, and the conversation. Write plain text: short paragraphs, or lines starting with "- ". No markdown headings, no bold, no tables. Keep it under 200 words unless the user asks for more. Never use an em dash.
+
+2. The answer needs facts that are not in the knowledge base or the conversation, such as what a company does, its website, news, or market facts:
+Return only one line and nothing else:
+
+SEARCH: a short web search query
+
+You will get the web results back, then answer with ANSWER:. Only search once.
+
+3. A request to create, design, write, edit, restyle, or fix an email:
 Return exactly this shape and nothing else. No JSON. No markdown fences.
 
 MESSAGE:
@@ -22,7 +41,7 @@ HTML:
 <!DOCTYPE html>
 ...complete email ending with </html>
 
-Rules:
+Email rules:
 - The HTML part is a complete email document: tables, inline CSS, max width 600px, works in Gmail and Outlook.
 - Always close every tag, including the body, and end with </html>.
 - A preheader may be one short sentence. Do not pad it with word joiners, zero-width spaces, or any invisible characters. Do not copy that padding from a reference.
@@ -36,10 +55,34 @@ Rules:
 - When the email needs a new photo or illustration, set that img src to exactly {{gen:short visual description}}. No quotes inside the description. At most 6 generated images. Do not generate the logo this way.
 - Example: <img src="{{gen:wide photo of a sunlit product on a linen table}}" alt="Product" width="560" style="display:block;width:100%;max-width:560px;height:auto;border:0;" />
 - If no attached image is used as a logo, use the client logo URL when one is given. Do not invent a logo.
-- Use each knowledge base name and link as a real destination in the email when it fits (button or footer). Do not invent URLs.
+- The knowledge base is the project's uploaded documents in Markdown. Use its facts, product names, and tone. Use URLs that appear in it as real destinations (button or footer) when they fit. Do not invent URLs.
 - Use merge tags when a name or company fits: {{ contact.FIRSTNAME }}, {{ contact.EMAIL }}, {{ contact.COMPANY }}, {{ unsubscribe }}.
 - If current HTML is provided, edit that document. Return the full HTML, not a diff.
-- Keep MESSAGE to one or two sentences. Put the email only after HTML:.`;
+- Keep MESSAGE to one or two sentences. Put the email only after HTML:.
+- Never say you cannot browse the web. Use SEARCH: instead.`;
+
+function answerOnly(raw: string) {
+  const text = raw.replace(/```(?:\w+)?/g, "").trim();
+  if (/^\s*HTML:/im.test(text) || /<!DOCTYPE|<html/i.test(text)) return null;
+  return text
+    .replace(/^\s*(?:ANSWER|MESSAGE):\s*/i, "")
+    .replace(/\u2014/g, ", ")
+    .trim()
+    .slice(0, 6000);
+}
+
+function searchQuery(raw: string) {
+  const match = raw.trim().match(/^SEARCH:\s*(.+)$/im);
+  return match && !/HTML:/i.test(raw) ? match[1].trim().slice(0, 200) : "";
+}
+
+function needsImageUpload(html: string, imageTokens: string[]) {
+  return (
+    html.includes("{{gen:") ||
+    /\bsrc=["']data:image\//i.test(html) ||
+    imageTokens.some((token) => html.includes(token))
+  );
+}
 
 function stripEmDashes(html: string) {
   return html.replace(/&mdash;|&#8212;|&#x2014;/gi, "-").replace(/\u2014/g, "-");
@@ -86,10 +129,13 @@ export async function POST(request: NextRequest) {
       attachments?: unknown;
       currentHtml?: unknown;
       bucket?: { name?: unknown; region?: unknown };
+      finalizeHtml?: unknown;
     } | null;
 
     const message = typeof body?.message === "string" ? body.message.trim() : "";
-    if (!message) {
+    const finalizeHtml =
+      typeof body?.finalizeHtml === "string" ? body.finalizeHtml.trim().slice(0, 200_000) : "";
+    if (!message && !finalizeHtml) {
       return NextResponse.json({ error: "Message is required" }, { status: 400 });
     }
 
@@ -124,6 +170,48 @@ export async function POST(request: NextRequest) {
             };
           })
       : [];
+    const bucketName = typeof body?.bucket?.name === "string" ? body.bucket.name.trim() : "";
+    const imageTokens = attachments.flatMap((file, index) =>
+      file.dataUrl ? [`{{file-${index}}}`] : [],
+    );
+
+    async function finishEmail(html: string, bucket: EdmBucket) {
+      let output = html;
+      let note = "";
+      attachments.forEach((file, index) => {
+        if (file.dataUrl) output = output.replaceAll(`{{file-${index}}}`, file.dataUrl);
+      });
+      try {
+        const generated = await fillGeneratedImages(output);
+        output = generated.html;
+        if (generated.count) {
+          note = `Generated ${generated.count} image${generated.count === 1 ? "" : "s"}.`;
+        }
+      } catch (error) {
+        note = error instanceof Error ? error.message : "Image generation failed";
+      }
+      if (/data:image\//.test(output)) output = await publishHtmlImages(output, bucket);
+      return { html: stripEmDashes(output), note };
+    }
+
+    const projectName = session.projectName;
+    async function pickBucket() {
+      const allowed = await listProjectBuckets(projectName);
+      return { allowed, chosen: allowed.find((item) => item.name === bucketName) ?? null };
+    }
+
+    if (finalizeHtml) {
+      const { chosen } = await pickBucket();
+      if (!chosen) {
+        return NextResponse.json(
+          { error: "Choose one of this project's S3 buckets before generating images." },
+          { status: 400 },
+        );
+      }
+      const done = await finishEmail(finalizeHtml, chosen);
+      return NextResponse.json({ message: done.note, html: done.html });
+    }
+
     const currentHtml =
       typeof body?.currentHtml === "string" ? clip(body.currentHtml, 50_000) : "";
     const brand = await loadKnowledgeBrand(session.projectId);
@@ -187,9 +275,45 @@ export async function POST(request: NextRequest) {
       ],
     });
 
-    const result = extractEdmResult(first.content);
+    let firstReply = first;
+    const query = searchQuery(first.content);
+    if (query) {
+      let findings = "Web search is not available. Answer from what you know and say the facts may be out of date.";
+      if (webResearchConfigured()) {
+        try {
+          const found = await searchWeb(query);
+          const sources = found.sources
+            .slice(0, 3)
+            .map((source) => source.url)
+            .join(" · ");
+          findings = `Web results for "${query}" (${found.searchedWith}):\n${found.answer}${sources ? `\n\nSources: ${sources}` : ""}`;
+        } catch (error) {
+          findings = `Web search failed: ${error instanceof Error ? error.message : "unknown error"}. Answer from what you know and say so.`;
+        }
+      }
+      firstReply = await chatWithDeepSeekResult({
+        maxTokens: 8192,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          ...prior,
+          { role: "user", content: `${context}\n\nRequest:\n${message}` },
+          { role: "assistant", content: `SEARCH: ${query}` },
+          {
+            role: "user",
+            content: `${findings}\n\nNow complete the original request. Do not search again. If it was a question, reply with ANSWER: and end with one "Sources:" line of up to 3 links separated by " · ".`,
+          },
+        ],
+      });
+    }
+
+    const answer = answerOnly(firstReply.content);
+    if (answer !== null) {
+      return NextResponse.json({ message: answer || "I could not find an answer to that.", html: "" });
+    }
+
+    const result = extractEdmResult(firstReply.content);
     result.html = stripInvisiblePadding(result.html);
-    let finishReason = first.finishReason;
+    let finishReason = firstReply.finishReason;
     for (let attempt = 0; attempt < 2 && result.html && !htmlIsComplete(result.html); attempt += 1) {
       const rest = await chatWithDeepSeekResult({
         maxTokens: 8192,
@@ -216,33 +340,26 @@ export async function POST(request: NextRequest) {
       if (finishReason && finishReason !== "length" && htmlIsComplete(result.html)) break;
     }
 
-    attachments.forEach((file, index) => {
-      if (!file.dataUrl) return;
-      result.html = result.html.replaceAll(`{{file-${index}}}`, file.dataUrl);
-    });
-    if (result.html) {
-      try {
-        const generated = await fillGeneratedImages(result.html);
-        result.html = generated.html;
-        if (generated.count) {
-          result.message = `${result.message} Generated ${generated.count} image${generated.count === 1 ? "" : "s"}.`;
-        }
-      } catch (error) {
-        const note = error instanceof Error ? error.message : "Image generation failed";
-        result.message = `${result.message} ${note}`;
-      }
-    }
-    if (result.html && /data:image\//.test(result.html)) {
-      const bucketName = typeof body?.bucket?.name === "string" ? body.bucket.name.trim() : "";
-      const allowed = await listProjectBuckets(session.projectName);
-      const chosen = allowed.find((item) => item.name === bucketName);
+    if (result.html && needsImageUpload(result.html, imageTokens)) {
+      const { allowed, chosen } = await pickBucket();
       if (!chosen) {
-        return NextResponse.json(
-          { error: "Choose one of this project's S3 buckets before generating images." },
-          { status: 400 },
-        );
+        if (!allowed.length) {
+          return NextResponse.json(
+            { error: `No S3 buckets match ${session.projectName}. Images need a bucket to upload to.` },
+            { status: 400 },
+          );
+        }
+        return NextResponse.json({
+          message: result.message,
+          html: result.html,
+          needsBucket: true,
+          buckets: allowed,
+          projectName: session.projectName,
+        });
       }
-      result.html = await publishHtmlImages(result.html, chosen);
+      const done = await finishEmail(result.html, chosen);
+      result.html = done.html;
+      if (done.note) result.message = `${result.message} ${done.note}`;
     }
     if (result.html) result.html = stripEmDashes(result.html);
     return NextResponse.json(result);

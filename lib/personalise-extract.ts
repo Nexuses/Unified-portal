@@ -136,7 +136,7 @@ function docxXmlToText(xml: string, numberingXml = "", links = new Map<string, s
     .trim();
 }
 
-async function textFromDocx(buffer: Buffer) {
+export async function textFromDocx(buffer: Buffer) {
   const zip = await JSZip.loadAsync(buffer);
   const file = zip.file("word/document.xml");
   if (!file) {
@@ -191,7 +191,7 @@ function flatCell(value: ExcelJS.CellValue) {
     .replace(/^(?:\\n)+|(?:\\n)+$/g, "");
 }
 
-async function textFromXlsx(buffer: Buffer) {
+export async function textFromXlsx(buffer: Buffer) {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
   const sheets: string[] = [];

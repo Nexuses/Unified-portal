@@ -1,6 +1,25 @@
 import type { CampaignKind } from "@/lib/drip-campaigns";
 
-export type KanbanStageRule = "delivered" | "opened" | "clicked";
+export type KanbanStageRule = "delivered" | "opened" | "clicked" | "replied";
+
+/** Stage triggers offered when creating a list, in funnel order. */
+export const KANBAN_STAGE_RULES: Array<{ value: KanbanStageRule; label: string }> = [
+  { value: "delivered", label: "Sent" },
+  { value: "opened", label: "Open" },
+  { value: "clicked", label: "Click" },
+  { value: "replied", label: "Reply" },
+];
+
+const RULE_RANK: Record<KanbanStageRule, number> = {
+  delivered: 0,
+  opened: 1,
+  clicked: 2,
+  replied: 3,
+};
+
+export function isKanbanStageRule(value: unknown): value is KanbanStageRule {
+  return typeof value === "string" && value in RULE_RANK;
+}
 
 export type KanbanStage = {
   id: string;
@@ -42,6 +61,7 @@ export type KanbanPerson = {
   delivered: boolean;
   opened: boolean;
   clicked: boolean;
+  replied?: boolean;
   campaigns: string[];
   lastActivityAt?: string;
 };
@@ -127,27 +147,46 @@ export const DEFAULT_KANBAN_STAGES: KanbanStage[] = [
   },
 ];
 
-export function autoStageId(person: KanbanPerson): string {
+function personRank(person: KanbanPerson) {
+  if (person.replied) {
+    return RULE_RANK.replied;
+  }
   if (person.clicked) {
-    return "cold";
+    return RULE_RANK.clicked;
   }
   if (person.opened) {
-    return "engage";
+    return RULE_RANK.opened;
   }
-  return "prospect";
+  return RULE_RANK.delivered;
+}
+
+/** Furthest stage the person has reached; null when the board has no stage for their level. */
+export function autoStageId(person: KanbanPerson, stages: KanbanStage[]): string | null {
+  const rank = personRank(person);
+  let best: KanbanStage | null = null;
+  for (const stage of stages) {
+    if (!stage.rule) {
+      continue;
+    }
+    const stageRank = RULE_RANK[stage.rule];
+    if (stageRank <= rank && (!best || stageRank > RULE_RANK[best.rule!])) {
+      best = stage;
+    }
+  }
+  return best?.id ?? null;
 }
 
 export function stageIdForPerson(
   person: KanbanPerson,
   placements: Record<string, string>,
   stages: KanbanStage[],
-) {
+): string | null {
   const email = person.email.trim().toLowerCase();
   const placed = placements[email];
   if (placed && stages.some((stage) => stage.id === placed)) {
     return placed;
   }
-  return autoStageId(person);
+  return autoStageId(person, stages);
 }
 
 export function portalKanbanRoute(id: string) {
@@ -168,6 +207,7 @@ export async function fetchKanbanLists(): Promise<KanbanList[]> {
 export async function createKanbanList(input: {
   name: string;
   campaigns: KanbanCampaignRef[];
+  stages?: Array<Pick<KanbanStage, "name" | "color" | "rule">>;
 }): Promise<KanbanBoard> {
   const response = await fetch("/api/analytics/kanban", {
     method: "POST",

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import PortalCampaignReportTable from "@/app/components/portal/PortalCampaignReportTable";
 import {
   campaignSequences,
   formatCampaignClock,
@@ -225,6 +226,26 @@ export default function PortalCampaignReport({
     count: number;
   } | null>(null);
   const isPublic = Boolean(publicToken);
+  const [tableView, setTableView] = useState(false);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem("campaign-report-table-view") === "1";
+    if (saved) queueMicrotask(() => setTableView(true));
+  }, []);
+
+  function toggleTableView() {
+    setTableView((on) => {
+      window.localStorage.setItem("campaign-report-table-view", on ? "0" : "1");
+      return !on;
+    });
+    setPeopleView(null);
+  }
+
+  const tableUrl = publicToken
+    ? `/api/public/reports/${encodeURIComponent(publicToken)}/table`
+    : `/api/campaigns/${encodeURIComponent(campaign.id)}/report-table${
+        campaign.kind === "oneone" || campaign.kind === "drip" ? `?kind=${campaign.kind}` : ""
+      }`;
 
   useEffect(() => {
     let cancelled = false;
@@ -950,6 +971,16 @@ export default function PortalCampaignReport({
           </button>
           <button
             type="button"
+            role="switch"
+            aria-checked={tableView}
+            className={`drip-report-table-toggle${tableView ? " is-on" : ""}`}
+            onClick={toggleTableView}
+          >
+            <span className="drip-report-table-switch" aria-hidden="true" />
+            Table view
+          </button>
+          <button
+            type="button"
             className="drip-report-export"
             onClick={() => void exportReport()}
             disabled={exporting}
@@ -1016,7 +1047,11 @@ export default function PortalCampaignReport({
         </div>
       ) : null}
 
-      {isPersonalise ? (
+      {tableView ? (
+        <PortalCampaignReportTable key={tableUrl} url={tableUrl} />
+      ) : null}
+
+      {tableView ? null : isPersonalise ? (
         <div className="drip-report-tabs">
           {["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
             (label) => (
@@ -1089,6 +1124,8 @@ export default function PortalCampaignReport({
         </div>
       )}
 
+      {tableView ? null : (
+      <>
       <div className="drip-report-section-head">
         <h3>
           {isOneOne && sequenceScope !== null
@@ -1142,6 +1179,8 @@ export default function PortalCampaignReport({
           </div>
         ))}
       </div>
+      </>
+      )}
 
       {sequencesOpen ? (
         <div
@@ -1237,7 +1276,7 @@ export default function PortalCampaignReport({
         </div>
       ) : null}
 
-      {peopleView ? (
+      {peopleView && !tableView ? (
         <>
           <div className="crm-page-head drip-report-people-head">
             <div>

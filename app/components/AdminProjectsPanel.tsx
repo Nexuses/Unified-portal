@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import type { Project } from "@/lib/projects";
-import { slugify } from "@/lib/projects";
+import { DEFAULT_PROJECT_DATA_CREDITS, slugify } from "@/lib/projects";
 
 const emptyForm = {
   name: "",
@@ -19,6 +19,8 @@ export default function AdminProjectsPanel() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [savingLimitId, setSavingLimitId] = useState<string | null>(null);
   const [limitDrafts, setLimitDrafts] = useState<Record<string, string>>({});
+  const [savingCreditsId, setSavingCreditsId] = useState<string | null>(null);
+  const [creditDrafts, setCreditDrafts] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
   async function loadProjects() {
@@ -221,6 +223,50 @@ export default function AdminProjectsPanel() {
     }
   }
 
+  async function saveDataCredits(project: Project) {
+    const current = project.dataCredits ?? DEFAULT_PROJECT_DATA_CREDITS;
+    const raw = creditDrafts[project.id] ?? String(current);
+    const parsed = Number(String(raw).replace(/,/g, "").trim());
+    const clearDraft = () =>
+      setCreditDrafts((drafts) => {
+        const copy = { ...drafts };
+        delete copy[project.id];
+        return copy;
+      });
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setError("Data credits must be 0 or more.");
+      clearDraft();
+      return;
+    }
+    const next = Math.min(Math.floor(parsed), 10_000_000);
+    if (next === current) {
+      clearDraft();
+      return;
+    }
+
+    setSavingCreditsId(project.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataCredits: next }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update data credits");
+      }
+      setProjects((list) =>
+        list.map((item) => (item.id === project.id ? { ...item, ...data } : item)),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update data credits");
+    } finally {
+      clearDraft();
+      setSavingCreditsId(null);
+    }
+  }
+
   return (
     <div className="admin-page">
       <div className="admin-layout">
@@ -311,6 +357,7 @@ export default function AdminProjectsPanel() {
                   <th>Users</th>
                   <th>Logo</th>
                   <th>Sending limit</th>
+                  <th>Data credits / month</th>
                   <th>Action</th>
                   <th aria-label="Manage" />
                 </tr>
@@ -318,13 +365,13 @@ export default function AdminProjectsPanel() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={7} className="admin-empty">
+                    <td colSpan={8} className="admin-empty">
                       Loading projects...
                     </td>
                   </tr>
                 ) : projects.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="admin-empty">
+                    <td colSpan={8} className="admin-empty">
                       No projects yet. Create one on the left.
                     </td>
                   </tr>
@@ -386,6 +433,38 @@ export default function AdminProjectsPanel() {
                             }}
                           />
                         </label>
+                      </td>
+                      <td>
+                        <label className="admin-sending-limit">
+                          <input
+                            className="admin-sending-limit-input"
+                            type="number"
+                            min={0}
+                            step={1}
+                            inputMode="numeric"
+                            value={
+                              creditDrafts[project.id] ??
+                              String(project.dataCredits ?? DEFAULT_PROJECT_DATA_CREDITS)
+                            }
+                            disabled={savingCreditsId === project.id}
+                            aria-label={`Monthly data credits for ${project.name}`}
+                            onChange={(event) =>
+                              setCreditDrafts((current) => ({
+                                ...current,
+                                [project.id]: event.target.value,
+                              }))
+                            }
+                            onBlur={() => void saveDataCredits(project)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.currentTarget.blur();
+                              }
+                            }}
+                          />
+                        </label>
+                        <span className="admin-credits-used">
+                          {(project.dataCreditsUsed ?? 0).toLocaleString()} used this month
+                        </span>
                       </td>
                       <td>
                         <div className="admin-open-click-action">

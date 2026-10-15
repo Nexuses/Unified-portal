@@ -1,5 +1,11 @@
+import { randomBytes } from "node:crypto";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
+import {
+  analyticsShareExpiresAt,
+  isAnalyticsShareExpired,
+  resolveAnalyticsShareExpiry,
+} from "@/lib/analytics";
 import type { ContactDoc } from "@/lib/crm";
 import type { CampaignKind } from "@/lib/drip-campaigns";
 import type { CampaignBlastDoc, CampaignSendDoc } from "@/lib/campaign-blasts-server";
@@ -10,6 +16,7 @@ import {
   companyBrandLogoUrl,
   companyDomainFromEmail,
   isFreeEmailHost,
+  isKanbanStageRule,
   type KanbanBoard,
   type KanbanCampaignRef,
   type KanbanList,
@@ -70,15 +77,58 @@ function normalizeStages(value: unknown): KanbanStage[] {
     if (!name || row.system) {
       continue;
     }
-    next.push({ id, name, color: normalizeStageColor(row.color) });
+    next.push({
+      id,
+      name: name.slice(0, 40),
+      color: normalizeStageColor(row.color),
+      ...(isKanbanStageRule(row.rule) ? { rule: row.rule } : {}),
+    });
     seen.add(id);
   }
-  for (const stage of DEFAULT_KANBAN_STAGES) {
-    if (!seen.has(stage.id)) {
-      next.push(stage);
+  // Older boards always carry the three default stages; boards built with
+  // custom stages do not.
+  if (next.some((stage) => stage.system)) {
+    for (const stage of DEFAULT_KANBAN_STAGES) {
+      if (!seen.has(stage.id)) {
+        next.push(stage);
+      }
     }
   }
   return next.length > 0 ? next : DEFAULT_KANBAN_STAGES;
+}
+
+function stagesFromSetup(value: unknown): KanbanStage[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return DEFAULT_KANBAN_STAGES;
+  }
+  const usedRules = new Set<string>();
+  const usedNames = new Set<string>();
+  const stages: KanbanStage[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const row = item as Partial<KanbanStage>;
+    const name = String(row.name ?? "").trim().slice(0, 40);
+    if (!name || !isKanbanStageRule(row.rule)) {
+      throw new Error("Each stage needs a name and a trigger");
+    }
+    if (usedRules.has(row.rule)) {
+      throw new Error("Each trigger can only be used by one stage");
+    }
+    if (usedNames.has(name.toLowerCase())) {
+      throw new Error(`Stage "${name}" is listed twice`);
+    }
+    usedRules.add(row.rule);
+    usedNames.add(name.toLowerCase());
+    stages.push({
+      id: `stage-${new ObjectId().toString().slice(-8)}`,
+      name,
+      color: normalizeStageColor(row.color),
+      rule: row.rule,
+    });
+  }
+  return stages.length > 0 ? stages : DEFAULT_KANBAN_STAGES;
 }
 
 function normalizePlacements(value: unknown): Record<string, string> {
@@ -264,13 +314,14 @@ async function loadPeople(
       companyName: string;
       opened: boolean;
       clicked: boolean;
+      replied: boolean;
       campaigns: string[];
       lastActivityAt?: string;
     }
   >();
 
   function activityIso(doc: CampaignSendDoc) {
-    const latest = [doc.clickedAt, doc.openedAt, doc.sentAt]
+    const latest = [doc.repliedAt, doc.clickedAt, doc.openedAt, doc.sentAt]
       .map((value) => (value ? new Date(value).getTime() : NaN))
       .filter((value) => Number.isFinite(value));
     if (latest.length === 0) {
@@ -319,6 +370,7 @@ async function loadPeople(
           clickedAt: 1,
           clickBurstIgnored: 1,
           sentAt: 1,
+          repliedAt: 1,
         })
         .toArray()) as CampaignSendDoc[];
       return { campaign, docs };
@@ -338,6 +390,7 @@ async function loadPeople(
         !doc.clickBurstIgnored &&
         ((doc.clickCount ?? 0) > 0 || Boolean(doc.clickedAt));
       const current = merged.get(email);
+      const replied = Boolean(doc.repliedAt);
       const lastActivityAt = activityIso(doc);
       if (!current) {
         merged.set(email, {
@@ -347,6 +400,7 @@ async function loadPeople(
           companyName: doc.companyName || "",
           opened,
           clicked,
+          replied,
           campaigns: [campaign.name],
           lastActivityAt,
         });
@@ -354,6 +408,7 @@ async function loadPeople(
       }
       current.opened = current.opened || opened;
       current.clicked = current.clicked || clicked;
+      current.replied = current.replied || replied;
       current.lastActivityAt = laterIso(current.lastActivityAt, lastActivityAt);
       if (!current.campaigns.includes(campaign.name)) {
         current.campaigns.push(campaign.name);
@@ -473,7 +528,7 @@ export async function listProjectKanbanBoards(
 
 export async function createProjectKanbanBoard(
   projectId: ObjectId,
-  input: { name: string; campaigns: KanbanCampaignRef[] },
+  input: { name: string; campaigns: KanbanCampaignRef[]; stages?: unknown },
 ): Promise<KanbanBoard> {
   const name = input.name.trim();
   const campaigns = normalizeCampaigns(input.campaigns);
@@ -483,6 +538,7 @@ export async function createProjectKanbanBoard(
   if (campaigns.length === 0) {
     throw new Error("Select at least one sent or running campaign");
   }
+  const stages = stagesFromSetup(input.stages);
   const db = await getDb();
   const now = new Date();
   const doc: KanbanDoc = {
@@ -490,7 +546,7 @@ export async function createProjectKanbanBoard(
     projectId,
     name,
     campaigns,
-    stages: DEFAULT_KANBAN_STAGES,
+    stages,
     placements: {},
     createdAt: now,
     updatedAt: now,
@@ -597,6 +653,102 @@ export async function patchProjectKanbanBoard(
     placements: cleaned,
     people,
   };
+}
+
+export type KanbanShareDoc = {
+  _id: ObjectId;
+  projectId: ObjectId;
+  boardId: ObjectId;
+  token: string;
+  projectName: string;
+  createdBy: ObjectId | null;
+  createdAt: Date;
+  expiresAt: Date;
+};
+
+/** Reuses the board's live public link, or creates one that expires like analytics reports. */
+export async function createKanbanShare(
+  projectId: ObjectId,
+  boardId: string,
+  projectName: string,
+  userId: ObjectId | null,
+): Promise<KanbanShareDoc | null> {
+  if (!ObjectId.isValid(boardId)) {
+    return null;
+  }
+  const db = await getDb();
+  const board = await db
+    .collection<KanbanDoc>("analytics_kanban")
+    .findOne({ _id: new ObjectId(boardId), projectId }, { projection: { name: 1 } });
+  if (!board?.name) {
+    return null;
+  }
+  const shares = db.collection<KanbanShareDoc>("analytics_kanban_shares");
+  void shares.createIndex({ token: 1 }, { unique: true, background: true }).catch(() => {});
+  const existing = (
+    await shares.find({ projectId, boardId: board._id }).sort({ createdAt: -1 }).toArray()
+  ).find((share) => !isAnalyticsShareExpired(share));
+  if (existing) {
+    return existing;
+  }
+  const createdAt = new Date();
+  const doc: KanbanShareDoc = {
+    _id: new ObjectId(),
+    projectId,
+    boardId: board._id,
+    token: randomBytes(18).toString("base64url"),
+    projectName,
+    createdBy: userId,
+    createdAt,
+    expiresAt: analyticsShareExpiresAt(createdAt),
+  };
+  await shares.insertOne(doc);
+  return doc;
+}
+
+export async function findKanbanShareByToken(token: string) {
+  const trimmed = token.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const db = await getDb();
+  return db.collection<KanbanShareDoc>("analytics_kanban_shares").findOne({ token: trimmed });
+}
+
+export function kanbanShareExpiresAt(share: KanbanShareDoc) {
+  return resolveAnalyticsShareExpiry(share);
+}
+
+/** Board for a public link, without contact ids so the page never links into the portal. */
+export async function getSharedKanbanBoard(share: KanbanShareDoc): Promise<KanbanBoard | null> {
+  if (isAnalyticsShareExpired(share)) {
+    return null;
+  }
+  const board = await getProjectKanbanBoard(share.projectId, share.boardId.toString());
+  if (!board) {
+    return null;
+  }
+  return {
+    ...board,
+    people: board.people.map((person) => ({ ...person, contactId: undefined })),
+  };
+}
+
+/** Card moves from a public link; stages and campaigns stay owner-only. */
+export async function moveSharedKanbanCards(
+  share: KanbanShareDoc,
+  placements: Record<string, string>,
+): Promise<Record<string, string> | null> {
+  if (isAnalyticsShareExpired(share)) {
+    return null;
+  }
+  const board = await patchProjectKanbanBoard(
+    share.projectId,
+    share.boardId.toString(),
+    { placements },
+    { skipPeople: true },
+  );
+  return board?.placements ?? null;
 }
 
 export async function deleteProjectKanbanBoard(

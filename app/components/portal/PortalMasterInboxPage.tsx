@@ -16,6 +16,7 @@ import type {
   InboxMessage,
   InboxThread,
 } from "@/lib/master-inbox-server";
+import type { InboxSignature } from "@/lib/inbox-signatures-server";
 import { portalCampaignRoute } from "@/lib/portal-nav";
 
 const HTML_SIGNATURE_STORAGE_KEY = "portal-inbox-html-signature";
@@ -522,6 +523,11 @@ export default function PortalMasterInboxPage() {
   const [syncNote, setSyncNote] = useState("");
   const [signatureModalOpen, setSignatureModalOpen] = useState(false);
   const [signatureHtmlDraft, setSignatureHtmlDraft] = useState("");
+  const [signatureAutoAddDraft, setSignatureAutoAddDraft] = useState(true);
+  const [signatureSaving, setSignatureSaving] = useState(false);
+  const [signatureError, setSignatureError] = useState("");
+  const [signatures, setSignatures] = useState<Record<string, InboxSignature>>({});
+  const [signatureChoice, setSignatureChoice] = useState<boolean | null>(null);
   const replyEditorRef = useRef<InboxReplyEditorHandle>(null);
   const [aiInstruction, setAiInstruction] = useState("");
   const [suggesting, setSuggesting] = useState(false);
@@ -535,33 +541,115 @@ export default function PortalMasterInboxPage() {
     setReplyHtml(html);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/inbox/signatures");
+        const data = (await response.json().catch(() => ({}))) as {
+          signatures?: InboxSignature[];
+        };
+        if (!response.ok || cancelled) {
+          return;
+        }
+        const next: Record<string, InboxSignature> = {};
+        for (const signature of data.signatures ?? []) {
+          next[signature.senderId] = signature;
+        }
+        setSignatures(next);
+      } catch {
+        // Signatures are optional; replies still work without them.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   function openSignatureModal() {
-    try {
-      setSignatureHtmlDraft(
-        localStorage.getItem(HTML_SIGNATURE_STORAGE_KEY) || "",
-      );
-    } catch {
-      setSignatureHtmlDraft("");
+    const senderId = threads.find((thread) => thread.threadKey === selectedKey)?.senderId;
+    const saved = senderId ? signatures[senderId] : undefined;
+    let draft = saved?.html ?? "";
+    if (!draft) {
+      try {
+        draft = localStorage.getItem(HTML_SIGNATURE_STORAGE_KEY) || "";
+      } catch {
+        draft = "";
+      }
     }
+    setSignatureHtmlDraft(draft);
+    setSignatureAutoAddDraft(saved?.autoAdd ?? true);
+    setSignatureError("");
     setSignatureModalOpen(true);
   }
 
   function closeSignatureModal() {
+    if (signatureSaving) {
+      return;
+    }
     setSignatureModalOpen(false);
   }
 
-  function insertHtmlSignature() {
-    const raw = signatureHtmlDraft.trim();
-    if (!raw) {
+  async function saveSignature() {
+    const senderId = threads.find((thread) => thread.threadKey === selectedKey)?.senderId;
+    const html = signatureHtmlDraft.trim();
+    if (!senderId || !html) {
       return;
     }
+    setSignatureSaving(true);
+    setSignatureError("");
     try {
-      localStorage.setItem(HTML_SIGNATURE_STORAGE_KEY, raw);
-    } catch {
-      // Ignore storage failures (private mode / quota).
+      const response = await fetch("/api/inbox/signatures", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ senderId, html, autoAdd: signatureAutoAddDraft }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        signature?: InboxSignature;
+        error?: string;
+      };
+      if (!response.ok || !data.signature) {
+        throw new Error(data.error || "Could not save signature.");
+      }
+      const saved = data.signature;
+      setSignatures((current) => ({ ...current, [senderId]: saved }));
+      setSignatureChoice(null);
+      setSignatureModalOpen(false);
+    } catch (err) {
+      setSignatureError(err instanceof Error ? err.message : "Could not save signature.");
+    } finally {
+      setSignatureSaving(false);
     }
-    replyEditorRef.current?.insertHtml(raw);
-    setSignatureModalOpen(false);
+  }
+
+  async function removeSignature() {
+    const senderId = threads.find((thread) => thread.threadKey === selectedKey)?.senderId;
+    if (!senderId) {
+      return;
+    }
+    setSignatureSaving(true);
+    setSignatureError("");
+    try {
+      const response = await fetch(
+        `/api/inbox/signatures?senderId=${encodeURIComponent(senderId)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "Could not remove signature.");
+      }
+      setSignatures((current) => {
+        const next = { ...current };
+        delete next[senderId];
+        return next;
+      });
+      setSignatureChoice(null);
+      setSignatureModalOpen(false);
+    } catch (err) {
+      setSignatureError(err instanceof Error ? err.message : "Could not remove signature.");
+    } finally {
+      setSignatureSaving(false);
+    }
   }
 
   const loadThreads = useCallback(async (inboxId: string, options?: { silent?: boolean }) => {
@@ -657,6 +745,7 @@ export default function PortalMasterInboxPage() {
     setSuggestError("");
     setLoadingThread(true);
     setError("");
+    setSignatureChoice(null);
     try {
       const response = await fetch(
         `/api/inbox/${encodeURIComponent(threadKey)}`,
@@ -724,7 +813,11 @@ export default function PortalMasterInboxPage() {
     }
     setSendingReply(true);
     setError("");
-    const outgoingHtml = replyHtml;
+    const bodyHtml = replyHtml;
+    const outgoingHtml =
+      includeSignature && currentSignature
+        ? `${bodyHtml}<br><div class="portal-signature">${sanitizePastedHtml(currentSignature.html)}</div>`
+        : bodyHtml;
     try {
       const response = await fetch(
         `/api/inbox/${encodeURIComponent(selectedKey)}`,
@@ -741,11 +834,12 @@ export default function PortalMasterInboxPage() {
       const nextMessages = Array.isArray(data.messages) ? data.messages : [];
       setMessages(nextMessages);
       setReplyHtml("");
+      setSignatureChoice(null);
       setReplyEditorKey((key) => key + 1);
       setComposerOpen(false);
       const preview =
-        stripHtmlToText(outgoingHtml).slice(0, 140) ||
-        (/<img\b/i.test(outgoingHtml) ? "(image)" : "(no preview)");
+        stripHtmlToText(bodyHtml).slice(0, 140) ||
+        (/<img\b/i.test(bodyHtml) ? "(image)" : "(no preview)");
       setThreads((current) => {
         const updated = current.map((thread) =>
           thread.threadKey === selectedKey
@@ -793,6 +887,10 @@ export default function PortalMasterInboxPage() {
       : inboxes.find((inbox) => inbox.id === selectedInboxId)?.email ||
         "Selected inbox";
   const canSendReply = !sendingReply && !isEmptyReplyHtml(replyHtml);
+  const currentSignature = selected?.senderId ? signatures[selected.senderId] : undefined;
+  const includeSignature = Boolean(
+    currentSignature && (signatureChoice ?? currentSignature.autoAdd),
+  );
 
   return (
     <div className="crm-page inbox-page">
@@ -1048,14 +1146,35 @@ export default function PortalMasterInboxPage() {
                     void sendReply();
                   }}
                 />
+                {currentSignature ? (
+                  <div className={`inbox-sig-attached${includeSignature ? "" : " is-off"}`}>
+                    <label className="inbox-sig-toggle">
+                      <input
+                        type="checkbox"
+                        checked={includeSignature}
+                        disabled={sendingReply}
+                        onChange={(event) => setSignatureChoice(event.target.checked)}
+                      />
+                      Include signature
+                    </label>
+                    {includeSignature ? (
+                      <div
+                        className="inbox-sig-attached-preview"
+                        dangerouslySetInnerHTML={{
+                          __html: sanitizePastedHtml(currentSignature.html),
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="inbox-reply-actions">
                   <button
                     type="button"
                     className="inbox-sig-btn"
                     onClick={openSignatureModal}
-                    disabled={sendingReply}
+                    disabled={sendingReply || !selected?.senderId}
                   >
-                    Insert HTML signature
+                    {currentSignature ? "Edit signature" : "Add signature"}
                   </button>
                   <button
                     type="submit"
@@ -1082,11 +1201,11 @@ export default function PortalMasterInboxPage() {
           >
             <div className="crm-modal-head">
               <div>
-                <h3 id="inbox-sig-title">HTML signature</h3>
+                <h3 id="inbox-sig-title">Email signature</h3>
                 <p>
-                  Paste your signature HTML below. Use{" "}
-                  <code>https://</code> or <code>data:image</code> image URLs so
-                  logos show in the reply.
+                  Saved for replies sent from{" "}
+                  <strong>{selected?.senderEmail || "this inbox"}</strong>. Use{" "}
+                  <code>https://</code> image URLs so logos show in the reply.
                 </p>
               </div>
               <button
@@ -1121,22 +1240,42 @@ export default function PortalMasterInboxPage() {
                   />
                 </div>
               ) : null}
+              <label className="inbox-sig-toggle">
+                <input
+                  type="checkbox"
+                  checked={signatureAutoAddDraft}
+                  onChange={(event) => setSignatureAutoAddDraft(event.target.checked)}
+                />
+                Add to every reply from this inbox automatically
+              </label>
+              {signatureError ? <div className="inbox-ai-error">{signatureError}</div> : null}
             </div>
             <div className="crm-modal-foot">
+              {currentSignature ? (
+                <button
+                  type="button"
+                  className="inbox-sig-remove"
+                  onClick={() => void removeSignature()}
+                  disabled={signatureSaving}
+                >
+                  Remove signature
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="btn-link-purple"
                 onClick={closeSignatureModal}
+                disabled={signatureSaving}
               >
                 Cancel
               </button>
               <button
                 type="button"
                 className="btn-dark"
-                onClick={insertHtmlSignature}
-                disabled={!signatureHtmlDraft.trim()}
+                onClick={() => void saveSignature()}
+                disabled={!signatureHtmlDraft.trim() || signatureSaving}
               >
-                Insert into reply
+                {signatureSaving ? "Saving…" : "Save signature"}
               </button>
             </div>
           </div>

@@ -513,6 +513,14 @@ export default function PortalDripPage({
             <h2>{listTitle}</h2>
           </div>
           <div className="crm-actions">
+            {personalise ? (
+              <a className="btn-soft pz-sample-btn" href="/samples/personalise-sample.csv" download>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+                </svg>
+                Download sample
+              </a>
+            ) : null}
             <button type="button" className="btn-dark" onClick={openCreateForm}>
               Create campaign
             </button>

@@ -3,6 +3,7 @@ import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import type { ContactDoc, ListDoc, ListMembershipDoc } from "@/lib/crm";
 import {
+  campaignCcList,
   campaignSequences,
   formatCampaignClock,
   isOneOneCampaign,
@@ -59,6 +60,8 @@ export type CampaignBlastDoc = {
   senderName?: string;
   senderEmail: string;
   replyTo?: string;
+  /** CC'd on every email in the campaign. */
+  cc?: string[];
   listId?: string;
   listName?: string;
   listDisplayId?: number;
@@ -1260,6 +1263,7 @@ async function sendPendingBatch(
         html,
         fromName: readableSenderName(blast.senderName),
         replyTo: blast.replyTo,
+        cc: blast.cc,
         listUnsubscribeUrl: `${trackingBase.replace(/\/$/, "")}/api/unsubscribe/${send.token}`,
         inReplyTo: outbound.inReplyTo,
         references: outbound.references,
@@ -1560,6 +1564,7 @@ export async function launchCampaignBlast(input: {
     senderName: campaign.senderName,
     senderEmail: campaign.senderEmail,
     replyTo: campaign.replyToEnabled ? campaign.replyToEmail : undefined,
+    cc: campaignCcList(campaign),
     listId: campaign.listId,
     listName: campaign.listName,
     listDisplayId,
@@ -2219,6 +2224,7 @@ export async function syncPausedOneOneBlast(
         senderName: campaign.senderName,
         senderEmail: campaign.senderEmail || blast.senderEmail,
         replyTo: campaign.replyToEnabled ? campaign.replyToEmail : undefined,
+        cc: campaignCcList(campaign),
         listId: campaign.listId || blast.listId,
         listName: campaign.listName || blast.listName,
         listDisplayId,
@@ -2412,12 +2418,79 @@ function clickEventsHaveBurst(events: Array<{ url: string; at: Date | string }>)
   return false;
 }
 
+async function instantClickProjectIds() {
+  const db = await getDb();
+  const projects = await db
+    .collection("projects")
+    .find({
+      $or: [
+        { instantClick: true },
+        { instantClick: { $exists: false }, instantOpenClick: true },
+      ],
+    })
+    .project<{ _id: ObjectId }>({ _id: 1 })
+    .toArray();
+  return projects.map((project) => project._id);
+}
+
+/** Un-ignore every stored click for an instant-click project and recount its campaigns. */
+export async function restoreClickBurstsForProject(projectId: ObjectId) {
+  const db = await getDb();
+  const sends = db.collection<CampaignSendDoc>("campaign_sends");
+  const docs = await sends
+    .find({ projectId, $or: [{ clickBurstIgnored: true }, { "clickEvents.ignored": true }] })
+    .project<Pick<CampaignSendDoc, "_id" | "blastId" | "clickEvents">>({
+      blastId: 1,
+      clickEvents: 1,
+    })
+    .toArray();
+
+  const blastIds = new Map<string, ObjectId>();
+  const updates = docs.map((doc) => {
+    blastIds.set(doc.blastId.toString(), doc.blastId);
+    const events = (doc.clickEvents ?? []).map((event) => ({ url: event.url, at: event.at }));
+    const countable = events
+      .filter((event) => !isNonNavigationalTrackedUrl(event.url ?? ""))
+      .sort((left, right) => asTimeMs(left.at) - asTimeMs(right.at));
+    const first = countable[0];
+    return {
+      updateOne: {
+        filter: { _id: doc._id },
+        update: first
+          ? {
+              $set: {
+                clickEvents: events,
+                clickCount: countable.length,
+                clickedAt: new Date(first.at),
+                clickedUrl: first.url,
+              },
+              $unset: { clickBurstIgnored: "" as const },
+            }
+          : { $set: { clickEvents: events }, $unset: { clickBurstIgnored: "" as const } },
+      },
+    };
+  });
+
+  for (let index = 0; index < updates.length; index += 500) {
+    await sends.bulkWrite(updates.slice(index, index + 500), { ordered: false });
+  }
+  for (const blastId of blastIds.values()) {
+    await refreshBlastCounts(blastId);
+  }
+  return { restoredSends: updates.length, campaigns: blastIds.size };
+}
+
 /** Flag past sends whose stored clicks show a scanner burst and recount their campaigns. */
 export async function repairClickBursts(options?: { dryRun?: boolean }) {
   const db = await getDb();
   const sends = db.collection<CampaignSendDoc>("campaign_sends");
+  const trustedProjects = await instantClickProjectIds();
   const cursor = sends
-    .find({ clickBurstIgnored: { $ne: true }, "clickEvents.1": { $exists: true } })
+    .find({
+      clickBurstIgnored: { $ne: true },
+      "clickEvents.1": { $exists: true },
+      ...(trustedProjects.length > 0 ? { projectId: { $nin: trustedProjects } } : {}),
+    })
     .project<Pick<CampaignSendDoc, "_id" | "blastId" | "clickEvents">>({
       blastId: 1,
       clickEvents: 1,
@@ -2538,6 +2611,21 @@ export async function recordCampaignClick(token: string, url?: string) {
     return;
   }
 
+  const sends = db.collection<CampaignSendDoc>("campaign_sends");
+
+  // Instant-click projects count every click, including multi-link bursts.
+  if (skipClickGrace) {
+    await sends.updateOne(
+      { _id: send._id },
+      {
+        ...(clickedUrl ? { $push: { clickEvents: { url: clickedUrl, at: now } } } : {}),
+        $unset: { clickBurstIgnored: "" },
+      },
+    );
+    await countClick({ db, send, now, clickedUrl, burstFilter: {} });
+    return;
+  }
+
   // Already flagged as burst — keep redirect, never count again.
   if (send.clickBurstIgnored) {
     if (clickedUrl) {
@@ -2555,7 +2643,6 @@ export async function recordCampaignClick(token: string, url?: string) {
 
   // Scanners fire every link at once, so save this event before judging it:
   // whichever request saves last sees the whole burst.
-  const sends = db.collection<CampaignSendDoc>("campaign_sends");
   const saved = clickedUrl
     ? await sends.findOneAndUpdate(
         { _id: send._id },
@@ -2611,8 +2698,26 @@ export async function recordCampaignClick(token: string, url?: string) {
     return;
   }
 
+  await countClick({
+    db,
+    send,
+    now,
+    clickedUrl,
+    burstFilter: { clickBurstIgnored: { $ne: true } },
+  });
+}
+
+async function countClick(input: {
+  db: Awaited<ReturnType<typeof getDb>>;
+  send: CampaignSendDoc;
+  now: Date;
+  clickedUrl: string;
+  burstFilter: Record<string, unknown>;
+}) {
+  const { db, send, now, clickedUrl, burstFilter } = input;
+  const sends = db.collection<CampaignSendDoc>("campaign_sends");
   const first = await sends.updateOne(
-    { _id: send._id, clickBurstIgnored: { $ne: true }, clickedAt: { $exists: false } },
+    { _id: send._id, ...burstFilter, clickedAt: { $exists: false } },
     {
       $inc: { clickCount: 1 },
       $set: { clickedAt: now, ...(clickedUrl ? { clickedUrl } : {}) },
@@ -2620,10 +2725,7 @@ export async function recordCampaignClick(token: string, url?: string) {
   );
   const firstClick = first.modifiedCount > 0;
   if (!firstClick) {
-    await sends.updateOne(
-      { _id: send._id, clickBurstIgnored: { $ne: true } },
-      { $inc: { clickCount: 1 } },
-    );
+    await sends.updateOne({ _id: send._id, ...burstFilter }, { $inc: { clickCount: 1 } });
   }
   if (firstClick) {
     await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
@@ -2921,7 +3023,32 @@ export async function listCampaignSendsForExport(
   });
   return db
     .collection<CampaignSendDoc>("campaign_sends")
-    .find(blast ? { projectId, blastId: blast._id } : { projectId, campaignId })
+    .find(blast ? { projectId, blastId: blast._id } : { projectId, campaignId }, {
+      projection: {
+        email: 1,
+        fullName: 1,
+        firstName: 1,
+        lastName: 1,
+        companyName: 1,
+        status: 1,
+        error: 1,
+        sentAt: 1,
+        openedAt: 1,
+        openCount: 1,
+        clickedAt: 1,
+        clickedUrl: 1,
+        clickEvents: {
+          $map: {
+            input: { $slice: [{ $ifNull: ["$clickEvents", []] }, 2] },
+            as: "event",
+            in: { url: "$$event.url" },
+          },
+        },
+        clickCount: 1,
+        unsubscribedAt: 1,
+        sequenceIndex: 1,
+      },
+    })
     .sort({ fullName: 1, email: 1 })
     .toArray();
 }

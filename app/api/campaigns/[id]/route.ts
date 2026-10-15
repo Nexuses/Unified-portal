@@ -74,7 +74,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       error instanceof Error ? error.message : "Failed to update campaign";
     const status = message.includes("already exists")
       ? 409
-      : message.includes("required")
+      : message.includes("required") || message.includes("CC email")
         ? 400
         : 500;
     console.error("Failed to update drip campaign:", error);

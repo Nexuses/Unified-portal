@@ -106,6 +106,46 @@ export function stepDelayDays(steps: Array<Pick<PersonaliseStep, "day">>) {
   });
 }
 
+export const MAX_STEP_GAP_DAYS = 90;
+
+/** Most common gap per follow-up in the file; index 0 is the first follow-up. */
+export function defaultStepGaps(contacts: PersonaliseContact[]) {
+  const longest = contacts.reduce((max, contact) => Math.max(max, contact.steps.length), 0);
+  const gaps: number[] = [];
+  for (let step = 1; step < longest; step += 1) {
+    const counts = new Map<number, number>();
+    for (const contact of contacts) {
+      if (step >= contact.steps.length) continue;
+      const gap = stepDelayDays(contact.steps)[step];
+      counts.set(gap, (counts.get(gap) ?? 0) + 1);
+    }
+    let best = 3;
+    let bestCount = 0;
+    for (const [gap, count] of counts) {
+      if (count > bestCount || (count === bestCount && gap < best)) {
+        best = gap;
+        bestCount = count;
+      }
+    }
+    gaps.push(Math.min(MAX_STEP_GAP_DAYS, best));
+  }
+  return gaps;
+}
+
+/** Rewrites every contact's step days from the chosen gaps, replacing the file's days. */
+export function applyStepGaps(contacts: PersonaliseContact[], gaps: number[]) {
+  return contacts.map((contact) => {
+    let day = 0;
+    return {
+      ...contact,
+      steps: contact.steps.map((step, index) => {
+        if (index > 0) day += Math.max(0, gaps[index - 1] ?? 0);
+        return { ...step, day };
+      }),
+    };
+  });
+}
+
 export type PitchInline = { text: string; bold?: boolean };
 
 export type PitchBullet = { label?: string; text: PitchInline[] };
@@ -235,7 +275,23 @@ function inlineHtml(parts: PitchInline[]) {
     .join("");
 }
 
-export function pitchToHtml(body: string) {
+export const MAX_SIGNATURE_HTML = 20_000;
+
+/** Keeps signature markup but drops scripts, embeds, and inline event handlers. */
+export function cleanSignatureHtml(html: string) {
+  return html
+    .slice(0, MAX_SIGNATURE_HTML)
+    .replace(/<(script|style|iframe|object|embed|form|textarea)\b[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<\/?(script|style|iframe|object|embed|form|meta|link|base|textarea)\b[^>]*>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\b(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1="#"')
+    .trim();
+}
+
+export function pitchToHtml(body: string, signatureHtml = "") {
+  const signature = cleanSignatureHtml(signatureHtml);
+  const signatureBlock = signature ? `<div style="margin:8px 0 0">${signature}</div>` : "";
+  let signed = false;
   const html = pitchBlocks(body)
     .map((block) => {
       if (block.type === "list") {
@@ -248,11 +304,16 @@ export function pitchToHtml(body: string) {
         return `<ul style="list-style-type:disc;list-style-position:outside;margin:0 0 14px;padding-left:24px">${items}</ul>`;
       }
       if (block.type === "signoff") {
+        if (signature) {
+          signed = true;
+          return `<p style="margin:18px 0 0">${escapeHtml(block.lines[0])}</p>${signatureBlock}`;
+        }
         return `<p style="margin:18px 0 0">${block.lines.map(escapeHtml).join("<br>")}</p>`;
       }
       return `<p style="margin:0 0 14px">${inlineHtml(block.text)}</p>`;
     })
-    .join("");
+    .join("")
+    .concat(signature && !signed ? `<div style="margin:18px 0 0">${signature}</div>` : "");
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#222">${html}</div>`;
 }
 

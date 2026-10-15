@@ -7,6 +7,7 @@ import {
   getOpenGroupsFromPathname,
   getPageTitleFromPathname,
 } from "@/lib/portal-nav";
+import PortalAssistant from "./PortalAssistant";
 import PortalSidebar from "./PortalSidebar";
 import PortalTopbar from "./PortalTopbar";
 
@@ -84,6 +85,7 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
           {children}
         </div>
       </div>
+      <PortalAssistant projectId={user.projectId} projectName={user.projectName} />
     </div>
   );
 }

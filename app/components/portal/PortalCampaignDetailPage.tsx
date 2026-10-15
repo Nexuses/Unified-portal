@@ -27,6 +27,9 @@ import {
   type CampaignKind,
   type CampaignSequence,
   type DripCampaign,
+  MAX_CAMPAIGN_CC,
+  campaignCcList,
+  parseCcEmails,
 } from "@/lib/drip-campaigns";
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
 import { PORTAL_ROUTES, campaignListRoute, portalCampaignRoute } from "@/lib/portal-nav";
@@ -2252,6 +2255,7 @@ function PreviewTestModal({
           html: testHtml || html,
           fromName: campaign.senderName,
           replyTo: campaign.replyToEnabled ? campaign.replyToEmail : undefined,
+          cc: campaignCcList(campaign),
           campaignName: campaign.name,
           utmEnabled: campaign.utmEnabled,
           utmSourceEnabled: campaign.utmSourceEnabled,
@@ -3203,6 +3207,7 @@ function sendersAllowedForKind(
 
 function SettingsSavedCard({
   replyToEnabled,
+  ccEmails,
   attachmentEnabled,
   attachmentName,
   timezoneEnabled,
@@ -3213,6 +3218,7 @@ function SettingsSavedCard({
   onEdit,
 }: {
   replyToEnabled: boolean;
+  ccEmails?: string[];
   attachmentEnabled: boolean;
   attachmentName?: string;
   timezoneEnabled: boolean;
@@ -3235,6 +3241,9 @@ function SettingsSavedCard({
         <ul className="drip-settings-saved-list">
           {replyToEnabled ? (
             <li>You’re using a different ‘Reply-to’ Email address.</li>
+          ) : null}
+          {ccEmails?.length ? (
+            <li>Every email is CC’d to {ccEmails.join(", ")}.</li>
           ) : null}
           {attachmentEnabled ? (
             <li>
@@ -3366,6 +3375,8 @@ function SettingsPanel({
   campaign,
   draftReplyToEnabled,
   draftReplyToEmail,
+  draftCcEnabled,
+  draftCcEmails,
   draftAttachmentEnabled,
   draftAttachmentName,
   draftTimezoneEnabled,
@@ -3380,6 +3391,8 @@ function SettingsPanel({
   onSave,
   onReplyToEnabledChange,
   onReplyToEmailChange,
+  onCcEnabledChange,
+  onCcEmailsChange,
   onAttachmentEnabledChange,
   onAttachmentNameChange,
   onTimezoneEnabledChange,
@@ -3394,6 +3407,8 @@ function SettingsPanel({
   campaign: DripCampaign;
   draftReplyToEnabled: boolean;
   draftReplyToEmail: string;
+  draftCcEnabled: boolean;
+  draftCcEmails: string;
   draftAttachmentEnabled: boolean;
   draftAttachmentName: string;
   draftTimezoneEnabled: boolean;
@@ -3408,6 +3423,8 @@ function SettingsPanel({
   onSave: () => void;
   onReplyToEnabledChange: (value: boolean) => void;
   onReplyToEmailChange: (value: string) => void;
+  onCcEnabledChange: (value: boolean) => void;
+  onCcEmailsChange: (value: string) => void;
   onAttachmentEnabledChange: (value: boolean) => void;
   onAttachmentNameChange: (value: string) => void;
   onTimezoneEnabledChange: (value: boolean) => void;
@@ -3423,6 +3440,8 @@ function SettingsPanel({
   const hasChanges =
     draftReplyToEnabled !== Boolean(campaign.replyToEnabled) ||
     draftReplyToEmail.trim() !== (campaign.replyToEmail ?? "") ||
+    draftCcEnabled !== Boolean(campaign.ccEnabled) ||
+    draftCcEmails.trim() !== (campaign.ccEmails ?? "") ||
     draftAttachmentEnabled !== Boolean(campaign.attachmentEnabled) ||
     draftAttachmentName !== (campaign.attachmentName ?? "") ||
     draftTimezoneEnabled !== Boolean(campaign.timezoneEnabled) ||
@@ -3434,13 +3453,22 @@ function SettingsPanel({
     draftUtmMedium.trim() !== (campaign.utmMedium?.trim() || DEFAULT_UTM_MEDIUM) ||
     draftUtmCampaign.trim() !== (campaign.utmCampaign?.trim() || DEFAULT_UTM_CAMPAIGN);
   const replyToValid = !draftReplyToEnabled || isValidEmail(draftReplyToEmail.trim());
+  const cc = parseCcEmails(draftCcEmails);
+  const ccError = !draftCcEnabled || !draftCcEmails.trim()
+    ? ""
+    : cc.invalid.length
+      ? `“${cc.invalid[0]}” is not a valid email.`
+      : cc.valid.length > MAX_CAMPAIGN_CC
+        ? `Add up to ${MAX_CAMPAIGN_CC} CC emails.`
+        : "";
+  const ccValid = !draftCcEnabled || (cc.valid.length > 0 && !ccError);
   const attachmentValid = !draftAttachmentEnabled || Boolean(draftAttachmentName.trim());
   const utmValid =
     !draftUtmEnabled ||
     Boolean(
       draftUtmSource.trim() && draftUtmMedium.trim() && draftUtmCampaign.trim(),
     );
-  const canSave = hasChanges && replyToValid && attachmentValid && utmValid;
+  const canSave = hasChanges && replyToValid && ccValid && attachmentValid && utmValid;
 
   return (
     <div className="drip-settings-panel">
@@ -3472,6 +3500,23 @@ function SettingsPanel({
               onChange={(event) => onReplyToEmailChange(event.target.value)}
               placeholder="Enter an email address"
             />
+          </SettingsToggle>
+
+          <SettingsToggle
+            on={draftCcEnabled}
+            label="CC every email"
+            help={`Every email in this campaign, including follow-ups, is CC'd to these addresses. Up to ${MAX_CAMPAIGN_CC}, separated by commas.`}
+            onToggle={() => onCcEnabledChange(!draftCcEnabled)}
+          >
+            <input
+              type="text"
+              className="drip-settings-email"
+              value={draftCcEmails}
+              onChange={(event) => onCcEmailsChange(event.target.value)}
+              placeholder="manager@company.com, sales@company.com"
+              aria-invalid={Boolean(ccError)}
+            />
+            {ccError ? <p className="drip-settings-error">{ccError}</p> : null}
           </SettingsToggle>
 
           <SettingsToggle
@@ -4268,6 +4313,8 @@ export default function PortalCampaignDetailPage({
   const [draftPreviewText, setDraftPreviewText] = useState("");
   const [draftReplyToEnabled, setDraftReplyToEnabled] = useState(false);
   const [draftReplyToEmail, setDraftReplyToEmail] = useState("");
+  const [draftCcEnabled, setDraftCcEnabled] = useState(false);
+  const [draftCcEmails, setDraftCcEmails] = useState("");
   const [draftAttachmentEnabled, setDraftAttachmentEnabled] = useState(false);
   const [draftAttachmentName, setDraftAttachmentName] = useState("");
   const [draftTimezoneEnabled, setDraftTimezoneEnabled] = useState(false);
@@ -4657,6 +4704,8 @@ export default function PortalCampaignDetailPage({
     if (settingsPanelOpen) {
       patch.replyToEnabled = draftReplyToEnabled;
       patch.replyToEmail = draftReplyToEnabled ? draftReplyToEmail.trim() : "";
+      patch.ccEnabled = draftCcEnabled;
+      patch.ccEmails = draftCcEnabled ? draftCcEmails.trim() : "";
       patch.attachmentEnabled = draftAttachmentEnabled;
       patch.attachmentName = draftAttachmentEnabled ? draftAttachmentName : "";
       patch.timezoneEnabled = draftTimezoneEnabled;
@@ -4783,6 +4832,8 @@ export default function PortalCampaignDetailPage({
     setSettingsPanelOpen(true);
     setDraftReplyToEnabled(Boolean(campaign?.replyToEnabled));
     setDraftReplyToEmail(campaign?.replyToEmail ?? "");
+    setDraftCcEnabled(Boolean(campaign?.ccEnabled));
+    setDraftCcEmails(campaign?.ccEmails ?? "");
     setDraftAttachmentEnabled(Boolean(campaign?.attachmentEnabled));
     setDraftAttachmentName(campaign?.attachmentName ?? "");
     setDraftTimezoneEnabled(Boolean(campaign?.timezoneEnabled));
@@ -4860,6 +4911,8 @@ export default function PortalCampaignDetailPage({
       await persistCampaign({
         replyToEnabled: draftReplyToEnabled,
         replyToEmail: draftReplyToEnabled ? draftReplyToEmail.trim() : "",
+        ccEnabled: draftCcEnabled,
+        ccEmails: draftCcEnabled ? draftCcEmails.trim() : "",
         attachmentEnabled: draftAttachmentEnabled,
         attachmentName: draftAttachmentEnabled ? draftAttachmentName : "",
         timezoneEnabled: draftTimezoneEnabled,
@@ -5585,6 +5638,8 @@ export default function PortalCampaignDetailPage({
                   campaign={campaign}
                   draftReplyToEnabled={draftReplyToEnabled}
                   draftReplyToEmail={draftReplyToEmail}
+                  draftCcEnabled={draftCcEnabled}
+                  draftCcEmails={draftCcEmails}
                   draftAttachmentEnabled={draftAttachmentEnabled}
                   draftAttachmentName={draftAttachmentName}
                   draftTimezoneEnabled={draftTimezoneEnabled}
@@ -5599,6 +5654,8 @@ export default function PortalCampaignDetailPage({
                   onSave={handleSaveSettings}
                   onReplyToEnabledChange={setDraftReplyToEnabled}
                   onReplyToEmailChange={setDraftReplyToEmail}
+                  onCcEnabledChange={setDraftCcEnabled}
+                  onCcEmailsChange={setDraftCcEmails}
                   onAttachmentEnabledChange={setDraftAttachmentEnabled}
                   onAttachmentNameChange={setDraftAttachmentName}
                   onTimezoneEnabledChange={setDraftTimezoneEnabled}
@@ -5612,6 +5669,7 @@ export default function PortalCampaignDetailPage({
                 />
               ) : step.id === "settings" &&
                 (campaign.replyToEnabled ||
+                  campaignCcList(campaign) ||
                   campaign.attachmentEnabled ||
                   campaign.timezoneEnabled ||
                   campaign.openTrackingOff ||
@@ -5619,6 +5677,7 @@ export default function PortalCampaignDetailPage({
                   campaign.utmEnabled) ? (
                 <SettingsSavedCard
                   replyToEnabled={Boolean(campaign.replyToEnabled)}
+                  ccEmails={campaignCcList(campaign)}
                   attachmentEnabled={Boolean(campaign.attachmentEnabled)}
                   attachmentName={campaign.attachmentName}
                   timezoneEnabled={Boolean(campaign.timezoneEnabled)}

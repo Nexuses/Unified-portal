@@ -1,8 +1,13 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
+  MAX_SIGNATURE_HTML,
+  MAX_STEP_GAP_DAYS,
+  applyStepGaps,
+  cleanSignatureHtml,
   contactNeedsEmail,
+  defaultStepGaps,
   pitchBlocks,
   stepDelayDays,
   type PitchInline,
@@ -10,6 +15,7 @@ import {
   type PersonalisePlan,
 } from "@/lib/personalise-types";
 import SmtpSenderSelect from "@/app/components/portal/SmtpSenderSelect";
+import { formatTimezoneLabel, listCampaignTimezones } from "@/lib/campaign-timezones";
 import CampaignScheduleDrawer, {
   type CampaignScheduleInput,
 } from "@/app/components/portal/CampaignScheduleDrawer";
@@ -31,6 +37,49 @@ function personName(contact: PersonaliseContact) {
   return [contact.firstName, contact.lastName].filter(Boolean).join(" ");
 }
 
+function SignatureFrame({ html, signOff = "" }: { html: string; signOff?: string }) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [size, setSize] = useState<{ height: number; width?: number }>({ height: 80 });
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>html,body{margin:0;padding:0;background:#fff}body{font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222}p.signoff{margin:0 0 8px}</style></head><body>${signOff ? `<p class="signoff">${signOff}</p>` : ""}${html}</body></html>`;
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    let observer: ResizeObserver | null = null;
+    const measure = () => {
+      const body = frame.contentDocument?.body;
+      const root = frame.contentDocument?.documentElement;
+      if (!body || !root) return;
+      const available = frame.parentElement?.clientWidth ?? 0;
+      const wide = root.scrollWidth > available + 1 ? root.scrollWidth : undefined;
+      setSize({ height: Math.max(40, Math.ceil(body.scrollHeight)), width: wide });
+      if (!observer) {
+        observer = new ResizeObserver(measure);
+        observer.observe(body);
+      }
+    };
+    frame.addEventListener("load", measure);
+    if (frame.contentDocument?.readyState === "complete") measure();
+    return () => {
+      frame.removeEventListener("load", measure);
+      observer?.disconnect();
+    };
+  }, [doc]);
+
+  return (
+    <div className="pz-signature-scroll">
+      <iframe
+        ref={frameRef}
+        className="pz-signature-frame"
+        title="Signature preview"
+        sandbox="allow-same-origin allow-popups"
+        srcDoc={doc}
+        style={{ height: size.height, width: size.width ?? "100%" }}
+      />
+    </div>
+  );
+}
+
 function initials(contact: PersonaliseContact) {
   const letters = [contact.firstName, contact.lastName]
     .filter(Boolean)
@@ -49,7 +98,7 @@ function Inline({ parts }: { parts: PitchInline[] }) {
   );
 }
 
-function PitchPreview({ body }: { body: string }) {
+function PitchPreview({ body, signature }: { body: string; signature: string }) {
   const blocks = useMemo(() => pitchBlocks(body), [body]);
   return (
     <div className="pz-pitch">
@@ -65,6 +114,14 @@ function PitchPreview({ body }: { body: string }) {
                 </li>
               ))}
             </ul>
+          );
+        }
+        if (block.type === "signoff" && signature) {
+          return (
+            <Fragment key={index}>
+              <p className="pz-signoff">{block.lines[0]}</p>
+              <SignatureFrame html={signature} />
+            </Fragment>
           );
         }
         if (block.type === "signoff") {
@@ -85,6 +142,9 @@ function PitchPreview({ body }: { body: string }) {
           </p>
         );
       })}
+      {signature && !blocks.some((block) => block.type === "signoff") ? (
+        <SignatureFrame html={signature} />
+      ) : null}
     </div>
   );
 }
@@ -107,6 +167,51 @@ export default function PortalPersonalisePage({
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [suppressed, setSuppressed] = useState<Set<string>>(() => new Set());
   const [page, setPage] = useState(1);
+  const [stepGaps, setStepGaps] = useState<number[]>([]);
+  const [signatureHtml, setSignatureHtml] = useState("");
+  const [signatureOpen, setSignatureOpen] = useState(false);
+  const [signatureDraft, setSignatureDraft] = useState("");
+  const [signatureTab, setSignatureTab] = useState<"code" | "preview">("code");
+  const [timezone, setTimezone] = useState("Asia/Kolkata");
+  const timezones = useMemo(() => listCampaignTimezones(timezone), [timezone]);
+  const [signatureTouched, setSignatureTouched] = useState(false);
+  const [savedSignatures, setSavedSignatures] = useState<Record<string, string>>({});
+  const cleanSignature = useMemo(() => cleanSignatureHtml(signatureHtml), [signatureHtml]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/inbox/signatures");
+        const data = (await response.json()) as { signatures?: { senderId: string; html: string }[] };
+        if (cancelled || !response.ok) return;
+        setSavedSignatures(
+          Object.fromEntries((data.signatures ?? []).map((item) => [item.senderId, item.html])),
+        );
+      } catch {
+        // Signatures are optional.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const savedForSender = savedSignatures[senderId] ?? "";
+  const activeSignature = signatureTouched ? cleanSignature : cleanSignatureHtml(savedForSender);
+
+  function openSignatureEditor() {
+    const current = signatureTouched ? signatureHtml : savedForSender;
+    setSignatureDraft(current);
+    setSignatureTab(cleanSignatureHtml(current) ? "preview" : "code");
+    setSignatureOpen(true);
+  }
+
+  function saveSignature(value: string) {
+    setSignatureHtml(value.slice(0, MAX_SIGNATURE_HTML));
+    setSignatureTouched(true);
+    setSignatureOpen(false);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -205,6 +310,16 @@ export default function PortalPersonalisePage({
     });
   }
 
+  function changeStepGap(index: number, value: number) {
+    const gaps = stepGaps.map((gap, gapIndex) =>
+      gapIndex === index ? Math.max(0, Math.min(MAX_STEP_GAP_DAYS, Math.round(value) || 0)) : gap,
+    );
+    setStepGaps(gaps);
+    setPlan((current) =>
+      current ? { ...current, contacts: applyStepGaps(current.contacts, gaps) } : current,
+    );
+  }
+
   async function onFile(file: File | null) {
     if (!file) {
       return;
@@ -223,7 +338,9 @@ export default function PortalPersonalisePage({
       if (!response.ok) {
         throw new Error(data.error || "Could not read that file.");
       }
-      setPlan(data);
+      const gaps = defaultStepGaps(data.contacts);
+      setStepGaps(gaps);
+      setPlan({ ...data, contacts: applyStepGaps(data.contacts, gaps) });
       setOpenIndex(0);
       setPage(1);
     } catch (err) {
@@ -254,6 +371,8 @@ export default function PortalPersonalisePage({
           emailGapMinutes,
           mode: schedule.mode,
           scheduledFor: schedule.scheduledFor,
+          signatureHtml: activeSignature,
+          timezone,
         }),
       });
       const data = (await response.json().catch(() => ({}))) as Partial<RolloutResult> & {
@@ -334,7 +453,13 @@ export default function PortalPersonalisePage({
     <div className="personalise-create">
       <p className="personalise-lead">
         Upload a doc or spreadsheet. Contacts, subjects, pitches, and follow-up gaps are
-        read from the file, even when the layout changes.
+        read from the file, even when the layout changes.{" "}
+        <a className="pz-sample-link" href="/samples/personalise-sample.csv" download>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+          </svg>
+          Download sample
+        </a>
       </p>
 
       {error ? <p className="crm-error">{error}</p> : null}
@@ -399,6 +524,7 @@ export default function PortalPersonalisePage({
               disabled={busy !== null}
               onClick={() => {
                 setPlan(null);
+                setStepGaps([]);
                 setFileLabel("");
                 setError("");
               }}
@@ -452,6 +578,31 @@ export default function PortalPersonalisePage({
                 onChange={(event) => setWindowEnd(event.target.value)}
               />
             </div>
+          </div>
+          <div className="personalise-fields personalise-fields-extra">
+            <div className="crm-field">
+              <label>Signature</label>
+              <div className="pz-signature-field">
+                <button type="button" className="btn-soft pz-signature-btn" onClick={openSignatureEditor}>
+                  {activeSignature ? "Edit signature" : "Insert signature"}
+                </button>
+              </div>
+            </div>
+            <div className="crm-field">
+              <label htmlFor="personalise-timezone">Time zone</label>
+              <select
+                id="personalise-timezone"
+                className="pz-timezone-select"
+                value={timezone}
+                onChange={(event) => setTimezone(event.target.value)}
+              >
+                {timezones.map((zone) => (
+                  <option key={zone} value={zone}>
+                    {formatTimezoneLabel(zone)}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="crm-field">
               <label htmlFor="personalise-gap" title="Gap between emails, in minutes">
                 Gap (minutes)
@@ -469,10 +620,48 @@ export default function PortalPersonalisePage({
             </div>
           </div>
           <p className="personalise-hint">
-            Follow-up waits come from the file. Emails only go out between the start and stop
-            times, with this gap between each send.
+            Emails only go out between the start and stop times in {timezone}, with this gap
+            between each send. The signature goes below the sign-off, like
+            &ldquo;Best regards,&rdquo; in every email.
           </p>
           </div>
+          {stepGaps.length > 0 ? (
+            <div className="pz-card pz-gaps">
+              <h3 className="pz-card-title">Days between emails</h3>
+              <p className="personalise-hint">
+                The file has {stepGaps.length + 1} emails per contact. Set how many days to wait
+                before each follow-up. This replaces the days in the file for every contact.
+              </p>
+              <div className="pz-gap-list">
+                {stepGaps.map((gap, index) => {
+                  const day = stepGaps.slice(0, index + 1).reduce((sum, value) => sum + value, 0);
+                  return (
+                    <label key={index} className="pz-gap-row">
+                      <span className="pz-gap-name">
+                        <strong>Follow-up {index + 1}</strong>
+                        <em>
+                          Email {index + 2} · Day {day}
+                        </em>
+                      </span>
+                      <span className="pz-gap-input">
+                        <input
+                          type="number"
+                          min={0}
+                          max={MAX_STEP_GAP_DAYS}
+                          value={gap}
+                          onChange={(event) => changeStepGap(index, Number(event.target.value))}
+                          aria-label={`Days before follow-up ${index + 1}`}
+                        />
+                        <span>
+                          {gap === 1 ? "day" : "days"} after email {index + 1}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
           {missingEmails > 0 ? (
             <p className="crm-error">
               {missingEmails === 1
@@ -632,7 +821,7 @@ export default function PortalPersonalisePage({
                                 <span className="pz-thread">Reply in the same thread</span>
                               )}
                             </div>
-                            <PitchPreview body={step.body} />
+                            <PitchPreview body={step.body} signature={activeSignature} />
                           </div>
                         </li>
                       ))}
@@ -646,9 +835,98 @@ export default function PortalPersonalisePage({
         </div>
       ) : null}
 
+      {signatureOpen ? (
+        <div className="crm-modal-backdrop" role="presentation" onClick={() => setSignatureOpen(false)}>
+          <div
+            className="crm-modal pz-signature-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pz-signature-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="pz-signature-title">Email signature</h3>
+                <p>Paste your signature HTML. It goes below the sign-off in every email.</p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                onClick={() => setSignatureOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-body pz-signature-modal-body">
+              <div className="pz-signature-tabs" role="tablist">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={signatureTab === "code"}
+                  className={signatureTab === "code" ? "active" : ""}
+                  onClick={() => setSignatureTab("code")}
+                >
+                  Code
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={signatureTab === "preview"}
+                  className={signatureTab === "preview" ? "active" : ""}
+                  onClick={() => setSignatureTab("preview")}
+                >
+                  Preview
+                </button>
+              </div>
+              {signatureTab === "code" ? (
+                <textarea
+                  className="pz-signature-input"
+                  value={signatureDraft}
+                  onChange={(event) => setSignatureDraft(event.target.value.slice(0, MAX_SIGNATURE_HTML))}
+                  placeholder={'<table><tr><td><strong>Your Name</strong><br>Title, Company<br><a href="https://example.com">example.com</a></td></tr></table>'}
+                  spellCheck={false}
+                  rows={14}
+                  aria-label="Signature HTML"
+                  autoFocus
+                />
+              ) : cleanSignatureHtml(signatureDraft) ? (
+                <div className="pz-signature-preview">
+                  <SignatureFrame html={cleanSignatureHtml(signatureDraft)} signOff="Best regards," />
+                </div>
+              ) : (
+                <p className="pz-signature-empty">Paste the signature HTML in Code first.</p>
+              )}
+            </div>
+            <div className="crm-modal-foot pz-signature-modal-foot">
+              {signatureDraft.trim() ? (
+                <button type="button" className="btn-link-purple" onClick={() => saveSignature("")}>
+                  Remove signature
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="pz-signature-modal-actions">
+                <button type="button" className="btn-soft" onClick={() => setSignatureOpen(false)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-dark"
+                  disabled={!cleanSignatureHtml(signatureDraft) && !activeSignature}
+                  onClick={() => saveSignature(signatureDraft)}
+                >
+                  Save signature
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {scheduleOpen && plan ? (
         <CampaignScheduleDrawer
-          timezone="Asia/Kolkata"
+          timezone={timezone}
           onClose={() => {
             if (busy !== "rollout") {
               setScheduleOpen(false);

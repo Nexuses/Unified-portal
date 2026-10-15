@@ -38,17 +38,18 @@ export async function POST(request: NextRequest) {
     const body = (await request.json().catch(() => null)) as {
       name?: string;
       campaigns?: KanbanCampaignRef[];
+      stages?: unknown;
     } | null;
     const board = await createProjectKanbanBoard(new ObjectId(session.projectId), {
       name: String(body?.name ?? ""),
       campaigns: Array.isArray(body?.campaigns) ? body.campaigns : [],
+      stages: body?.stages,
     });
     return NextResponse.json(board, { status: 201, headers: NO_STORE });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to create kanban list";
-    const status =
-      message.includes("required") || message.includes("Select") ? 400 : 500;
+    const status = /required|Select|stage|trigger/i.test(message) ? 400 : 500;
     console.error("Failed to create kanban board:", error);
     return NextResponse.json({ error: message }, { status });
   }

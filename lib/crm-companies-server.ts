@@ -144,19 +144,57 @@ export async function getProjectCompanyWithContacts(
   companyId: ObjectId,
   owner: string,
 ) {
-  const companies = await getProjectCompaniesWithContacts(projectId, owner);
-  const index = companies.findIndex((company) => company.id === companyId.toString());
-  const company = index >= 0 ? companies[index] : null;
+  const db = await getDb();
+  const collection = db.collection<CompanyDoc>("companies");
+  const doc = await collection.findOne({ _id: companyId, projectId });
+  if (!doc) {
+    return { company: null, index: -1, total: 0, prevId: null, nextId: null };
+  }
+
+  const before = {
+    projectId,
+    $or: [{ name: { $lt: doc.name } }, { name: doc.name, _id: { $lt: doc._id } }],
+  };
+  const after = {
+    projectId,
+    $or: [{ name: { $gt: doc.name } }, { name: doc.name, _id: { $gt: doc._id } }],
+  };
+  const projection = { _id: 1 } as const;
+
+  const [contacts, index, total, prev, next] = await Promise.all([
+    db
+      .collection<ContactDoc>("contacts")
+      .find({ projectId, companyId })
+      .sort({ lastName: 1, firstName: 1 })
+      .toArray(),
+    collection.countDocuments(before),
+    collection.countDocuments({ projectId }),
+    collection.find(before, { projection }).sort({ name: -1, _id: -1 }).limit(1).next(),
+    collection.find(after, { projection }).sort({ name: 1, _id: 1 }).limit(1).next(),
+  ]);
+
+  const companyContacts: CompanyContact[] = contacts.map((contact) => {
+    const mapped = mapContact(contact);
+    return {
+      id: mapped.id,
+      fullName: mapped.fullName,
+      email: mapped.email,
+      createdAt: mapped.createdAt,
+    };
+  });
+
+  const company: CompanyWithContacts = {
+    ...mapCompany(doc),
+    domain: deriveCompanyDomain(companyContacts.map((contact) => contact.email)),
+    owner,
+    contacts: companyContacts,
+  };
 
   return {
     company,
     index,
-    total: companies.length,
-    prevId: index > 0 ? companies[index - 1]?.id ?? null : null,
-    nextId:
-      index >= 0 && index < companies.length - 1
-        ? companies[index + 1]?.id ?? null
-        : null,
-    allIds: companies.map((entry) => entry.id),
+    total,
+    prevId: prev?._id.toString() ?? null,
+    nextId: next?._id.toString() ?? null,
   };
 }

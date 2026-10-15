@@ -21,6 +21,7 @@ export async function POST(request: NextRequest) {
       html?: string;
       fromName?: string;
       replyTo?: string;
+      cc?: string[];
       campaignName?: string;
       utmEnabled?: boolean;
       utmSourceEnabled?: boolean;

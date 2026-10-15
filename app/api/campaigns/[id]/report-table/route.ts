@@ -1,0 +1,45 @@
+import { NextRequest, NextResponse } from "next/server";
+import { ObjectId } from "mongodb";
+import { listCampaignSendsForExport } from "@/lib/campaign-blasts-server";
+import { getProjectDripCampaign } from "@/lib/drip-campaigns-server";
+import { parseCampaignKind } from "@/lib/drip-campaigns";
+import { buildCampaignReportTables } from "@/lib/campaign-report-tables";
+import {
+  isSessionError,
+  requirePortalSession,
+} from "@/lib/require-portal-session";
+
+type RouteContext = {
+  params: Promise<{ id: string }>;
+};
+
+export async function GET(request: NextRequest, context: RouteContext) {
+  try {
+    const session = await requirePortalSession();
+    if (isSessionError(session)) {
+      return session;
+    }
+
+    const { id } = await context.params;
+    const kind = parseCampaignKind(request.nextUrl.searchParams.get("kind"));
+    const projectId = new ObjectId(session.projectId);
+    const campaign = await getProjectDripCampaign(projectId, id, kind);
+    if (!campaign) {
+      return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
+    }
+
+    const sends = await listCampaignSendsForExport(projectId, id, kind);
+    return NextResponse.json(
+      buildCampaignReportTables({
+        campaignName: campaign.name,
+        timezone: campaign.timezone || "Asia/Kolkata",
+        sentAt: campaign.sentAt,
+        sends,
+      }),
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  } catch (error) {
+    console.error("Failed to load campaign report table:", error);
+    return NextResponse.json({ error: "Failed to load the report table" }, { status: 500 });
+  }
+}

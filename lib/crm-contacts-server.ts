@@ -183,13 +183,15 @@ export async function getProjectContactDetail(
   owner: string,
 ): Promise<ContactDetail | null> {
   const db = await getDb();
-  const contacts = await getProjectContacts(projectId);
-  const index = contacts.findIndex((entry) => entry._id.equals(contactId));
-  const doc = index >= 0 ? contacts[index] : null;
+  const doc = await db
+    .collection<ContactDoc>("contacts")
+    .findOne({ _id: contactId, projectId });
 
   if (!doc) {
     return null;
   }
+
+  const navigation = await getContactNavigation(projectId, doc);
 
   const contact = mapContact(doc);
 
@@ -266,15 +268,67 @@ export async function getProjectContactDetail(
     lists: contactLists,
     history,
     campaignStats,
-    navigation: {
-      index,
-      total: contacts.length,
-      prevId: index > 0 ? contacts[index - 1]?._id.toString() ?? null : null,
-      nextId:
-        index >= 0 && index < contacts.length - 1
-          ? contacts[index + 1]?._id.toString() ?? null
-          : null,
-    },
+    navigation,
+  };
+}
+
+const CONTACT_SORT_FIELDS = ["lastName", "firstName", "email"] as const;
+
+// Mongo sorts missing/null before strings, so a null value has nothing "less" than it.
+function compareField(field: string, value: unknown, direction: "lt" | "gt") {
+  if (typeof value !== "string") {
+    return direction === "lt" ? { _id: { $exists: false } } : { [field]: { $type: "string" } };
+  }
+  return direction === "lt"
+    ? { $or: [{ [field]: { $lt: value } }, { [field]: null }] }
+    : { [field]: { $gt: value } };
+}
+
+function equalField(field: string, value: unknown) {
+  return { [field]: typeof value === "string" ? value : null };
+}
+
+function sortPositionFilter(doc: ContactDoc, direction: "lt" | "gt") {
+  const record = doc as unknown as Record<string, unknown>;
+  return {
+    $or: CONTACT_SORT_FIELDS.map((field, position) => ({
+      $and: [
+        ...CONTACT_SORT_FIELDS.slice(0, position).map((prior) =>
+          equalField(prior, record[prior]),
+        ),
+        compareField(field, record[field], direction),
+      ],
+    })),
+  };
+}
+
+async function getContactNavigation(projectId: ObjectId, doc: ContactDoc) {
+  await ensureContactSortIndex();
+  const contacts = (await getDb()).collection<ContactDoc>("contacts");
+  const before = { projectId, ...sortPositionFilter(doc, "lt") };
+  const after = { projectId, ...sortPositionFilter(doc, "gt") };
+  const projection = { _id: 1 } as const;
+
+  const [index, total, prev, next] = await Promise.all([
+    contacts.countDocuments(before),
+    contacts.countDocuments({ projectId }),
+    contacts
+      .find(before, { projection })
+      .sort({ lastName: -1, firstName: -1, email: -1 })
+      .limit(1)
+      .next(),
+    contacts
+      .find(after, { projection })
+      .sort({ lastName: 1, firstName: 1, email: 1 })
+      .limit(1)
+      .next(),
+  ]);
+
+  return {
+    index,
+    total,
+    prevId: prev?._id.toString() ?? null,
+    nextId: next?._id.toString() ?? null,
   };
 }
 

@@ -19,12 +19,6 @@ type ChatTurn = {
   buckets?: EdmBucket[];
 };
 
-type MemoryLink = {
-  id: string;
-  name: string;
-  link: string;
-};
-
 type ChatFile = {
   id: string;
   label: string;
@@ -47,6 +41,11 @@ type PendingEmail = {
   referenceHtml: string;
   currentHtml: string;
   history: { role: "user" | "assistant"; content: string }[];
+};
+
+type PendingUpload = {
+  html: string;
+  files: ChatFile[];
 };
 
 const HELLO_PROMPTS = [
@@ -72,6 +71,13 @@ function assistantText(text: string) {
     return extractEdmResult(text).message;
   }
   return text;
+}
+
+function wantsPost(text: string) {
+  return (
+    /\b(post|instagram|linkedin|social media|creative|banner)\b/i.test(text) &&
+    !/\b(email|e-mail|edm|newsletter|mailer)\b/i.test(text)
+  );
 }
 
 function blankChat(): SavedChat {
@@ -225,7 +231,7 @@ export default function PortalEdmPage() {
   const router = useRouter();
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const chatEpoch = useRef(0);
-  const pendingEmail = useRef<PendingEmail | null>(null);
+  const pendingEmail = useRef<PendingUpload | null>(null);
   const savedPayloads = useRef(new Map<string, string>());
   const pendingSave = useRef<{ id: string; payload: string; timer: number } | null>(null);
   const [ready, setReady] = useState(false);
@@ -240,13 +246,7 @@ export default function PortalEdmPage() {
   const [referenceHtml, setReferenceHtml] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [memoryOpen, setMemoryOpen] = useState(false);
-  const [logoUrl, setLogoUrl] = useState("");
   const [projectName, setProjectName] = useState("");
-  const [links, setLinks] = useState<MemoryLink[]>([]);
-  const [linkName, setLinkName] = useState("");
-  const [linkUrl, setLinkUrl] = useState("");
-  const [memoryNote, setMemoryNote] = useState("");
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteDraft, setPasteDraft] = useState("");
   const [saveOpen, setSaveOpen] = useState(false);
@@ -314,14 +314,8 @@ export default function PortalEdmPage() {
     void (async () => {
       const response = await fetch("/api/edm/memory");
       if (!response.ok) return;
-      const data = (await response.json()) as {
-        logoUrl?: string;
-        projectName?: string;
-        links?: MemoryLink[];
-      };
-      setLogoUrl(typeof data.logoUrl === "string" ? data.logoUrl : "");
+      const data = (await response.json()) as { projectName?: string };
       setProjectName(typeof data.projectName === "string" ? data.projectName : "");
-      setLinks(Array.isArray(data.links) ? data.links : []);
     })();
   }, []);
 
@@ -457,6 +451,7 @@ export default function PortalEdmPage() {
   }
 
   const hasAttachment = Boolean(files.length || referenceHtml);
+  const [postMode, setPostMode] = useState(false);
 
   function openChat(chat: SavedChat) {
     if (chat.id === activeId) return;
@@ -534,7 +529,15 @@ export default function PortalEdmPage() {
     setBusy(false);
   }
 
-  async function requestEmail(pending: PendingEmail, bucket: EdmBucket, epoch: number) {
+  function attachmentPayload(files: ChatFile[]) {
+    return files.map((file) => ({
+      name: file.label,
+      text: file.text ?? "",
+      dataUrl: file.dataUrl ?? "",
+    }));
+  }
+
+  async function requestEmail(pending: PendingEmail, bucket: EdmBucket | null, epoch: number) {
     setBusy(true);
     try {
       const response = await fetch("/api/edm/chat", {
@@ -543,13 +546,8 @@ export default function PortalEdmPage() {
         body: JSON.stringify({
           message: pending.message,
           history: pending.history,
-          links: links.map((item) => ({ name: item.name, link: item.link })),
           referenceHtml: pending.referenceHtml,
-          attachments: pending.files.map((file) => ({
-            name: file.label,
-            text: file.text ?? "",
-            dataUrl: file.dataUrl ?? "",
-          })),
+          attachments: attachmentPayload(pending.files),
           currentHtml: pending.currentHtml,
           bucket,
         }),
@@ -558,11 +556,30 @@ export default function PortalEdmPage() {
         error?: string;
         message?: string;
         html?: string;
+        needsBucket?: boolean;
+        buckets?: EdmBucket[];
+        projectName?: string;
       } | null;
       if (!response.ok) {
         throw new Error(data?.error || "Chat failed");
       }
       if (chatEpoch.current !== epoch) return;
+      if (data?.needsBucket && data.html) {
+        pendingEmail.current = { html: data.html, files: pending.files };
+        setMessages((current) => [
+          ...current,
+          ...(data.message
+            ? [{ id: crypto.randomUUID(), role: "assistant" as const, text: data.message }]
+            : []),
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            text: `This email has images. Which ${data.projectName || projectName || "project"} bucket should they upload to?`,
+            buckets: data.buckets ?? [],
+          },
+        ]);
+        return;
+      }
       const rawReply = data?.message?.trim() || "";
       const extracted =
         rawReply.includes('"html"') || /HTML:/i.test(rawReply)
@@ -599,10 +616,50 @@ export default function PortalEdmPage() {
       ),
     );
     if (!pending) return;
-    await requestEmail(pending, bucket, chatEpoch.current);
+    const epoch = chatEpoch.current;
+    setError("");
+    setBusy(true);
+    try {
+      const response = await fetch("/api/edm/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          finalizeHtml: pending.html,
+          attachments: attachmentPayload(pending.files),
+          bucket,
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as {
+        error?: string;
+        message?: string;
+        html?: string;
+      } | null;
+      if (!response.ok || !data?.html) {
+        throw new Error(data?.error || "Could not upload the images");
+      }
+      if (chatEpoch.current !== epoch) return;
+      setHtml(data.html);
+      setPreviewOpen(true);
+      if (data.message) {
+        setMessages((current) => [
+          ...current,
+          { id: crypto.randomUUID(), role: "assistant", text: data.message ?? "" },
+        ]);
+      }
+    } catch (err) {
+      if (chatEpoch.current !== epoch) return;
+      setError(err instanceof Error ? err.message : "Could not upload the images");
+    } finally {
+      if (chatEpoch.current === epoch) setBusy(false);
+    }
   }
 
   async function send() {
+    if (!ready) return;
+    if (postMode || wantsPost(draft)) {
+      await generatePost();
+      return;
+    }
     const message =
       draft.trim() ||
       (hasAttachment ? "Create an email from these attachments." : "");
@@ -624,72 +681,20 @@ export default function PortalEdmPage() {
     setFiles([]);
     setReferenceHtml("");
     setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", text: message }]);
-    if (!imageBucket) {
-      pendingEmail.current = pending;
-      setBusy(true);
-      try {
-        const response = await fetch("/api/edm/buckets");
-        const data = (await response.json().catch(() => null)) as {
-          error?: string;
-          buckets?: EdmBucket[];
-          projectName?: string;
-        } | null;
-        if (!response.ok) {
-          throw new Error(data?.error || "Could not list buckets");
-        }
-        if (chatEpoch.current !== epoch) return;
-        const buckets = Array.isArray(data?.buckets) ? data.buckets : [];
-        if (!buckets.length) {
-          throw new Error(
-            `No S3 buckets match ${data?.projectName || projectName || "this project"}.`,
-          );
-        }
-        setMessages((current) => [
-          ...current,
-          {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            text: `Which ${data?.projectName || projectName || "project"} bucket should the images upload to?`,
-            buckets,
-          },
-        ]);
-      } catch (err) {
-        if (chatEpoch.current !== epoch) return;
-        pendingEmail.current = null;
-        setError(err instanceof Error ? err.message : "Could not list buckets");
-      } finally {
-        if (chatEpoch.current === epoch) setBusy(false);
-      }
-      return;
-    }
+    pendingEmail.current = null;
     await requestEmail(pending, imageBucket, epoch);
   }
 
-  async function addLink() {
-    setMemoryNote("");
-    const response = await fetch("/api/edm/memory", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: linkName, link: linkUrl }),
-    });
-    const data = (await response.json().catch(() => null)) as {
-      error?: string;
-      link?: MemoryLink;
-    } | null;
-    if (!response.ok || !data?.link) {
-      setMemoryNote(data?.error || "Could not save that link.");
+  async function generatePost() {
+    if (busy || !ready) return;
+    const reference = files.find((file) => file.dataUrl)?.dataUrl ?? "";
+    const prompt =
+      draft.trim() ||
+      (reference ? `Create a post like this in ${projectName || "our"} branding and content.` : "");
+    if (!prompt) {
+      setError("Attach an image or describe the post, then press send.");
       return;
     }
-    setLinks((current) => [data.link as MemoryLink, ...current]);
-    setLinkName("");
-    setLinkUrl("");
-    setMemoryNote("Saved to the knowledge base.");
-  }
-
-  async function generatePost() {
-    const prompt = draft.trim();
-    if (!prompt || busy) return;
-    const reference = files.find((file) => file.dataUrl)?.dataUrl ?? "";
     speech.stop();
     const epoch = chatEpoch.current;
     setError("");
@@ -726,14 +731,6 @@ export default function PortalEdmPage() {
     } finally {
       if (chatEpoch.current === epoch) setBusy(false);
     }
-  }
-
-  async function removeLink(id: string) {
-    const response = await fetch(`/api/edm/memory?id=${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-    if (!response.ok) return;
-    setLinks((current) => current.filter((item) => item.id !== id));
   }
 
   async function saveTemplate() {
@@ -783,7 +780,7 @@ export default function PortalEdmPage() {
   }
 
   const showPreview = previewOpen && Boolean(html.trim());
-  const rightOpen = memoryOpen || showPreview;
+  const rightOpen = showPreview;
   const historyCollapsed = rightOpen && !historyExpanded;
 
   useEffect(() => {
@@ -1059,7 +1056,9 @@ export default function PortalEdmPage() {
                 placeholder={
                   speech.listening
                     ? "Listening… speak now"
-                    : html.trim()
+                    : postMode
+                      ? "Attach an image to copy its style, or describe the post"
+                      : html.trim()
                       ? "Ask for a change"
                       : "Describe the email you want"
                 }
@@ -1086,17 +1085,11 @@ export default function PortalEdmPage() {
                 </button>
                 <button
                   type="button"
-                  className={`edm-tool${memoryOpen ? " active" : ""}`}
-                  onClick={() => setMemoryOpen((open) => !open)}
-                >
-                  Knowledge base{links.length ? ` · ${links.length}` : ""}
-                </button>
-                <button
-                  type="button"
-                  className="edm-tool"
-                  disabled={busy || !draft.trim()}
-                  title="Uses the message in the chat. An attached image is an optional reference."
-                  onClick={() => void generatePost()}
+                  className={`edm-tool edm-post-toggle${postMode ? " active" : ""}`}
+                  disabled={busy}
+                  aria-pressed={postMode}
+                  title="Turn on, attach an image, and send. The post is made in your brand."
+                  onClick={() => setPostMode((on) => !on)}
                 >
                   Generate post
                 </button>
@@ -1128,7 +1121,7 @@ export default function PortalEdmPage() {
                 <button
                   type="submit"
                   className="edm-send"
-                  disabled={busy || (!draft.trim() && !hasAttachment)}
+                  disabled={busy || !ready || (!draft.trim() && !hasAttachment)}
                   aria-label="Send"
                 >
                   <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1199,98 +1192,6 @@ export default function PortalEdmPage() {
           </aside>
         ) : null}
 
-        <aside
-          className={`edm-memory-panel${memoryOpen ? " open" : ""}`}
-          aria-label="Knowledge base"
-          aria-hidden={!memoryOpen}
-        >
-          <div className="edm-memory-panel-inner">
-            <div className="edm-memory-head">
-              <div>
-                <h2 id="edm-memory-title">Knowledge base</h2>
-                <p>Included in every email</p>
-              </div>
-              <button type="button" onClick={() => setMemoryOpen(false)} aria-label="Close knowledge base">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    d="M6 6l12 12M18 6L6 18"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            </div>
-
-            <section className="edm-memory-brand" aria-label="Client logo">
-              <div className="edm-memory-logo-frame">
-                {logoUrl ? (
-                  <img src={logoUrl} alt={`${projectName || "Client"} logo`} />
-                ) : (
-                  <span>{projectName.slice(0, 1) || "C"}</span>
-                )}
-              </div>
-              <div>
-                <span>Client</span>
-                <strong>{projectName || "This project"}</strong>
-              </div>
-            </section>
-
-            <section className="edm-memory-links" aria-label="Saved links">
-              <h3>Links</h3>
-              {links.length === 0 ? (
-                <p className="edm-memory-empty">Add a site or deck link. The email can use it as a button.</p>
-              ) : (
-                <ul>
-                  {links.map((item) => (
-                    <li key={item.id}>
-                      <a href={item.link} target="_blank" rel="noreferrer">
-                        <strong>{item.name}</strong>
-                        <span>{item.link.replace(/^https?:\/\//, "")}</span>
-                      </a>
-                      <button type="button" onClick={() => void removeLink(item.id)} aria-label={`Remove ${item.name}`}>
-                        ×
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <form
-              className="edm-memory-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void addLink();
-              }}
-            >
-              <h3>Add a link</h3>
-              <label className="edm-field">
-                Name
-                <input
-                  value={linkName}
-                  onChange={(event) => setLinkName(event.target.value)}
-                  placeholder="Website"
-                  required
-                />
-              </label>
-              <label className="edm-field">
-                Link
-                <input
-                  value={linkUrl}
-                  onChange={(event) => setLinkUrl(event.target.value)}
-                  placeholder="https://"
-                  required
-                />
-              </label>
-              {memoryNote ? <p className="edm-note">{memoryNote}</p> : null}
-              <button type="submit" className="edm-memory-add" disabled={!linkName.trim() || !linkUrl.trim()}>
-                Add to knowledge base
-              </button>
-            </form>
-          </div>
-        </aside>
       </div>
 
       {saveOpen ? (
