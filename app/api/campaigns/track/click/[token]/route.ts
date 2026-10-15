@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { recordCampaignClick } from "@/lib/campaign-blasts-server";
+import { recordCampaignClick, requestOrigin } from "@/lib/campaign-blasts-server";
 
 type RouteContext = {
   params: Promise<{ token: string }>;
@@ -7,21 +7,22 @@ type RouteContext = {
 
 export async function GET(request: NextRequest, context: RouteContext) {
   const { token } = await context.params;
-  const target = request.nextUrl.searchParams.get("u") || "/";
+  const target = request.nextUrl.searchParams.get("u") || "";
 
-  let redirectTo = "/";
+  let redirectTo = "";
   try {
     const parsed = new URL(target);
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
       redirectTo = parsed.toString();
     }
   } catch {
-    redirectTo = "/";
+    redirectTo = "";
   }
 
-  if (token && !token.startsWith("test-")) {
+  if (token && !token.startsWith("test-") && redirectTo) {
     await recordCampaignClick(token, redirectTo).catch(() => undefined);
   }
 
-  return NextResponse.redirect(redirectTo, { status: 302 });
+  const fallback = `${requestOrigin(request.url, request.headers)}/`;
+  return NextResponse.redirect(redirectTo || fallback, { status: 302 });
 }

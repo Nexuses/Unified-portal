@@ -819,9 +819,9 @@ export async function updateProjectDripCampaign(
 
   if (
     updates.status === "sending" &&
-    existing.status === "paused"
+    (existing.status === "paused" || existing.status === "sending")
   ) {
-    if (resolvedKind === "oneone") {
+    if (resolvedKind === "oneone" && existing.status === "paused") {
       const ready = sequencesReady(
         mapCampaign({ ...existing, ...updates, status: existing.status }),
       );
