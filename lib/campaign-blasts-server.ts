@@ -1503,15 +1503,14 @@ export async function launchCampaignBlast(input: {
   const db = await getDb();
   if (oneOne) {
     if (!ObjectId.isValid(campaign.senderId)) {
-      throw new Error("Select a Gmail or Outlook SMTP sender.");
+      throw new Error("Select a sender.");
     }
     const sender = await db.collection("smtp_senders").findOne({
       _id: new ObjectId(campaign.senderId),
       projectId,
     });
-    const provider = (sender as { provider?: string } | null)?.provider;
-    if (provider !== "gmail" && provider !== "outlook") {
-      throw new Error("1-1 campaigns can only use Gmail or Outlook SMTP senders.");
+    if (!sender) {
+      throw new Error("Select a sender.");
     }
   }
   const now = new Date();
@@ -2010,14 +2009,14 @@ export async function syncPausedOneOneBlast(
 
   if (campaign.senderId && campaign.senderId !== blast.senderId) {
     if (!ObjectId.isValid(campaign.senderId)) {
-      throw new Error("Select a Gmail or Outlook SMTP sender.");
+      throw new Error("Select a sender.");
     }
     const sender = await db.collection<SenderDoc>("smtp_senders").findOne({
       _id: new ObjectId(campaign.senderId),
       projectId,
     });
-    if (!sender || (sender.provider !== "gmail" && sender.provider !== "outlook")) {
-      throw new Error("1-1 campaigns can only use Gmail or Outlook SMTP senders.");
+    if (!sender) {
+      throw new Error("Select a sender.");
     }
   }
 

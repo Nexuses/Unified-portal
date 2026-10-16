@@ -10,6 +10,8 @@ import {
   getProjectKanbanBoard,
   patchProjectKanbanBoard,
 } from "@/lib/analytics-kanban-server";
+import { isApiCreditLimitError } from "@/lib/api-credits";
+import { runInApiCredit } from "@/lib/api-credits-server";
 import { chatWithDeepSeek, type ChatMessage } from "@/lib/deepseek";
 import { stageIdForPerson } from "@/lib/analytics-kanban";
 import {
@@ -43,6 +45,7 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
     if (isSessionError(session)) {
       return session;
     }
+    return await runInApiCredit(session.projectId, "kanban", async () => {
     const { id } = await routeContext.params;
     const projectId = new ObjectId(session.projectId);
     const board = await getProjectKanbanBoard(projectId, id);
@@ -119,8 +122,12 @@ export async function POST(request: NextRequest, routeContext: RouteContext) {
       { reply, board: saved || applied.board },
       { headers: NO_STORE },
     );
+    });
   } catch (error) {
     console.error("Failed to chat with kanban:", error);
+    if (isApiCreditLimitError(error)) {
+      return NextResponse.json({ error: error.message }, { status: 402 });
+    }
     return NextResponse.json(
       { error: "Failed to chat with kanban" },
       { status: 500 },

@@ -1,3 +1,5 @@
+import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
+
 export type ChatContentPart =
   | { type: "text"; text: string }
   | {
@@ -51,6 +53,7 @@ export async function chatWithDeepSeekResult(input: {
       finish_reason?: string;
       message?: { content?: string };
     }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   } | null;
 
   if (!response.ok) {
@@ -64,5 +67,11 @@ export async function chatWithDeepSeekResult(input: {
   if (!content) {
     throw new Error("DeepSeek returned an empty response");
   }
+  const tokens = readTokenUsage(data?.usage);
+  await noteApiUsage({
+    provider: "deepseek",
+    model: input.model || "deepseek-chat",
+    ...tokens,
+  });
   return { content, finishReason: choice?.finish_reason ?? "" };
 }

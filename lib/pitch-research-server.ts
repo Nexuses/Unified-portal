@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import { ObjectId, type Document } from "mongodb";
+import { runInApiCredit } from "@/lib/api-credits-server";
 import { getDb } from "@/lib/mongodb";
 import { getRecordsCollection } from "@/lib/datatool-server";
 import { loadKnowledgeMarkdown } from "@/lib/knowledge-base-server";
@@ -604,6 +605,7 @@ async function runJob(jobId: ObjectId) {
   try {
     const job = await jobs.findOne({ _id: jobId });
     if (!job) return;
+    await runInApiCredit(job.projectId.toString(), "pitch", async () => {
     await jobs.updateOne({ _id: jobId }, { $set: { status: "running", updatedAt: new Date() } });
     const knowledge = await loadKnowledgeMarkdown(job.projectId.toString(), 6000).catch(() => "");
 
@@ -662,6 +664,7 @@ async function runJob(jobId: ObjectId) {
         },
       },
     );
+    });
   } catch (error) {
     console.error("[pitch-research] job failed:", error);
     await jobs.updateOne(

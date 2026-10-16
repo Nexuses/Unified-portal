@@ -18,6 +18,7 @@ import {
   trackingDnsRecords,
   verifyTrackingDomain,
 } from "@/lib/campaign-tracking";
+import { noteApiUsage, runInApiCredit } from "@/lib/api-credits-server";
 import { createOutboundMessageId } from "@/lib/master-inbox-server";
 
 function skippedInboxVerification(): SenderAuthVerification {
@@ -38,12 +39,15 @@ function skippedInboxVerification(): SenderAuthVerification {
 async function resolveSenderAuthVerification(
   fromEmail: string,
   provider: SmtpProviderId,
-  noInbox?: boolean,
+  noInbox: boolean | undefined,
+  projectId: ObjectId,
 ) {
   if (noInbox) {
     return skippedInboxVerification();
   }
-  return verifySenderAuth(emailDomain(fromEmail), provider);
+  return runInApiCredit(projectId.toString(), "lookup", () =>
+    verifySenderAuth(emailDomain(fromEmail), provider),
+  );
 }
 
 export async function getProjectSenders(projectId: ObjectId) {
@@ -109,6 +113,7 @@ export async function verifyProjectSender(
     sender.fromEmail,
     sender.provider,
     sender.noInbox,
+    projectId,
   );
   await saveSenderVerification(projectId, senderId, verification);
 
@@ -146,6 +151,7 @@ export async function createProjectSender(
     doc.fromEmail,
     doc.provider,
     doc.noInbox,
+    projectId,
   );
   await saveSenderVerification(projectId, doc._id, verification);
 
@@ -230,6 +236,7 @@ export async function updateProjectSender(
     fromEmail,
     existing.provider,
     noInbox,
+    projectId,
   );
   await saveSenderVerification(projectId, senderId, verification);
 
@@ -553,6 +560,13 @@ async function deliverWithSender(
     return { messageId };
   }
 
+    await noteApiUsage({
+      projectId: sender.projectId.toString(),
+      feature: "email",
+      provider: "sendgrid",
+      model: "mail/send",
+      flatUsd: 0.001,
+    });
   if (sender.provider === "resend" && sender.apiKey) {
     const headers: Array<{ name: string; value: string }> = [
       { name: "Message-ID", value: messageId },
@@ -578,6 +592,13 @@ async function deliverWithSender(
     return { messageId };
   }
 
+    await noteApiUsage({
+      projectId: sender.projectId.toString(),
+      feature: "email",
+      provider: "resend",
+      model: "emails",
+      flatUsd: 0.001,
+    });
   if (sender.provider === "cloudflare") {
     throw new Error("Cloudflare Email is not set up for sending yet.");
   }

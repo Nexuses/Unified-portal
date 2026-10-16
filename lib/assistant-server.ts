@@ -6,6 +6,7 @@ import {
   runAssistantTool,
   type AssistantToolContext,
 } from "@/lib/assistant-tools-server";
+import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
 
 export type AssistantMessage = { role: "user" | "assistant"; content: string };
@@ -32,13 +33,16 @@ function systemPrompt(projectName: string, userName: string) {
 
 The portal has:
 - CRM: Contacts (${PORTAL_ROUTES.contacts}), Lists (${PORTAL_ROUTES.lists}), Companies (${PORTAL_ROUTES.companies}), Enrich (${PORTAL_ROUTES.enrich}).
-- Marketing: Drip campaigns (${PORTAL_ROUTES.drip}) for bulk emails, 1-1 campaigns (${PORTAL_ROUTES.oneone}) for personal sequences sent from Gmail or Outlook, Personalise campaigns (${PORTAL_ROUTES.personalise}) built from an uploaded doc or sheet with a unique email per contact, Automation (${PORTAL_ROUTES.automation}), EDM generator (${PORTAL_ROUTES.edm}) for designing HTML emails with AI.
+- Marketing: Drip campaigns (${PORTAL_ROUTES.drip}) for bulk emails, 1-1 campaigns (${PORTAL_ROUTES.oneone}) for personal sequences, Personalise campaigns (${PORTAL_ROUTES.personalise}) built from an uploaded doc or sheet with a unique email per contact, Automation (${PORTAL_ROUTES.automation}), EDM generator (${PORTAL_ROUTES.edm}) for designing HTML emails with AI.
 - Analytics (${PORTAL_ROUTES.analytics}) and Kanban boards (${PORTAL_ROUTES["analytics-kanban"]}) that sort contacts into stages by sent, open, click and reply.
 - SMTP senders (${PORTAL_ROUTES.smtp}), Master inbox (${PORTAL_ROUTES.inbox}) with campaign replies and AI reply drafts, Suppression list (${PORTAL_ROUTES.unsub}), Integrations (${PORTAL_ROUTES.integrations}).
-- Drip campaigns cannot send from Gmail. 1-1 and Personalise send from Gmail or Outlook only. Clicks from link scanners and opens within the first seconds after sending are filtered out of reports.
+- Drip campaigns cannot send from Gmail. 1-1 and Personalise can use any sender. Clicks from link scanners and opens within the first seconds after sending are filtered out of reports.
 
 Rules:
-- Use the tools to get real numbers. Never invent data. If a tool returns nothing, say so.
+- Use the tools to get real numbers and real people. Never invent data. If a tool returns nothing, say so.
+- This project's own records are readable. When the user asks who was sent an email, who opened, who clicked, who bounced, who replied, or who unsubscribed, call list_campaign_recipients and answer with the names and emails it returns. Do the same for people on a list (list_list_contacts), companies, the knowledge base, automations, the suppression list, kanban stages, and saved email templates. Never say you cannot read those contacts, and never send the user to export a page when a tool returned the rows.
+- Opens and clicks are different. Use filter "opens" for people who opened and "clicks" for people who clicked. If an earlier table shows 9 opens and 12 clicks, those are not the same list. If the user already named a campaign, or only one campaign matches the count they gave, use that campaign. Do not ask them to pick again.
+- If a tool result says truncated, show the rows you have, say the total, and link the page. Do not present a partial table as the full list, and do not add the CSV marker for a truncated result.
 - For date questions ("this month", "last week") work out exact YYYY-MM-DD dates from today.
 - You can only read data. If the user asks you to change something (send, pause, delete, create, edit), explain the steps briefly and link the page where they can do it.
 - Answer in clean GitHub Markdown:
@@ -81,6 +85,7 @@ function providers(): Provider[] {
 }
 
 async function complete(provider: Provider, messages: ChatMessage[]) {
+  await guardApiCredit();
   const response = await fetch(provider.url, {
     method: "POST",
     headers: {
@@ -99,6 +104,7 @@ async function complete(provider: Provider, messages: ChatMessage[]) {
   const data = (await response.json().catch(() => null)) as {
     error?: { message?: string };
     choices?: Array<{ message?: { content?: string | null; tool_calls?: ToolCall[] } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   } | null;
   if (!response.ok) {
     throw new Error(data?.error?.message || `${provider.name} request failed (${response.status})`);
@@ -107,6 +113,8 @@ async function complete(provider: Provider, messages: ChatMessage[]) {
   if (!message) {
     throw new Error(`${provider.name} returned no answer`);
   }
+  const tokens = readTokenUsage(data?.usage);
+  await noteApiUsage({ provider: provider.name, model: provider.model, ...tokens });
   return message;
 }
 

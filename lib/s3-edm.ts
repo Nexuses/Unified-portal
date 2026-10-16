@@ -75,6 +75,24 @@ function imageBytes(dataUrl: string) {
   return { contentType, bytes, extension };
 }
 
+/** Upload a generated post image and return its public URL. */
+export async function uploadDataImage(bucket: EdmBucket, dataUrl: string) {
+  const image = imageBytes(dataUrl);
+  if (!image) {
+    throw new Error("That post image could not be uploaded.");
+  }
+  const key = `posts/${crypto.randomUUID()}.${image.extension}`;
+  await s3(bucket.region).send(
+    new PutObjectCommand({
+      Bucket: bucket.name,
+      Key: key,
+      Body: image.bytes,
+      ContentType: image.contentType,
+    }),
+  );
+  return `https://${bucket.name}.s3.${bucket.region}.amazonaws.com/${key}`;
+}
+
 /** Upload one file to a project bucket and return its public URL. */
 export async function uploadFileToBucket(
   bucket: EdmBucket,

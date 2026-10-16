@@ -1,3 +1,5 @@
+import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
+
 export type WebSource = { title: string; url: string };
 
 type Provider = {
@@ -20,6 +22,7 @@ type ResponsesPayload = {
     }>;
   }>;
   error?: { message?: string } | string;
+  usage?: { input_tokens?: number; output_tokens?: number };
 };
 
 /** Grok (web + X search) when XAI_API_KEY is set, otherwise OpenAI web search. */
@@ -74,6 +77,7 @@ async function callProvider(
   user: string,
   timeoutMs: number,
 ) {
+  await guardApiCredit();
   const response = await fetch(provider.url, {
     method: "POST",
     headers: { Authorization: `Bearer ${provider.key}`, "Content-Type": "application/json" },
@@ -110,6 +114,14 @@ async function callProvider(
   if (!text.trim()) {
     throw new Error(`${provider.name} web search returned no answer`);
   }
+  const tokens = readTokenUsage(data.usage);
+  await noteApiUsage({
+    provider: provider.name,
+    model: provider.model,
+    ...tokens,
+    flatUsd: 0.005,
+    kind: "search",
+  });
   return { text, sources: dedupeSources(sources), provider: provider.name };
 }
 

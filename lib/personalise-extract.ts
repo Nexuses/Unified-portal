@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
+import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
 import { normalizePersonalisePlan, type PersonalisePlan } from "@/lib/personalise-types";
 
 const MAX_FILE_BYTES = 15 * 1024 * 1024;
@@ -347,6 +348,7 @@ async function readWithOpenAI(apiKey: string, call: ModelCall) {
       type?: string;
       content?: Array<{ type?: string; text?: string; refusal?: string }>;
     }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
   } | null;
 
   if (!response.ok) {
@@ -373,6 +375,8 @@ async function readWithOpenAI(apiKey: string, call: ModelCall) {
   if (!content) {
     throw new Error("The reader returned an empty response.");
   }
+  const tokens = readTokenUsage(data?.usage);
+  await noteApiUsage({ provider: "openai", model, ...tokens });
   return parseModelJson(content);
 }
 
@@ -398,6 +402,7 @@ async function readWithDeepSeek(call: ModelCall) {
     throw new Error("Set OPENAI_API_KEY or DEEPSEEK_API_KEY to read uploaded files.");
   }
 
+  await guardApiCredit();
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: {
@@ -422,6 +427,7 @@ async function readWithDeepSeek(call: ModelCall) {
       finish_reason?: string;
       message?: { content?: string };
     }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   } | null;
 
   if (!response.ok) {
@@ -436,6 +442,8 @@ async function readWithDeepSeek(call: ModelCall) {
   if (!content) {
     throw new Error("The reader returned an empty response.");
   }
+  const tokens = readTokenUsage(data?.usage);
+  await noteApiUsage({ provider: "deepseek", model: "deepseek-chat", ...tokens });
   return parseModelJson(content);
 }
 

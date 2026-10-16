@@ -3,12 +3,22 @@ import { getDb } from "@/lib/mongodb";
 import type { ListDoc } from "@/lib/crm";
 import { listProjectDripCampaigns } from "@/lib/drip-campaigns-server";
 import { getAnalyticsDashboard } from "@/lib/analytics-server";
-import { listProjectContacts } from "@/lib/crm-contacts-server";
+import { listProjectContacts, listProjectListContacts } from "@/lib/crm-contacts-server";
+import { listProjectCompanies } from "@/lib/crm-companies-server";
 import { getProjectSenders } from "@/lib/smtp-senders-server";
 import { listProjectInboxThreads } from "@/lib/master-inbox-server";
 import { getUnsubscribeListEntries } from "@/lib/unsubscribe-server";
-import { listProjectKanbanBoards } from "@/lib/analytics-kanban-server";
+import { getProjectKanbanBoard, listProjectKanbanBoards } from "@/lib/analytics-kanban-server";
+import { portalKanbanRoute, stageIdForPerson } from "@/lib/analytics-kanban";
+import { listProjectAutomations } from "@/lib/automations-server";
+import { getKnowledgeDoc, listKnowledgeDocs } from "@/lib/knowledge-base-server";
+import {
+  listCampaignSendRecipients,
+  type CampaignRecipientFilter,
+  type CampaignSendRecipient,
+} from "@/lib/campaign-blasts-server";
 import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
+import type { Contact } from "@/lib/crm";
 import type { AssistantCard, AssistantPeopleSearchCard } from "@/lib/assistant";
 import { createPitchResearchJob, normalizeCompanyInputs } from "@/lib/pitch-research-server";
 import { PITCH_RESEARCH_MAX_COMPANIES, type AssistantPitchResearchCard } from "@/lib/pitch-research";
@@ -83,6 +93,140 @@ export const ASSISTANT_TOOLS: AssistantToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "list_campaign_recipients",
+      description:
+        "People on one campaign: who was in the audience, delivered, opened, clicked, bounced, replied, or unsubscribed. Returns names, emails, company, and the time or link for that event. Use this whenever the user asks for the list of people behind a campaign stat.",
+      parameters: {
+        type: "object",
+        properties: {
+          name_or_id: {
+            type: "string",
+            description: "Campaign name, id, or link such as /portal/marketing/campaigns/60",
+          },
+          filter: {
+            type: "string",
+            enum: ["audience", "delivered", "opens", "clicks", "bounces", "replies", "unsubscribes"],
+            description: "opens = opened the email. clicks = clicked a link. These are different people.",
+          },
+          limit: { type: "number", description: "Default 40, max 80" },
+        },
+        required: ["name_or_id", "filter"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_list_contacts",
+      description: "People saved on a CRM contact list, found by list name or id.",
+      parameters: {
+        type: "object",
+        properties: {
+          name_or_id: { type: "string" },
+          query: { type: "string", description: "Optional name, email or company filter inside the list" },
+          limit: { type: "number", description: "Default 40, max 80" },
+        },
+        required: ["name_or_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_companies",
+      description: "CRM companies in this project, with contact counts. Optional name search.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          limit: { type: "number", description: "Default 20, max 40" },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_knowledge",
+      description: "Knowledge base documents for this project: title, file name, and a short preview.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Part of the document title" },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_knowledge",
+      description:
+        "Read one knowledge base document by title or id. Use it when the user asks what a document says.",
+      parameters: {
+        type: "object",
+        properties: { name_or_id: { type: "string" } },
+        required: ["name_or_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_automations",
+      description: "Automations in this project: name, status, and how each step waits and who it targets.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_suppression",
+      description: "Suppression list: unsubscribed emails and blocked domains.",
+      parameters: {
+        type: "object",
+        properties: { limit: { type: "number", description: "Default 40, max 80" } },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_kanban",
+      description:
+        "Kanban boards that sort campaign contacts into stages. Without a name, lists the boards. With a name, returns stage counts and, when a stage is given, the people in that stage.",
+      parameters: {
+        type: "object",
+        properties: {
+          name_or_id: { type: "string" },
+          stage: { type: "string", description: "Stage name, e.g. Engage or Cold" },
+          limit: { type: "number", description: "People to return for the stage. Default 40, max 80" },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_edm_templates",
+      description: "Saved EDM email templates: name, subject, and where they can be used. Not the HTML.",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_analytics",
       description:
         "Email results for a date range: totals, open/click/unsubscribe rates, split by Drip, 1-1 and Personalise, and per-campaign rows.",
@@ -101,12 +245,13 @@ export const ASSISTANT_TOOLS: AssistantToolDefinition[] = [
     type: "function",
     function: {
       name: "search_contacts",
-      description: "Find contacts by name, email or company. Also returns the total match count.",
+      description:
+        "Find CRM contacts by name, email or company. Does not know who opened or clicked a campaign; use list_campaign_recipients for that.",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string" },
-          limit: { type: "number", description: "Default 10, max 25" },
+          limit: { type: "number", description: "Default 20, max 50" },
         },
         required: ["query"],
         additionalProperties: false,
@@ -542,19 +687,358 @@ async function getAnalytics(projectId: ObjectId, args: Record<string, unknown>) 
   };
 }
 
+function contactSummary(contact: Contact) {
+  const attributes = contact.attributes ?? {};
+  const title =
+    attributes.Title || attributes.title || attributes.JobTitle || attributes["Job Title"] || "";
+  const phone = attributes.Phone || attributes.phone || attributes.Mobile || "";
+  return {
+    name: contact.fullName,
+    email: contact.email,
+    company: contact.companyName || undefined,
+    title: title || undefined,
+    phone: phone || undefined,
+    subscribed: contact.subscribed,
+    link: `${PORTAL_ROUTES.contacts}/${contact.id}`,
+  };
+}
+
+function campaignNeedle(value: string) {
+  const fromLink = value.match(/campaigns\/([^/?#\s]+)/i)?.[1];
+  return (fromLink ?? value).trim();
+}
+
 async function searchContacts(projectId: ObjectId, args: Record<string, unknown>) {
   const result = await listProjectContacts(projectId, {
     q: String(args.query ?? ""),
-    pageSize: clampLimit(args.limit, 10, 25),
+    pageSize: clampLimit(args.limit, 20, 50),
   });
   return {
     total: result.total,
-    contacts: result.items.map((contact) => ({
-      name: `${contact.firstName ?? ""} ${contact.lastName ?? ""}`.trim(),
-      email: contact.email,
-      company: contact.companyName,
-      link: `${PORTAL_ROUTES.contacts}/${contact.id}`,
+    contacts: result.items.map(contactSummary),
+  };
+}
+
+const RECIPIENT_FILTERS: CampaignRecipientFilter[] = [
+  "audience",
+  "delivered",
+  "opens",
+  "clicks",
+  "bounces",
+  "replies",
+  "unsubscribes",
+];
+
+function recipientRow(person: CampaignSendRecipient, filter: CampaignRecipientFilter) {
+  return {
+    name: person.fullName,
+    email: person.email,
+    company: person.companyName || undefined,
+    sentAt: person.sentAt,
+    openedAt: filter === "opens" || filter === "clicks" ? person.openedAt : undefined,
+    clickedAt: filter === "clicks" ? person.clickedAt : undefined,
+    clickedUrl: filter === "clicks" ? person.clickedUrl || undefined : undefined,
+    repliedAt: filter === "replies" ? person.repliedAt : undefined,
+    unsubscribedAt: filter === "unsubscribes" ? person.unsubscribedAt : undefined,
+    error: filter === "bounces" ? person.error || undefined : undefined,
+    link: person.contactId ? `${PORTAL_ROUTES.contacts}/${person.contactId}` : undefined,
+  };
+}
+
+async function listCampaignRecipients(projectId: ObjectId, args: Record<string, unknown>) {
+  const filter = RECIPIENT_FILTERS.find((item) => item === args.filter);
+  if (!filter) {
+    return { error: `filter must be one of ${RECIPIENT_FILTERS.join(", ")}` };
+  }
+  const needle = campaignNeedle(String(args.name_or_id ?? "")).toLowerCase();
+  if (!needle) {
+    return { error: "Give a campaign name or id" };
+  }
+  const campaigns = await allCampaigns(projectId);
+  const matches = campaigns.filter(
+    (campaign) =>
+      campaign.id.toLowerCase() === needle || campaign.name.toLowerCase().includes(needle),
+  );
+  if (matches.length === 0) {
+    return { error: `No campaign matches "${needle}"` };
+  }
+  const exact = matches.find((campaign) => campaign.name.toLowerCase() === needle || campaign.id.toLowerCase() === needle);
+  const campaign = exact ?? matches[0];
+  const kind = campaign.kind === "oneone" ? "oneone" : "drip";
+  const people = await listCampaignSendRecipients(projectId, campaign.id, filter, kind, {
+    uniqueContacts: true,
+  });
+  const limit = clampLimit(args.limit, 40, 80);
+  return {
+    campaign: campaign.name,
+    id: campaign.id,
+    filter,
+    total: people.length,
+    truncated: people.length > limit,
+    people: people.slice(0, limit).map((person) => recipientRow(person, filter)),
+    otherMatches: exact ? [] : matches.slice(1, 6).map((item) => item.name),
+    link: portalCampaignRoute(campaign.id, campaign.kind, campaign.tags),
+  };
+}
+
+async function findList(projectId: ObjectId, needle: string) {
+  const db = await getDb();
+  const text = needle.trim();
+  const displayId = Number(text.replace(/^#/, ""));
+  if (ObjectId.isValid(text) && text.length === 24) {
+    const byId = await db.collection<ListDoc>("lists").findOne({ projectId, _id: new ObjectId(text) });
+    if (byId) return byId;
+  }
+  if (Number.isInteger(displayId) && displayId > 0) {
+    const byDisplay = await db.collection<ListDoc>("lists").findOne({ projectId, displayId });
+    if (byDisplay) return byDisplay;
+  }
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const named = await db
+    .collection<ListDoc>("lists")
+    .find({ projectId, name: { $regex: escaped, $options: "i" } })
+    .sort({ createdAt: -1 })
+    .limit(6)
+    .toArray();
+  const exact = named.find((list) => list.name.toLowerCase() === text.toLowerCase());
+  return { chosen: exact ?? named[0], others: named.filter((list) => list !== (exact ?? named[0])) };
+}
+
+async function listListContacts(projectId: ObjectId, args: Record<string, unknown>) {
+  const needle = String(args.name_or_id ?? "").trim();
+  if (!needle) {
+    return { error: "Give a list name or id" };
+  }
+  const found = await findList(projectId, needle);
+  const list = found && "name" in found ? found : found?.chosen;
+  if (!list) {
+    return { error: `No list matches "${needle}"` };
+  }
+  const others = found && "others" in found ? found.others : [];
+  const limit = clampLimit(args.limit, 40, 80);
+  const result = await listProjectListContacts(projectId, list._id, {
+    q: optionalString(args.query),
+    pageSize: limit,
+  });
+  return {
+    list: list.name,
+    id: list.displayId,
+    total: result.total,
+    truncated: result.total > result.items.length,
+    contacts: result.items.map(contactSummary),
+    otherMatches: others.map((item) => item.name),
+    link: `${PORTAL_ROUTES.lists}/${list._id.toString()}`,
+  };
+}
+
+async function searchCompanies(projectId: ObjectId, userName: string, args: Record<string, unknown>) {
+  const limit = clampLimit(args.limit, 20, 40);
+  const result = await listProjectCompanies(projectId, userName, {
+    q: optionalString(args.query) ?? "",
+    pageSize: limit,
+  });
+  return {
+    total: result.total,
+    truncated: result.total > result.items.length,
+    companies: result.items.map((company) => ({
+      name: company.name,
+      domain: company.domain || undefined,
+      contacts: company.contactCount,
+      people: company.contacts.slice(0, 8).map((contact) => ({
+        name: contact.fullName,
+        email: contact.email,
+      })),
+      link: `${PORTAL_ROUTES.companies}/${company.id}`,
     })),
+    link: PORTAL_ROUTES.companies,
+  };
+}
+
+async function listKnowledge(projectId: ObjectId, args: Record<string, unknown>) {
+  const query = String(args.query ?? "").trim().toLowerCase();
+  const docs = await listKnowledgeDocs(projectId.toString());
+  const rows = query
+    ? docs.filter((doc) => doc.title.toLowerCase().includes(query) || doc.fileName.toLowerCase().includes(query))
+    : docs;
+  return {
+    total: rows.length,
+    documents: rows.slice(0, 30).map((doc) => ({
+      id: doc.id,
+      title: doc.title,
+      fileName: doc.fileName,
+      preview: doc.preview.slice(0, 280),
+      createdAt: doc.createdAt,
+    })),
+  };
+}
+
+async function readKnowledge(projectId: ObjectId, args: Record<string, unknown>) {
+  const needle = String(args.name_or_id ?? "").trim();
+  if (!needle) {
+    return { error: "Give a document title or id" };
+  }
+  const docs = await listKnowledgeDocs(projectId.toString());
+  const exact = docs.find(
+    (doc) => doc.id === needle || doc.title.toLowerCase() === needle.toLowerCase(),
+  );
+  const partial = docs.filter(
+    (doc) =>
+      doc.title.toLowerCase().includes(needle.toLowerCase()) ||
+      doc.fileName.toLowerCase().includes(needle.toLowerCase()),
+  );
+  const chosen = exact ?? partial[0];
+  if (!chosen) {
+    return { error: `No knowledge document matches "${needle}"` };
+  }
+  const doc = await getKnowledgeDoc(projectId.toString(), chosen.id);
+  if (!doc) {
+    return { error: "That document could not be read" };
+  }
+  const text = doc.markdown.slice(0, 8000);
+  return {
+    title: doc.title,
+    fileName: doc.fileName,
+    truncated: doc.markdown.length > text.length || doc.truncated,
+    text,
+    otherMatches: exact ? [] : partial.slice(1, 5).map((item) => item.title),
+  };
+}
+
+async function listAutomations(projectId: ObjectId) {
+  const automations = await listProjectAutomations(projectId, { nonEmptyOnly: true });
+  return {
+    total: automations.length,
+    automations: automations.slice(0, 30).map((automation) => ({
+      name: automation.name,
+      kind: automation.kind,
+      status: automation.status,
+      steps: automation.steps.map((step, index) => ({
+        step: index + 1,
+        waitDays: step.waitDays,
+        waitHours: step.waitHours,
+        who: step.engagement,
+        pastCampaign: step.pastCampaignName,
+      })),
+      updatedAt: automation.updatedAt,
+    })),
+    link: PORTAL_ROUTES.automation,
+  };
+}
+
+async function listSuppression(projectId: ObjectId, args: Record<string, unknown>) {
+  const limit = clampLimit(args.limit, 40, 80);
+  const page = await getUnsubscribeListEntries(projectId, { page: 1, pageSize: limit });
+  return {
+    emails: page.emailTotal,
+    domains: page.domainTotal,
+    truncated: page.emailTotal + page.domainTotal > page.entries.length + page.domains.length,
+    unsubscribed: page.entries.map((entry) => ({
+      name: entry.fullName,
+      email: entry.email,
+      addedAt: entry.addedAt,
+    })),
+    blockedDomains: page.domains.map((entry) => ({
+      domain: entry.domain,
+      addedAt: entry.addedAt,
+    })),
+    link: PORTAL_ROUTES.unsub,
+  };
+}
+
+async function getKanban(projectId: ObjectId, args: Record<string, unknown>) {
+  const boards = await listProjectKanbanBoards(projectId);
+  const needle = optionalString(args.name_or_id)?.toLowerCase();
+  if (!needle) {
+    return {
+      boards: boards.map((board) => ({
+        id: board.id,
+        name: board.name,
+        campaigns: board.campaigns.map((campaign) => campaign.name),
+        link: portalKanbanRoute(board.id),
+      })),
+    };
+  }
+  const matches = boards.filter(
+    (board) => board.id.toLowerCase() === needle || board.name.toLowerCase().includes(needle),
+  );
+  const exact = matches.find((board) => board.name.toLowerCase() === needle || board.id === needle);
+  const board = exact ?? matches[0];
+  if (!board) {
+    return { error: `No kanban board matches "${needle}"` };
+  }
+  const full = await getProjectKanbanBoard(projectId, board.id);
+  if (!full) {
+    return { error: "That board could not be loaded" };
+  }
+  const grouped = new Map<string, typeof full.people>();
+  for (const person of full.people) {
+    const stageId = stageIdForPerson(person, full.placements, full.stages);
+    if (!stageId) continue;
+    const bucket = grouped.get(stageId) ?? [];
+    bucket.push(person);
+    grouped.set(stageId, bucket);
+  }
+  const stages = full.stages.map((stage) => ({
+    id: stage.id,
+    name: stage.name,
+    count: grouped.get(stage.id)?.length ?? 0,
+  }));
+  const stageNeedle = optionalString(args.stage)?.toLowerCase();
+  const stage = stageNeedle
+    ? full.stages.find(
+        (item) => item.id.toLowerCase() === stageNeedle || item.name.toLowerCase().includes(stageNeedle),
+      )
+    : undefined;
+  const limit = clampLimit(args.limit, 40, 80);
+  const people = stage ? (grouped.get(stage.id) ?? []) : [];
+  return {
+    name: full.name,
+    link: portalKanbanRoute(full.id),
+    stages,
+    ...(stage
+      ? {
+          stage: stage.name,
+          total: people.length,
+          truncated: people.length > limit,
+          people: people.slice(0, limit).map((person) => ({
+            name: person.fullName,
+            email: person.email,
+            company: person.companyName || undefined,
+            opened: person.opened,
+            clicked: person.clicked,
+            replied: person.replied === true,
+          })),
+        }
+      : {}),
+    otherMatches: exact ? [] : matches.slice(1, 5).map((item) => item.name),
+  };
+}
+
+async function listEdmTemplates(projectId: ObjectId, args: Record<string, unknown>) {
+  const query = String(args.query ?? "").trim().toLowerCase();
+  const db = await getDb();
+  const docs = await db
+    .collection<{ name: string; subject: string; destinations?: string[]; updatedAt: Date }>(
+      "edm_templates",
+    )
+    .find({ projectId: projectId.toString() }, { projection: { html: 0 } })
+    .sort({ updatedAt: -1 })
+    .limit(40)
+    .toArray();
+  const rows = query
+    ? docs.filter(
+        (doc) => doc.name.toLowerCase().includes(query) || doc.subject.toLowerCase().includes(query),
+      )
+    : docs;
+  return {
+    total: rows.length,
+    templates: rows.map((doc) => ({
+      name: doc.name,
+      subject: doc.subject,
+      usedFor: doc.destinations ?? [],
+      updatedAt: doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : undefined,
+    })),
+    link: PORTAL_ROUTES.edm,
   };
 }
 
@@ -617,10 +1101,11 @@ async function listInboxReplies(projectId: ObjectId, args: Record<string, unknow
 }
 
 async function runLookup(
-  projectId: ObjectId,
+  context: AssistantToolContext,
   name: string,
   args: Record<string, unknown>,
 ) {
+  const projectId = context.projectId;
   switch (name) {
     case "get_project_overview":
       return projectOverview(projectId);
@@ -628,12 +1113,30 @@ async function runLookup(
       return listCampaigns(projectId, args);
     case "get_campaign":
       return getCampaign(projectId, args);
+    case "list_campaign_recipients":
+      return listCampaignRecipients(projectId, args);
     case "get_analytics":
       return getAnalytics(projectId, args);
     case "search_contacts":
       return searchContacts(projectId, args);
     case "list_contact_lists":
       return listContactLists(projectId, args);
+    case "list_list_contacts":
+      return listListContacts(projectId, args);
+    case "search_companies":
+      return searchCompanies(projectId, context.userName, args);
+    case "list_knowledge":
+      return listKnowledge(projectId, args);
+    case "read_knowledge":
+      return readKnowledge(projectId, args);
+    case "list_automations":
+      return listAutomations(projectId);
+    case "list_suppression":
+      return listSuppression(projectId, args);
+    case "get_kanban":
+      return getKanban(projectId, args);
+    case "list_edm_templates":
+      return listEdmTemplates(projectId, args);
     case "list_senders":
       return listSenders(projectId);
     case "list_inbox_replies":
@@ -661,5 +1164,5 @@ export async function runAssistantTool(
   if (name === "start_pitch_research") {
     return startPitchResearch(context, args);
   }
-  return { output: await runLookup(context.projectId, name, args) };
+  return { output: await runLookup(context, name, args) };
 }

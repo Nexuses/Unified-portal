@@ -1,3 +1,4 @@
+import { guardApiCredit } from "@/lib/api-credits-server";
 import { generateBrandedPost } from "@/lib/higgsfield";
 
 export const POST_IMAGE_PROVIDERS = ["openai", "higgsfield", "grok", "gemini"] as const;
@@ -181,11 +182,15 @@ export async function generatePostImage(
   provider: PostImageProvider,
   input: { prompt: string; referenceDataUrl?: string },
 ) {
+  await guardApiCredit();
   const reference = input.referenceDataUrl?.trim() || "";
-  if (provider === "higgsfield") {
-    return generateBrandedPost({ prompt: input.prompt, referenceDataUrl: reference });
-  }
-  if (provider === "grok") return grokPost(input.prompt);
-  if (provider === "gemini") return geminiPost(input.prompt, reference);
-  return openAiPost(input.prompt, reference);
+  const image =
+    provider === "higgsfield"
+      ? await generateBrandedPost({ prompt: input.prompt, referenceDataUrl: reference })
+      : provider === "grok"
+        ? await grokPost(input.prompt)
+        : provider === "gemini"
+          ? await geminiPost(input.prompt, reference)
+          : await openAiPost(input.prompt, reference);
+  return image;
 }

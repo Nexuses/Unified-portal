@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import {
+  DEFAULT_API_CREDIT_LIMIT_USD,
+  normalizeApiCreditLimit,
+} from "@/lib/api-credits";
+import { getApiCreditUsedByProject } from "@/lib/api-credits-server";
+import {
   DEFAULT_PROJECT_DATA_CREDITS,
   DEFAULT_PROJECT_SENDING_LIMIT,
   normalizeDataCredits,
@@ -27,6 +32,7 @@ type ProjectDoc = {
   instantClick?: boolean;
   sendingLimit?: number;
   dataCredits?: number;
+  apiCreditLimitUsd?: number;
   /** @deprecated Prefer instantOpen / instantClick. */
   instantOpenClick?: boolean;
 };
@@ -39,7 +45,10 @@ function restoreClickBurstsInBackground(projectId: ObjectId) {
 }
 
 async function mapProject(doc: ProjectDoc) {
-  const used = await getDataCreditsUsedByProject([doc._id]);
+  const [used, apiUsed] = await Promise.all([
+    getDataCreditsUsedByProject([doc._id]),
+    getApiCreditUsedByProject([doc._id]),
+  ]);
   const legacyBoth = Boolean(doc.instantOpenClick);
   return {
     id: doc._id.toString(),
@@ -56,6 +65,10 @@ async function mapProject(doc: ProjectDoc) {
     ),
     dataCredits: normalizeDataCredits(doc.dataCredits ?? DEFAULT_PROJECT_DATA_CREDITS),
     dataCreditsUsed: used.get(doc._id.toString()) ?? 0,
+    apiCreditLimitUsd: normalizeApiCreditLimit(
+      doc.apiCreditLimitUsd ?? DEFAULT_API_CREDIT_LIMIT_USD,
+    ),
+    apiCreditUsedUsd: apiUsed.get(doc._id.toString()) ?? 0,
   };
 }
 
@@ -81,6 +94,10 @@ export async function PUT(request: NextRequest, context: RouteContext) {
         : undefined;
     const dataCredits =
       body.dataCredits !== undefined ? normalizeDataCredits(body.dataCredits) : undefined;
+    const apiCreditLimitUsd =
+      body.apiCreditLimitUsd !== undefined
+        ? normalizeApiCreditLimit(body.apiCreditLimitUsd)
+        : undefined;
 
     if (!name) {
       return NextResponse.json(
@@ -129,6 +146,9 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     }
     if (typeof dataCredits === "number") {
       $set.dataCredits = dataCredits;
+    }
+    if (typeof apiCreditLimitUsd === "number") {
+      $set.apiCreditLimitUsd = apiCreditLimitUsd;
     }
 
     const result = await db.collection("projects").findOneAndUpdate(
@@ -182,12 +202,16 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       $set.dataCredits = normalizeDataCredits(body.dataCredits);
       hasUpdate = true;
     }
+    if (body.apiCreditLimitUsd !== undefined) {
+      $set.apiCreditLimitUsd = normalizeApiCreditLimit(body.apiCreditLimitUsd);
+      hasUpdate = true;
+    }
 
     if (!hasUpdate) {
       return NextResponse.json(
         {
           error:
-            "Provide instantOpen, instantClick, sendingLimit, and/or dataCredits to update",
+            "Provide instantOpen, instantClick, sendingLimit, dataCredits, and/or apiCreditLimitUsd to update",
         },
         { status: 400 },
       );

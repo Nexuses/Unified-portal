@@ -1,3 +1,5 @@
+import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
+
 /**
  * Thin client for the Jev System One decisions API (TypeSafe AI).
  * Not OpenAI-compatible — uses state + typed questions, not chat completions.
@@ -120,6 +122,16 @@ export async function callJevSystemOne(args: {
     throw new Error("Jev returned an empty response");
   }
   return payload;
+  const model = args.model || defaultModel;
+  const tokens = readTokenUsage(payload.usage);
+  await noteApiUsage({
+    provider: "openai",
+    model,
+    ...tokens,
+    ...(tokens.inputTokens + tokens.outputTokens > 0
+      ? {}
+      : { flatUsd: 0.01, kind: "chat" as const }),
+  });
 }
 
 export function asChoice(

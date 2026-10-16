@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { runInApiCredit } from "@/lib/api-credits-server";
 import { chatWithDeepSeek, type ChatMessage } from "@/lib/deepseek";
 import {
   isSessionError,
@@ -22,7 +23,7 @@ export async function POST(request: NextRequest) {
     if (isSessionError(session)) {
       return session;
     }
-
+    return await runInApiCredit(session.projectId, "automation", async () => {
     const body = (await request.json().catch(() => null)) as {
       message?: unknown;
       history?: unknown;
@@ -103,6 +104,7 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({ reply });
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to chat with DeepSeek";

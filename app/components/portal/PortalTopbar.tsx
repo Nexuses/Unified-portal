@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
+import ApiCreditButton from "./ApiCreditButton";
 import {
   IconChevronDown,
   IconHelp,
@@ -95,6 +96,7 @@ export default function PortalTopbar({
         <h1 id="pageTitle">{pageTitle}</h1>
       </div>
       <div className="topbar-right" ref={menusRef}>
+        <ApiCreditButton onOpen={() => setOpenMenu(null)} />
         <div className="org-menu">
           <button
             type="button"

@@ -10,6 +10,12 @@ export type EdmChatTurn = {
   buckets?: EdmChatBucket[];
 };
 
+export type EdmChatSummary = {
+  id: string;
+  title: string;
+  updatedAt: string;
+};
+
 export type EdmChat = {
   id: string;
   title: string;
@@ -46,9 +52,17 @@ function ensureIndexes() {
   if (!indexesReady) {
     indexesReady = getDb()
       .then((db) =>
-        db
-          .collection<EdmChatDoc>(COLLECTION)
-          .createIndex({ projectId: 1, updatedAt: -1 }, { name: "edm_chats_project_updated" }),
+        Promise.all([
+          db
+            .collection<EdmChatDoc>(COLLECTION)
+            .createIndex({ projectId: 1, updatedAt: -1 }, { name: "edm_chats_project_updated" }),
+          db
+            .collection<EdmChatDoc>(COLLECTION)
+            .createIndex(
+              { projectId: 1, updatedAt: -1, title: 1, _id: 1 },
+              { name: "edm_chats_project_list" },
+            ),
+        ]),
       )
       .catch((error) => {
         console.error("EDM chat index failed:", error);
@@ -116,16 +130,27 @@ export function isEdmChatId(id: string) {
   return CHAT_ID.test(id);
 }
 
-export async function listEdmChats(projectId: string): Promise<EdmChat[]> {
+export async function listEdmChats(projectId: string): Promise<EdmChatSummary[]> {
   void ensureIndexes();
   const db = await getDb();
   const docs = await db
     .collection<EdmChatDoc>(COLLECTION)
-    .find({ projectId })
+    .find({ projectId }, { projection: { title: 1, updatedAt: 1 } })
     .sort({ updatedAt: -1 })
     .limit(CHAT_LIMIT)
     .toArray();
-  return docs.map(toChat);
+  return docs.map((doc) => ({
+    id: doc._id,
+    title: doc.title || "New chat",
+    updatedAt: doc.updatedAt.toISOString(),
+  }));
+}
+
+export async function getEdmChat(projectId: string, id: string): Promise<EdmChat | null> {
+  if (!isEdmChatId(id)) return null;
+  const db = await getDb();
+  const doc = await db.collection<EdmChatDoc>(COLLECTION).findOne({ _id: id, projectId });
+  return doc ? toChat(doc) : null;
 }
 
 export async function saveEdmChat(
@@ -143,18 +168,22 @@ export async function saveEdmChat(
     (typeof input.title === "string" ? input.title.trim().slice(0, 120) : "") || "New chat";
   const now = new Date();
   const db = await getDb();
-  const saved = await db.collection<EdmChatDoc>(COLLECTION).findOneAndUpdate(
+  await db.collection<EdmChatDoc>(COLLECTION).updateOne(
     { _id: id, projectId },
     {
       $set: { title, messages, html, imageBucket: cleanBucket(input.imageBucket), updatedAt: now },
       $setOnInsert: { projectId, createdBy: userId, createdAt: now },
     },
-    { upsert: true, returnDocument: "after" },
+    { upsert: true },
   );
-  if (!saved) {
-    throw new Error("Could not save the chat");
-  }
-  return toChat(saved);
+  return {
+    id,
+    title,
+    messages: [],
+    html: "",
+    imageBucket: cleanBucket(input.imageBucket),
+    updatedAt: now.toISOString(),
+  };
 }
 
 export async function deleteEdmChat(projectId: string, id: string) {

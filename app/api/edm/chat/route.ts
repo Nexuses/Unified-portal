@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isApiCreditLimitError } from "@/lib/api-credits";
+import { runInApiCredit } from "@/lib/api-credits-server";
 import { chatWithDeepSeekResult, type ChatMessage } from "@/lib/deepseek";
 import { extractEdmResult, htmlIsComplete } from "@/lib/edm-result";
 import { loadKnowledgeBrand } from "@/lib/edm-brand";
@@ -13,6 +15,8 @@ import {
 export const maxDuration = 180;
 
 const SYSTEM_PROMPT = `You are the EDM assistant for Nexuses. You answer questions and you design HTML emails (EDMs).
+
+Social posts, Instagram, LinkedIn, banners, and creatives are images, not emails. Do not write HTML for them and do not ask which S3 bucket to use. If one reaches you, reply with ANSWER: and one sentence that the post can be downloaded from the chat.
 
 First decide what the latest request needs.
 
@@ -49,7 +53,8 @@ Email rules:
 - Pasted HTML and reference screenshots are layout only: section order, spacing, image-and-text rhythm, and button shape.
 - Never copy colors, fonts, logos, product names, or claims from that reference. Replace them on the first draft.
 - Colors, backgrounds, button color, text color, logo, copy, and links always come from the knowledge base brand, even if the user does not ask.
-- Use the knowledge base brand colors as the actual CSS hex values. Use its copy, not the reference company's copy.
+- Brand colors are the hex values taken from the client logo. Use those exact values in the CSS. Do not invent a different palette.
+- The header logo must be an img whose src is the client logo URL exactly. Do not generate, redraw, or replace that logo.
 - Attachments are not labeled. A screenshot is layout. Text that is a deck or site note is copy. An image the user calls a logo is the logo.
 - To place an attached image in the email, use its {{file-N}} token as the img src.
 - When the email needs a new photo or illustration, set that img src to exactly {{gen:short visual description}}. No quotes inside the description. At most 6 generated images. Do not generate the logo this way.
@@ -88,6 +93,26 @@ function stripEmDashes(html: string) {
   return html.replace(/&mdash;|&#8212;|&#x2014;/gi, "-").replace(/\u2014/g, "-");
 }
 
+function ensureClientLogo(html: string, logoUrl: string) {
+  const url = logoUrl.trim();
+  if (!html || !url || html.includes(url)) return html;
+  const safe = url.replace(/"/g, "%22");
+  const existing = html.match(
+    /<img\b[^>]*(?:alt=["'][^"']*logo[^"']*["']|src=["'][^"']*logo[^"']*["'])[^>]*>/i,
+  );
+  if (existing) {
+    const next = /src=["'][^"']*["']/i.test(existing[0])
+      ? existing[0].replace(/src=["'][^"']*["']/i, `src="${safe}"`)
+      : existing[0].replace(/<img\b/i, `<img src="${safe}"`);
+    return html.replace(existing[0], next);
+  }
+  const img = `<img src="${safe}" alt="Logo" width="160" style="display:block;width:160px;max-width:180px;height:auto;border:0;" />`;
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/<body([^>]*)>/i, `<body$1>\n${img}`);
+  }
+  return html;
+}
+
 function stripInvisiblePadding(html: string) {
   return html.replace(/(?:[\u034F\u200B-\u200D\u2060\uFEFF\u00AD]\s*){4,}/g, "");
 }
@@ -120,7 +145,7 @@ export async function POST(request: NextRequest) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) return session;
-
+    return await runInApiCredit(session.projectId, "edm", async () => {
     const body = (await request.json().catch(() => null)) as {
       message?: unknown;
       history?: unknown;
@@ -214,16 +239,13 @@ export async function POST(request: NextRequest) {
 
     const currentHtml =
       typeof body?.currentHtml === "string" ? clip(body.currentHtml, 50_000) : "";
-    const brand = await loadKnowledgeBrand(session.projectId);
+    const brand = await loadKnowledgeBrand(session.projectId, session.projectLogoUrl);
 
     const context = [
       `Client: ${session.projectName}`,
-      session.projectLogoUrl
-        ? `Client logo URL (use this src in the header): ${session.projectLogoUrl}`
+      brand.text
+        ? `Knowledge base brand. This controls the logo, colors, copy, and links. Do not wait for the user to ask:\n${brand.text}`
         : "Client logo URL: none",
-      brand
-        ? `Knowledge base brand. This controls color, copy, and links. Do not wait for the user to ask:\n${brand}`
-        : "",
       referenceHtml
         ? `Layout reference only. Copy the structure, not the colors or the company:\n${referenceHtml}`
         : "",
@@ -340,6 +362,8 @@ export async function POST(request: NextRequest) {
       if (finishReason && finishReason !== "length" && htmlIsComplete(result.html)) break;
     }
 
+    if (result.html) result.html = ensureClientLogo(result.html, brand.logoUrl);
+
     if (result.html && needsImageUpload(result.html, imageTokens)) {
       const { allowed, chosen } = await pickBucket();
       if (!chosen) {
@@ -363,8 +387,12 @@ export async function POST(request: NextRequest) {
     }
     if (result.html) result.html = stripEmDashes(result.html);
     return NextResponse.json(result);
+    });
   } catch (error) {
     console.error("EDM chat failed:", error);
+    if (isApiCreditLimitError(error)) {
+      return NextResponse.json({ error: error.message }, { status: 402 });
+    }
     const message = error instanceof Error ? error.message : "Chat failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }

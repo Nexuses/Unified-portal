@@ -142,13 +142,9 @@ export async function rolloutPersonaliseCampaign(input: {
     _id: new ObjectId(senderId),
     projectId: input.projectId,
   });
-  const provider = (sender as { provider?: string; fromEmail?: string } | null)?.provider;
   const fromEmail = (sender as { fromEmail?: string } | null)?.fromEmail?.trim() ?? "";
   if (!sender || !fromEmail) {
     throw new Error("Select a sender.");
-  }
-  if (provider !== "gmail" && provider !== "outlook") {
-    throw new Error("Personalise campaigns use a Gmail or Outlook sender.");
   }
 
   await assertProjectRecipientQuota(input.projectId, plan.contacts.length);

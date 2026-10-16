@@ -5,6 +5,7 @@ import {
   parseAiSearchExpandOptions,
 } from "@/lib/people/ai-search";
 import { parseFiltersHybrid } from "@/lib/people/ai-filters";
+import { runInApiCredit } from "@/lib/api-credits-server";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
 export const runtime = "nodejs";
@@ -17,6 +18,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    return await runInApiCredit(session.projectId, "enrich", async () => {
     const body = await request.json();
     const query = typeof body.query === "string" ? body.query.trim() : "";
 
@@ -36,6 +38,7 @@ export async function POST(request: NextRequest) {
       parseAiSearchExpandOptions(body.expandOptions)
     );
     return NextResponse.json({ filters });
+    });
   } catch (error) {
     console.error("[enrich/people/ai] failed", error);
     const message = error instanceof Error ? error.message : "Failed to build filters";

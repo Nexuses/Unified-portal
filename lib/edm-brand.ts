@@ -1,4 +1,5 @@
 import { loadKnowledgeMarkdown } from "@/lib/knowledge-base-server";
+import { readLogoBrand } from "@/lib/logo-brand";
 
 function expandHex(value: string) {
   const hex = value.toLowerCase();
@@ -32,11 +33,29 @@ function topColors(html: string) {
   return [...chromatic, ...neutrals];
 }
 
-export async function loadKnowledgeBrand(projectId: string) {
-  const markdown = await loadKnowledgeMarkdown(projectId, 9000);
-  if (!markdown) return "";
-  const colors = topColors(markdown);
-  return [colors.length ? `Brand colors: ${colors.join(", ")}` : "", markdown]
+export type KnowledgeBrand = {
+  /** Prompt text: logo colors, then the knowledge-base documents. */
+  text: string;
+  colors: string[];
+  logoUrl: string;
+  /** PNG of the client logo, for placing on a generated post. */
+  logoDataUrl: string;
+};
+
+export async function loadKnowledgeBrand(projectId: string, logoUrl = ""): Promise<KnowledgeBrand> {
+  const [markdown, logo] = await Promise.all([
+    loadKnowledgeMarkdown(projectId, 9000),
+    readLogoBrand(logoUrl),
+  ]);
+  const colors = logo.colors.length > 0 ? logo.colors : topColors(markdown);
+  const text = [
+    logoUrl ? `Client logo URL (use this exact img src, do not redraw the logo): ${logoUrl}` : "",
+    colors.length
+      ? `Brand colors taken from the client logo. Use these exact hex values for backgrounds, buttons, links, and accents: ${colors.join(", ")}.`
+      : "",
+    markdown,
+  ]
     .filter(Boolean)
     .join("\n\n");
+  return { text, colors, logoUrl, logoDataUrl: logo.pngDataUrl };
 }

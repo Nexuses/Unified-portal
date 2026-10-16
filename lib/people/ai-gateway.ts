@@ -3,6 +3,8 @@
  * Docs: https://vercel.com/docs/ai-gateway
  */
 
+import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
+
 export type AiGatewayMessage = {
   role: "system" | "user" | "assistant";
   content: string;
@@ -35,6 +37,7 @@ export async function callAiGatewayJson(args: {
     throw new Error("AI_GATEWAY_API_KEY is not configured");
   }
 
+  await guardApiCredit();
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -61,10 +64,18 @@ export async function callAiGatewayJson(args: {
 
   const payload = (await response.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
   const content = payload.choices?.[0]?.message?.content;
   if (!content) {
     throw new Error("AI Gateway returned an empty response");
   }
+  const model = args.model || defaultModel;
+  const tokens = readTokenUsage(payload.usage);
+  await noteApiUsage({
+    provider: model.startsWith("deepseek") ? "deepseek" : "openai",
+    model,
+    ...tokens,
+  });
   return content;
 }

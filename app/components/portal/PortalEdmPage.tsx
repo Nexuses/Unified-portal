@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import ApiCreditButton from "@/app/components/portal/ApiCreditButton";
 import { extractEdmResult } from "@/lib/edm-result";
 import { useRouter } from "next/navigation";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
@@ -17,6 +18,7 @@ type ChatTurn = {
   text: string;
   imageUrl?: string;
   buckets?: EdmBucket[];
+  uploadImageUrl?: string;
 };
 
 type ChatFile = {
@@ -33,6 +35,7 @@ type SavedChat = {
   html: string;
   imageBucket?: EdmBucket | null;
   updatedAt: string;
+  loaded?: boolean;
 };
 
 type PendingEmail = {
@@ -49,12 +52,12 @@ type PendingUpload = {
 };
 
 const HELLO_PROMPTS = [
-  "What email should we make?",
+  "What email or social post should we make?",
   "Write a product launch email in our brand",
-  "Make a short follow-up with one button",
   "Create a square social post for this offer",
-  "Match this reference layout with our colors",
-  "Design a welcome email with our logo",
+  "Make a short follow-up with one button",
+  "Design a LinkedIn post from our brand",
+  "Change the email, or ask for a new post",
 ];
 
 const HISTORY_KEY = "edm-studio-chats-v1";
@@ -73,11 +76,28 @@ function assistantText(text: string) {
   return text;
 }
 
-function wantsPost(text: string) {
+function wantsPostUpload(text: string) {
   return (
-    /\b(post|instagram|linkedin|social media|creative|banner)\b/i.test(text) &&
-    !/\b(email|e-mail|edm|newsletter|mailer)\b/i.test(text)
+    /\b(s3|bucket)\b/i.test(text) ||
+    (/\bupload\b/i.test(text) && /\b(post|image|it|this|link|url)\b/i.test(text))
   );
+}
+
+function wantsPost(text: string) {
+  if (/\b(email|e-mail|edm|newsletter|mailer)\b/i.test(text)) return false;
+  if (wantsPostUpload(text) && !/\b(generate|create|make|design|draw|write)\b/i.test(text)) {
+    return false;
+  }
+  return /\b(post|instagram|linkedin|facebook|banner|social media)\b/i.test(text);
+}
+
+function downloadPost(imageUrl: string) {
+  const link = document.createElement("a");
+  link.href = imageUrl;
+  link.download = "social-post.png";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 function blankChat(): SavedChat {
@@ -87,6 +107,7 @@ function blankChat(): SavedChat {
     messages: [],
     html: "",
     updatedAt: new Date().toISOString(),
+    loaded: true,
   };
 }
 
@@ -114,7 +135,6 @@ async function putChat(payload: string) {
     const data = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new Error(data?.error || "Could not save the chat");
   }
-  return ((await response.json()) as { chat: SavedChat }).chat;
 }
 
 /** Chats from before server storage lived only in this browser; move them into the open project once. */
@@ -259,6 +279,7 @@ export default function PortalEdmPage() {
   const [imageBucket, setImageBucket] = useState<EdmBucket | null>(null);
   const [helloIndex, setHelloIndex] = useState(0);
   const [helloVisible, setHelloVisible] = useState(true);
+  const [chatLoading, setChatLoading] = useState(false);
   const speech = useSpeechInput({ value: draft, onChange: setDraft });
 
   useEffect(() => {
@@ -274,29 +295,20 @@ export default function PortalEdmPage() {
         if (!response.ok) {
           throw new Error(data?.error || "Could not load your chats");
         }
-        saved = Array.isArray(data?.chats) ? data.chats : [];
-        const local = takeBrowserChats();
-        if (local.length) {
-          const known = new Set(saved.map((chat) => chat.id));
-          const moved = await Promise.all(
-            local
-              .filter((chat) => !known.has(chat.id))
-              .map((chat) => putChat(chatPayload(chat)).catch(() => null)),
-          );
-          saved = [...saved, ...moved.filter((chat): chat is SavedChat => Boolean(chat))]
-            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-            .slice(0, 40);
-          forgetBrowserChats();
-        }
+        saved = (Array.isArray(data?.chats) ? data.chats : []).map((chat) => ({
+          id: chat.id,
+          title: chat.title || "New chat",
+          messages: [],
+          html: "",
+          updatedAt: chat.updatedAt,
+          loaded: false,
+        }));
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Could not load your chats");
         }
       }
       if (cancelled) return;
-      for (const chat of saved) {
-        savedPayloads.current.set(chat.id, chatPayload(chat));
-      }
       const fresh = blankChat();
       setChats([fresh, ...saved].slice(0, 40));
       setActiveId(fresh.id);
@@ -304,6 +316,30 @@ export default function PortalEdmPage() {
       setHtml("");
       setPreviewOpen(false);
       setReady(true);
+      const local = takeBrowserChats();
+      if (!local.length) return;
+      const known = new Set(saved.map((chat) => chat.id));
+      const moved: SavedChat[] = [];
+      for (const chat of local) {
+        if (known.has(chat.id)) continue;
+        try {
+          await putChat(chatPayload(chat));
+          moved.push({ ...chat, loaded: true });
+        } catch {
+          // Keep going. A failed copy stays out of this list.
+        }
+      }
+      forgetBrowserChats();
+      if (cancelled || !moved.length) return;
+      for (const chat of moved) {
+        savedPayloads.current.set(chat.id, chatPayload(chat));
+      }
+      setChats((current) => {
+        const ids = new Set(current.map((chat) => chat.id));
+        return [...current, ...moved.filter((chat) => !ids.has(chat.id))]
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          .slice(0, 40);
+      });
     })();
     return () => {
       cancelled = true;
@@ -451,17 +487,14 @@ export default function PortalEdmPage() {
   }
 
   const hasAttachment = Boolean(files.length || referenceHtml);
-  const [postMode, setPostMode] = useState(false);
 
   function openChat(chat: SavedChat) {
     if (chat.id === activeId) return;
     chatEpoch.current += 1;
+    const epoch = chatEpoch.current;
     setActiveId(chat.id);
-    setMessages(chat.messages);
-    setHtml(chat.html);
     setImageBucket(chat.imageBucket ?? null);
     pendingEmail.current = null;
-    setPreviewOpen(Boolean(chat.html.trim()));
     setDraft("");
     setFiles([]);
     setReferenceHtml("");
@@ -469,6 +502,47 @@ export default function PortalEdmPage() {
     setPasteDraft("");
     setError("");
     setBusy(false);
+    if (chat.loaded !== false) {
+      setMessages(chat.messages);
+      setHtml(chat.html);
+      setPreviewOpen(Boolean(chat.html.trim()));
+      setChatLoading(false);
+      return;
+    }
+    setMessages([]);
+    setHtml("");
+    setPreviewOpen(false);
+    setChatLoading(true);
+    void fetch(`/api/edm/chats?id=${encodeURIComponent(chat.id)}`)
+      .then(async (response) => {
+        const data = (await response.json().catch(() => null)) as {
+          chat?: SavedChat;
+          error?: string;
+        } | null;
+        if (!response.ok || !data?.chat) {
+          throw new Error(data?.error || "Could not open that chat");
+        }
+        return data.chat;
+      })
+      .then((full) => {
+        if (chatEpoch.current !== epoch) return;
+        const loaded = { ...full, loaded: true };
+        savedPayloads.current.set(loaded.id, chatPayload(loaded));
+        setChats((current) =>
+          current.map((item) => (item.id === loaded.id ? { ...item, ...loaded } : item)),
+        );
+        setMessages(loaded.messages ?? []);
+        setHtml(loaded.html ?? "");
+        setImageBucket(loaded.imageBucket ?? null);
+        setPreviewOpen(Boolean(loaded.html?.trim()));
+      })
+      .catch((err: unknown) => {
+        if (chatEpoch.current !== epoch) return;
+        setError(err instanceof Error ? err.message : "Could not open that chat");
+      })
+      .finally(() => {
+        if (chatEpoch.current === epoch) setChatLoading(false);
+      });
   }
 
   function deleteChat(id: string) {
@@ -481,7 +555,7 @@ export default function PortalEdmPage() {
       pendingSave.current = null;
     }
     const removed = chats.find((chat) => chat.id === id);
-    if (savedPayloads.current.has(id) || (removed && hasContent(removed))) {
+    if (removed && (removed.loaded === false || savedPayloads.current.has(id) || hasContent(removed))) {
       savedPayloads.current.delete(id);
       void fetch(`/api/edm/chats?id=${encodeURIComponent(id)}`, { method: "DELETE" }).then(
         (response) => {
@@ -492,6 +566,10 @@ export default function PortalEdmPage() {
       );
     }
     if (id !== activeId) return;
+    if (active.loaded === false) {
+      openChat(active);
+      return;
+    }
     chatEpoch.current += 1;
     pendingEmail.current = null;
     setActiveId(active.id);
@@ -564,6 +642,7 @@ export default function PortalEdmPage() {
         throw new Error(data?.error || "Chat failed");
       }
       if (chatEpoch.current !== epoch) return;
+      window.dispatchEvent(new Event("nexuses-api-credit"));
       if (data?.needsBucket && data.html) {
         pendingEmail.current = { html: data.html, files: pending.files };
         setMessages((current) => [
@@ -603,8 +682,75 @@ export default function PortalEdmPage() {
     }
   }
 
+  async function finishPostUpload(imageUrl: string, bucket: EdmBucket | null) {
+    const epoch = chatEpoch.current;
+    setError("");
+    setBusy(true);
+    try {
+      const response = await fetch("/api/edm/post", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          upload: true,
+          imageUrl,
+          bucket: bucket ? { name: bucket.name, region: bucket.region } : undefined,
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as {
+        error?: string;
+        url?: string;
+        bucket?: string;
+        needsBucket?: boolean;
+        buckets?: EdmBucket[];
+      } | null;
+      if (chatEpoch.current !== epoch) return;
+      if (data?.needsBucket) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            text: "Which bucket should this post go to?",
+            buckets: data.buckets ?? [],
+            uploadImageUrl: imageUrl,
+          },
+        ]);
+        return;
+      }
+      if (!response.ok || !data?.url) {
+        throw new Error(data?.error || "Could not upload the post");
+      }
+      setMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          text: `The post is on S3${data.bucket ? ` (${data.bucket})` : ""}:\n${data.url}`,
+        },
+      ]);
+    } catch (err) {
+      if (chatEpoch.current !== epoch) return;
+      setError(err instanceof Error ? err.message : "Could not upload the post");
+    } finally {
+      if (chatEpoch.current === epoch) setBusy(false);
+    }
+  }
+
   async function chooseBucket(bucket: EdmBucket) {
     if (busy) return;
+    const uploadImage = messages.find((item) => item.buckets && item.uploadImageUrl)?.uploadImageUrl;
+    if (uploadImage) {
+      setImageBucket(bucket);
+      setMessages((current) =>
+        current.map((item) =>
+          item.uploadImageUrl && item.buckets
+            ? { ...item, buckets: undefined, uploadImageUrl: undefined, text: `Uploading the post to ${bucket.name}.` }
+            : item,
+        ),
+      );
+      await finishPostUpload(uploadImage, bucket);
+      return;
+    }
     const pending = pendingEmail.current;
     pendingEmail.current = null;
     setImageBucket(bucket);
@@ -655,9 +801,24 @@ export default function PortalEdmPage() {
   }
 
   async function send() {
-    if (!ready) return;
-    if (postMode || wantsPost(draft)) {
+    if (!ready || busy) return;
+    if (wantsPost(draft)) {
       await generatePost();
+      return;
+    }
+    if (wantsPostUpload(draft)) {
+      const imageUrl = [...messages].reverse().find((item) => item.imageUrl)?.imageUrl;
+      const message = draft.trim();
+      if (!message) return;
+      speech.stop();
+      setError("");
+      setDraft("");
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", text: message }]);
+      if (!imageUrl) {
+        setError("Generate a post first, then ask to upload it.");
+        return;
+      }
+      await finishPostUpload(imageUrl, imageBucket);
       return;
     }
     const message =
@@ -691,8 +852,9 @@ export default function PortalEdmPage() {
     const prompt =
       draft.trim() ||
       (reference ? `Create a post like this in ${projectName || "our"} branding and content.` : "");
+    const alsoUpload = wantsPostUpload(prompt);
     if (!prompt) {
-      setError("Attach an image or describe the post, then press send.");
+      setError("Describe the post, then press send.");
       return;
     }
     speech.stop();
@@ -716,15 +878,19 @@ export default function PortalEdmPage() {
         throw new Error(data?.error || "Could not generate the post");
       }
       if (chatEpoch.current !== epoch) return;
+      window.dispatchEvent(new Event("nexuses-api-credit"));
       setMessages((current) => [
         ...current,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          text: "Here is the post.",
+          text: "Here is the post. Hover it to download.",
           imageUrl: data.imageUrl,
         },
       ]);
+      if (alsoUpload && data.imageUrl) {
+        await finishPostUpload(data.imageUrl, imageBucket);
+      }
     } catch (err) {
       if (chatEpoch.current !== epoch) return;
       setError(err instanceof Error ? err.message : "Could not generate the post");
@@ -797,6 +963,7 @@ export default function PortalEdmPage() {
           alt="Nexuses"
         />
         <div className="edm-top-actions">
+          <ApiCreditButton />
           <button
             type="button"
             className="edm-close"
@@ -936,8 +1103,10 @@ export default function PortalEdmPage() {
           </div>
         </aside>
         <section className="edm-chat" aria-label="Chat">
-          <div className={`edm-messages${messages.length === 0 && !html ? " is-empty" : ""}`}>
-            {messages.length === 0 && !html ? (
+          <div className={`edm-messages${messages.length === 0 && !html && !chatLoading ? " is-empty" : ""}`}>
+            {chatLoading ? (
+              <p className="edm-chat-loading">Loading chat…</p>
+            ) : messages.length === 0 && !html ? (
               <button
                 type="button"
                 className={`edm-hello${helloVisible ? "" : " is-fading"}`}
@@ -966,8 +1135,27 @@ export default function PortalEdmPage() {
                       </div>
                     ) : null}
                     {item.imageUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img className="edm-post-image" src={item.imageUrl} alt="Generated post" />
+                      <div className="edm-post-frame">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img className="edm-post-image" src={item.imageUrl} alt="Generated post" />
+                        <button
+                          type="button"
+                          className="edm-post-download"
+                          aria-label="Download post"
+                          onClick={() => downloadPost(item.imageUrl || "")}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M12 4v10M8 10l4 4 4-4M5 19h14"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </button>
+                      </div>
                     ) : null}
                   </div>
                 ))}
@@ -1056,11 +1244,9 @@ export default function PortalEdmPage() {
                 placeholder={
                   speech.listening
                     ? "Listening… speak now"
-                    : postMode
-                      ? "Attach an image to copy its style, or describe the post"
-                      : html.trim()
-                      ? "Ask for a change"
-                      : "Describe the email you want"
+                    : html.trim()
+                      ? "Ask for an email change, or ask for a social post"
+                      : "Describe an email or a social post"
                 }
                 rows={1}
               />
@@ -1082,16 +1268,6 @@ export default function PortalEdmPage() {
                   onClick={() => setPasteOpen((open) => !open)}
                 >
                   Paste HTML
-                </button>
-                <button
-                  type="button"
-                  className={`edm-tool edm-post-toggle${postMode ? " active" : ""}`}
-                  disabled={busy}
-                  aria-pressed={postMode}
-                  title="Turn on, attach an image, and send. The post is made in your brand."
-                  onClick={() => setPostMode((on) => !on)}
-                >
-                  Generate post
                 </button>
                 {speech.supported ? (
                   <button

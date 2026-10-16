@@ -1,14 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteEdmChat, listEdmChats, saveEdmChat } from "@/lib/edm-chats-server";
+import { deleteEdmChat, getEdmChat, listEdmChats, saveEdmChat } from "@/lib/edm-chats-server";
 import {
   isSessionError,
   requirePortalSession,
 } from "@/lib/require-portal-session";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) return session;
+    const id = request.nextUrl.searchParams.get("id")?.trim() ?? "";
+    if (id) {
+      const chat = await getEdmChat(session.projectId, id);
+      if (!chat) {
+        return NextResponse.json({ error: "Chat not found" }, { status: 404 });
+      }
+      return NextResponse.json({ chat });
+    }
     const chats = await listEdmChats(session.projectId);
     return NextResponse.json({ projectId: session.projectId, chats });
   } catch (error) {
@@ -26,7 +34,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: "Chat is required" }, { status: 400 });
     }
     const chat = await saveEdmChat(session.projectId, session.id, body);
-    return NextResponse.json({ chat });
+    return NextResponse.json({ ok: true, id: chat.id, updatedAt: chat.updatedAt });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to save chat";
     if (message === "Invalid chat id") {

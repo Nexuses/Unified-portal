@@ -222,12 +222,9 @@ export default function PortalPersonalisePage({
         if (!response.ok || !Array.isArray(data)) {
           return;
         }
-        const allowed = data.filter(
-          (sender) => sender.provider === "gmail" || sender.provider === "outlook",
-        );
         if (!cancelled) {
-          setSenders(allowed);
-          setSenderId((current) => current || allowed[0]?.id || "");
+          setSenders(data);
+          setSenderId((current) => current || data[0]?.id || "");
         }
       } catch {
         // The rollout form shows an empty sender list.
@@ -557,7 +554,7 @@ export default function PortalPersonalisePage({
                 senders={senders}
                 value={senderId}
                 onChange={setSenderId}
-                placeholder="No Gmail or Outlook sender"
+                placeholder="No sender yet"
               />
             </div>
             <div className="crm-field">

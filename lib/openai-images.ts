@@ -1,3 +1,5 @@
+import { guardApiCredit, noteApiUsage } from "@/lib/api-credits-server";
+
 export async function generateEmailImage(prompt: string) {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
@@ -6,6 +8,7 @@ export async function generateEmailImage(prompt: string) {
     );
   }
 
+  await guardApiCredit();
   const response = await fetch("https://api.openai.com/v1/images/generations", {
     method: "POST",
     headers: {
@@ -35,6 +38,12 @@ export async function generateEmailImage(prompt: string) {
   if (!b64) {
     throw new Error("ChatGPT returned an empty image");
   }
+  await noteApiUsage({
+    provider: "openai",
+    model: "gpt-image-2.5-flare",
+    flatUsd: 0.02,
+    kind: "image",
+  });
   return `data:image/jpeg;base64,${b64}`;
 }
 

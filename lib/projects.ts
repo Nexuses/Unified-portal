@@ -14,6 +14,10 @@ export type Project = {
   dataCredits: number;
   /** Credits used in the current month. */
   dataCreditsUsed: number;
+  /** Dollar cap for AI API use. Default $5. */
+  apiCreditLimitUsd: number;
+  /** Estimated dollars used so far. */
+  apiCreditUsedUsd: number;
 };
 
 export const DEFAULT_PROJECT_SENDING_LIMIT = 50_000;

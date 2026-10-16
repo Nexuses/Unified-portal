@@ -292,7 +292,7 @@ function SenderPanel({
               </>
             ) : (
               <>
-                No Gmail or Outlook SMTP senders yet.{" "}
+                No senders yet.{" "}
                 <Link href={PORTAL_ROUTES.smtp} className="link-blue">
                   Add a sender
                 </Link>
@@ -3192,15 +3192,13 @@ function senderDisplayName(sender: SmtpSender) {
   return match?.[1]?.trim() || sender.providerName;
 }
 
-/** 1-1 uses Gmail and Outlook SMTP only. Drip cannot use Gmail SMTP. */
+/** Drip cannot use Gmail SMTP. 1-1 can use any sender. */
 function sendersAllowedForKind(
   senders: SmtpSender[],
   kind: "drip" | "oneone" | undefined,
 ) {
   if (kind === "oneone") {
-    return senders.filter(
-      (sender) => sender.provider === "gmail" || sender.provider === "outlook",
-    );
+    return senders;
   }
   return senders.filter((sender) => sender.provider !== "gmail");
 }

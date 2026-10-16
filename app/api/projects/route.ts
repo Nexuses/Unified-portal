@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import {
+  DEFAULT_API_CREDIT_LIMIT_USD,
+  normalizeApiCreditLimit,
+} from "@/lib/api-credits";
+import { getApiCreditUsedByProject } from "@/lib/api-credits-server";
+import {
   DEFAULT_PROJECT_DATA_CREDITS,
   DEFAULT_PROJECT_SENDING_LIMIT,
   normalizeDataCredits,
@@ -20,11 +25,12 @@ type ProjectDoc = {
   instantClick?: boolean;
   sendingLimit?: number;
   dataCredits?: number;
+  apiCreditLimitUsd?: number;
   /** @deprecated Prefer instantOpen / instantClick. */
   instantOpenClick?: boolean;
 };
 
-function mapProject(doc: ProjectDoc, dataCreditsUsed = 0) {
+function mapProject(doc: ProjectDoc, dataCreditsUsed = 0, apiCreditUsedUsd = 0) {
   const legacyBoth = Boolean(doc.instantOpenClick);
   return {
     id: doc._id.toString(),
@@ -41,6 +47,10 @@ function mapProject(doc: ProjectDoc, dataCreditsUsed = 0) {
     ),
     dataCredits: normalizeDataCredits(doc.dataCredits ?? DEFAULT_PROJECT_DATA_CREDITS),
     dataCreditsUsed,
+    apiCreditLimitUsd: normalizeApiCreditLimit(
+      doc.apiCreditLimitUsd ?? DEFAULT_API_CREDIT_LIMIT_USD,
+    ),
+    apiCreditUsedUsd,
   };
 }
 
@@ -53,9 +63,15 @@ export async function GET() {
       .sort({ createdAt: -1 })
       .toArray();
 
-    const used = await getDataCreditsUsedByProject(docs.map((doc) => doc._id));
+    const ids = docs.map((doc) => doc._id);
+    const [used, apiUsed] = await Promise.all([
+      getDataCreditsUsedByProject(ids),
+      getApiCreditUsedByProject(ids),
+    ]);
     return NextResponse.json(
-      docs.map((doc) => mapProject(doc, used.get(doc._id.toString()) ?? 0)),
+      docs.map((doc) =>
+        mapProject(doc, used.get(doc._id.toString()) ?? 0, apiUsed.get(doc._id.toString()) ?? 0),
+      ),
     );
   } catch (error) {
     console.error("Failed to fetch projects:", error);
@@ -79,6 +95,9 @@ export async function POST(request: NextRequest) {
     );
     const dataCredits = normalizeDataCredits(
       body.dataCredits ?? DEFAULT_PROJECT_DATA_CREDITS,
+    );
+    const apiCreditLimitUsd = normalizeApiCreditLimit(
+      body.apiCreditLimitUsd ?? DEFAULT_API_CREDIT_LIMIT_USD,
     );
 
     if (!name) {
@@ -114,6 +133,7 @@ export async function POST(request: NextRequest) {
       instantClick,
       sendingLimit,
       dataCredits,
+      apiCreditLimitUsd,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -132,6 +152,8 @@ export async function POST(request: NextRequest) {
         sendingLimit: doc.sendingLimit,
         dataCredits: doc.dataCredits,
         dataCreditsUsed: 0,
+        apiCreditLimitUsd: doc.apiCreditLimitUsd,
+        apiCreditUsedUsd: 0,
       },
       { status: 201 },
     );

@@ -1,3 +1,4 @@
+import { noteApiUsage } from "@/lib/api-credits-server";
 import type { SmtpProviderId } from "@/lib/smtp-senders";
 
 export type MxLookupItem = {

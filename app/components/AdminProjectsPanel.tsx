@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { DEFAULT_API_CREDIT_LIMIT_USD, formatApiCreditUsd } from "@/lib/api-credits";
 import type { Project } from "@/lib/projects";
 import { DEFAULT_PROJECT_DATA_CREDITS, slugify } from "@/lib/projects";
 
@@ -21,6 +22,8 @@ export default function AdminProjectsPanel() {
   const [limitDrafts, setLimitDrafts] = useState<Record<string, string>>({});
   const [savingCreditsId, setSavingCreditsId] = useState<string | null>(null);
   const [creditDrafts, setCreditDrafts] = useState<Record<string, string>>({});
+  const [savingApiId, setSavingApiId] = useState<string | null>(null);
+  const [apiDrafts, setApiDrafts] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
   async function loadProjects() {
@@ -267,6 +270,50 @@ export default function AdminProjectsPanel() {
     }
   }
 
+  async function saveApiCredit(project: Project) {
+    const current = project.apiCreditLimitUsd ?? DEFAULT_API_CREDIT_LIMIT_USD;
+    const raw = apiDrafts[project.id] ?? String(current);
+    const parsed = Number(String(raw).replace(/[$,]/g, "").trim());
+    const clearDraft = () =>
+      setApiDrafts((drafts) => {
+        const copy = { ...drafts };
+        delete copy[project.id];
+        return copy;
+      });
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setError("API credit must be $0 or more.");
+      clearDraft();
+      return;
+    }
+    const next = Math.min(Math.round(parsed * 100) / 100, 100_000);
+    if (next === current) {
+      clearDraft();
+      return;
+    }
+
+    setSavingApiId(project.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiCreditLimitUsd: next }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update API credit");
+      }
+      setProjects((list) =>
+        list.map((item) => (item.id === project.id ? { ...item, ...data } : item)),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update API credit");
+    } finally {
+      clearDraft();
+      setSavingApiId(null);
+    }
+  }
+
   return (
     <div className="admin-page">
       <div className="admin-layout">
@@ -358,6 +405,7 @@ export default function AdminProjectsPanel() {
                   <th>Logo</th>
                   <th>Sending limit</th>
                   <th>Data credits / month</th>
+                  <th>API credit ($)</th>
                   <th>Action</th>
                   <th aria-label="Manage" />
                 </tr>
@@ -365,13 +413,13 @@ export default function AdminProjectsPanel() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="admin-empty">
+                    <td colSpan={9} className="admin-empty">
                       Loading projects...
                     </td>
                   </tr>
                 ) : projects.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="admin-empty">
+                    <td colSpan={9} className="admin-empty">
                       No projects yet. Create one on the left.
                     </td>
                   </tr>
@@ -464,6 +512,38 @@ export default function AdminProjectsPanel() {
                         </label>
                         <span className="admin-credits-used">
                           {(project.dataCreditsUsed ?? 0).toLocaleString()} used this month
+                        </span>
+                      </td>
+                      <td>
+                        <label className="admin-sending-limit">
+                          <input
+                            className="admin-sending-limit-input"
+                            type="number"
+                            min={0}
+                            step={0.01}
+                            inputMode="decimal"
+                            value={
+                              apiDrafts[project.id] ??
+                              String(project.apiCreditLimitUsd ?? DEFAULT_API_CREDIT_LIMIT_USD)
+                            }
+                            disabled={savingApiId === project.id}
+                            aria-label={`API credit limit in dollars for ${project.name}`}
+                            onChange={(event) =>
+                              setApiDrafts((current) => ({
+                                ...current,
+                                [project.id]: event.target.value,
+                              }))
+                            }
+                            onBlur={() => void saveApiCredit(project)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.currentTarget.blur();
+                              }
+                            }}
+                          />
+                        </label>
+                        <span className="admin-credits-used">
+                          {formatApiCreditUsd(project.apiCreditUsedUsd ?? 0)} used
                         </span>
                       </td>
                       <td>
