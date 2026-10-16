@@ -928,10 +928,21 @@ function individualContactsEqual(
   return leftIds.every((id, index) => id === rightIds[index]);
 }
 
+function sameListIds(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  const a = [...left].sort();
+  const b = [...right].sort();
+  return a.every((id, index) => id === b[index]);
+}
+
+function savedRecipientListIds(listId: string, addedListIds: string[]) {
+  return [...new Set([listId, ...addedListIds].filter(Boolean))];
+}
+
 function recipientsSelectionChanged(
-  savedListId: string,
+  savedListIds: string[],
   savedIndividualContacts: CampaignIndividualContact[],
-  draftListId: string,
+  draftListIds: string[],
   draftIndividualContacts: CampaignIndividualContact[],
 ) {
   const savedUsesIndividual = savedIndividualContacts.length > 0;
@@ -945,7 +956,7 @@ function recipientsSelectionChanged(
     return !individualContactsEqual(savedIndividualContacts, draftIndividualContacts);
   }
 
-  return draftListId !== savedListId;
+  return !sameListIds(savedListIds, draftListIds);
 }
 
 function AddIndividualContactsModal({
@@ -1142,7 +1153,7 @@ function RecipientsPanel({
   lists,
   contacts,
   optionsLoading,
-  draftListId,
+  draftListIds,
   draftIndividualContacts,
   savedListId,
   savedAddedListIds = [],
@@ -1151,15 +1162,14 @@ function RecipientsPanel({
   liveAdd = false,
   onClose,
   onSave,
-  onListChange,
-  onClearList,
+  onListIdsChange,
   onRemoveAddedList,
   onIndividualContactsChange,
 }: {
   lists: CrmList[];
   contacts: Contact[];
   optionsLoading: boolean;
-  draftListId: string;
+  draftListIds: string[];
   draftIndividualContacts: CampaignIndividualContact[];
   savedListId: string;
   savedAddedListIds?: string[];
@@ -1167,9 +1177,8 @@ function RecipientsPanel({
   remainingEmails?: number;
   liveAdd?: boolean;
   onClose: () => void;
-  onSave: (addedListId?: string) => void;
-  onListChange: (listId: string) => void;
-  onClearList: () => void;
+  onSave: (addedListIds?: string[]) => void;
+  onListIdsChange: (listIds: string[]) => void;
   onRemoveAddedList?: (listId: string) => void;
   onIndividualContactsChange: (contacts: CampaignIndividualContact[]) => void;
 }) {
@@ -1178,9 +1187,8 @@ function RecipientsPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<RecipientPickerTab>("recent");
   const [addContactsOpen, setAddContactsOpen] = useState(false);
-  const [extraListId, setExtraListId] = useState("");
+  const [extraListIds, setExtraListIds] = useState<string[]>([]);
   const [hiddenListIds, setHiddenListIds] = useState<string[]>([]);
-  const selectedList = lists.find((list) => list.id === draftListId) ?? null;
   const lockedListIds = liveAdd
     ? [savedListId, ...savedAddedListIds].filter((id, index, all) => id && all.indexOf(id) === index)
     : [];
@@ -1188,20 +1196,24 @@ function RecipientsPanel({
     .filter((id) => !hiddenListIds.includes(id))
     .map((id) => lists.find((list) => list.id === id))
     .filter((list): list is CrmList => Boolean(list));
-  const extraList = liveAdd ? lists.find((list) => list.id === extraListId) ?? null : null;
+  const extraLists = liveAdd
+    ? extraListIds
+        .map((id) => lists.find((list) => list.id === id))
+        .filter((list): list is CrmList => Boolean(list))
+    : [];
+  const selectedLists = draftListIds
+    .map((id) => lists.find((list) => list.id === id))
+    .filter((list): list is CrmList => Boolean(list));
+  const chosenLists = liveAdd ? [...lockedLists, ...extraLists] : selectedLists;
   const usingIndividual = draftIndividualContacts.length > 0;
   const recipientCount = usingIndividual
     ? draftIndividualContacts.length
-    : selectedList?.contactCount ?? 0;
+    : chosenLists.reduce((sum, list) => sum + (list.contactCount || 0), 0);
   const usagePct = Math.min(
     100,
     Math.round((recipientCount / Math.max(remainingEmails + recipientCount, 1)) * 100),
   );
-  const selectedCount = usingIndividual
-    ? draftIndividualContacts.length
-    : draftListId
-      ? 1
-      : 0;
+  const selectedCount = usingIndividual ? draftIndividualContacts.length : chosenLists.length;
   const selectionTotal = usingIndividual ? MAX_INDIVIDUAL_CONTACTS : lists.length;
 
   const visibleLists = useMemo(() => {
@@ -1218,24 +1230,26 @@ function RecipientsPanel({
       const sorted = [...filtered].sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       );
-      if (!draftListId) {
+      if (draftListIds.length === 0) {
         return sorted;
       }
-
-      const selected = sorted.find((list) => list.id === draftListId);
-      if (!selected) {
-        return sorted;
-      }
-
-      return [selected, ...sorted.filter((list) => list.id !== draftListId)];
+      const picked = new Set(draftListIds);
+      return [
+        ...sorted.filter((list) => picked.has(list.id)),
+        ...sorted.filter((list) => !picked.has(list.id)),
+      ];
     }
 
     return [];
-  }, [lists, searchQuery, activeTab, draftListId]);
+  }, [lists, searchQuery, activeTab, draftListIds]);
+
+  function removeDraftList(listId: string) {
+    onListIdsChange(draftListIds.filter((id) => id !== listId));
+  }
 
   function removeLiveList(listId: string) {
-    if (listId === extraListId) {
-      setExtraListId("");
+    if (extraListIds.includes(listId)) {
+      setExtraListIds((current) => current.filter((id) => id !== listId));
       return;
     }
     setHiddenListIds((current) => (current.includes(listId) ? current : [...current, listId]));
@@ -1253,15 +1267,21 @@ function RecipientsPanel({
       if (lockedListIds.includes(listId)) {
         return;
       }
-      setExtraListId((current) => (current === listId ? "" : listId));
+      setExtraListIds((current) =>
+        current.includes(listId) ? current.filter((id) => id !== listId) : [...current, listId],
+      );
       return;
     }
     onIndividualContactsChange([]);
-    onListChange(draftListId === listId ? "" : listId);
+    onListIdsChange(
+      draftListIds.includes(listId)
+        ? draftListIds.filter((id) => id !== listId)
+        : [...draftListIds, listId],
+    );
   }
 
   function toggleIndividualContact(contact: CampaignIndividualContact) {
-    onListChange("");
+    onListIdsChange([]);
     const exists = draftIndividualContacts.some((item) => item.id === contact.id);
     if (exists) {
       onIndividualContactsChange(
@@ -1278,7 +1298,7 @@ function RecipientsPanel({
   }
 
   function clearRecipients() {
-    onClearList();
+    onListIdsChange([]);
     onIndividualContactsChange([]);
   }
 
@@ -1296,18 +1316,18 @@ function RecipientsPanel({
   }, [draftIndividualContacts, searchQuery]);
 
   const hasChanges = liveAdd
-    ? Boolean(extraListId)
+    ? extraListIds.length > 0
     : recipientsSelectionChanged(
-        savedListId,
+        savedRecipientListIds(savedListId, savedAddedListIds),
         savedIndividualContacts,
-        draftListId,
+        draftListIds,
         draftIndividualContacts,
       );
   const hasValidSelection = liveAdd
-    ? Boolean(extraList)
+    ? extraLists.length > 0
     : usingIndividual
       ? draftIndividualContacts.length > 0
-      : Boolean(draftListId);
+      : draftListIds.length > 0;
   const canSave = hasChanges && hasValidSelection;
 
   return (
@@ -1323,7 +1343,7 @@ function RecipientsPanel({
             <h3>Recipients</h3>
             <p>
               {liveAdd
-                ? "The current list stays. Pick one more list to add its contacts."
+                ? "Lists already on this campaign stay. Check more lists to add their contacts."
                 : (
                   <>
                     <strong>{recipientCount.toLocaleString()}</strong> recipients •{" "}
@@ -1370,7 +1390,7 @@ function RecipientsPanel({
                   <div className="drip-send-to-chips">
                     {liveAdd ? (
                       <>
-                        {[...lockedLists, ...(extraList ? [extraList] : [])].map((list) => (
+                        {chosenLists.map((list) => (
                           <span className="drip-send-to-chip" key={list.id}>
                             <span className="drip-send-to-chip-name">{list.name}</span>
                             <span
@@ -1394,8 +1414,8 @@ function RecipientsPanel({
                             </span>
                           </span>
                         ))}
-                        {lockedLists.length === 0 && !extraList ? (
-                          <span className="drip-send-to-placeholder">Select one more list</span>
+                        {chosenLists.length === 0 ? (
+                          <span className="drip-send-to-placeholder">Select lists</span>
                         ) : null}
                       </>
                     ) : usingIndividual ? (
@@ -1427,31 +1447,33 @@ function RecipientsPanel({
                           </span>
                         </span>
                       ))
-                    ) : selectedList ? (
-                      <span className="drip-send-to-chip">
-                        {selectedList.name}
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          className="drip-send-to-chip-remove"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onClearList();
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
+                    ) : selectedLists.length > 0 ? (
+                      selectedLists.map((list) => (
+                        <span className="drip-send-to-chip" key={list.id}>
+                          <span className="drip-send-to-chip-name">{list.name}</span>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            className="drip-send-to-chip-remove"
+                            onClick={(event) => {
                               event.stopPropagation();
-                              onClearList();
-                            }
-                          }}
-                          aria-label="Remove list"
-                        >
-                          ×
+                              removeDraftList(list.id);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                removeDraftList(list.id);
+                              }
+                            }}
+                            aria-label={`Remove ${list.name}`}
+                          >
+                            ×
+                          </span>
                         </span>
-                      </span>
+                      ))
                     ) : (
-                      <span className="drip-send-to-placeholder">Select recipients</span>
+                      <span className="drip-send-to-placeholder">Select lists</span>
                     )}
                   </div>
                   <span className="drip-send-to-toggle" aria-hidden="true">
@@ -1613,8 +1635,8 @@ function RecipientsPanel({
                         <button
                           type="button"
                           className="drip-recipients-unselect-all"
-                          onClick={liveAdd ? () => setExtraListId("") : clearRecipients}
-                          disabled={liveAdd ? !extraListId : selectedCount === 0}
+                          onClick={liveAdd ? () => setExtraListIds([]) : clearRecipients}
+                          disabled={liveAdd ? extraListIds.length === 0 : selectedCount === 0}
                         >
                           <span
                             className={`drip-recipient-checkbox${selectedCount > 0 ? " minus" : ""}`}
@@ -1631,8 +1653,8 @@ function RecipientsPanel({
                               const selected = liveAdd
                                 ? (!hiddenListIds.includes(list.id) &&
                                     lockedListIds.includes(list.id)) ||
-                                  extraListId === list.id
-                                : draftListId === list.id;
+                                  extraListIds.includes(list.id)
+                                : draftListIds.includes(list.id);
                               return (
                                 <button
                                   type="button"
@@ -1689,7 +1711,7 @@ function RecipientsPanel({
         <button
           type="button"
           className="btn-dark"
-          onClick={() => onSave(liveAdd ? extraListId : undefined)}
+          onClick={() => onSave(liveAdd ? extraListIds : undefined)}
           disabled={!canSave}
         >
           Save
@@ -1702,7 +1724,7 @@ function RecipientsPanel({
           initialSelection={draftIndividualContacts}
           onClose={() => setAddContactsOpen(false)}
           onContinue={(selection) => {
-            onListChange("");
+            onListIdsChange([]);
             onIndividualContactsChange(selection);
             setAddContactsOpen(false);
             setActiveTab("contacts");
@@ -4234,9 +4256,11 @@ function buildSteps(
           ? `${recipientsCount.toLocaleString()} engagers so far · auto-filled from opens & clicks`
           : "Filled later automatically from opens & clicks (after the wait)"
         : recipientsDone
-          ? remainingEmails !== undefined
-            ? `${campaign.recipients.toLocaleString()} recipients • ${remainingEmails.toLocaleString()} remaining emails`
-            : `${campaign.recipients.toLocaleString()} recipients`
+          ? `${campaign.listName ? `${campaign.listName} · ` : ""}${campaign.recipients.toLocaleString()} recipients${
+              remainingEmails !== undefined
+                ? ` • ${remainingEmails.toLocaleString()} remaining emails`
+                : ""
+            }`
           : "The people who receive your campaign",
       action: followUp
         ? recipientsCount > 0
@@ -4303,7 +4327,7 @@ export default function PortalCampaignDetailPage({
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [draftSenderId, setDraftSenderId] = useState("");
   const [draftSenderName, setDraftSenderName] = useState("");
-  const [draftListId, setDraftListId] = useState("");
+  const [draftListIds, setDraftListIds] = useState<string[]>([]);
   const [draftIndividualContacts, setDraftIndividualContacts] = useState<
     CampaignIndividualContact[]
   >([]);
@@ -4534,12 +4558,14 @@ export default function PortalCampaignDetailPage({
     setDraftIndividualContacts(savedIndividuals);
 
     if (savedIndividuals.length > 0) {
-      setDraftListId("");
+      setDraftListIds([]);
       return;
     }
 
-    setDraftListId(campaign?.listId ?? "");
-  }, [recipientsPanelOpen, campaign?.listId, campaign?.individualContacts]);
+    setDraftListIds(
+      savedRecipientListIds(campaign?.listId ?? "", campaign?.addedListIds ?? []),
+    );
+  }, [recipientsPanelOpen, campaign?.listId, campaign?.addedListIds, campaign?.individualContacts]);
 
   useEffect(() => {
     if (!nameEditing) {
@@ -4670,14 +4696,18 @@ export default function PortalCampaignDetailPage({
         patch.recipients = draftIndividualContacts.length;
         patch.listId = "";
         patch.listName = "";
+        patch.addedListIds = [];
       } else {
-        const selected = lists.find((list) => list.id === draftListId);
-        if (selected) {
+        const selected = draftListIds
+          .map((id) => lists.find((list) => list.id === id))
+          .filter((list): list is CrmList => Boolean(list));
+        if (selected.length > 0) {
           patch.recipientMode = "list";
           patch.individualContacts = [];
-          patch.listId = selected.id;
-          patch.listName = selected.name;
-          patch.recipients = selected.contactCount;
+          patch.listId = selected[0].id;
+          patch.listName = selected.map((list) => list.name).join(" · ");
+          patch.addedListIds = selected.slice(1).map((list) => list.id);
+          patch.recipients = selected.reduce((sum, list) => sum + (list.contactCount || 0), 0);
         }
       }
     }
@@ -4806,7 +4836,11 @@ export default function PortalCampaignDetailPage({
     }
     closeAllPanels();
     setRecipientsPanelOpen(true);
-    setDraftListId(campaign?.listId ?? "");
+    setDraftListIds(
+      (campaign?.individualContacts?.length ?? 0) > 0
+        ? []
+        : savedRecipientListIds(campaign?.listId ?? "", campaign?.addedListIds ?? []),
+    );
     setDraftIndividualContacts(campaign?.individualContacts ?? []);
   }
 
@@ -5115,18 +5149,35 @@ export default function PortalCampaignDetailPage({
     }
   }
 
-  async function handleSaveRecipients(addedListId?: string) {
+  async function handleSaveRecipients(addedListIds?: string[]) {
     try {
-      if (campaign?.status === "paused" && addedListId) {
-        const selected = lists.find((list) => list.id === addedListId);
-        const alreadyAdded =
-          addedListId === campaign.listId ||
-          (campaign.addedListIds ?? []).includes(addedListId);
-        if (!selected || alreadyAdded) {
+      if (campaign?.status === "paused" && addedListIds && addedListIds.length > 0) {
+        const fresh = addedListIds.filter(
+          (id) => id !== campaign.listId && !(campaign.addedListIds ?? []).includes(id),
+        );
+        const selected = fresh
+          .map((id) => lists.find((list) => list.id === id))
+          .filter((list): list is CrmList => Boolean(list));
+        if (selected.length === 0) {
           return;
         }
+        const nextAdded = [...(campaign.addedListIds ?? []), ...selected.map((list) => list.id)];
+        const primary = lists.find((list) => list.id === campaign.listId);
+        const named = [
+          primary?.name,
+          ...nextAdded
+            .map((id) => lists.find((list) => list.id === id)?.name)
+            .filter((name): name is string => Boolean(name)),
+        ].filter(Boolean);
         await persistCampaign({
-          addedListIds: [...(campaign.addedListIds ?? []), addedListId],
+          addedListIds: nextAdded,
+          listName: named.join(" · "),
+          recipients:
+            (primary?.contactCount || 0) +
+            nextAdded.reduce(
+              (sum, id) => sum + (lists.find((list) => list.id === id)?.contactCount || 0),
+              0,
+            ),
         });
         setRecipientsPanelOpen(false);
         return;
@@ -5139,22 +5190,26 @@ export default function PortalCampaignDetailPage({
           recipients: draftIndividualContacts.length,
           listId: "",
           listName: "",
+          addedListIds: [],
         });
         setRecipientsPanelOpen(false);
         return;
       }
 
-      const selected = lists.find((list) => list.id === draftListId);
-      if (!selected) {
+      const selected = draftListIds
+        .map((id) => lists.find((list) => list.id === id))
+        .filter((list): list is CrmList => Boolean(list));
+      if (selected.length === 0) {
         return;
       }
 
       await persistCampaign({
         recipientMode: "list",
         individualContacts: [],
-        listId: selected.id,
-        listName: selected.name,
-        recipients: selected.contactCount,
+        listId: selected[0].id,
+        listName: selected.map((list) => list.name).join(" · "),
+        addedListIds: selected.slice(1).map((list) => list.id),
+        recipients: selected.reduce((sum, list) => sum + (list.contactCount || 0), 0),
       });
       setRecipientsPanelOpen(false);
     } catch (error) {
@@ -5283,6 +5338,7 @@ export default function PortalCampaignDetailPage({
     return (
       <PersonaliseCampaignView
         campaignId={campaign.id}
+        sequences={campaignSequences(campaign)}
         editable={campaign.status === "paused"}
         onBack={() => setSetupViewing(false)}
         onSaved={setCampaign}
@@ -5580,7 +5636,7 @@ export default function PortalCampaignDetailPage({
                   lists={lists}
                   contacts={contacts}
                   optionsLoading={optionsLoading}
-                  draftListId={draftListId}
+                  draftListIds={draftListIds}
                   draftIndividualContacts={draftIndividualContacts}
                   savedListId={campaign.listId ?? ""}
                   savedAddedListIds={campaign.addedListIds ?? []}
@@ -5589,8 +5645,7 @@ export default function PortalCampaignDetailPage({
                   onClose={closeRecipientsPanel}
                   onSave={handleSaveRecipients}
                   liveAdd={campaign.status === "paused"}
-                  onListChange={setDraftListId}
-                  onClearList={() => setDraftListId("")}
+                  onListIdsChange={setDraftListIds}
                   onIndividualContactsChange={setDraftIndividualContacts}
                   onRemoveAddedList={(listId) => void handleRemoveAddedList(listId)}
                 />

@@ -15,12 +15,10 @@ const COLORS = {
   rowAlt: "FFF5F9FC",
   rowWhite: "FFFFFFFF",
   ink: "FF1A1A1A",
-  muted: "FF5F6368",
   clickedBg: "FFC8E6C9",
   clickedInk: "FF1B5E20",
   openedBg: "FFBBDEFB",
   openedInk: "FF0D47A1",
-  noteBg: "FFFFF8E1",
   white: "FFFFFFFF",
 };
 
@@ -115,7 +113,7 @@ export async function buildCampaignReportWorkbook({
   sends: CampaignSendDoc[];
 }) {
   const tables = buildCampaignReportTables({ campaignName, timezone, sentAt, sends });
-  const { sentLong, clickers, opensOnly, bounces } = tables;
+  const { sentLong, clickers, opensOnly, bounces, unsubscribes } = tables;
   const { sent: totalSent, opens: uniqueOpens, clicks: uniqueClicks } = tables.totals;
 
   const workbook = new ExcelJS.Workbook();
@@ -340,29 +338,40 @@ export async function buildCampaignReportWorkbook({
   }
 
   row += 1;
-  paintMergedBanner(
-    bounceSheet,
-    row,
-    8,
-    "UNSUBSCRIBES (suppressed at launch)",
-    COLORS.unsubPurple,
-    12,
-    24,
-  );
+  paintMergedBanner(bounceSheet, row, 8, "UNSUBSCRIBES", COLORS.unsubPurple, 12, 24);
   row += 1;
-  paintCell(bounceSheet, row, 1, "Count", { fill: COLORS.rowWhite, size: 10 });
-  paintCell(bounceSheet, row, 2, tables.unsubscribed, { fill: COLORS.rowWhite, size: 10 });
+  paintHeaderRow(bounceSheet, row, [
+    "#",
+    "Person Name",
+    "Email Address",
+    "Company",
+    "Domain",
+    "Reason",
+    "Unsubscribed Date",
+    "Unsubscribed Time",
+  ]);
   row += 1;
-  bounceSheet.mergeCells(row, 1, row, 8);
-  bounceSheet.getRow(row).height = 18;
-  for (let col = 1; col <= 8; col += 1) {
-    paintCell(
-      bounceSheet,
-      row,
-      col,
-      "Contacts on the unsubscribe list were excluded when the campaign launched.",
-      { fill: COLORS.noteBg, fontColor: COLORS.muted, size: 10 },
-    );
+  if (unsubscribes.length === 0) {
+    [DASH, "No records", "", "", "", "", "", ""].forEach((value, col) => {
+      paintCell(bounceSheet, row, col + 1, value, { fill: COLORS.rowWhite, size: 10 });
+    });
+  } else {
+    unsubscribes.forEach((person, index) => {
+      const fill = rowFill(index);
+      [
+        index + 1,
+        person.name,
+        person.email,
+        person.company,
+        person.domain,
+        person.reason,
+        person.date,
+        person.time,
+      ].forEach((value, col) => {
+        paintCell(bounceSheet, row, col + 1, value, { fill, size: 10 });
+      });
+      row += 1;
+    });
   }
 
   const summary = workbook.addWorksheet("Summary");

@@ -27,6 +27,7 @@ type SendRecipient = {
   openedAt?: string;
   clickedAt?: string;
   clickedUrl?: string;
+  clickedLinks?: Array<{ url: string; at?: string; sequenceNumber?: number }>;
   unsubscribedAt?: string;
   repliedAt?: string;
   sequenceIndex?: number;
@@ -179,10 +180,16 @@ function linkLabel(url?: string) {
   }
   try {
     const parsed = new URL(raw);
-    return `${parsed.hostname}${parsed.pathname === "/" ? "" : parsed.pathname}${parsed.search}`;
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    const label = `${parsed.hostname}${path}`;
+    return label.length > 72 ? `${label.slice(0, 69)}…` : label;
   } catch {
-    return raw;
+    return raw.length > 72 ? `${raw.slice(0, 69)}…` : raw;
   }
+}
+
+function otherClicks(person: SendRecipient) {
+  return (person.clickedLinks ?? []).slice(1);
 }
 
 export default function PortalCampaignReport({
@@ -208,6 +215,7 @@ export default function PortalCampaignReport({
   const [peopleError, setPeopleError] = useState("");
   const [peopleSearch, setPeopleSearch] = useState("");
   const [peoplePage, setPeoplePage] = useState(1);
+  const [openClickId, setOpenClickId] = useState<string | null>(null);
   const peoplePageSize = 50;
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
@@ -409,29 +417,7 @@ export default function PortalCampaignReport({
     };
   }, [campaign.id, campaign.kind, campaign.clicks, publicToken, sequenceScope]);
 
-  const reportPeople = useMemo(() => {
-    if (campaign.kind !== "oneone" || peopleView !== "clicks") {
-      return people;
-    }
-    const byEmail = new Map<string, SendRecipient>();
-    for (const person of people) {
-      const key = person.email.trim().toLowerCase();
-      if (!key) {
-        continue;
-      }
-      const existing = byEmail.get(key);
-      if (!existing) {
-        byEmail.set(key, person);
-        continue;
-      }
-      const existingAt = existing.clickedAt ? new Date(existing.clickedAt).getTime() : 0;
-      const nextAt = person.clickedAt ? new Date(person.clickedAt).getTime() : 0;
-      if (nextAt >= existingAt) {
-        byEmail.set(key, person);
-      }
-    }
-    return [...byEmail.values()];
-  }, [campaign.kind, people, peopleView]);
+  const reportPeople = people;
 
   const visiblePeople = useMemo(() => {
     const query = peopleSearch.trim().toLowerCase();
@@ -443,13 +429,15 @@ export default function PortalCampaignReport({
         person.fullName.toLowerCase().includes(query) ||
         person.email.toLowerCase().includes(query) ||
         person.companyName.toLowerCase().includes(query) ||
-        (person.clickedUrl ?? "").toLowerCase().includes(query),
+        (person.clickedUrl ?? "").toLowerCase().includes(query) ||
+        (person.clickedLinks ?? []).some((link) => link.url.toLowerCase().includes(query)),
     );
   }, [reportPeople, peopleSearch]);
 
   useEffect(() => {
     setPeoplePage(1);
-  }, [peopleSearch]);
+    setOpenClickId(null);
+  }, [peopleSearch, peopleView, sequenceScope, campaign.id]);
 
   const peopleTotalPages = Math.max(
     1,
@@ -1291,9 +1279,9 @@ export default function PortalCampaignReport({
                   : peopleView === "clicks"
                     ? campaign.kind === "oneone"
                       ? sequenceScope === null
-                        ? "Each contact is counted once, even if they clicked more than one link or sequence."
-                        : `Each contact is counted once in sequence ${sequenceScope + 1}, even if they clicked more than one link.`
-                      : "Links clicked in this campaign, with date and time."
+                        ? "Each contact is one row, showing the link they clicked last."
+                        : `Each contact is one row in sequence ${sequenceScope + 1}, showing the link they clicked last.`
+                      : "Each contact is one row, showing the link they clicked last."
                     : peopleView === "bounces"
                       ? "Addresses that bounced (from delivery failures or bounce emails). Replies are not counted here."
                       : peopleView === "replies"
@@ -1307,9 +1295,7 @@ export default function PortalCampaignReport({
             <div className="crm-count">
               {peopleLoading
                 ? "Loading..."
-                : `${visiblePeople.length} ${
-                    peopleView === "clicks" && campaign.kind !== "oneone" ? "clicks" : "contacts"
-                  }`}
+                : `${visiblePeople.length} contacts`}
             </div>
             <div className="crm-meta-right">
               <div className="search-input">
@@ -1368,8 +1354,28 @@ export default function PortalCampaignReport({
                     </td>
                   </tr>
                 ) : (
-                  pagedPeople.map((person) => (
-                    <tr key={person.id}>
+                  pagedPeople.map((person) => {
+                    const more = peopleView === "clicks" ? otherClicks(person) : [];
+                    const open = openClickId === person.id && more.length > 0;
+                    return (
+                    <tr
+                      key={person.id}
+                      className={more.length > 0 ? "drip-click-row" : undefined}
+                      aria-expanded={more.length > 0 ? open : undefined}
+                      onClick={(event) => {
+                        if (more.length === 0) {
+                          return;
+                        }
+                        const target = event.target;
+                        if (
+                          target instanceof HTMLElement &&
+                          target.closest("a, button, input")
+                        ) {
+                          return;
+                        }
+                        setOpenClickId(open ? null : person.id);
+                      }}
+                    >
                       <td className="chk">
                         <input type="checkbox" readOnly />
                       </td>
@@ -1409,18 +1415,56 @@ export default function PortalCampaignReport({
                       {peopleView === "clicks" ? (
                         <>
                           <td data-label="Link clicked">
-                            {person.clickedUrl ? (
-                              <a
-                                href={person.clickedUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="name-link"
-                              >
-                                {linkLabel(person.clickedUrl)}
-                              </a>
-                            ) : (
-                              "—"
-                            )}
+                            <div className="drip-click-cell">
+                              <div className="drip-click-latest">
+                                {person.clickedUrl ? (
+                                  <a
+                                    href={person.clickedUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="name-link"
+                                    title={person.clickedUrl}
+                                  >
+                                    {linkLabel(person.clickedUrl)}
+                                  </a>
+                                ) : (
+                                  "—"
+                                )}
+                                {more.length > 0 ? (
+                                  <span className={open ? "drip-click-chevron open" : "drip-click-chevron"} aria-hidden="true">
+                                    ▾
+                                  </span>
+                                ) : null}
+                              </div>
+                              {open ? (
+                                <ul className="drip-click-more">
+                                  {more.map((link) => (
+                                    <li key={`${link.sequenceNumber ?? 0}-${link.url}-${link.at ?? ""}`}>
+                                      <a
+                                        href={link.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="name-link"
+                                        title={link.url}
+                                      >
+                                        {linkLabel(link.url)}
+                                      </a>
+                                      <span>
+                                        {showSequence && typeof link.sequenceNumber === "number"
+                                          ? `Sequence ${link.sequenceNumber}`
+                                          : ""}
+                                        {showSequence &&
+                                        typeof link.sequenceNumber === "number" &&
+                                        link.at
+                                          ? " · "
+                                          : ""}
+                                        {link.at ? formatCampaignClock(link.at, timezone) : ""}
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </div>
                           </td>
                           <td data-label="Clicked">
                             {person.clickedAt
@@ -1452,7 +1496,8 @@ export default function PortalCampaignReport({
                         <td data-label="Company">{person.companyName || "—"}</td>
                       ) : null}
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>

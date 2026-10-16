@@ -35,6 +35,16 @@ export type ReportBounceRow = {
   time: string;
 };
 
+export type ReportUnsubscribeRow = {
+  name: string;
+  email: string;
+  company: string;
+  domain: string;
+  reason: string;
+  date: string;
+  time: string;
+};
+
 export type ReportCompanyRow = {
   company: string;
   domain: string;
@@ -57,6 +67,7 @@ export type CampaignReportTables = {
   clickers: ReportEngageRow[];
   opensOnly: ReportEngageRow[];
   bounces: ReportBounceRow[];
+  unsubscribes: ReportUnsubscribeRow[];
   unsubscribed: number;
   totals: { sent: number; opens: number; clicks: number };
 };
@@ -260,6 +271,30 @@ export function buildCampaignReportTables({
     };
   });
 
+  const unsubscribesByEmail = new Map<string, CampaignSendDoc>();
+  for (const send of unsubscribedSends) {
+    const key = emailKey(send.email);
+    if (!key) continue;
+    const existing = unsubscribesByEmail.get(key);
+    if (!existing || (send.unsubscribedAt && !existing.unsubscribedAt)) {
+      unsubscribesByEmail.set(key, send);
+    }
+  }
+  const unsubscribes = [...unsubscribesByEmail.values()]
+    .sort((a, b) => personName(a).localeCompare(personName(b)) || a.email.localeCompare(b.email))
+    .map((send) => {
+      const eventAt = asDate(send.unsubscribedAt);
+      return {
+        name: personName(send),
+        email: send.email,
+        company: send.companyName || "",
+        domain: emailDomain(send.email),
+        reason: send.unsubscribedAt ? "Unsubscribed" : "On unsubscribe list",
+        date: eventAt ? formatInZone(eventAt, timeZone, "date") : "",
+        time: eventAt ? formatInZone(eventAt, timeZone, "time") : "",
+      };
+    });
+
   const openedEmails = new Set(engaged.filter((row) => row.opens > 0).map((row) => emailKey(row.email)));
   const clickedEmails = new Set(clickers.map((row) => emailKey(row.email)));
   const bouncedEmails = new Set(bouncedSends.map((send) => emailKey(send.email)));
@@ -327,8 +362,8 @@ export function buildCampaignReportTables({
       ["Campaign", campaignName],
       ["Report Date", generatedLong],
       ["Total Contacts (audience)", audience.size],
-      ["Eligible Recipients", Math.max(0, audience.size - unsubscribedSends.length)],
-      ["Unsubscribed at Launch", unsubscribedSends.length],
+      ["Eligible Recipients", Math.max(0, audience.size - unsubscribes.length)],
+      ["Unsubscribed", unsubscribes.length],
       ["Total Sent", totalSent],
       ["Unique Opens", uniqueOpens],
       ["Unique Clicks", uniqueClicks],
@@ -343,7 +378,8 @@ export function buildCampaignReportTables({
     clickers,
     opensOnly,
     bounces,
-    unsubscribed: unsubscribedSends.length,
+    unsubscribes,
+    unsubscribed: unsubscribes.length,
     totals: { sent: totalSent, opens: uniqueOpens, clicks: uniqueClicks },
   };
 }

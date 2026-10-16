@@ -738,6 +738,12 @@ function recipientRow(person: CampaignSendRecipient, filter: CampaignRecipientFi
     openedAt: filter === "opens" || filter === "clicks" ? person.openedAt : undefined,
     clickedAt: filter === "clicks" ? person.clickedAt : undefined,
     clickedUrl: filter === "clicks" ? person.clickedUrl || undefined : undefined,
+    clickedLinks:
+      filter === "clicks"
+        ? (person.clickedLinks ?? [])
+            .map((link) => link.url)
+            .filter(Boolean)
+        : undefined,
     repliedAt: filter === "replies" ? person.repliedAt : undefined,
     unsubscribedAt: filter === "unsubscribes" ? person.unsubscribedAt : undefined,
     error: filter === "bounces" ? person.error || undefined : undefined,

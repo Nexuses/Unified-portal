@@ -1482,7 +1482,7 @@ export async function launchCampaignBlast(input: {
   const blastSubject = firstSequence?.subject?.trim() || campaign.subject || "";
   const blastHtml = firstSequence?.designHtml?.trim() || campaign.designHtml || "";
 
-  const recipients = await resolveRecipients(projectId, campaign);
+  const recipients = await recipientsToEnroll(projectId, campaign);
   const unique = new Map(recipients.map((item) => [item.email, item]));
   const suppressed = await getSuppressionSets(projectId);
   const list = [...unique.values()].filter(
@@ -2155,7 +2155,7 @@ export async function syncPausedOneOneBlast(
   const delayWrites: Array<{
     updateOne: {
       filter: { _id: ObjectId };
-      update: { $set: { availableAt: Date } };
+      update: { $set: { availableAt: Date; stepDelayDays?: number } };
     };
   }> = [];
   for (let index = 1; index < sequences.length; index += 1) {
@@ -2164,14 +2164,17 @@ export async function syncPausedOneOneBlast(
       continue;
     }
     const previous = sequences[index - 1];
+    const stored = previousSequences.find((item) => item.id === sequence.id);
+    const previousDelay = Math.max(0, Math.round(Number(stored?.delayDays) || 0));
+    const nextDelay = Math.max(0, Math.round(Number(sequence.delayDays) || 0));
+    const gapChanged = previousDelay !== nextDelay;
     for (const send of keptSends) {
       if (send.sequenceId !== sequence.id || send.status !== "pending") {
         continue;
       }
-      const delayDays = explicitDelayDays(
-        send.stepDelayDays,
-        Number(sequence.delayDays) || 0,
-      );
+      const delayDays = gapChanged
+        ? nextDelay
+        : explicitDelayDays(send.stepDelayDays, nextDelay);
       const email = send.email.trim().toLowerCase();
       const previousSent = keptSends.find(
         (item) =>
@@ -2185,6 +2188,7 @@ export async function syncPausedOneOneBlast(
           filter: { _id: send._id },
           update: {
             $set: {
+              ...(gapChanged ? { stepDelayDays: nextDelay } : {}),
               availableAt: previousSent?.sentAt
                 ? new Date(previousSent.sentAt.getTime() + delayDays * LIVE_EDIT_DAY_MS)
                 : LOCKED_SEQUENCE_AT,
@@ -2789,6 +2793,7 @@ export type CampaignSendRecipient = {
   openedAt?: string;
   clickedAt?: string;
   clickedUrl?: string;
+  clickedLinks?: Array<{ url: string; at?: string; sequenceNumber?: number }>;
   unsubscribedAt?: string;
   repliedAt?: string;
   sequenceIndex?: number;
@@ -2937,58 +2942,78 @@ export async function listCampaignSendRecipients(
   }
 
   if (filter === "clicks") {
-    const rows = docs.flatMap((doc) => {
+    const byEmail = new Map<
+      string,
+      {
+        doc: CampaignSendDoc;
+        latestAt: number;
+        links: Array<{ url: string; at?: string; sequenceNumber?: number }>;
+      }
+    >();
+
+    for (const doc of docs) {
+      const key = doc.email.trim().toLowerCase();
+      if (!key) {
+        continue;
+      }
       const events =
         doc.clickEvents && doc.clickEvents.length > 0
           ? doc.clickEvents
           : doc.clickedAt
             ? [{ url: doc.clickedUrl || "", at: doc.clickedAt }]
             : [];
+      const sequenceNumber =
+        typeof doc.sequenceIndex === "number" ? doc.sequenceIndex + 1 : undefined;
+      const countable = events.filter((event) => isCountableClickEvent(event));
+      if (countable.length === 0) {
+        continue;
+      }
 
-      return events
-        .filter((event) => isCountableClickEvent(event))
-        .slice()
-        .sort((left, right) => {
-          const leftAt = left.at instanceof Date ? left.at.getTime() : new Date(left.at).getTime();
-          const rightAt = right.at instanceof Date ? right.at.getTime() : new Date(right.at).getTime();
-          return rightAt - leftAt;
-        })
-        .map((event, index) =>
-          mapRecipient(doc, {
-            id: `${doc._id.toString()}-${index}`,
-            clickedAt: (event.at instanceof Date
-              ? event.at
-              : new Date(event.at)
-            ).toISOString(),
-            clickedUrl: event.url || doc.clickedUrl || "",
-          }),
+      const bucket = byEmail.get(key) ?? { doc, latestAt: 0, links: [] };
+      for (const event of countable) {
+        const atMs = event.at instanceof Date ? event.at.getTime() : new Date(event.at).getTime();
+        const at = Number.isFinite(atMs) ? new Date(atMs).toISOString() : undefined;
+        const url = (event.url || doc.clickedUrl || "").trim();
+        if (!url) {
+          continue;
+        }
+        const existing = bucket.links.find(
+          (link) => link.url === url && link.sequenceNumber === sequenceNumber,
         );
-    });
-
-    const oneContactPerClick =
-      kind === "oneone" || blast?.kind === "oneone" || Boolean(options?.uniqueContacts);
-    if (!oneContactPerClick) {
-      return rows;
+        if (!existing) {
+          bucket.links.push({ url, at, sequenceNumber });
+        } else if ((at ?? "") > (existing.at ?? "")) {
+          existing.at = at;
+        }
+        if (Number.isFinite(atMs) && atMs >= bucket.latestAt) {
+          bucket.latestAt = atMs;
+          bucket.doc = doc;
+        }
+      }
+      byEmail.set(key, bucket);
     }
 
-    const byEmail = new Map<string, CampaignSendRecipient>();
-    for (const row of rows) {
-      const key = row.email.trim().toLowerCase();
-      if (!key) {
-        continue;
-      }
-      const existing = byEmail.get(key);
-      if (!existing) {
-        byEmail.set(key, row);
-        continue;
-      }
-      const existingAt = existing.clickedAt ? new Date(existing.clickedAt).getTime() : 0;
-      const nextAt = row.clickedAt ? new Date(row.clickedAt).getTime() : 0;
-      if (nextAt >= existingAt) {
-        byEmail.set(key, row);
-      }
-    }
-    return [...byEmail.values()];
+    return [...byEmail.values()]
+      .filter(({ links }) => links.length > 0)
+      .map(({ doc, links }) => {
+        const clickedLinks = links
+          .slice()
+          .sort((left, right) => (right.at ?? "").localeCompare(left.at ?? ""));
+        const latest = clickedLinks[0];
+        return mapRecipient(doc, {
+          id: doc.email.trim().toLowerCase(),
+          clickedAt: latest?.at,
+          clickedUrl: latest?.url ?? "",
+          clickedLinks,
+          ...(typeof latest?.sequenceNumber === "number"
+            ? {
+                sequenceIndex: latest.sequenceNumber - 1,
+                sequenceNumber: latest.sequenceNumber,
+              }
+            : { sequenceIndex: undefined, sequenceNumber: undefined }),
+        });
+      })
+      .sort((left, right) => (right.clickedAt ?? "").localeCompare(left.clickedAt ?? ""));
   }
 
   // One row per email for bounces (1-1 can create multiple failed sequence rows)

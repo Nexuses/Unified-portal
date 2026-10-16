@@ -4,13 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
 import SmtpSenderSelect, { type SmtpSenderOption } from "@/app/components/portal/SmtpSenderSelect";
 import { formatTimezoneLabel, listCampaignTimezones } from "@/lib/campaign-timezones";
-import { patchDripCampaign, type DripCampaign } from "@/lib/drip-campaigns";
+import { patchDripCampaign, type CampaignSequence, type DripCampaign } from "@/lib/drip-campaigns";
 import type { SmtpProviderId } from "@/lib/smtp-senders";
-import type {
-  PersonaliseCampaignSnapshot,
-  PersonaliseSentContact,
-  PersonaliseSentStep,
-} from "@/lib/personalise-types";
+import { MAX_STEP_GAP_DAYS, type PersonaliseCampaignSnapshot, type PersonaliseSentContact, type PersonaliseSentStep } from "@/lib/personalise-types";
 
 function personName(contact: PersonaliseSentContact) {
   return [contact.firstName, contact.lastName].filter(Boolean).join(" ") || contact.email;
@@ -66,6 +62,32 @@ function windowLabel(snapshot: PersonaliseCampaignSnapshot) {
   return `${snapshot.windowStart} – ${snapshot.windowEnd}`;
 }
 
+function followUpGaps(contacts: PersonaliseSentContact[], count: number) {
+  const gaps: number[] = [];
+  for (let step = 1; step <= count; step += 1) {
+    const counts = new Map<number, number>();
+    for (const contact of contacts) {
+      const delay = contact.steps[step]?.delayDays;
+      if (typeof delay !== "number") continue;
+      counts.set(delay, (counts.get(delay) ?? 0) + 1);
+    }
+    let best = 3;
+    let bestCount = 0;
+    for (const [gap, hits] of counts) {
+      if (hits > bestCount || (hits === bestCount && gap < best)) {
+        best = gap;
+        bestCount = hits;
+      }
+    }
+    gaps.push(Math.min(MAX_STEP_GAP_DAYS, Math.max(0, bestCount > 0 ? best : 3)));
+  }
+  return gaps;
+}
+
+function clampGap(value: number) {
+  return Math.max(0, Math.min(MAX_STEP_GAP_DAYS, Math.round(Number(value) || 0)));
+}
+
 function senderLabel(email: string) {
   const local = email.split("@")[0] ?? "";
   const name = local
@@ -79,11 +101,13 @@ function senderLabel(email: string) {
 
 export default function PersonaliseCampaignView({
   campaignId,
+  sequences = [],
   editable = false,
   onBack,
   onSaved,
 }: {
   campaignId: string;
+  sequences?: CampaignSequence[];
   editable?: boolean;
   onBack: () => void;
   onSaved?: (campaign: DripCampaign) => void;
@@ -98,6 +122,7 @@ export default function PersonaliseCampaignView({
   const [windowEnd, setWindowEnd] = useState("18:00");
   const [timezone, setTimezone] = useState("Asia/Kolkata");
   const [emailGapMinutes, setEmailGapMinutes] = useState(5);
+  const [stepGaps, setStepGaps] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [savedNote, setSavedNote] = useState("");
@@ -137,7 +162,15 @@ export default function PersonaliseCampaignView({
     setWindowEnd(snapshot.windowEnd || "18:00");
     setTimezone(snapshot.timezone || "Asia/Kolkata");
     setEmailGapMinutes(snapshot.emailGapMinutes);
-  }, [snapshot]);
+    const followUps = Math.max(0, sequences.length - 1);
+    setStepGaps(
+      followUps > 0
+        ? followUpGaps(snapshot.contacts, followUps).map(
+            (gap, index) => gap ?? clampGap(sequences[index + 1]?.delayDays ?? 3),
+          )
+        : [],
+    );
+  }, [snapshot, sequences]);
 
   useEffect(() => {
     if (!editable) {
@@ -213,10 +246,23 @@ export default function PersonaliseCampaignView({
           emailGapMinutes,
           timezone,
           timezoneEnabled: true,
+          ...(sequences.length > 0
+            ? {
+                sequences: sequences.map((sequence, index) => ({
+                  ...sequence,
+                  delayDays: index === 0 ? 0 : clampGap(stepGaps[index - 1] ?? sequence.delayDays),
+                })),
+              }
+            : {}),
         },
         "oneone",
       );
       onSaved?.(updated);
+      const refreshed = await fetch(`/api/personalise/${encodeURIComponent(campaignId)}`, {
+        cache: "no-store",
+      });
+      const next = (await refreshed.json()) as PersonaliseCampaignSnapshot & { error?: string };
+      if (refreshed.ok) setSnapshot(next);
       setSavedNote("Saved. The campaign stays paused until you resume it.");
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Could not save the setup.");
@@ -351,6 +397,48 @@ export default function PersonaliseCampaignView({
                       />
                     </div>
                   </div>
+                  {stepGaps.length > 0 ? (
+                    <div className="pz-gaps">
+                      <h3 className="pz-card-title">Days between emails</h3>
+                      <p className="personalise-hint">
+                        Set how many days to wait before each follow-up. Emails that have not been
+                        sent yet use this gap.
+                      </p>
+                      <div className="pz-gap-list">
+                        {stepGaps.map((gap, index) => {
+                          const day = stepGaps.slice(0, index + 1).reduce((sum, value) => sum + value, 0);
+                          return (
+                            <label key={index} className="pz-gap-row">
+                              <span className="pz-gap-name">
+                                <strong>Follow-up {index + 1}</strong>
+                                <em>
+                                  Email {index + 2} · Day {day}
+                                </em>
+                              </span>
+                              <span className="pz-gap-input">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={MAX_STEP_GAP_DAYS}
+                                  value={gap}
+                                  onChange={(event) => {
+                                    const next = clampGap(Number(event.target.value));
+                                    setStepGaps((current) =>
+                                      current.map((item, itemIndex) => (itemIndex === index ? next : item)),
+                                    );
+                                  }}
+                                  aria-label={`Days before follow-up ${index + 1}`}
+                                />
+                                <span>
+                                  {gap === 1 ? "day" : "days"} after email {index + 1}
+                                </span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
                   <p className="personalise-hint">
                     Changes apply to emails that have not been sent yet. Resume the campaign from the
                     report when you want sending to continue.
