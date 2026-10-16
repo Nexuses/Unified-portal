@@ -4,6 +4,7 @@ import { runInApiCredit } from "@/lib/api-credits-server";
 import { getDb } from "@/lib/mongodb";
 import { getRecordsCollection } from "@/lib/datatool-server";
 import { loadKnowledgeMarkdown } from "@/lib/knowledge-base-server";
+import { brandGuidePrompt, listBrandMemories } from "@/lib/brand-memories";
 import { inferSeniorityFromTitle } from "@/lib/people/seniority-inference";
 import {
   assertWebResearchConfigured,
@@ -607,7 +608,11 @@ async function runJob(jobId: ObjectId) {
     if (!job) return;
     await runInApiCredit(job.projectId.toString(), "pitch", async () => {
     await jobs.updateOne({ _id: jobId }, { $set: { status: "running", updatedAt: new Date() } });
-    const knowledge = await loadKnowledgeMarkdown(job.projectId.toString(), 6000).catch(() => "");
+    const [markdown, memories] = await Promise.all([
+      loadKnowledgeMarkdown(job.projectId.toString(), 6000).catch(() => ""),
+      listBrandMemories(job.projectId).catch(() => []),
+    ]);
+    const knowledge = [brandGuidePrompt(memories), markdown].filter(Boolean).join("\n\n");
 
     const queue = job.companies
       .map((company, index) => ({ company, index }))

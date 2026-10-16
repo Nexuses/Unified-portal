@@ -14,6 +14,7 @@ export type PortalPageId =
   | "analytics"
   | "analytics-kanban"
   | "smtp"
+  | "branding"
   | "knowledge"
   | "inbox"
   | "unsub"
@@ -58,6 +59,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   analytics: "/portal/analytics",
   "analytics-kanban": "/portal/analytics/kanban",
   smtp: "/portal/smtp",
+  branding: "/portal/branding",
   knowledge: "/portal/knowledge-base",
   inbox: "/portal/inbox",
   unsub: "/portal/unsub",
@@ -143,6 +145,12 @@ export const PORTAL_NAV: PortalNavItem[] = [
   },
   {
     type: "item",
+    id: "branding",
+    label: "Branding",
+    href: PORTAL_ROUTES.branding,
+  },
+  {
+    type: "item",
     id: "knowledge",
     label: "Knowledge Base",
     href: PORTAL_ROUTES.knowledge,
@@ -201,6 +209,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   analytics: "Report",
   "analytics-kanban": "Kanban",
   smtp: "SMTP & Senders",
+  branding: "Branding",
   knowledge: "Knowledge Base",
   inbox: "Master Inbox",
   unsub: "Suppression List",
@@ -238,6 +247,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/analytics/kanban")) return "analytics-kanban";
   if (pathname.startsWith("/portal/analytics")) return "analytics";
   if (pathname.startsWith("/portal/smtp")) return "smtp";
+  if (pathname.startsWith("/portal/branding")) return "branding";
   if (pathname.startsWith("/portal/knowledge-base")) return "knowledge";
   if (pathname.startsWith("/portal/inbox")) return "inbox";
   if (pathname.startsWith("/portal/unsub")) return "unsub";

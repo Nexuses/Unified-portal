@@ -85,10 +85,13 @@ export async function POST(request: NextRequest) {
       `Square social media post for ${session.projectName}.`,
       "Use this brand for colors, product, and claims. Do not invent another company.",
       brand.colors.length
-        ? `Brand colors taken from the company logo. Use only these exact colors: ${brand.colors.join(", ")}.`
+        ? `Brand colors from the branding guidelines and logo. Use only these exact colors: ${brand.colors.join(", ")}.`
         : "",
       brand.logoDataUrl
         ? "Do not draw a logo, wordmark, or company icon. Leave the top-left corner as empty background. The real logo is added afterwards."
+        : "",
+      brand.guidelines
+        ? `Branding guidelines. Follow this design system and vocal tone:\n${clip(brand.guidelines, 4000)}`
         : "",
       brand.text ? `Knowledge base:\n${clip(brand.text, 1200)}` : "",
       referenceDataUrl

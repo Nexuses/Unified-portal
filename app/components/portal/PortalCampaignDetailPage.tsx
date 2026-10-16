@@ -5281,7 +5281,12 @@ export default function PortalCampaignDetailPage({
 
   if (personalise && setupViewing) {
     return (
-      <PersonaliseCampaignView campaignId={campaign.id} onBack={() => setSetupViewing(false)} />
+      <PersonaliseCampaignView
+        campaignId={campaign.id}
+        editable={campaign.status === "paused"}
+        onBack={() => setSetupViewing(false)}
+        onSaved={setCampaign}
+      />
     );
   }
 
@@ -5292,7 +5297,9 @@ export default function PortalCampaignDetailPage({
         onViewSetup={personalise ? () => setSetupViewing(true) : undefined}
         onEditPaused={
           campaign.status === "paused" && isOneOneCampaign(campaign)
-            ? () => setPausedEditing(true)
+            ? personalise
+              ? () => setSetupViewing(true)
+              : () => setPausedEditing(true)
             : undefined
         }
         onCampaignChange={(next) => {

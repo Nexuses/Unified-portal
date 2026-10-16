@@ -83,6 +83,22 @@ export async function readLogoBrand(logoUrl: string): Promise<LogoBrand> {
   }
 }
 
+/** Brand colors from an uploaded image, without keeping the file. */
+export async function colorsFromImageBuffer(input: Buffer) {
+  if (input.length === 0 || input.length > 6_000_000) return [];
+  try {
+    const sample = await sharp(input, { density: 180, limitInputPixels: 20_000_000 })
+      .resize(48, 48, { fit: "inside" })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    return dominantColors(sample.data, sample.info.channels);
+  } catch (error) {
+    console.error("Failed to read image colors:", error);
+    return [];
+  }
+}
+
 /** Places the real logo on the top-left of a generated post. */
 export async function stampLogo(image: string, logoPngDataUrl: string) {
   const source = image.trim();

@@ -58,6 +58,17 @@ export function IconSmtp({ className }: IconProps) {
   );
 }
 
+export function IconBrand({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" {...stroke}>
+      <path d="M12 3.6a8.4 8.4 0 1 0 .2 16.8h1.1a2 2 0 0 0 .1-4h-.8a1.5 1.5 0 0 1 0-3h2.2A5 5 0 0 0 19.8 8 8.4 8.4 0 0 0 12 3.6z" />
+      <circle cx="8" cy="9.2" r=".9" fill="currentColor" stroke="none" />
+      <circle cx="11.2" cy="7.3" r=".9" fill="currentColor" stroke="none" />
+      <circle cx="14.4" cy="8.7" r=".9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function IconKnowledge({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
@@ -214,6 +225,8 @@ export function getNavIcon(pageId: string) {
       return IconAnalytics;
     case "smtp":
       return IconSmtp;
+    case "branding":
+      return IconBrand;
     case "knowledge":
       return IconKnowledge;
     case "inbox":

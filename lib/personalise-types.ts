@@ -51,8 +51,10 @@ export type PersonaliseCampaignSnapshot = {
   name: string;
   status: string;
   listName: string;
+  senderId: string;
   senderEmail: string;
   senderProvider: string;
+  timezone: string;
   windowStart: string;
   windowEnd: string;
   emailGapMinutes: number;

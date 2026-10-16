@@ -1,3 +1,5 @@
+import { ObjectId } from "mongodb";
+import { brandGuidePrompt, colorsFromGuide, listBrandMemories, mergeBrandColors } from "@/lib/brand-memories";
 import { loadKnowledgeMarkdown } from "@/lib/knowledge-base-server";
 import { readLogoBrand } from "@/lib/logo-brand";
 
@@ -34,8 +36,10 @@ function topColors(html: string) {
 }
 
 export type KnowledgeBrand = {
-  /** Prompt text: logo colors, then the knowledge-base documents. */
+  /** Prompt text: logo, colors, branding guidelines, then the knowledge-base documents. */
   text: string;
+  /** Saved branding memories: design system and vocal tone. */
+  guidelines: string;
   colors: string[];
   logoUrl: string;
   /** PNG of the client logo, for placing on a generated post. */
@@ -43,19 +47,25 @@ export type KnowledgeBrand = {
 };
 
 export async function loadKnowledgeBrand(projectId: string, logoUrl = ""): Promise<KnowledgeBrand> {
-  const [markdown, logo] = await Promise.all([
+  const [markdown, logo, memories] = await Promise.all([
     loadKnowledgeMarkdown(projectId, 9000),
     readLogoBrand(logoUrl),
+    ObjectId.isValid(projectId)
+      ? listBrandMemories(new ObjectId(projectId)).catch(() => [])
+      : Promise.resolve([]),
   ]);
-  const colors = logo.colors.length > 0 ? logo.colors : topColors(markdown);
+  const guideText = memories.map((memory) => memory.text).join("\n");
+  const colors = mergeBrandColors(colorsFromGuide(guideText), logo.colors.length > 0 ? logo.colors : topColors(markdown));
+  const guidelines = brandGuidePrompt(memories).slice(0, 8_000);
   const text = [
     logoUrl ? `Client logo URL (use this exact img src, do not redraw the logo): ${logoUrl}` : "",
     colors.length
-      ? `Brand colors taken from the client logo. Use these exact hex values for backgrounds, buttons, links, and accents: ${colors.join(", ")}.`
+      ? `Brand colors from the branding guidelines and logo. Use these exact hex values for backgrounds, buttons, links, and accents: ${colors.join(", ")}.`
       : "",
+    guidelines,
     markdown,
   ]
     .filter(Boolean)
     .join("\n\n");
-  return { text, colors, logoUrl, logoDataUrl: logo.pngDataUrl };
+  return { text, guidelines, colors, logoUrl, logoDataUrl: logo.pngDataUrl };
 }

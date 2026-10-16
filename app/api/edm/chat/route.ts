@@ -52,8 +52,9 @@ Email rules:
 - Never use an em dash in the HTML. No — character, and no &mdash;. Use a comma, a period, or a hyphen.
 - Pasted HTML and reference screenshots are layout only: section order, spacing, image-and-text rhythm, and button shape.
 - Never copy colors, fonts, logos, product names, or claims from that reference. Replace them on the first draft.
-- Colors, backgrounds, button color, text color, logo, copy, and links always come from the knowledge base brand, even if the user does not ask.
-- Brand colors are the hex values taken from the client logo. Use those exact values in the CSS. Do not invent a different palette.
+- Colors, backgrounds, button color, text color, logo, copy, voice, and links always come from the branding guidelines and the knowledge base brand, even if the user does not ask.
+- Branding guidelines are the project's saved memories. Follow their design system and vocal tone on every email: colors, type, spacing, words, and phrases.
+- When the branding guidelines name hex colors, those colors win. Otherwise use the brand hex values listed in the context. Use those exact values in the CSS. Do not invent a different palette.
 - The header logo must be an img whose src is the client logo URL exactly. Do not generate, redraw, or replace that logo.
 - Attachments are not labeled. A screenshot is layout. Text that is a deck or site note is copy. An image the user calls a logo is the logo.
 - To place an attached image in the email, use its {{file-N}} token as the img src.
@@ -243,6 +244,9 @@ export async function POST(request: NextRequest) {
 
     const context = [
       `Client: ${session.projectName}`,
+      brand.guidelines
+        ? `Branding guidelines. Follow this design system and vocal tone on this email:\n${brand.guidelines}`
+        : "",
       brand.text
         ? `Knowledge base brand. This controls the logo, colors, copy, and links. Do not wait for the user to ask:\n${brand.text}`
         : "Client logo URL: none",

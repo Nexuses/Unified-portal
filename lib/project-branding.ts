@@ -1,9 +1,14 @@
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 
+type BrandProject = {
+  name?: string;
+  logoUrl?: string;
+};
+
 export async function getProjectBranding(projectId: ObjectId) {
   const db = await getDb();
-  const project = await db.collection<{ name?: string; logoUrl?: string }>("projects").findOne(
+  const project = await db.collection<BrandProject>("projects").findOne(
     { _id: projectId },
     { projection: { name: 1, logoUrl: 1 } },
   );

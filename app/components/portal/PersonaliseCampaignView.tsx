@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
+import SmtpSenderSelect, { type SmtpSenderOption } from "@/app/components/portal/SmtpSenderSelect";
+import { formatTimezoneLabel, listCampaignTimezones } from "@/lib/campaign-timezones";
+import { patchDripCampaign, type DripCampaign } from "@/lib/drip-campaigns";
 import type { SmtpProviderId } from "@/lib/smtp-senders";
 import type {
   PersonaliseCampaignSnapshot,
@@ -63,16 +66,42 @@ function windowLabel(snapshot: PersonaliseCampaignSnapshot) {
   return `${snapshot.windowStart} – ${snapshot.windowEnd}`;
 }
 
+function senderLabel(email: string) {
+  const local = email.split("@")[0] ?? "";
+  const name = local
+    .replace(/[._-]+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+  return name || email;
+}
+
 export default function PersonaliseCampaignView({
   campaignId,
+  editable = false,
   onBack,
+  onSaved,
 }: {
   campaignId: string;
+  editable?: boolean;
   onBack: () => void;
+  onSaved?: (campaign: DripCampaign) => void;
 }) {
   const [snapshot, setSnapshot] = useState<PersonaliseCampaignSnapshot | null>(null);
   const [error, setError] = useState("");
   const [openIndex, setOpenIndex] = useState<number | null>(0);
+  const [senders, setSenders] = useState<SmtpSenderOption[]>([]);
+  const [listName, setListName] = useState("");
+  const [senderId, setSenderId] = useState("");
+  const [windowStart, setWindowStart] = useState("09:00");
+  const [windowEnd, setWindowEnd] = useState("18:00");
+  const [timezone, setTimezone] = useState("Asia/Kolkata");
+  const [emailGapMinutes, setEmailGapMinutes] = useState(5);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [savedNote, setSavedNote] = useState("");
+  const timezones = useMemo(() => listCampaignTimezones(timezone), [timezone]);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +128,103 @@ export default function PersonaliseCampaignView({
     };
   }, [campaignId]);
 
+  useEffect(() => {
+    if (!snapshot) {
+      return;
+    }
+    setListName(snapshot.listName || snapshot.name);
+    setWindowStart(snapshot.windowStart || "09:00");
+    setWindowEnd(snapshot.windowEnd || "18:00");
+    setTimezone(snapshot.timezone || "Asia/Kolkata");
+    setEmailGapMinutes(snapshot.emailGapMinutes);
+  }, [snapshot]);
+
+  useEffect(() => {
+    if (!editable) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/smtp/senders");
+        const data = (await response.json()) as SmtpSenderOption[] | { error?: string };
+        if (!response.ok || !Array.isArray(data) || cancelled) {
+          return;
+        }
+        setSenders(data);
+      } catch {
+        // The sender field stays empty until the list loads.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [editable]);
+
+  useEffect(() => {
+    if (!snapshot || senders.length === 0) {
+      return;
+    }
+    setSenderId((current) => {
+      if (current && senders.some((sender) => sender.id === current)) {
+        return current;
+      }
+      const match =
+        senders.find((sender) => sender.id === snapshot.senderId) ??
+        senders.find(
+          (sender) => sender.fromEmail.toLowerCase() === snapshot.senderEmail.toLowerCase(),
+        );
+      return match?.id ?? "";
+    });
+  }, [snapshot, senders]);
+
+  async function saveSetup() {
+    if (!editable || saving) {
+      return;
+    }
+    const name = listName.trim();
+    const sender = senders.find((item) => item.id === senderId);
+    if (!name) {
+      setSaveError("Add a list name.");
+      return;
+    }
+    if (!sender) {
+      setSaveError("Select a sender.");
+      return;
+    }
+    if (!/^\d{2}:\d{2}$/.test(windowStart) || !/^\d{2}:\d{2}$/.test(windowEnd)) {
+      setSaveError("Sending hours need a start and stop time.");
+      return;
+    }
+    setSaving(true);
+    setSaveError("");
+    setSavedNote("");
+    try {
+      const updated = await patchDripCampaign(
+        campaignId,
+        {
+          name: name || undefined,
+          listName: name || undefined,
+          senderId: sender.id,
+          senderEmail: sender.fromEmail,
+          senderName: senderLabel(sender.fromEmail),
+          windowStart,
+          windowEnd,
+          emailGapMinutes,
+          timezone,
+          timezoneEnabled: true,
+        },
+        "oneone",
+      );
+      onSaved?.(updated);
+      setSavedNote("Saved. The campaign stays paused until you resume it.");
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Could not save the setup.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const totalEmails = snapshot
     ? snapshot.contacts.reduce((sum, contact) => sum + contact.steps.length, 0)
     : 0;
@@ -115,7 +241,12 @@ export default function PersonaliseCampaignView({
           <h2>{snapshot?.name ?? "Campaign setup"}</h2>
         </div>
         <div className="drip-detail-actions">
-          <button type="button" className="btn-dark" onClick={onBack}>
+          {editable ? (
+            <button type="button" className="btn-dark" disabled={saving || !snapshot} onClick={() => void saveSetup()}>
+              {saving ? "Saving…" : "Save changes"}
+            </button>
+          ) : null}
+          <button type="button" className="btn-soft" onClick={onBack}>
             Back to report
           </button>
         </div>
@@ -148,36 +279,117 @@ export default function PersonaliseCampaignView({
 
             <div className="pz-card">
               <h3 className="pz-card-title">Campaign setup</h3>
-              <dl className="pz-setup-summary">
-                <div>
-                  <dt>List name</dt>
-                  <dd>{snapshot.listName || "—"}</dd>
-                </div>
-                <div>
-                  <dt>Sender</dt>
-                  <dd className="pz-setup-sender">
-                    <SmtpProviderBadge
-                      iconOnly
-                      providerId={(snapshot.senderProvider || undefined) as SmtpProviderId | undefined}
-                    />
-                    <span>{snapshot.senderEmail || "—"}</span>
-                  </dd>
-                </div>
-                <div>
-                  <dt>Sending hours</dt>
-                  <dd>{windowLabel(snapshot)}</dd>
-                </div>
-                <div>
-                  <dt>Gap (minutes)</dt>
-                  <dd>{snapshot.emailGapMinutes}</dd>
-                </div>
-                {snapshot.scheduledFor ? (
-                  <div>
-                    <dt>Scheduled for</dt>
-                    <dd>{formatWhen(snapshot.scheduledFor)}</dd>
+              {editable ? (
+                <>
+                  <div className="personalise-fields">
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-list">List name</label>
+                      <input
+                        id="personalise-edit-list"
+                        value={listName}
+                        onChange={(event) => setListName(event.target.value)}
+                      />
+                    </div>
+                    <div className="crm-field">
+                      <label id="personalise-edit-sender-label">Sender</label>
+                      <SmtpSenderSelect
+                        id="personalise-edit-sender"
+                        labelledBy="personalise-edit-sender-label"
+                        className="pz-sender-select"
+                        senders={senders}
+                        value={senderId}
+                        onChange={setSenderId}
+                        placeholder="No sender yet"
+                      />
+                    </div>
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-start">Start sending</label>
+                      <input
+                        id="personalise-edit-start"
+                        type="time"
+                        value={windowStart}
+                        onChange={(event) => setWindowStart(event.target.value)}
+                      />
+                    </div>
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-end">Stop sending</label>
+                      <input
+                        id="personalise-edit-end"
+                        type="time"
+                        value={windowEnd}
+                        onChange={(event) => setWindowEnd(event.target.value)}
+                      />
+                    </div>
                   </div>
-                ) : null}
-              </dl>
+                  <div className="personalise-fields personalise-fields-extra">
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-timezone">Time zone</label>
+                      <select
+                        id="personalise-edit-timezone"
+                        className="pz-timezone-select"
+                        value={timezone}
+                        onChange={(event) => setTimezone(event.target.value)}
+                      >
+                        {timezones.map((zone) => (
+                          <option key={zone} value={zone}>
+                            {formatTimezoneLabel(zone)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-gap">Gap (minutes)</label>
+                      <input
+                        id="personalise-edit-gap"
+                        type="number"
+                        min={0}
+                        max={1440}
+                        value={emailGapMinutes}
+                        onChange={(event) =>
+                          setEmailGapMinutes(Math.max(0, Math.min(1440, Number(event.target.value) || 0)))
+                        }
+                      />
+                    </div>
+                  </div>
+                  <p className="personalise-hint">
+                    Changes apply to emails that have not been sent yet. Resume the campaign from the
+                    report when you want sending to continue.
+                  </p>
+                  {saveError ? <p className="crm-error">{saveError}</p> : null}
+                  {savedNote ? <p className="personalise-hint">{savedNote}</p> : null}
+                </>
+              ) : (
+                <dl className="pz-setup-summary">
+                  <div>
+                    <dt>List name</dt>
+                    <dd>{snapshot.listName || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Sender</dt>
+                    <dd className="pz-setup-sender">
+                      <SmtpProviderBadge
+                        iconOnly
+                        providerId={(snapshot.senderProvider || undefined) as SmtpProviderId | undefined}
+                      />
+                      <span>{snapshot.senderEmail || "—"}</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Sending hours</dt>
+                    <dd>{windowLabel(snapshot)}</dd>
+                  </div>
+                  <div>
+                    <dt>Gap (minutes)</dt>
+                    <dd>{snapshot.emailGapMinutes}</dd>
+                  </div>
+                  {snapshot.scheduledFor ? (
+                    <div>
+                      <dt>Scheduled for</dt>
+                      <dd>{formatWhen(snapshot.scheduledFor)}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              )}
             </div>
 
             <div className="pz-contacts">
