@@ -54,6 +54,7 @@ export type PersonaliseCampaignSnapshot = {
   senderId: string;
   senderEmail: string;
   senderProvider: string;
+  replyTo: string;
   timezone: string;
   windowStart: string;
   windowEnd: string;
@@ -64,6 +65,17 @@ export type PersonaliseCampaignSnapshot = {
 
 const MAX_CONTACTS = 500;
 const MAX_STEPS = 30;
+
+export function cleanReplyTo(value: string) {
+  const email = value.trim().toLowerCase();
+  if (!email) {
+    return "";
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return null;
+  }
+  return email;
+}
 
 function asText(value: unknown) {
   return String(value ?? "").trim();

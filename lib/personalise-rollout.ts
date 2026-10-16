@@ -22,6 +22,7 @@ import { getDb } from "@/lib/mongodb";
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
 import {
   normalizePersonalisePlan,
+  cleanReplyTo,
   cleanSignatureHtml,
   pitchToHtml,
   stepDelayDays,
@@ -44,6 +45,7 @@ export type PersonaliseRolloutInput = {
   scheduledFor?: string;
   signatureHtml?: string;
   timezone?: string;
+  replyTo?: string;
 };
 
 function timezoneOrThrow(value: unknown) {
@@ -124,6 +126,10 @@ export async function rolloutPersonaliseCampaign(input: {
   const timezone = timezoneOrThrow(input.body.timezone);
   const windowStart = clockOrThrow(String(input.body.windowStart ?? "09:00"), "Start time");
   const windowEnd = clockOrThrow(String(input.body.windowEnd ?? "18:00"), "End time");
+  const replyTo = cleanReplyTo(String(input.body.replyTo ?? ""));
+  if (replyTo === null) {
+    throw new Error("Reply to must be an email address.");
+  }
   const emailGapMinutes = Math.max(
     0,
     Math.min(1440, Math.floor(Number(input.body.emailGapMinutes) || 0)),
@@ -266,6 +272,7 @@ export async function rolloutPersonaliseCampaign(input: {
     senderId,
     senderName,
     senderEmail: fromEmail,
+    ...(replyTo ? { replyTo } : {}),
     listId: list._id.toString(),
     listName: list.name,
     listDisplayId: list.displayId,
@@ -332,6 +339,8 @@ export async function rolloutPersonaliseCampaign(input: {
       senderId,
       senderName,
       senderEmail: fromEmail,
+      replyToEnabled: Boolean(replyTo),
+      replyToEmail: replyTo,
       listId: list._id.toString(),
       listName: list.name,
       listDisplayId: list.displayId,

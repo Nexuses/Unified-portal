@@ -5,6 +5,7 @@ import {
   MAX_SIGNATURE_HTML,
   MAX_STEP_GAP_DAYS,
   applyStepGaps,
+  cleanReplyTo,
   cleanSignatureHtml,
   contactNeedsEmail,
   defaultStepGaps,
@@ -157,6 +158,7 @@ export default function PortalPersonalisePage({
   const [plan, setPlan] = useState<PersonalisePlan | null>(null);
   const [senders, setSenders] = useState<SenderOption[]>([]);
   const [senderId, setSenderId] = useState("");
+  const [replyTo, setReplyTo] = useState("");
   const [windowStart, setWindowStart] = useState("09:00");
   const [windowEnd, setWindowEnd] = useState("18:00");
   const [emailGapMinutes, setEmailGapMinutes] = useState(5);
@@ -352,6 +354,11 @@ export default function PortalPersonalisePage({
     if (!plan) {
       return;
     }
+    const replyAddress = cleanReplyTo(replyTo);
+    if (replyAddress === null) {
+      setError("Reply to must be an email address.");
+      return;
+    }
     setBusy("rollout");
     setError("");
     try {
@@ -370,6 +377,7 @@ export default function PortalPersonalisePage({
           scheduledFor: schedule.scheduledFor,
           signatureHtml: activeSignature,
           timezone,
+          replyTo: replyAddress,
         }),
       });
       const data = (await response.json().catch(() => ({}))) as Partial<RolloutResult> & {
@@ -613,6 +621,16 @@ export default function PortalPersonalisePage({
                 onChange={(event) =>
                   setEmailGapMinutes(Math.max(0, Math.min(1440, Number(event.target.value) || 0)))
                 }
+              />
+            </div>
+            <div className="crm-field">
+              <label htmlFor="personalise-reply-to">Reply to</label>
+              <input
+                id="personalise-reply-to"
+                type="email"
+                value={replyTo}
+                placeholder="Replies go to the sender"
+                onChange={(event) => setReplyTo(event.target.value)}
               />
             </div>
           </div>

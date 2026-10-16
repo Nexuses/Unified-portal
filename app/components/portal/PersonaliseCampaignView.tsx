@@ -6,7 +6,7 @@ import SmtpSenderSelect, { type SmtpSenderOption } from "@/app/components/portal
 import { formatTimezoneLabel, listCampaignTimezones } from "@/lib/campaign-timezones";
 import { patchDripCampaign, type CampaignSequence, type DripCampaign } from "@/lib/drip-campaigns";
 import type { SmtpProviderId } from "@/lib/smtp-senders";
-import { MAX_STEP_GAP_DAYS, type PersonaliseCampaignSnapshot, type PersonaliseSentContact, type PersonaliseSentStep } from "@/lib/personalise-types";
+import { MAX_STEP_GAP_DAYS, cleanReplyTo, type PersonaliseCampaignSnapshot, type PersonaliseSentContact, type PersonaliseSentStep } from "@/lib/personalise-types";
 
 function personName(contact: PersonaliseSentContact) {
   return [contact.firstName, contact.lastName].filter(Boolean).join(" ") || contact.email;
@@ -118,6 +118,7 @@ export default function PersonaliseCampaignView({
   const [senders, setSenders] = useState<SmtpSenderOption[]>([]);
   const [listName, setListName] = useState("");
   const [senderId, setSenderId] = useState("");
+  const [replyTo, setReplyTo] = useState("");
   const [windowStart, setWindowStart] = useState("09:00");
   const [windowEnd, setWindowEnd] = useState("18:00");
   const [timezone, setTimezone] = useState("Asia/Kolkata");
@@ -158,6 +159,7 @@ export default function PersonaliseCampaignView({
       return;
     }
     setListName(snapshot.listName || snapshot.name);
+    setReplyTo(snapshot.replyTo || "");
     setWindowStart(snapshot.windowStart || "09:00");
     setWindowEnd(snapshot.windowEnd || "18:00");
     setTimezone(snapshot.timezone || "Asia/Kolkata");
@@ -229,6 +231,11 @@ export default function PersonaliseCampaignView({
       setSaveError("Sending hours need a start and stop time.");
       return;
     }
+    const replyAddress = cleanReplyTo(replyTo);
+    if (replyAddress === null) {
+      setSaveError("Reply to must be an email address.");
+      return;
+    }
     setSaving(true);
     setSaveError("");
     setSavedNote("");
@@ -241,6 +248,8 @@ export default function PersonaliseCampaignView({
           senderId: sender.id,
           senderEmail: sender.fromEmail,
           senderName: senderLabel(sender.fromEmail),
+          replyToEnabled: Boolean(replyAddress),
+          replyToEmail: replyAddress,
           windowStart,
           windowEnd,
           emailGapMinutes,
@@ -396,6 +405,16 @@ export default function PersonaliseCampaignView({
                         }
                       />
                     </div>
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-reply-to">Reply to</label>
+                      <input
+                        id="personalise-edit-reply-to"
+                        type="email"
+                        value={replyTo}
+                        placeholder="Replies go to the sender"
+                        onChange={(event) => setReplyTo(event.target.value)}
+                      />
+                    </div>
                   </div>
                   {stepGaps.length > 0 ? (
                     <div className="pz-gaps">
@@ -469,6 +488,10 @@ export default function PersonaliseCampaignView({
                   <div>
                     <dt>Gap (minutes)</dt>
                     <dd>{snapshot.emailGapMinutes}</dd>
+                  </div>
+                  <div>
+                    <dt>Reply to</dt>
+                    <dd>{snapshot.replyTo || "—"}</dd>
                   </div>
                   {snapshot.scheduledFor ? (
                     <div>

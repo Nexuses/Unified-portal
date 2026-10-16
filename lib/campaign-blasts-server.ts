@@ -2226,7 +2226,9 @@ export async function syncPausedOneOneBlast(
         senderId: campaign.senderId || blast.senderId,
         senderName: campaign.senderName,
         senderEmail: campaign.senderEmail || blast.senderEmail,
-        replyTo: campaign.replyToEnabled ? campaign.replyToEmail : undefined,
+        ...(campaign.replyToEnabled && campaign.replyToEmail?.trim()
+          ? { replyTo: campaign.replyToEmail.trim() }
+          : {}),
         cc: campaignCcList(campaign),
         listId: campaign.listId || blast.listId,
         listName: campaign.listName || blast.listName,
@@ -2239,6 +2241,9 @@ export async function syncPausedOneOneBlast(
         recipients: emails.length,
         updatedAt: now,
       },
+      ...(campaign.replyToEnabled && campaign.replyToEmail?.trim()
+        ? {}
+        : { $unset: { replyTo: "" as const } }),
     },
   );
 }
