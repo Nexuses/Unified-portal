@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
 import SmtpSenderSelect, { type SmtpSenderOption } from "@/app/components/portal/SmtpSenderSelect";
 import { formatTimezoneLabel, listCampaignTimezones } from "@/lib/campaign-timezones";
-import { patchDripCampaign, type CampaignSequence, type DripCampaign } from "@/lib/drip-campaigns";
+import { patchDripCampaign, SEND_WEEKDAYS, sendWeekdayLabel, type CampaignSequence, type DripCampaign } from "@/lib/drip-campaigns";
 import type { SmtpProviderId } from "@/lib/smtp-senders";
 import { MAX_STEP_GAP_DAYS, cleanReplyTo, type PersonaliseCampaignSnapshot, type PersonaliseSentContact, type PersonaliseSentStep } from "@/lib/personalise-types";
 
@@ -121,6 +121,8 @@ export default function PersonaliseCampaignView({
   const [replyTo, setReplyTo] = useState("");
   const [windowStart, setWindowStart] = useState("09:00");
   const [windowEnd, setWindowEnd] = useState("18:00");
+  const [sendStartDay, setSendStartDay] = useState(1);
+  const [sendEndDay, setSendEndDay] = useState(0);
   const [timezone, setTimezone] = useState("Asia/Kolkata");
   const [emailGapMinutes, setEmailGapMinutes] = useState(5);
   const [stepGaps, setStepGaps] = useState<number[]>([]);
@@ -162,6 +164,8 @@ export default function PersonaliseCampaignView({
     setReplyTo(snapshot.replyTo || "");
     setWindowStart(snapshot.windowStart || "09:00");
     setWindowEnd(snapshot.windowEnd || "18:00");
+    setSendStartDay(snapshot.sendStartDay);
+    setSendEndDay(snapshot.sendEndDay);
     setTimezone(snapshot.timezone || "Asia/Kolkata");
     setEmailGapMinutes(snapshot.emailGapMinutes);
     const followUps = Math.max(0, sequences.length - 1);
@@ -252,6 +256,8 @@ export default function PersonaliseCampaignView({
           replyToEmail: replyAddress,
           windowStart,
           windowEnd,
+          sendStartDay,
+          sendEndDay,
           emailGapMinutes,
           timezone,
           timezoneEnabled: true,
@@ -375,6 +381,36 @@ export default function PersonaliseCampaignView({
                         onChange={(event) => setWindowEnd(event.target.value)}
                       />
                     </div>
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-start-day">Start day</label>
+                      <select
+                        id="personalise-edit-start-day"
+                        className="pz-timezone-select"
+                        value={sendStartDay}
+                        onChange={(event) => setSendStartDay(Number(event.target.value))}
+                      >
+                        {SEND_WEEKDAYS.map((day) => (
+                          <option key={day.value} value={day.value}>
+                            {day.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-end-day">End day</label>
+                      <select
+                        id="personalise-edit-end-day"
+                        className="pz-timezone-select"
+                        value={sendEndDay}
+                        onChange={(event) => setSendEndDay(Number(event.target.value))}
+                      >
+                        {SEND_WEEKDAYS.map((day) => (
+                          <option key={day.value} value={day.value}>
+                            {day.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                   <div className="personalise-fields personalise-fields-extra">
                     <div className="crm-field">
@@ -459,8 +495,9 @@ export default function PersonaliseCampaignView({
                     </div>
                   ) : null}
                   <p className="personalise-hint">
-                    Changes apply to emails that have not been sent yet. Resume the campaign from the
-                    report when you want sending to continue.
+                    Changes apply to emails that have not been sent yet. Sending stays inside the
+                    days and hours you set. Resume the campaign from the report when you want
+                    sending to continue.
                   </p>
                   {saveError ? <p className="crm-error">{saveError}</p> : null}
                   {savedNote ? <p className="personalise-hint">{savedNote}</p> : null}
@@ -484,6 +521,12 @@ export default function PersonaliseCampaignView({
                   <div>
                     <dt>Sending hours</dt>
                     <dd>{windowLabel(snapshot)}</dd>
+                  </div>
+                  <div>
+                    <dt>Sending days</dt>
+                    <dd>
+                      {sendWeekdayLabel(snapshot.sendStartDay)} – {sendWeekdayLabel(snapshot.sendEndDay)}
+                    </dd>
                   </div>
                   <div>
                     <dt>Gap (minutes)</dt>

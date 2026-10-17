@@ -16,6 +16,7 @@ import {
 import {
   createEmptySequence,
   formatCampaignClock,
+  normalizeSendDay,
   type CampaignSequence,
 } from "@/lib/drip-campaigns";
 import { getDb } from "@/lib/mongodb";
@@ -40,6 +41,8 @@ export type PersonaliseRolloutInput = {
   senderId?: string;
   windowStart?: string;
   windowEnd?: string;
+  sendStartDay?: number;
+  sendEndDay?: number;
   emailGapMinutes?: number;
   mode?: "now" | "later";
   scheduledFor?: string;
@@ -126,6 +129,8 @@ export async function rolloutPersonaliseCampaign(input: {
   const timezone = timezoneOrThrow(input.body.timezone);
   const windowStart = clockOrThrow(String(input.body.windowStart ?? "09:00"), "Start time");
   const windowEnd = clockOrThrow(String(input.body.windowEnd ?? "18:00"), "End time");
+  const sendStartDay = normalizeSendDay(input.body.sendStartDay, 1);
+  const sendEndDay = normalizeSendDay(input.body.sendEndDay, 0);
   const replyTo = cleanReplyTo(String(input.body.replyTo ?? ""));
   if (replyTo === null) {
     throw new Error("Reply to must be an email address.");
@@ -294,6 +299,8 @@ export async function rolloutPersonaliseCampaign(input: {
     sequences,
     windowStart,
     windowEnd,
+    sendStartDay,
+    sendEndDay,
     emailGapMinutes,
   };
 
@@ -348,6 +355,8 @@ export async function rolloutPersonaliseCampaign(input: {
       sequences,
       windowStart,
       windowEnd,
+      sendStartDay,
+      sendEndDay,
       emailGapMinutes,
       subject: sequences[0]?.subject,
       hasDesign: true,

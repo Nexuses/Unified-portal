@@ -107,6 +107,8 @@ export async function getPersonaliseCampaignSnapshot(
     timezone: blast.timezone || "Asia/Kolkata",
     windowStart: blast.windowStart ?? "",
     windowEnd: blast.windowEnd ?? "",
+    sendStartDay: typeof blast.sendStartDay === "number" ? blast.sendStartDay : 1,
+    sendEndDay: typeof blast.sendEndDay === "number" ? blast.sendEndDay : 0,
     emailGapMinutes: blast.emailGapMinutes ?? 0,
     scheduledFor: blast.scheduledFor?.toISOString(),
     contacts,

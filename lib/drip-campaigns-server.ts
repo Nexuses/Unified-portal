@@ -80,6 +80,8 @@ export type DripCampaignDoc = {
   sequences?: CampaignSequence[];
   windowStart?: string;
   windowEnd?: string;
+  sendStartDay?: number;
+  sendEndDay?: number;
   emailGapMinutes?: number;
   timeline?: DripCampaign["timeline"];
   createdBy: ObjectId | null;
@@ -139,6 +141,8 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     sequences: doc.sequences,
     windowStart: doc.windowStart,
     windowEnd: doc.windowEnd,
+    sendStartDay: doc.sendStartDay,
+    sendEndDay: doc.sendEndDay,
     emailGapMinutes: doc.emailGapMinutes,
     timeline: doc.timeline,
     createdAt: doc.createdAt?.toISOString(),
@@ -721,6 +725,8 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "sequences",
   "windowStart",
   "windowEnd",
+  "sendStartDay",
+  "sendEndDay",
   "emailGapMinutes",
   "timeline",
 ];
@@ -999,6 +1005,8 @@ export async function duplicateProjectDripCampaign(
     sequences,
     windowStart: existing.windowStart,
     windowEnd: existing.windowEnd,
+    sendStartDay: existing.sendStartDay,
+    sendEndDay: existing.sendEndDay,
     emailGapMinutes: existing.emailGapMinutes,
     timeline: [
       {

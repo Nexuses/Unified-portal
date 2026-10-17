@@ -84,6 +84,8 @@ export type CampaignBlastDoc = {
   sequences?: CampaignSequence[];
   windowStart?: string;
   windowEnd?: string;
+  sendStartDay?: number;
+  sendEndDay?: number;
   emailGapMinutes?: number;
   sendLockUntil?: Date;
   utmEnabled?: boolean;
@@ -297,12 +299,45 @@ function minutesInTimeZone(date: Date, timeZone: string) {
   return hour * 60 + minute;
 }
 
+function weekdayInTimeZone(date: Date, timeZone: string) {
+  const name = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+  }).format(date);
+  const index = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(name.slice(0, 3));
+  return index < 0 ? 0 : index;
+}
+
+function isAllowedSendDay(
+  date: Date,
+  timeZone: string,
+  startDay?: number,
+  endDay?: number,
+) {
+  if (!Number.isInteger(startDay) || !Number.isInteger(endDay)) {
+    return true;
+  }
+  if ((startDay as number) < 0 || (startDay as number) > 6 || (endDay as number) < 0 || (endDay as number) > 6) {
+    return true;
+  }
+  const day = weekdayInTimeZone(date, timeZone);
+  if ((startDay as number) <= (endDay as number)) {
+    return day >= (startDay as number) && day <= (endDay as number);
+  }
+  return day >= (startDay as number) || day <= (endDay as number);
+}
+
 function isWithinSendWindow(
   date: Date,
   timeZone: string,
   windowStart?: string,
   windowEnd?: string,
+  startDay?: number,
+  endDay?: number,
 ) {
+  if (!isAllowedSendDay(date, timeZone, startDay, endDay)) {
+    return false;
+  }
   const start = parseHmToMinutes(windowStart ?? "");
   const end = parseHmToMinutes(windowEnd ?? "");
   if (start === null || end === null) {
@@ -1047,7 +1082,14 @@ async function sendPendingBatch(
   }
   if (
     oneOne &&
-    !isWithinSendWindow(now, blast.timezone || "Asia/Kolkata", blast.windowStart, blast.windowEnd)
+    !isWithinSendWindow(
+      now,
+      blast.timezone || "Asia/Kolkata",
+      blast.windowStart,
+      blast.windowEnd,
+      blast.sendStartDay,
+      blast.sendEndDay,
+    )
   ) {
     return blast;
   }
@@ -1587,6 +1629,8 @@ export async function launchCampaignBlast(input: {
           sequences,
           windowStart: campaign.windowStart || "09:00",
           windowEnd: campaign.windowEnd || "18:00",
+          ...(Number.isInteger(campaign.sendStartDay) ? { sendStartDay: campaign.sendStartDay } : {}),
+          ...(Number.isInteger(campaign.sendEndDay) ? { sendEndDay: campaign.sendEndDay } : {}),
           emailGapMinutes: Math.max(0, Number(campaign.emailGapMinutes) || 0),
         }
       : { kind: "drip" as const }),
@@ -2237,6 +2281,8 @@ export async function syncPausedOneOneBlast(
         sequences,
         windowStart: campaign.windowStart || blast.windowStart || "09:00",
         windowEnd: campaign.windowEnd || blast.windowEnd || "18:00",
+        ...(Number.isInteger(campaign.sendStartDay) ? { sendStartDay: campaign.sendStartDay } : {}),
+        ...(Number.isInteger(campaign.sendEndDay) ? { sendEndDay: campaign.sendEndDay } : {}),
         emailGapMinutes: Math.max(0, Number(campaign.emailGapMinutes) || 0),
         recipients: emails.length,
         updatedAt: now,

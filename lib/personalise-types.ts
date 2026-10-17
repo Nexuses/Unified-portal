@@ -58,6 +58,8 @@ export type PersonaliseCampaignSnapshot = {
   timezone: string;
   windowStart: string;
   windowEnd: string;
+  sendStartDay: number;
+  sendEndDay: number;
   emailGapMinutes: number;
   scheduledFor?: string;
   contacts: PersonaliseSentContact[];

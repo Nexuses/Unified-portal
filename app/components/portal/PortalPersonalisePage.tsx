@@ -20,6 +20,7 @@ import { formatTimezoneLabel, listCampaignTimezones } from "@/lib/campaign-timez
 import CampaignScheduleDrawer, {
   type CampaignScheduleInput,
 } from "@/app/components/portal/CampaignScheduleDrawer";
+import { SEND_WEEKDAYS } from "@/lib/drip-campaigns";
 
 const CONTACTS_PAGE_SIZE = 50;
 
@@ -161,6 +162,8 @@ export default function PortalPersonalisePage({
   const [replyTo, setReplyTo] = useState("");
   const [windowStart, setWindowStart] = useState("09:00");
   const [windowEnd, setWindowEnd] = useState("18:00");
+  const [sendStartDay, setSendStartDay] = useState(1);
+  const [sendEndDay, setSendEndDay] = useState(0);
   const [emailGapMinutes, setEmailGapMinutes] = useState(5);
   const [openIndex, setOpenIndex] = useState<number | null>(0);
   const [busy, setBusy] = useState<"extract" | "rollout" | null>(null);
@@ -372,6 +375,8 @@ export default function PortalPersonalisePage({
           senderId,
           windowStart,
           windowEnd,
+          sendStartDay,
+          sendEndDay,
           emailGapMinutes,
           mode: schedule.mode,
           scheduledFor: schedule.scheduledFor,
@@ -583,6 +588,36 @@ export default function PortalPersonalisePage({
                 onChange={(event) => setWindowEnd(event.target.value)}
               />
             </div>
+            <div className="crm-field">
+              <label htmlFor="personalise-start-day">Start day</label>
+              <select
+                id="personalise-start-day"
+                className="pz-timezone-select"
+                value={sendStartDay}
+                onChange={(event) => setSendStartDay(Number(event.target.value))}
+              >
+                {SEND_WEEKDAYS.map((day) => (
+                  <option key={day.value} value={day.value}>
+                    {day.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="crm-field">
+              <label htmlFor="personalise-end-day">End day</label>
+              <select
+                id="personalise-end-day"
+                className="pz-timezone-select"
+                value={sendEndDay}
+                onChange={(event) => setSendEndDay(Number(event.target.value))}
+              >
+                {SEND_WEEKDAYS.map((day) => (
+                  <option key={day.value} value={day.value}>
+                    {day.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="personalise-fields personalise-fields-extra">
             <div className="crm-field">
@@ -635,9 +670,9 @@ export default function PortalPersonalisePage({
             </div>
           </div>
           <p className="personalise-hint">
-            Emails only go out between the start and stop times in {timezone}, with this gap
-            between each send. The signature goes below the sign-off, like
-            &ldquo;Best regards,&rdquo; in every email.
+            Emails only go out from the start day through the end day, between the start and
+            stop times in {timezone}, with this gap between each send. The signature goes below
+            the sign-off, like &ldquo;Best regards,&rdquo; in every email.
           </p>
           </div>
           {stepGaps.length > 0 ? (

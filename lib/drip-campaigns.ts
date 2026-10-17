@@ -97,6 +97,10 @@ export type DripCampaign = {
   sequenceReports?: SequenceReportStats[];
   windowStart?: string;
   windowEnd?: string;
+  /** Weekday the send window opens. 0 is Sunday, 1 is Monday. */
+  sendStartDay?: number;
+  /** Weekday the send window closes, inclusive. 0 is Sunday. */
+  sendEndDay?: number;
   emailGapMinutes?: number;
   sequenceProgress?: CampaignSequenceProgress;
   timeline?: Array<{
@@ -162,6 +166,28 @@ export function campaignSequences(campaign: DripCampaign) {
       designSourceCampaignId: campaign.designSourceCampaignId,
     },
   ];
+}
+
+export const SEND_WEEKDAYS = [
+  { value: 1, label: "Monday" },
+  { value: 2, label: "Tuesday" },
+  { value: 3, label: "Wednesday" },
+  { value: 4, label: "Thursday" },
+  { value: 5, label: "Friday" },
+  { value: 6, label: "Saturday" },
+  { value: 0, label: "Sunday" },
+] as const;
+
+export function normalizeSendDay(value: unknown, fallback: number) {
+  const day = Number(value);
+  if (!Number.isInteger(day) || day < 0 || day > 6) {
+    return fallback;
+  }
+  return day;
+}
+
+export function sendWeekdayLabel(value: number | undefined) {
+  return SEND_WEEKDAYS.find((day) => day.value === value)?.label ?? "—";
 }
 
 export function sequencesReady(campaign: DripCampaign) {
