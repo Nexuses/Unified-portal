@@ -165,7 +165,10 @@ export default function PortalAnalyticsKanban({
   const [savingCampaigns, setSavingCampaigns] = useState(false);
   const [campaignQuery, setCampaignQuery] = useState("");
   const [visibleByStage, setVisibleByStage] = useState<Record<string, number>>({});
+  const [editingStageId, setEditingStageId] = useState("");
+  const [editingStageName, setEditingStageName] = useState("");
   const boardRef = useRef<HTMLDivElement | null>(null);
+  const editStageInputRef = useRef<HTMLInputElement | null>(null);
 
   function scrollElementIntoView(
     container: HTMLElement,
@@ -500,6 +503,65 @@ export default function PortalAnalyticsKanban({
     void persist({ stages, placements });
   }
 
+  function startRenameStage(stage: KanbanStage) {
+    setEditingStageId(stage.id);
+    setEditingStageName(stage.name);
+    setError("");
+  }
+
+  function cancelRenameStage() {
+    setEditingStageId("");
+    setEditingStageName("");
+  }
+
+  function commitRenameStage() {
+    if (!board || !editingStageId) {
+      return;
+    }
+    const name = editingStageName.trim().slice(0, 40);
+    const current = board.stages.find((stage) => stage.id === editingStageId);
+    if (!current || current.system) {
+      cancelRenameStage();
+      return;
+    }
+    if (!name) {
+      setError("Stage name is required");
+      return;
+    }
+    if (
+      board.stages.some(
+        (stage) =>
+          stage.id !== editingStageId &&
+          stage.name.toLowerCase() === name.toLowerCase(),
+      )
+    ) {
+      setError("That stage already exists");
+      return;
+    }
+    if (current.name === name) {
+      cancelRenameStage();
+      return;
+    }
+    const stages = board.stages.map((stage) =>
+      stage.id === editingStageId ? { ...stage, name } : stage,
+    );
+    setBoard({ ...board, stages });
+    cancelRenameStage();
+    void persist({ stages, placements: board.placements });
+  }
+
+  useEffect(() => {
+    if (!editingStageId) {
+      return;
+    }
+    const input = editStageInputRef.current;
+    if (!input) {
+      return;
+    }
+    input.focus();
+    input.select();
+  }, [editingStageId]);
+
   const pickableCampaigns = useMemo(
     () =>
       allCampaigns
@@ -801,13 +863,56 @@ export default function PortalAnalyticsKanban({
                     className="an-kanban-dot"
                     style={{ background: stageDotColor(stage) }}
                   />
-                  <h3>{stageLabel(stage.name)}</h3>
+                  {editingStageId === stage.id ? (
+                    <input
+                      ref={editStageInputRef}
+                      className="an-kanban-rename"
+                      value={editingStageName}
+                      maxLength={40}
+                      aria-label={`Rename ${stage.name}`}
+                      onChange={(event) => setEditingStageName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          commitRenameStage();
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelRenameStage();
+                        }
+                      }}
+                      onBlur={() => commitRenameStage()}
+                    />
+                  ) : (
+                    <h3>{stageLabel(stage.name)}</h3>
+                  )}
                   {stage.rule && !stage.system ? (
                     <span className="an-kanban-rule">{stageRuleLabel(stage.rule)}</span>
                   ) : null}
                   <em>{people.length}</em>
                   {readOnly ? null : (
                     <span className="an-kanban-head-actions">
+                      {!stage.system ? (
+                        <button
+                          type="button"
+                          className="an-kanban-rename-btn"
+                          onClick={() => startRenameStage(stage)}
+                          aria-label={`Rename ${stage.name}`}
+                          title="Rename stage"
+                        >
+                          <svg
+                            viewBox="0 0 24 24"
+                            width="14"
+                            height="14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            aria-hidden
+                          >
+                            <path d="M12 20h9" />
+                            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                          </svg>
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="an-kanban-grip-btn"

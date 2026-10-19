@@ -5159,6 +5159,28 @@ select.filter{
 .content.auto-content{
   padding:0;overflow:hidden;display:flex;flex-direction:column;min-height:0;
 }
+.auto-under-dev{
+  min-height:100%;display:flex;align-items:center;justify-content:center;
+  padding:48px 24px;background:#f4f6f8;
+}
+.auto-under-dev-card{
+  width:min(480px,100%);background:#fff;border:1px solid #e8eaee;border-radius:16px;
+  padding:32px 28px;box-shadow:0 10px 30px rgba(15,23,42,.04);
+}
+.auto-under-dev-kicker{
+  margin:0 0 8px;font-size:11px;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;color:#9ca3af;
+}
+.auto-under-dev-card h1{
+  margin:0 0 10px;font-size:28px;line-height:1.2;font-weight:700;color:#111827;
+  letter-spacing:-0.02em;
+}
+.auto-under-dev-status{
+  margin:0 0 12px;font-size:14px;font-weight:700;color:#b45309;
+}
+.auto-under-dev-copy{
+  margin:0;font-size:15px;line-height:1.55;color:#6b7280;
+}
 .auto-page{
   display:flex;height:100%;min-height:0;background:#f4f6f8;position:relative;
 }
@@ -5862,10 +5884,25 @@ select.filter{
 }
 .an-kanban-col-head h3{
   margin:0;font-size:16px;font-weight:600;color:#171717;letter-spacing:-0.15px;
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.an-kanban-rename{
+  min-width:0;flex:1 1 auto;max-width:160px;margin:0;
+  border:1px solid #e5e7eb;border-radius:8px;padding:4px 8px;
+  font-size:15px;font-weight:600;font-family:inherit;color:#171717;background:#fff;
+}
+.an-kanban-rename:focus{
+  outline:none;border-color:var(--purple);box-shadow:0 0 0 3px rgba(124,58,237,.12);
 }
 .an-kanban-col-head em{
   font-style:normal;font-size:15px;font-weight:500;color:#b0b0b0;
 }
+.an-kanban-rename-btn{
+  border:none;background:transparent;color:#c4c8cd;cursor:pointer;
+  width:24px;height:24px;border-radius:6px;padding:0;
+  display:inline-flex;align-items:center;justify-content:center;
+}
+.an-kanban-rename-btn:hover{color:#111827;background:#eceef0;}
 .an-kanban-rule{
   font-size:11px;font-weight:600;color:#6b7280;background:#f3f4f6;border-radius:999px;padding:2px 8px;
 }

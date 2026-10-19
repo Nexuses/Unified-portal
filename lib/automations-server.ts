@@ -1,12 +1,15 @@
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
-import type {
-  AutomationEngagement,
-  AutomationStatus,
-  AutomationStep,
-  CreateAutomationInput,
-  PatchAutomationInput,
-  PortalAutomation,
+import {
+  AUTOMATION_CAMPAIGN_TAG,
+  AUTOMATION_FOLLOW_UP_TAG,
+  AUTOMATION_UNDER_DEVELOPMENT,
+  type AutomationEngagement,
+  type AutomationStatus,
+  type AutomationStep,
+  type CreateAutomationInput,
+  type PatchAutomationInput,
+  type PortalAutomation,
 } from "@/lib/automations";
 import {
   mergeBlastReport,
@@ -19,6 +22,7 @@ import {
 } from "@/lib/drip-campaigns-server";
 import {
   launchCampaignBlast,
+  pauseCampaignBlast,
   type CampaignBlastDoc,
   type CampaignSendDoc,
 } from "@/lib/campaign-blasts-server";
@@ -293,10 +297,70 @@ async function loadEngagers(
   return [...unique.values()];
 }
 
+/**
+ * Stop active automation flows and pause any linked campaigns that are still
+ * sending. Used while Automation is under development.
+ */
+export async function pauseActiveAutomations(projectId: ObjectId) {
+  const db = await getDb();
+  const now = new Date();
+  const active = await db
+    .collection<AutomationDoc>("automations")
+    .updateMany(
+      { projectId, status: { $in: ["running", "scheduled"] } },
+      { $set: { status: "draft", updatedAt: now } },
+    );
+
+  const tagged = await db
+    .collection<{ campaignId?: string; kind?: CampaignKind }>("drip_campaigns")
+    .find({
+      projectId,
+      tags: { $in: [AUTOMATION_CAMPAIGN_TAG, AUTOMATION_FOLLOW_UP_TAG] },
+      status: { $in: ["sending", "scheduled"] },
+    })
+    .project({ campaignId: 1, kind: 1 })
+    .toArray();
+
+  let pausedCampaigns = 0;
+  for (const row of tagged) {
+    const campaignId = String(row.campaignId ?? "").trim();
+    if (!campaignId) {
+      continue;
+    }
+    const kind: CampaignKind = row.kind === "oneone" ? "oneone" : "drip";
+    try {
+      const paused = await pauseCampaignBlast(projectId, campaignId, kind);
+      if (!paused) {
+        continue;
+      }
+      await db.collection("drip_campaigns").updateOne(
+        { projectId, campaignId, ...blastKindFilter(kind) },
+        { $set: { status: "paused", updatedAt: now } },
+      );
+      pausedCampaigns += 1;
+    } catch (error) {
+      console.error(
+        `[automation] failed to pause campaign ${campaignId}:`,
+        error,
+      );
+    }
+  }
+
+  return {
+    automations: active.modifiedCount,
+    campaigns: pausedCampaigns,
+  };
+}
+
 export async function processDueAutomationFollowUps(
   projectId: ObjectId,
   origin: string,
 ) {
+  if (AUTOMATION_UNDER_DEVELOPMENT) {
+    await pauseActiveAutomations(projectId);
+    return { launched: 0 };
+  }
+
   const db = await getDb();
   const automations = await db
     .collection<AutomationDoc>("automations")

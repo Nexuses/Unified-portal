@@ -19,7 +19,6 @@ import {
 } from "@/lib/drip-campaigns";
 import { portalCampaignRoute } from "@/lib/portal-nav";
 import {
-  campaignHasAutomationTag,
   ensureAutomationCampaignTags,
 } from "@/lib/automations";
 import PortalPersonalisePage from "@/app/components/portal/PortalPersonalisePage";
@@ -771,14 +770,6 @@ export default function PortalDripPage({
                         ) : campaign.status === "sent" ? (
                           <span className="drip-row-status drip-row-status-complete">
                             Complete
-                          </span>
-                        ) : null}
-                        {campaignHasAutomationTag(campaign) ? (
-                          <span
-                            className="drip-automation-badge"
-                            title="Created from Automation"
-                          >
-                            Automation
                           </span>
                         ) : null}
                       </div>

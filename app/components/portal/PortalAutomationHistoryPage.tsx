@@ -4,12 +4,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AUTOMATION_UNDER_DEVELOPMENT,
   deleteAutomation,
   fetchAutomations,
   portalAutomationRoute,
   type AutomationStatus,
   type PortalAutomation,
 } from "@/lib/automations";
+import AutomationUnderDevelopment from "@/app/components/portal/AutomationUnderDevelopment";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
 
 const STATUS_FILTERS: Array<AutomationStatus | "all"> = [
@@ -249,6 +251,10 @@ export default function PortalAutomationHistoryPage({
     } finally {
       setDeleting(false);
     }
+  }
+
+  if (AUTOMATION_UNDER_DEVELOPMENT) {
+    return <AutomationUnderDevelopment />;
   }
 
   return (

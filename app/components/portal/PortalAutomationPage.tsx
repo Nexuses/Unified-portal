@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  AUTOMATION_UNDER_DEVELOPMENT,
   createAutomation,
   fetchAutomation,
   fetchAutomations,
@@ -21,6 +22,7 @@ import {
   type CampaignKind,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
+import AutomationUnderDevelopment from "@/app/components/portal/AutomationUnderDevelopment";
 import PortalAutomationHistoryPage from "@/app/components/portal/PortalAutomationHistoryPage";
 import { portalCampaignRoute, PORTAL_ROUTES } from "@/lib/portal-nav";
 
@@ -1316,6 +1318,10 @@ export default function PortalAutomationPage({
     if (searchParams.get("history") === "1") {
       router.replace(PORTAL_ROUTES.automation);
     }
+  }
+
+  if (AUTOMATION_UNDER_DEVELOPMENT) {
+    return <AutomationUnderDevelopment />;
   }
 
   if (historyOpen) {

@@ -44,7 +44,6 @@ import {
 } from "@/lib/campaign-tracking";
 import {
   AUTOMATION_FOLLOW_UP_TAG,
-  campaignHasAutomationTag,
   ensureAutomationCampaignTags,
 } from "@/lib/automations";
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
@@ -68,10 +67,6 @@ type SetupStep = {
   noIcon?: boolean;
   locked?: boolean;
 };
-
-function isAutomationCampaign(campaign: DripCampaign | null | undefined) {
-  return campaignHasAutomationTag(campaign);
-}
 
 function isAutomationFollowUpCampaign(
   campaign: DripCampaign | null | undefined,
@@ -5514,11 +5509,6 @@ export default function PortalCampaignDetailPage({
           )}
           <div className="drip-detail-badges">
             <span className="drip-status-pill">{statusLabel}</span>
-            {isAutomationCampaign(campaign) ? (
-              <span className="drip-automation-badge" title="Created from Automation">
-                Automation
-              </span>
-            ) : null}
           </div>
         </div>
         <div className="drip-detail-actions">

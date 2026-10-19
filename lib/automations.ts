@@ -12,6 +12,9 @@ export type AutomationWhoSource = "current" | "past";
 export const AUTOMATION_CAMPAIGN_TAG = "automation";
 export const AUTOMATION_FOLLOW_UP_TAG = "automation-follow-up";
 
+/** Builder UI is gated while Automation is rebuilt. Existing code stays in place. */
+export const AUTOMATION_UNDER_DEVELOPMENT = true;
+
 export type AutomationStep = {
   id: string;
   type: "email";
