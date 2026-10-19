@@ -520,7 +520,7 @@ export default function PortalAnalyticsKanban({
     }
     const name = editingStageName.trim().slice(0, 40);
     const current = board.stages.find((stage) => stage.id === editingStageId);
-    if (!current || current.system) {
+    if (!current) {
       cancelRenameStage();
       return;
     }
@@ -891,28 +891,26 @@ export default function PortalAnalyticsKanban({
                   <em>{people.length}</em>
                   {readOnly ? null : (
                     <span className="an-kanban-head-actions">
-                      {!stage.system ? (
-                        <button
-                          type="button"
-                          className="an-kanban-rename-btn"
-                          onClick={() => startRenameStage(stage)}
-                          aria-label={`Rename ${stage.name}`}
-                          title="Rename stage"
+                      <button
+                        type="button"
+                        className="an-kanban-rename-btn"
+                        onClick={() => startRenameStage(stage)}
+                        aria-label={`Rename ${stage.name}`}
+                        title="Rename stage"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          width="14"
+                          height="14"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          aria-hidden
                         >
-                          <svg
-                            viewBox="0 0 24 24"
-                            width="14"
-                            height="14"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            aria-hidden
-                          >
-                            <path d="M12 20h9" />
-                            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                          </svg>
-                        </button>
-                      ) : null}
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                      </button>
                       <button
                         type="button"
                         className="an-kanban-grip-btn"

@@ -70,7 +70,11 @@ function normalizeStages(value: unknown): KanbanStage[] {
     }
     const system = systemById.get(id);
     if (system) {
-      next.push(system);
+      next.push({
+        ...system,
+        // Keep default stages editable by name; rule/color stay system defaults.
+        name: (name || system.name).slice(0, 40),
+      });
       seen.add(system.id);
       continue;
     }
