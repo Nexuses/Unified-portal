@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getProjectSender, sendProjectTestEmail } from "@/lib/smtp-senders-server";
+import { isGmailOrOutlookProvider } from "@/lib/smtp-senders";
 import { injectCampaignTracking, resolveUtmConfig, trackingOrigin } from "@/lib/campaign-tracking";
 import {
   isSessionError,
@@ -52,6 +53,8 @@ export async function POST(request: NextRequest) {
         campaignName: body.campaignName ?? "",
         trackOpens: body.openTrackingOff !== true,
         trackClicks: body.clickTrackingOff !== true,
+        // Gmail / Outlook SMTP: no auto unsubscribe in test sends either.
+        autoUnsubscribeFooter: !isGmailOrOutlookProvider(sender?.provider),
       },
     );
 

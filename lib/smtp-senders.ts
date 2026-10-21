@@ -143,6 +143,16 @@ export const SMTP_PROVIDER_LOGOS = {
     "https://nexuseslink2024.s3.us-east-2.amazonaws.com/resend-icon-black_1786699892036_sqdf.svg",
 } as const;
 
+/**
+ * Gmail / Outlook SMTP senders never get an auto-attached unsubscribe
+ * (no footer, no List-Unsubscribe header) — the user adds their own.
+ */
+export function isGmailOrOutlookProvider(
+  provider: SmtpProviderId | string | null | undefined,
+) {
+  return provider === "gmail" || provider === "outlook";
+}
+
 export const SMTP_PROVIDERS: SmtpProviderDefinition[] = [
   {
     id: "aws_ses",

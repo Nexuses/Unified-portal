@@ -90,6 +90,10 @@ export default function PortalListsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deletePrompt, setDeletePrompt] = useState<{
+    ids: string[];
+    label: string;
+  } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   async function loadLists() {
@@ -203,28 +207,26 @@ export default function PortalListsPage() {
     });
   }
 
-  async function deleteSelectedLists(ids: string[], label: string) {
+  function askDeleteLists(ids: string[], label: string) {
     if (ids.length === 0) {
       return;
     }
+    setOpenMenuId(null);
+    setDeletePrompt({ ids, label });
+  }
 
-    const confirmText =
-      ids.length === 1
-        ? `Delete list "${label}"? Contacts stay in CRM.`
-        : `Delete ${ids.length} lists? Contacts stay in CRM.`;
-    if (!window.confirm(confirmText)) {
-      setOpenMenuId(null);
+  async function confirmDeleteLists(deleteContacts: boolean) {
+    if (!deletePrompt || deleting) {
       return;
     }
-
+    const { ids, label } = deletePrompt;
     setDeleting(true);
-    setOpenMenuId(null);
     setError("");
     try {
       const response = await fetch("/api/crm/lists", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
+        body: JSON.stringify({ ids, deleteContacts }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -239,9 +241,19 @@ export default function PortalListsPage() {
         }
         return next;
       });
+      const contactsDeleted = Number(data.contactsDeleted) || 0;
+      const listNote =
+        ids.length === 1
+          ? `List "${label}" deleted.`
+          : `${ids.length} lists deleted.`;
       setSuccess(
-        ids.length === 1 ? "List deleted." : `${ids.length} lists deleted.`,
+        deleteContacts && contactsDeleted > 0
+          ? `${listNote} ${contactsDeleted.toLocaleString()} contact${
+              contactsDeleted === 1 ? "" : "s"
+            } removed from CRM.`
+          : listNote,
       );
+      setDeletePrompt(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete lists");
     } finally {
@@ -283,7 +295,7 @@ export default function PortalListsPage() {
             className="lists-bulk-delete"
             disabled={deleting}
             onClick={() =>
-              void deleteSelectedLists(
+              askDeleteLists(
                 [...selectedIds],
                 lists.find((list) => selectedIds.has(list.id))?.name ?? "list",
               )
@@ -422,9 +434,7 @@ export default function PortalListsPage() {
                             role="menuitem"
                             className="danger"
                             disabled={deleting}
-                            onClick={() =>
-                              void deleteSelectedLists([list.id], list.name)
-                            }
+                            onClick={() => askDeleteLists([list.id], list.name)}
                           >
                             <TrashIcon />
                             {deleting ? "Deleting..." : "Delete"}
@@ -448,6 +458,73 @@ export default function PortalListsPage() {
             pageSize={LISTS_PAGE_SIZE}
             onPage={setPage}
           />
+        </div>
+      ) : null}
+
+      {deletePrompt ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => {
+            if (!deleting) {
+              setDeletePrompt(null);
+            }
+          }}
+        >
+          <div
+            className="crm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="lists-delete-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="lists-delete-title">
+                  {deletePrompt.ids.length === 1
+                    ? `Delete list "${deletePrompt.label}"?`
+                    : `Delete ${deletePrompt.ids.length} lists?`}
+                </h3>
+                <p>
+                  Choose whether contacts in {deletePrompt.ids.length === 1 ? "this list" : "these lists"} stay in CRM or are deleted too.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                disabled={deleting}
+                onClick={() => setDeletePrompt(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-foot" style={{ justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={deleting}
+                onClick={() => setDeletePrompt(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={deleting}
+                onClick={() => void confirmDeleteLists(false)}
+              >
+                {deleting ? "Deleting..." : "Delete list only"}
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                disabled={deleting}
+                onClick={() => void confirmDeleteLists(true)}
+              >
+                {deleting ? "Deleting..." : "Delete list and contacts"}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </>

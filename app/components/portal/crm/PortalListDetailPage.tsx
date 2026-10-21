@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   DEFAULT_LIST_ATTRIBUTES,
@@ -16,6 +16,7 @@ type PortalListDetailPageProps = {
 
 const CORE_FIELDS = new Set(["firstName", "lastName", "email", "companyName"]);
 const LIST_CONTACTS_PAGE_SIZE = 50;
+const BULK_ACTION_CHUNK = 250;
 
 function emptyAttributeValues() {
   return Object.fromEntries(
@@ -99,7 +100,14 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
   const [modalError, setModalError] = useState("");
   const [saving, setSaving] = useState(false);
   const [successNote, setSuccessNote] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectingAll, setSelectingAll] = useState(false);
+  const [busyAction, setBusyAction] = useState<"remove" | "delete" | null>(null);
+  const [contactActionPrompt, setContactActionPrompt] = useState<
+    "remove" | "delete" | null
+  >(null);
   const requestIdRef = useRef(0);
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -111,6 +119,10 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
   useEffect(() => {
     setPage(1);
   }, [debouncedSearch]);
+
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [listId, debouncedSearch]);
 
   async function loadListPage(nextPage = page) {
     const requestId = ++requestIdRef.current;
@@ -165,6 +177,141 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
 
   const totalPages = Math.max(1, Math.ceil(total / LIST_CONTACTS_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
+
+  const pageIds = useMemo(
+    () => contacts.map((contact) => contact.id),
+    [contacts],
+  );
+  const selectedOnPage = pageIds.filter((id) => selectedIds.includes(id));
+  const allVisibleSelected =
+    pageIds.length > 0 && selectedOnPage.length === pageIds.length;
+  const allMatchingSelected = total > 0 && selectedIds.length >= total;
+  const showSelectAllBanner =
+    total > LIST_CONTACTS_PAGE_SIZE &&
+    allVisibleSelected &&
+    !allMatchingSelected;
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate =
+        selectedOnPage.length > 0 && !allVisibleSelected;
+    }
+  }, [allVisibleSelected, selectedOnPage.length]);
+
+  function toggleContact(id: string) {
+    setSelectedIds((current) =>
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id],
+    );
+  }
+
+  function toggleAllVisible() {
+    setSelectedIds((current) => {
+      if (allVisibleSelected) {
+        return current.filter((id) => !pageIds.includes(id));
+      }
+      return Array.from(new Set([...current, ...pageIds]));
+    });
+  }
+
+  async function selectAllMatching() {
+    if (total === 0 || selectingAll || busyAction) {
+      return;
+    }
+    setSelectingAll(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({ idsOnly: "1" });
+      if (debouncedSearch) {
+        params.set("q", debouncedSearch);
+      }
+      const response = await fetch(
+        `/api/crm/lists/${encodeURIComponent(listId)}?${params.toString()}`,
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to select all contacts");
+      }
+      const ids = Array.isArray(data.ids)
+        ? data.ids.map((id: unknown) => String(id))
+        : [];
+      setSelectedIds(ids);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to select all contacts",
+      );
+    } finally {
+      setSelectingAll(false);
+    }
+  }
+
+  async function confirmContactAction() {
+    if (!contactActionPrompt || selectedIds.length === 0 || busyAction) {
+      return;
+    }
+    const action = contactActionPrompt;
+    const ids = [...selectedIds];
+    setBusyAction(action);
+    setError("");
+    try {
+      let processed = 0;
+      for (let index = 0; index < ids.length; index += BULK_ACTION_CHUNK) {
+        const chunk = ids.slice(index, index + BULK_ACTION_CHUNK);
+        if (action === "remove") {
+          const response = await fetch(
+            `/api/crm/lists/${encodeURIComponent(listId)}`,
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ removeContactIds: chunk }),
+            },
+          );
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(
+              data.error || "Failed to remove contacts from list",
+            );
+          }
+          processed += Number(data.removed) || chunk.length;
+        } else {
+          const response = await fetch("/api/crm/contacts", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: chunk }),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || "Failed to delete contacts");
+          }
+          processed += Number(data.deleted) || chunk.length;
+        }
+      }
+      setSuccessNote(
+        action === "remove"
+          ? `Removed ${processed.toLocaleString()} contact${
+              processed === 1 ? "" : "s"
+            } from this list.`
+          : `Deleted ${processed.toLocaleString()} contact${
+              processed === 1 ? "" : "s"
+            } from CRM.`,
+      );
+      setSelectedIds([]);
+      setContactActionPrompt(null);
+      setPage(1);
+      await loadListPage(1);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : action === "remove"
+            ? "Failed to remove contacts from list"
+            : "Failed to delete contacts",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
 
   function openAddModal() {
     setValues(emptyAttributeValues());
@@ -275,8 +422,59 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
       </div>
 
       <div className="crm-meta-row">
-        <div className="crm-meta-right" style={{ marginLeft: "auto" }}>
-          <div className="search-input">
+        <div className="drip-toolbar" style={{ flex: 1 }}>
+          {total > 0 ? (
+            <button
+              type="button"
+              className="btn-soft"
+              disabled={
+                selectingAll ||
+                Boolean(busyAction) ||
+                loading ||
+                allMatchingSelected
+              }
+              onClick={() => void selectAllMatching()}
+            >
+              {selectingAll
+                ? "Selecting..."
+                : allMatchingSelected
+                  ? `All ${total.toLocaleString()} selected`
+                  : `Select all (${total.toLocaleString()})`}
+            </button>
+          ) : null}
+          {selectedIds.length > 0 ? (
+            <>
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={Boolean(busyAction) || selectingAll}
+                onClick={() => setSelectedIds([])}
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={Boolean(busyAction) || selectingAll}
+                onClick={() => setContactActionPrompt("remove")}
+              >
+                {busyAction === "remove"
+                  ? "Removing..."
+                  : `Remove from list (${selectedIds.length})`}
+              </button>
+              <button
+                type="button"
+                className="lists-bulk-delete"
+                disabled={Boolean(busyAction) || selectingAll}
+                onClick={() => setContactActionPrompt("delete")}
+              >
+                {busyAction === "delete"
+                  ? "Deleting..."
+                  : `Delete from CRM (${selectedIds.length})`}
+              </button>
+            </>
+          ) : null}
+          <div className="search-input" style={{ marginLeft: "auto" }}>
             <svg
               viewBox="0 0 24 24"
               fill="none"
@@ -300,6 +498,47 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
       {error ? <div className="crm-error">{error}</div> : null}
       {successNote ? <div className="crm-summary">{successNote}</div> : null}
 
+      {showSelectAllBanner || allMatchingSelected ? (
+        <div className="crm-summary" style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          {allMatchingSelected ? (
+            <>
+              <span>
+                All {total.toLocaleString()} contact
+                {total === 1 ? "" : "s"}
+                {debouncedSearch ? " matching this search" : " in this list"}{" "}
+                selected.
+              </span>
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={Boolean(busyAction)}
+                onClick={() => setSelectedIds([])}
+              >
+                Clear selection
+              </button>
+            </>
+          ) : (
+            <>
+              <span>
+                {selectedOnPage.length.toLocaleString()} on this page selected.
+              </span>
+              <button
+                type="button"
+                className="btn-dark"
+                disabled={selectingAll || Boolean(busyAction)}
+                onClick={() => void selectAllMatching()}
+              >
+                {selectingAll
+                  ? "Selecting..."
+                  : `Select all ${total.toLocaleString()}${
+                      debouncedSearch ? " matching" : ""
+                    }`}
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
+
       <ListContactsPagination
         total={total}
         page={currentPage}
@@ -312,7 +551,14 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
           <thead>
             <tr>
               <th className="chk">
-                <input type="checkbox" disabled aria-label="Select all" />
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  disabled={loading || pageIds.length === 0 || selectingAll}
+                  onChange={toggleAllVisible}
+                  aria-label="Select all contacts on this page"
+                />
               </th>
               <th className="contact-name-cell">Contact</th>
               <th className="contact-subscribed-cell">Subscribed</th>
@@ -341,7 +587,9 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
                   <td className="chk">
                     <input
                       type="checkbox"
-                      disabled
+                      checked={selectedIds.includes(contact.id)}
+                      disabled={Boolean(busyAction)}
+                      onChange={() => toggleContact(contact.id)}
                       aria-label={`Select ${contact.fullName}`}
                     />
                   </td>
@@ -393,6 +641,80 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
           onPage={setPage}
         />
       </div>
+
+      {contactActionPrompt ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => {
+            if (!busyAction) {
+              setContactActionPrompt(null);
+            }
+          }}
+        >
+          <div
+            className="crm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="list-contact-action-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="list-contact-action-title">
+                  {contactActionPrompt === "remove"
+                    ? `Remove ${selectedIds.length} contact${
+                        selectedIds.length === 1 ? "" : "s"
+                      } from this list?`
+                    : `Delete ${selectedIds.length} contact${
+                        selectedIds.length === 1 ? "" : "s"
+                      } from CRM?`}
+                </h3>
+                <p>
+                  {contactActionPrompt === "remove"
+                    ? "Contacts stay in CRM and other lists. Only this list membership is removed."
+                    : "This permanently deletes the contacts from CRM and all lists."}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                disabled={Boolean(busyAction)}
+                onClick={() => setContactActionPrompt(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div
+              className="crm-modal-foot"
+              style={{ justifyContent: "flex-end", gap: 8 }}
+            >
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={Boolean(busyAction)}
+                onClick={() => setContactActionPrompt(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                disabled={Boolean(busyAction)}
+                onClick={() => void confirmContactAction()}
+              >
+                {busyAction
+                  ? contactActionPrompt === "remove"
+                    ? "Removing..."
+                    : "Deleting..."
+                  : contactActionPrompt === "remove"
+                    ? "Remove from list"
+                    : "Delete from CRM"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {modalOpen ? (
         <div className="crm-modal-backdrop" onClick={closeAddModal}>

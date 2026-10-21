@@ -4,8 +4,10 @@ import { getDb } from "@/lib/mongodb";
 import {
   API_FEATURE_LABELS,
   ApiCreditLimitError,
+  BILLABLE_API_FEATURES,
   DEFAULT_API_CREDIT_LIMIT_USD,
   estimateApiCostUsd,
+  isBillableApiFeature,
   normalizeApiCreditLimit,
   type ApiCreditEntry,
   type ApiCreditStatus,
@@ -73,14 +75,24 @@ async function usedMicros(projectId: ObjectId) {
   const collection = await usageCollection();
   const [row] = await collection
     .aggregate<{ costMicros: number }>([
-      { $match: { projectId } },
+      {
+        $match: {
+          projectId,
+          // Historical email / lookup / other non-billable rows stay in the
+          // collection but must not count against the limit any more.
+          feature: { $in: [...BILLABLE_API_FEATURES] },
+        },
+      },
       { $group: { _id: null, costMicros: { $sum: "$costMicros" } } },
     ])
     .toArray();
   return row?.costMicros ?? 0;
 }
 
-export async function assertApiCredit(projectId: string) {
+export async function assertApiCredit(projectId: string, feature?: ApiFeature) {
+  // Non-billable work (email, lookup, Personalise, ...) is never blocked
+  // by — and never counted toward — the API credit limit.
+  if (feature && !isBillableApiFeature(feature)) return;
   if (!ObjectId.isValid(projectId)) return;
   const id = new ObjectId(projectId);
   const [limitUsd, spent] = await Promise.all([projectLimitUsd(id), usedMicros(id)]);
@@ -91,7 +103,7 @@ export async function assertApiCredit(projectId: string) {
 
 /** Bills the rest of this request to the project. Uses one shared store so every API call can see it. */
 export async function bindApiCredit(projectId: string, feature: ApiFeature) {
-  await assertApiCredit(projectId);
+  await assertApiCredit(projectId, feature);
   creditStorage().enterWith({ projectId, feature });
 }
 
@@ -101,7 +113,7 @@ export async function runInApiCredit<T>(
   feature: ApiFeature,
   fn: () => Promise<T>,
 ) {
-  await assertApiCredit(projectId);
+  await assertApiCredit(projectId, feature);
   return creditStorage().run({ projectId, feature }, fn);
 }
 
@@ -109,7 +121,7 @@ export async function runInApiCredit<T>(
 export async function guardApiCredit() {
   const scope = creditStorage().getStore();
   if (!scope) return;
-  await assertApiCredit(scope.projectId);
+  await assertApiCredit(scope.projectId, scope.feature);
 }
 
 /** Records one paid API call. Pass projectId when this call is outside a billed request. */
@@ -126,7 +138,12 @@ export async function noteApiUsage(input: {
   const scope = creditStorage().getStore();
   const projectId = input.projectId || scope?.projectId;
   const feature = input.feature || scope?.feature;
-  if (!projectId || !feature || !ObjectId.isValid(projectId)) return;
+  // Only Assistant chat and EDM generation may deduct API credit. Every
+  // other caller (email sends, lookup, Personalise, post, pitch, Enrich,
+  // Automation, Kanban, ...) is ignored here so it can never be billed
+  // by accident, even if a stray noteApiUsage call is added elsewhere.
+  if (!isBillableApiFeature(feature)) return;
+  if (!projectId || !ObjectId.isValid(projectId)) return;
   const costMicros = usdToMicros(
     estimateApiCostUsd({
       provider: input.provider,
@@ -171,11 +188,15 @@ export function readTokenUsage(usage: unknown) {
 export async function getApiCreditStatus(projectId: string): Promise<ApiCreditStatus> {
   const id = new ObjectId(projectId);
   const collection = await usageCollection();
+  const billableMatch = {
+    projectId: id,
+    feature: { $in: [...BILLABLE_API_FEATURES] },
+  };
   const [limitUsd, rows, latest] = await Promise.all([
     projectLimitUsd(id),
     collection
       .aggregate<{ _id: ApiFeature; calls: number; costMicros: number }>([
-        { $match: { projectId: id } },
+        { $match: billableMatch },
         {
           $group: {
             _id: "$feature",
@@ -186,7 +207,11 @@ export async function getApiCreditStatus(projectId: string): Promise<ApiCreditSt
         { $sort: { costMicros: -1 } },
       ])
       .toArray(),
-    collection.find({ projectId: id }).sort({ createdAt: -1 }).limit(40).toArray(),
+    collection
+      .find(billableMatch)
+      .sort({ createdAt: -1 })
+      .limit(40)
+      .toArray(),
   ]);
   const items = rows
     .filter((row) => row._id in API_FEATURE_LABELS)
@@ -223,7 +248,12 @@ export async function getApiCreditUsedByProject(projectIds: ObjectId[]) {
   const collection = await usageCollection();
   const rows = await collection
     .aggregate<{ _id: ObjectId; costMicros: number }>([
-      { $match: { projectId: { $in: projectIds } } },
+      {
+        $match: {
+          projectId: { $in: projectIds },
+          feature: { $in: [...BILLABLE_API_FEATURES] },
+        },
+      },
       { $group: { _id: "$projectId", costMicros: { $sum: "$costMicros" } } },
     ])
     .toArray();

@@ -24,6 +24,20 @@ export const API_FEATURE_LABELS: Record<ApiFeature, string> = {
   email: "Email API",
 };
 
+/**
+ * Only these features count against the API credit limit.
+ * Email sends (SendGrid / Resend / SMTP), domain lookup, Personalise,
+ * social-post, pitch, Enrich, Automation and Kanban calls must never
+ * deduct from this credit.
+ */
+export const BILLABLE_API_FEATURES = ["assistant", "edm"] as const;
+
+export function isBillableApiFeature(
+  feature: string | undefined | null,
+): feature is (typeof BILLABLE_API_FEATURES)[number] {
+  return feature === "assistant" || feature === "edm";
+}
+
 /** Starting dollar cap for a project until an admin changes it. */
 export const DEFAULT_API_CREDIT_LIMIT_USD = 5;
 
@@ -72,6 +86,7 @@ export function formatApiCreditUsd(usd: number) {
  * A call with no token counts uses a small flat amount so it still shows up.
  */
 const TOKEN_RATES: Record<string, { input: number; output: number }> = {
+  claude: { input: 3, output: 15 },
   openai: { input: 0.25, output: 2 },
   deepseek: { input: 0.14, output: 0.28 },
   grok: { input: 0.2, output: 0.5 },

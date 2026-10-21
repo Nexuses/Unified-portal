@@ -447,12 +447,16 @@ export async function importContactsToList(
   };
 }
 
-export async function deleteLists(projectId: ObjectId, ids: string[]) {
+export async function deleteLists(
+  projectId: ObjectId,
+  ids: string[],
+  options?: { deleteContacts?: boolean },
+) {
   const listIds = [...new Set(ids)]
     .filter((id) => ObjectId.isValid(id))
     .map((id) => new ObjectId(id));
   if (listIds.length === 0) {
-    return { deleted: 0 };
+    return { deleted: 0, contactsDeleted: 0 };
   }
 
   const db = await getDb();
@@ -467,7 +471,28 @@ export async function deleteLists(projectId: ObjectId, ids: string[]) {
     .toArray();
   const allowedIds = lists.map((list) => list._id);
   if (allowedIds.length === 0) {
-    return { deleted: 0 };
+    return { deleted: 0, contactsDeleted: 0 };
+  }
+
+  let contactsDeleted = 0;
+  if (options?.deleteContacts) {
+    const memberships = await db
+      .collection<ListMembershipDoc>("list_memberships")
+      .find({ projectId, listId: { $in: allowedIds } })
+      .project({ contactId: 1 })
+      .toArray();
+    const contactIds = [
+      ...new Set(
+        memberships
+          .map((row) => row.contactId?.toString?.() ?? String(row.contactId ?? ""))
+          .filter((id) => ObjectId.isValid(id)),
+      ),
+    ];
+    if (contactIds.length > 0) {
+      const { deleteContacts } = await import("@/lib/crm-contacts-server");
+      const removed = await deleteContacts(projectId, contactIds);
+      contactsDeleted = removed.deleted;
+    }
   }
 
   await db.collection<ListMembershipDoc>("list_memberships").deleteMany({
@@ -478,7 +503,10 @@ export async function deleteLists(projectId: ObjectId, ids: string[]) {
     projectId,
     _id: { $in: allowedIds },
   });
-  return { deleted: result.deletedCount ?? 0 };
+  return {
+    deleted: result.deletedCount ?? 0,
+    contactsDeleted,
+  };
 }
 
 export async function deleteProjectCrmData(projectId: ObjectId) {

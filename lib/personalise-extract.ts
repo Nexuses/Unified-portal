@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
+import { chatWithClaude, claudeConfigured } from "@/lib/claude";
 import { normalizePersonalisePlan, type PersonalisePlan } from "@/lib/personalise-types";
 
 const MAX_FILE_BYTES = 15 * 1024 * 1024;
@@ -380,7 +381,34 @@ async function readWithOpenAI(apiKey: string, call: ModelCall) {
   return parseModelJson(content);
 }
 
+async function readWithClaude(call: ModelCall) {
+  const result = await chatWithClaude({
+    maxTokens: Math.min(call.maxOutputTokens ?? 8192, 8192),
+    temperature: 0,
+    messages: [
+      {
+        role: "system",
+        content: `${call.instructions}\n\nReturn JSON only, matching this JSON schema:\n${JSON.stringify(call.schema)}`,
+      },
+      { role: "user", content: call.input },
+    ],
+  });
+  return parseModelJson(result.content);
+}
+
 async function readWithModel(call: ModelCall) {
+  // Claude first; on any failure switch to OpenAI, then DeepSeek.
+  if (claudeConfigured()) {
+    try {
+      return await readWithClaude(call);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/too long to read/i.test(message)) {
+        throw error;
+      }
+      console.warn(`[personalise] Claude reader failed, switching provider: ${message}`);
+    }
+  }
   const openAiKey = process.env.OPENAI_API_KEY?.trim();
   if (openAiKey) {
     try {

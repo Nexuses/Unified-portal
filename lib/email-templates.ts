@@ -54,3 +54,7 @@ export function upsertEmailTemplate(template: SavedEmailTemplate) {
 export function getEmailTemplate(id: string) {
   return loadEmailTemplates().find((item) => item.id === id) ?? null;
 }
+
+export function deleteEmailTemplate(id: string) {
+  saveEmailTemplates(loadEmailTemplates().filter((item) => item.id !== id));
+}

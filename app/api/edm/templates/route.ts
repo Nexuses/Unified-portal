@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listEdmTemplates, saveEdmTemplate, type EdmDestination } from "@/lib/edm-server";
+import {
+  deleteEdmTemplate,
+  listEdmTemplates,
+  saveEdmTemplate,
+  type EdmDestination,
+} from "@/lib/edm-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -22,6 +27,27 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error("Failed to list EDM templates:", error);
     return NextResponse.json({ error: "Failed to list templates" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await requirePortalSession();
+    if (isSessionError(session)) return session;
+
+    const id = request.nextUrl.searchParams.get("id")?.trim() ?? "";
+    if (!id) {
+      return NextResponse.json({ error: "Template id is required" }, { status: 400 });
+    }
+
+    const deleted = await deleteEdmTemplate(session.projectId, id);
+    if (!deleted) {
+      return NextResponse.json({ error: "Template not found" }, { status: 404 });
+    }
+    return NextResponse.json({ deleted: true });
+  } catch (error) {
+    console.error("Failed to delete EDM template:", error);
+    return NextResponse.json({ error: "Failed to delete template" }, { status: 500 });
   }
 }
 

@@ -1124,6 +1124,15 @@ body {
 }
 .unsub-public-card strong{color:#111827;font-weight:700;}
 .unsub-public-error{color:#b42318;font-weight:600;}
+.unsub-public-label{
+  display:block;margin:0 0 8px;font-size:14px;font-weight:600;color:#111827;
+}
+.unsub-public-input{
+  display:block;width:100%;box-sizing:border-box;margin:0 0 20px;
+  border:1px solid #d1d5db;border-radius:10px;padding:12px 14px;
+  font-size:16px;font-family:inherit;color:#111827;background:#fff;
+}
+.unsub-public-input:focus{outline:2px solid #1a1a1a;outline-offset:1px;border-color:#1a1a1a;}
 .unsub-public-btn{
   border:none;background:#1a1a1a;color:#fff;border-radius:999px;
   padding:12px 22px;font-size:16px;font-weight:600;cursor:pointer;font-family:inherit;

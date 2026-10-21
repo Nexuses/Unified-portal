@@ -79,6 +79,11 @@ export type DripCampaign = {
   attachmentName?: string;
   timezoneEnabled?: boolean;
   timezone?: string;
+  /**
+   * When true, schedule each contact near the time of day they usually open
+   * past emails. Contacts with no open history use the normal campaign time.
+   */
+  scheduleByOpenTime?: boolean;
   /** When true, do not inject the open-tracking pixel. */
   openTrackingOff?: boolean;
   /** When true, leave links naked (no click-tracking wrapper). */

@@ -125,6 +125,7 @@ export async function DELETE(request: NextRequest) {
     const ids = Array.isArray(body.ids)
       ? body.ids.map((id: unknown) => String(id))
       : [];
+    const deleteContacts = body.deleteContacts === true;
 
     if (ids.length === 0) {
       return NextResponse.json(
@@ -133,8 +134,13 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const result = await deleteLists(new ObjectId(session.projectId), ids);
-    return NextResponse.json({ deleted: result.deleted });
+    const result = await deleteLists(new ObjectId(session.projectId), ids, {
+      deleteContacts,
+    });
+    return NextResponse.json({
+      deleted: result.deleted,
+      contactsDeleted: result.contactsDeleted,
+    });
   } catch (error) {
     console.error("Failed to delete lists:", error);
     return NextResponse.json(

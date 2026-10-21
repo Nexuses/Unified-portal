@@ -18,7 +18,7 @@ import {
   trackingDnsRecords,
   verifyTrackingDomain,
 } from "@/lib/campaign-tracking";
-import { noteApiUsage, runInApiCredit } from "@/lib/api-credits-server";
+import { runInApiCredit } from "@/lib/api-credits-server";
 import { createOutboundMessageId } from "@/lib/master-inbox-server";
 
 function skippedInboxVerification(): SenderAuthVerification {
@@ -560,13 +560,8 @@ async function deliverWithSender(
     return { messageId };
   }
 
-    await noteApiUsage({
-      projectId: sender.projectId.toString(),
-      feature: "email",
-      provider: "sendgrid",
-      model: "mail/send",
-      flatUsd: 0.001,
-    });
+  // Email sends are never billed to API credit — credit is only for
+  // Assistant chat and EDM generation. Do not add noteApiUsage here.
   if (sender.provider === "resend" && sender.apiKey) {
     const headers: Array<{ name: string; value: string }> = [
       { name: "Message-ID", value: messageId },
@@ -592,13 +587,6 @@ async function deliverWithSender(
     return { messageId };
   }
 
-    await noteApiUsage({
-      projectId: sender.projectId.toString(),
-      feature: "email",
-      provider: "resend",
-      model: "emails",
-      flatUsd: 0.001,
-    });
   if (sender.provider === "cloudflare") {
     throw new Error("Cloudflare Email is not set up for sending yet.");
   }

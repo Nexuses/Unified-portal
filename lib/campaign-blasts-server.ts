@@ -34,9 +34,15 @@ import { normalizeEmailMergeTags } from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
 import {
   GMAIL_DAILY_LIMIT_DEFAULT,
+  isGmailOrOutlookProvider,
   normalizeGmailDailyLimit,
   type SenderDoc,
 } from "@/lib/smtp-senders";
+import {
+  followUpAvailableAt,
+  loadUsualOpenMinutes,
+  snapToUsualOpenTime,
+} from "@/lib/schedule-by-open-time";
 
 export type BlastStatus = "scheduled" | "sending" | "sent" | "paused";
 
@@ -97,6 +103,8 @@ export type CampaignBlastDoc = {
   utmCampaign?: string;
   openTrackingOff?: boolean;
   clickTrackingOff?: boolean;
+  /** When true, snap each contact’s availableAt to their usual open time. */
+  scheduleByOpenTime?: boolean;
 };
 
 export type CampaignSendDoc = {
@@ -192,16 +200,20 @@ function isResendRateLimitError(message: string) {
   );
 }
 
-async function isResendCampaignSender(projectId: ObjectId, senderId: string) {
+async function campaignSenderProvider(projectId: ObjectId, senderId: string) {
   if (!ObjectId.isValid(senderId)) {
-    return false;
+    return null;
   }
   const db = await getDb();
   const sender = await db.collection<SenderDoc>("smtp_senders").findOne(
     { _id: new ObjectId(senderId), projectId },
     { projection: { provider: 1 } },
   );
-  return sender?.provider === "resend";
+  return sender?.provider ?? null;
+}
+
+async function isResendCampaignSender(projectId: ObjectId, senderId: string) {
+  return (await campaignSenderProvider(projectId, senderId)) === "resend";
 }
 
 /** Turn an email local part saved as a name ("greta.h") into "Greta H". */
@@ -1076,7 +1088,11 @@ async function sendPendingBatch(
   const db = await getDb();
   const now = new Date();
   const oneOne = blast.kind === "oneone";
-  const resendSender = await isResendCampaignSender(blast.projectId, blast.senderId);
+  const senderProvider = await campaignSenderProvider(blast.projectId, blast.senderId);
+  // Gmail / Outlook SMTP: user adds their own unsubscribe only — never
+  // auto-attach a footer unsubscribe or a List-Unsubscribe header.
+  const userUnsubscribeOnly = isGmailOrOutlookProvider(senderProvider);
+  const resendSender = senderProvider === "resend";
   if (resendSender) {
     limit = Math.min(limit, RESEND_SEND_BATCH);
   }
@@ -1138,6 +1154,13 @@ async function sendPendingBatch(
           row.stepDelayDays,
         );
       }
+      const usualMinutes = blast.scheduleByOpenTime
+        ? await loadUsualOpenMinutes(
+            blast.projectId,
+            sentSteps.map((row) => String(row.email ?? "")),
+            blast.timezone,
+          )
+        : new Map<string, number>();
       for (const sent of sentSteps) {
         if (typeof sent.sequenceIndex !== "number") {
           continue;
@@ -1146,14 +1169,20 @@ async function sendPendingBatch(
         if (!nextSequence) {
           continue;
         }
+        const email = String(sent.email ?? "").trim().toLowerCase();
         const delayDays = explicitDelayDays(
-          delayByStep.get(
-            `${String(sent.email ?? "").trim().toLowerCase()}|${sent.sequenceIndex + 1}`,
-          ),
+          delayByStep.get(`${email}|${sent.sequenceIndex + 1}`),
           Number(nextSequence.delayDays) || 0,
         );
         const base = sent.sentAt instanceof Date ? sent.sentAt : now;
-        const availableAt = new Date(base.getTime() + delayDays * 24 * 60 * 60 * 1000);
+        const availableAt = blast.scheduleByOpenTime
+          ? followUpAvailableAt(
+              base,
+              delayDays,
+              usualMinutes.get(email),
+              blast.timezone,
+            )
+          : new Date(base.getTime() + delayDays * 24 * 60 * 60 * 1000);
         if (availableAt.getTime() > now.getTime()) {
           continue;
         }
@@ -1254,6 +1283,14 @@ async function sendPendingBatch(
   const suppressed = await getSuppressionSets(blast.projectId);
   let lastSuccessAt: Date | null = null;
   let sentInBatch = 0;
+  const batchUsualMinutes =
+    oneOne && blast.scheduleByOpenTime
+      ? await loadUsualOpenMinutes(
+          blast.projectId,
+          pending.map((send) => send.email),
+          blast.timezone,
+        )
+      : new Map<string, number>();
 
   for (const send of pending) {
     if (isSuppressedAddress(send.email, suppressed)) {
@@ -1298,6 +1335,7 @@ async function sendPendingBatch(
         campaignName: blast.name,
         trackOpens: blast.openTrackingOff !== true,
         trackClicks: blast.clickTrackingOff !== true,
+        autoUnsubscribeFooter: !userUnsubscribeOnly,
       });
       const mailResult = await sendProjectMail(blast.projectId, blast.senderId, {
         to: send.email,
@@ -1306,7 +1344,9 @@ async function sendPendingBatch(
         fromName: readableSenderName(blast.senderName),
         replyTo: blast.replyTo,
         cc: blast.cc,
-        listUnsubscribeUrl: `${trackingBase.replace(/\/$/, "")}/api/unsubscribe/${send.token}`,
+        listUnsubscribeUrl: userUnsubscribeOnly
+          ? undefined
+          : `${trackingBase.replace(/\/$/, "")}/api/unsubscribe/${send.token}`,
         inReplyTo: outbound.inReplyTo,
         references: outbound.references,
       });
@@ -1348,13 +1388,19 @@ async function sendPendingBatch(
             nextSend?.stepDelayDays,
             Number(nextSequence.delayDays) || 0,
           );
-          const availableAt = new Date(
-            sentAt.getTime() + delayDays * 24 * 60 * 60 * 1000,
-          );
+          const email = send.email.trim().toLowerCase();
+          const availableAt = blast.scheduleByOpenTime
+            ? followUpAvailableAt(
+                sentAt,
+                delayDays,
+                batchUsualMinutes.get(email),
+                blast.timezone,
+              )
+            : new Date(sentAt.getTime() + delayDays * 24 * 60 * 60 * 1000);
           await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
             {
               blastId: blast._id,
-              email: send.email.trim().toLowerCase(),
+              email,
               sequenceIndex: send.sequenceIndex + 1,
               status: "pending",
             },
@@ -1647,6 +1693,7 @@ export async function launchCampaignBlast(input: {
       : {}),
     ...(campaign.openTrackingOff ? { openTrackingOff: true } : {}),
     ...(campaign.clickTrackingOff ? { clickTrackingOff: true } : {}),
+    ...(campaign.scheduleByOpenTime ? { scheduleByOpenTime: true } : {}),
   };
 
   const kindFilter = oneOne
@@ -1669,10 +1716,50 @@ export async function launchCampaignBlast(input: {
   await db.collection<CampaignBlastDoc>("campaign_blasts").insertOne(blast);
   const saved = blast;
 
+  const baseAvailableAt = scheduledFor ?? now;
+  const usualMinutes = campaign.scheduleByOpenTime
+    ? await loadUsualOpenMinutes(
+        projectId,
+        list.map((contact) => contact.email),
+        timezone,
+      )
+    : new Map<string, number>();
+
   await db.collection<CampaignSendDoc>("campaign_sends").insertMany(
     oneOne
       ? list.flatMap((contact) =>
-          sequences.map((sequence, sequenceIndex) => ({
+          sequences.map((sequence, sequenceIndex) => {
+            const email = contact.email.trim().toLowerCase();
+            const firstAt = campaign.scheduleByOpenTime
+              ? snapToUsualOpenTime(
+                  baseAvailableAt,
+                  usualMinutes.get(email),
+                  timezone,
+                )
+              : baseAvailableAt;
+            return {
+              _id: new ObjectId(),
+              projectId,
+              blastId: saved._id,
+              campaignId: campaign.id,
+              email: contact.email,
+              fullName: contact.fullName,
+              firstName: contact.firstName,
+              lastName: contact.lastName,
+              companyName: contact.companyName,
+              token: randomBytes(18).toString("hex"),
+              status: "pending" as const,
+              openCount: 0,
+              clickCount: 0,
+              sequenceId: sequence.id,
+              sequenceIndex,
+              availableAt: sequenceIndex === 0 ? firstAt : LOCKED_SEQUENCE_AT,
+            };
+          }),
+        )
+      : list.map((contact) => {
+          const email = contact.email.trim().toLowerCase();
+          const row: CampaignSendDoc = {
             _id: new ObjectId(),
             projectId,
             blastId: saved._id,
@@ -1686,27 +1773,16 @@ export async function launchCampaignBlast(input: {
             status: "pending" as const,
             openCount: 0,
             clickCount: 0,
-            sequenceId: sequence.id,
-            sequenceIndex,
-            availableAt:
-              sequenceIndex === 0 ? scheduledFor ?? now : LOCKED_SEQUENCE_AT,
-          })),
-        )
-      : list.map((contact) => ({
-          _id: new ObjectId(),
-          projectId,
-          blastId: saved._id,
-          campaignId: campaign.id,
-          email: contact.email,
-          fullName: contact.fullName,
-          firstName: contact.firstName,
-          lastName: contact.lastName,
-          companyName: contact.companyName,
-          token: randomBytes(18).toString("hex"),
-          status: "pending" as const,
-          openCount: 0,
-          clickCount: 0,
-        })),
+          };
+          if (campaign.scheduleByOpenTime) {
+            row.availableAt = snapToUsualOpenTime(
+              baseAvailableAt,
+              usualMinutes.get(email),
+              timezone,
+            );
+          }
+          return row;
+        }),
   );
 
   let latest = saved;
@@ -2131,6 +2207,16 @@ export async function syncPausedOneOneBlast(
     }
   }
 
+  const incoming = await recipientsToEnroll(projectId, campaign);
+  const useOpenTime = Boolean(blast.scheduleByOpenTime || campaign.scheduleByOpenTime);
+  const usualMinutes = useOpenTime
+    ? await loadUsualOpenMinutes(
+        projectId,
+        [...sampleByEmail.keys(), ...incoming.map((contact) => contact.email)],
+        blast.timezone,
+      )
+    : new Map<string, number>();
+
   const rows: CampaignSendDoc[] = [];
   for (const contact of sampleByEmail.values()) {
     const email = contact.email.trim().toLowerCase();
@@ -2149,13 +2235,20 @@ export async function syncPausedOneOneBlast(
           },
           sequenceId: sequence.id,
           sequenceIndex: index,
-          availableAt: availableAtForNewStep(keptSends, sequences, index, email, now),
+          availableAt: availableAtForNewStep(
+            keptSends,
+            sequences,
+            index,
+            email,
+            now,
+            useOpenTime ? usualMinutes : undefined,
+            blast.timezone,
+          ),
         }),
       );
     }
   }
 
-  const incoming = await recipientsToEnroll(projectId, campaign);
   const suppressed = await getSuppressionSets(projectId);
   const fresh = incoming.filter(
     (contact) =>
@@ -2174,8 +2267,12 @@ export async function syncPausedOneOneBlast(
   }
 
   for (const contact of fresh) {
+    const email = contact.email.trim().toLowerCase();
     for (let index = 0; index < sequences.length; index += 1) {
       const sequence = sequences[index];
+      const firstAt = useOpenTime
+        ? snapToUsualOpenTime(now, usualMinutes.get(email), blast.timezone)
+        : now;
       rows.push(
         pendingSendRow({
           projectId,
@@ -2184,7 +2281,7 @@ export async function syncPausedOneOneBlast(
           contact,
           sequenceId: sequence.id,
           sequenceIndex: index,
-          availableAt: index === 0 ? now : LOCKED_SEQUENCE_AT,
+          availableAt: index === 0 ? firstAt : LOCKED_SEQUENCE_AT,
         }),
       );
     }
@@ -2227,15 +2324,23 @@ export async function syncPausedOneOneBlast(
           item.status === "sent" &&
           item.sentAt instanceof Date,
       );
+      const availableAt = !previousSent?.sentAt
+        ? LOCKED_SEQUENCE_AT
+        : useOpenTime
+          ? followUpAvailableAt(
+              previousSent.sentAt,
+              delayDays,
+              usualMinutes.get(email),
+              blast.timezone,
+            )
+          : new Date(previousSent.sentAt.getTime() + delayDays * LIVE_EDIT_DAY_MS);
       delayWrites.push({
         updateOne: {
           filter: { _id: send._id },
           update: {
             $set: {
               ...(gapChanged ? { stepDelayDays: nextDelay } : {}),
-              availableAt: previousSent?.sentAt
-                ? new Date(previousSent.sentAt.getTime() + delayDays * LIVE_EDIT_DAY_MS)
-                : LOCKED_SEQUENCE_AT,
+              availableAt,
             },
           },
         },
@@ -2284,6 +2389,7 @@ export async function syncPausedOneOneBlast(
         ...(Number.isInteger(campaign.sendStartDay) ? { sendStartDay: campaign.sendStartDay } : {}),
         ...(Number.isInteger(campaign.sendEndDay) ? { sendEndDay: campaign.sendEndDay } : {}),
         emailGapMinutes: Math.max(0, Number(campaign.emailGapMinutes) || 0),
+        scheduleByOpenTime: Boolean(campaign.scheduleByOpenTime),
         recipients: emails.length,
         updatedAt: now,
       },
@@ -2335,9 +2441,14 @@ function availableAtForNewStep(
   index: number,
   email: string,
   now: Date,
+  usualMinutes?: Map<string, number>,
+  timeZone?: string,
 ) {
+  const zone = timeZone || "Asia/Kolkata";
   if (index === 0) {
-    return now;
+    return usualMinutes
+      ? snapToUsualOpenTime(now, usualMinutes.get(email), zone)
+      : now;
   }
   const previous = sequences[index - 1];
   const previousSent = sends.find(
@@ -2351,6 +2462,14 @@ function availableAtForNewStep(
     return LOCKED_SEQUENCE_AT;
   }
   const delayDays = Math.max(0, Number(sequences[index]?.delayDays) || 0);
+  if (usualMinutes) {
+    return followUpAvailableAt(
+      previousSent.sentAt,
+      delayDays,
+      usualMinutes.get(email),
+      zone,
+    );
+  }
   return new Date(previousSent.sentAt.getTime() + delayDays * LIVE_EDIT_DAY_MS);
 }
 

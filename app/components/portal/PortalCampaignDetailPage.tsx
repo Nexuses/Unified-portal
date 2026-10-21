@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { SmtpSender } from "@/lib/smtp-senders";
+import { isGmailOrOutlookProvider, type SmtpSender } from "@/lib/smtp-senders";
 import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
 import SmtpSenderSelect from "@/app/components/portal/SmtpSenderSelect";
 import type { Contact, CrmList } from "@/lib/crm";
@@ -41,6 +41,7 @@ import {
   DEFAULT_UTM_CAMPAIGN,
   DEFAULT_UTM_MEDIUM,
   DEFAULT_UTM_SOURCE,
+  emailHasUnsubscribe,
 } from "@/lib/campaign-tracking";
 import {
   AUTOMATION_FOLLOW_UP_TAG,
@@ -49,7 +50,11 @@ import {
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
 import CampaignScheduleDrawer from "@/app/components/portal/CampaignScheduleDrawer";
 import PersonaliseCampaignView from "@/app/components/portal/PersonaliseCampaignView";
-import { getEmailTemplate, loadEmailTemplates } from "@/lib/email-templates";
+import {
+  deleteEmailTemplate,
+  getEmailTemplate,
+  loadEmailTemplates,
+} from "@/lib/email-templates";
 import { normalizeEmailMergeTags, replaceUnsubscribeVariables } from "@/lib/email-variables";
 import {
   addSavedTestEmail,
@@ -1812,10 +1817,22 @@ function HorizontalDotsIcon() {
   );
 }
 
+/** Shown above a preview when a Gmail/Outlook SMTP email has no unsubscribe. */
+export function NoUnsubscribeWarning() {
+  return (
+    <div className="drip-no-unsub-warning" role="alert">
+      {
+        "No unsubscribe attached. For Gmail / Outlook SMTP we don't add one automatically — add your own unsubscribe link (for example {{ unsubscribe }}) before sending."
+      }
+    </div>
+  );
+}
+
 function DesignSavedCard({
   html,
   fileName,
   compact = false,
+  noUnsubscribeWarning = false,
   onEdit,
   onReset,
   onPreview,
@@ -1823,6 +1840,7 @@ function DesignSavedCard({
   html: string;
   fileName: string;
   compact?: boolean;
+  noUnsubscribeWarning?: boolean;
   onEdit: () => void;
   onReset: () => void;
   onPreview: () => void;
@@ -1933,6 +1951,7 @@ function DesignSavedCard({
           </button>
         </div>
       </div>
+      {noUnsubscribeWarning ? <NoUnsubscribeWarning /> : null}
       <div className="drip-design-saved-preview">
         {html.trim() ? (
           <div className="drip-design-saved-thumb">
@@ -2041,6 +2060,17 @@ function MobilePreviewIcon() {
   );
 }
 
+function TemplateTrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M4 7h16" />
+      <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+      <path d="M6.5 7 7.4 19a2 2 0 0 0 2 1.8h5.2a2 2 0 0 0 2-1.8L17.5 7" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
 function QuitWithoutSavingIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -2060,15 +2090,36 @@ function MoreDotsIcon() {
   );
 }
 
+type SpamIssue = {
+  original: string;
+  replacement: string;
+  reason: string;
+};
+
+type SpamCheckResult = {
+  score: number;
+  rating: string;
+  issues: SpamIssue[];
+  fixedSubject: string;
+  fixedHtml: string;
+  fixedScore: number;
+  fixedRating: string;
+  checkedWith: string;
+};
+
 function PreviewTestModal({
   campaign,
   html,
   contacts,
+  noUnsubscribeWarning = false,
+  onApplySpamFix,
   onClose,
 }: {
   campaign: DripCampaign;
   html: string;
   contacts: Contact[];
+  noUnsubscribeWarning?: boolean;
+  onApplySpamFix?: (fixedHtml: string, fixedSubject: string) => Promise<void> | void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<PreviewTestTab>("preview");
@@ -2084,6 +2135,22 @@ function PreviewTestModal({
   const [testStatus, setTestStatus] = useState("");
   const [sendingTest, setSendingTest] = useState(false);
   const [testSuccessToast, setTestSuccessToast] = useState(0);
+  const [spamResult, setSpamResult] = useState<SpamCheckResult | null>(null);
+  const [spamStatus, setSpamStatus] = useState("");
+  const [spamChecking, setSpamChecking] = useState(false);
+  const [spamApplying, setSpamApplying] = useState(false);
+  const [spamApplied, setSpamApplied] = useState(false);
+  const spamAppliedHtmlRef = useRef("");
+  const spamSectionRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (spamResult) {
+      spamSectionRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
+    }
+  }, [spamResult]);
   const contactSearchRef = useRef<HTMLDivElement>(null);
   const recipientFieldRef = useRef<HTMLDivElement>(null);
 
@@ -2145,6 +2212,81 @@ function PreviewTestModal({
     activeValues,
   );
   const previewHtml = applyVariableMap(html, activeValues, true);
+
+  useEffect(() => {
+    // A new design invalidates the last spam check (unless it is the fix
+    // the user just approved being written back by the parent).
+    if (html.trim() === spamAppliedHtmlRef.current.trim()) {
+      return;
+    }
+    setSpamResult(null);
+    setSpamStatus("");
+    setSpamApplied(false);
+  }, [html]);
+
+  async function runSpamTest() {
+    if (spamChecking || !html.trim()) {
+      return;
+    }
+    // Already fixed (100/100 All fixed) and the email has not changed
+    // since — a re-run must not invent another round of fixes.
+    if (
+      spamApplied &&
+      spamResult &&
+      html.trim() === spamAppliedHtmlRef.current.trim()
+    ) {
+      return;
+    }
+    setSpamChecking(true);
+    setSpamStatus("");
+    setSpamApplied(false);
+    try {
+      const response = await fetch("/api/campaigns/spam-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject: campaign.subject ?? "", html }),
+      });
+      const data = (await response.json().catch(() => null)) as
+        | (SpamCheckResult & { error?: string })
+        | null;
+      if (!response.ok || !data) {
+        throw new Error(data?.error || "Spam check failed");
+      }
+      setSpamResult(data);
+    } catch (error) {
+      setSpamStatus(
+        error instanceof Error ? error.message : "Spam check failed",
+      );
+    } finally {
+      setSpamChecking(false);
+    }
+  }
+
+  async function approveSpamFix() {
+    if (!spamResult || spamApplying) {
+      return;
+    }
+    setSpamApplying(true);
+    setSpamStatus("");
+    try {
+      spamAppliedHtmlRef.current = spamResult.fixedHtml;
+      await onApplySpamFix?.(spamResult.fixedHtml, spamResult.fixedSubject);
+      setSpamResult({
+        ...spamResult,
+        score: spamResult.fixedScore,
+        rating: spamResult.fixedRating,
+        issues: [],
+      });
+      setSpamApplied(true);
+    } catch (error) {
+      spamAppliedHtmlRef.current = "";
+      setSpamStatus(
+        error instanceof Error ? error.message : "Could not apply the fixes",
+      );
+    } finally {
+      setSpamApplying(false);
+    }
+  }
 
   useEffect(() => {
     setSavedTestEmails(loadSavedTestEmails());
@@ -2369,6 +2511,7 @@ function PreviewTestModal({
               </button>
             </div>
             </div>
+            {noUnsubscribeWarning ? <NoUnsubscribeWarning /> : null}
             <div className={`drip-preview-frame ${device}`}>
               {previewHtml.trim() ? (
                 <iframe
@@ -2631,6 +2774,139 @@ function PreviewTestModal({
                   </div>
                   {testStatus ? <div className="drip-preview-status error">{testStatus}</div> : null}
                 </div>
+
+                <div className="drip-spam-test" ref={spamSectionRef}>
+                  <div className="drip-preview-recipients-label">Spam test</div>
+                  <p className="drip-spam-test-copy">
+                    AI checks this email for spam trigger words and scores it.
+                    Nothing changes until you approve the fixes.
+                  </p>
+                  {!spamApplied ? (
+                    <button
+                      type="button"
+                      className="btn-soft drip-spam-run"
+                      disabled={spamChecking || spamApplying || !html.trim()}
+                      onClick={() => void runSpamTest()}
+                    >
+                      {spamChecking ? (
+                        <>
+                          <span className="drip-btn-spinner" aria-hidden="true" />
+                          Checking...
+                        </>
+                      ) : spamResult ? (
+                        "Run spam test again"
+                      ) : (
+                        "Run spam test"
+                      )}
+                    </button>
+                  ) : null}
+
+                  {spamResult ? (
+                    <div className="drip-spam-result">
+                      <div className="drip-spam-score-row">
+                        <span
+                          className={`drip-spam-score drip-spam-score-${
+                            spamApplied
+                              ? "low"
+                              : spamResult.score <= 25
+                                ? "low"
+                                : spamResult.score <= 50
+                                  ? "moderate"
+                                  : "high"
+                          }`}
+                        >
+                          {spamApplied ? 100 : spamResult.score}
+                          <small>/100</small>
+                        </span>
+                        <div className="drip-spam-score-meta">
+                          <strong>
+                            {spamApplied
+                              ? "All fixed"
+                              : `${spamResult.rating} spam risk`}
+                          </strong>
+                          <span>
+                            {spamApplied
+                              ? "All spam fixes applied"
+                              : spamResult.issues.length > 0
+                                ? `${spamResult.issues.length} spam word${
+                                    spamResult.issues.length === 1 ? "" : "s"
+                                  } found`
+                                : "No spam words found"}
+                          </span>
+                        </div>
+                      </div>
+                      <div
+                        className="drip-spam-bar"
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={spamApplied ? 100 : spamResult.score}
+                        aria-label="Spam score"
+                      >
+                        <span
+                          className={`drip-spam-bar-fill drip-spam-score-${
+                            spamApplied
+                              ? "low"
+                              : spamResult.score <= 25
+                                ? "low"
+                                : spamResult.score <= 50
+                                  ? "moderate"
+                                  : "high"
+                          }`}
+                          style={{
+                            width: `${spamApplied ? 100 : spamResult.score}%`,
+                          }}
+                        />
+                      </div>
+
+                      {spamResult.issues.length > 0 ? (
+                        <>
+                          <ul className="drip-spam-issues">
+                            {spamResult.issues.map((issue, index) => (
+                              <li key={`${issue.original}-${index}`}>
+                                <span className="drip-spam-original">{issue.original}</span>
+                                <span className="drip-spam-arrow">→</span>
+                                <span className="drip-spam-replacement">{issue.replacement}</span>
+                                <span className="drip-spam-reason">{issue.reason}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <p className="drip-spam-test-copy">
+                            After fixes the score will show{" "}
+                            <strong>100/100 (All fixed)</strong>. The email is
+                            not changed yet.
+                          </p>
+                          <div className="drip-spam-actions">
+                            <button
+                              type="button"
+                              className="btn-dark"
+                              disabled={spamApplying}
+                              onClick={() => void approveSpamFix()}
+                            >
+                              {spamApplying ? "Applying..." : "Approve & apply fixes"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-soft"
+                              disabled={spamApplying}
+                              onClick={() => setSpamResult(null)}
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        </>
+                      ) : spamApplied ? (
+                        <p className="drip-spam-test-copy">
+                          Spam fixes applied and saved. Run the test again any time.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {spamStatus ? (
+                    <div className="drip-preview-status error">{spamStatus}</div>
+                  ) : null}
+                </div>
               </>
             ) : null}
           </aside>
@@ -2654,6 +2930,7 @@ function CustomHtmlEditor({
   sequenceId = null,
   contacts,
   initialHtml,
+  senderProviderId,
   onQuit,
   onSaved,
 }: {
@@ -2662,6 +2939,7 @@ function CustomHtmlEditor({
   sequenceId?: string | null;
   contacts: Contact[];
   initialHtml: string;
+  senderProviderId?: SmtpSender["provider"] | null;
   onQuit: () => void;
   onSaved: (updated: DripCampaign) => void;
 }) {
@@ -2813,7 +3091,9 @@ function CustomHtmlEditor({
           <code>{"{{ unsubscribe }}"}</code> or{" "}
           <code>{'<a href="{{ unsubscribe }}">Unsubscribe</a>'}</code>, that
           link is used on send and no extra unsubscribe footer is added. Only
-          when you leave it out do we append a footer unsubscribe link. Other
+          when you leave it out do we append a footer unsubscribe link —
+          except for Gmail / Outlook SMTP senders, where we never add one
+          and you must add your own. Other
           merge tags become <code>{"{{ contact.FIRSTNAME }}"}</code>,{" "}
           <code>{"{{ contact.LASTNAME }}"}</code>,{" "}
           <code>{"{{ contact.EMAIL }}"}</code>, and{" "}
@@ -2838,6 +3118,11 @@ function CustomHtmlEditor({
           </div>
           <div className="drip-html-editor-pane drip-html-editor-preview">
             <div className="drip-html-editor-pane-label">Preview</div>
+            {isGmailOrOutlookProvider(senderProviderId) &&
+            deferredHtml.trim() &&
+            !emailHasUnsubscribe(deferredHtml) ? (
+              <NoUnsubscribeWarning />
+            ) : null}
             <div className="drip-html-editor-preview-frame">
               {deferredHtml.trim() ? (
                 <iframe
@@ -2860,6 +3145,17 @@ function CustomHtmlEditor({
           campaign={campaign}
           html={htmlDraft}
           contacts={contacts}
+          noUnsubscribeWarning={
+            isGmailOrOutlookProvider(senderProviderId) &&
+            Boolean(htmlDraft.trim()) &&
+            !emailHasUnsubscribe(htmlDraft)
+          }
+          onApplySpamFix={(fixedHtml) => {
+            setHtmlDraft(fixedHtml);
+            if (htmlInputRef.current) {
+              htmlInputRef.current.value = fixedHtml;
+            }
+          }}
           onClose={() => setPreviewOpen(false)}
         />
       ) : null}
@@ -2873,6 +3169,7 @@ function DesignEmailModal({
   sequenceId = null,
   contacts,
   startInEditor = false,
+  senderProviderId,
   onClose,
   onSaveDesign,
   onHtmlSaved,
@@ -2882,6 +3179,7 @@ function DesignEmailModal({
   sequenceId?: string | null;
   contacts: Contact[];
   startInEditor?: boolean;
+  senderProviderId?: SmtpSender["provider"] | null;
   onClose: () => void;
   onSaveDesign: (
     patch: Pick<DripCampaign, "hasDesign" | "designHtml" | "designSourceCampaignId">,
@@ -2897,8 +3195,10 @@ function DesignEmailModal({
     html: string;
   } | null>(null);
   const [campaignEmails, setCampaignEmails] = useState<
-    { id: string; name: string; subject: string; html: string }[]
+    { id: string; name: string; subject: string; html: string; kind?: CampaignKind }[]
   >([]);
+  const [templatesLoading, setTemplatesLoading] = useState(true);
+  const [deletingTemplateId, setDeletingTemplateId] = useState("");
 
   useEffect(() => {
     if (htmlEditorOpen) {
@@ -2906,6 +3206,7 @@ function DesignEmailModal({
     }
 
     let cancelled = false;
+    setTemplatesLoading(true);
     async function loadCampaignEmails() {
       const fromTemplates = loadEmailTemplates().map((item) => ({
         id: item.id,
@@ -2916,9 +3217,10 @@ function DesignEmailModal({
 
       let fromEdm: { id: string; name: string; subject: string; html: string }[] = [];
       try {
-        const response = await fetch(
-          `/api/edm/templates?destination=${campaignKind}`,
-        );
+        // All templates saved for this project, not only those flagged for
+        // this campaign kind — a template saved for Drip should still be
+        // reusable in a 1-1 design, and vice versa.
+        const response = await fetch("/api/edm/templates");
         if (response.ok) {
           const data = (await response.json()) as {
             templates?: { id: string; name: string; subject: string; html: string }[];
@@ -2934,18 +3236,31 @@ function DesignEmailModal({
         fromEdm = [];
       }
 
-      let fromCampaigns: { id: string; name: string; subject: string; html: string }[] =
-        [];
+      let fromCampaigns: {
+        id: string;
+        name: string;
+        subject: string;
+        html: string;
+        kind?: CampaignKind;
+      }[] = [];
       try {
-        const campaigns = await fetchDripCampaigns();
-        fromCampaigns = campaigns
-          .filter((item) => item.hasDesign && item.designHtml?.trim())
-          .map((item) => ({
-            id: `campaign-${item.id}`,
-            name: item.name,
-            subject: item.subject ?? "",
-            html: item.designHtml ?? "",
-          }));
+        // The campaign list endpoint strips designHtml, so saved designs
+        // must come from the dedicated designs endpoint (with HTML).
+        const response = await fetch("/api/campaigns/designs");
+        if (response.ok) {
+          const data = (await response.json()) as {
+            designs?: {
+              id: string;
+              name: string;
+              subject: string;
+              html: string;
+              kind?: CampaignKind;
+            }[];
+          };
+          fromCampaigns = (data.designs ?? []).filter((item) =>
+            Boolean(item.html?.trim()),
+          );
+        }
       } catch {
         fromCampaigns = [];
       }
@@ -2966,7 +3281,13 @@ function DesignEmailModal({
             ]
           : [];
 
-      const merged: { id: string; name: string; subject: string; html: string }[] = [];
+      const merged: {
+        id: string;
+        name: string;
+        subject: string;
+        html: string;
+        kind?: CampaignKind;
+      }[] = [];
       const seenIds = new Set<string>();
       const seenHtml = new Set<string>();
 
@@ -2983,9 +3304,14 @@ function DesignEmailModal({
       }
 
       setCampaignEmails(merged);
+      setTemplatesLoading(false);
     }
 
-    void loadCampaignEmails();
+    void loadCampaignEmails().catch(() => {
+      if (!cancelled) {
+        setTemplatesLoading(false);
+      }
+    });
     return () => {
       cancelled = true;
     };
@@ -3031,6 +3357,94 @@ function DesignEmailModal({
     });
   }
 
+  async function handleDeleteTemplate(item: {
+    id: string;
+    name: string;
+    kind?: CampaignKind;
+  }) {
+    if (deletingTemplateId) {
+      return;
+    }
+    const isEdmTemplate = item.id.startsWith("edm-");
+    const isCampaignDesign = item.id.startsWith("campaign-");
+    const confirmText =
+      isEdmTemplate || !isCampaignDesign
+        ? `Delete template "${item.name}"? This removes the saved template.`
+        : `Delete the saved design "${item.name}"? This clears the design saved on that campaign.`;
+    if (!window.confirm(confirmText)) {
+      return;
+    }
+
+    setDeletingTemplateId(item.id);
+    try {
+      if (isEdmTemplate) {
+        const templateId = item.id.replace(/^edm-/, "");
+        const response = await fetch(
+          `/api/edm/templates?id=${encodeURIComponent(templateId)}`,
+          { method: "DELETE" },
+        );
+        const data = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        if (!response.ok) {
+          throw new Error(data?.error || "Failed to delete template");
+        }
+      } else if (isCampaignDesign) {
+        const rest = item.id.replace(/^campaign-/, "");
+        const seqMarker = "-seq-";
+        const seqIndex = rest.indexOf(seqMarker);
+        const sourceCampaignId =
+          seqIndex >= 0 ? rest.slice(0, seqIndex) : rest;
+        const sequenceId =
+          seqIndex >= 0 ? rest.slice(seqIndex + seqMarker.length) : "";
+        const sourceKind = item.kind ?? campaignKind;
+        if (sequenceId) {
+          const source = await fetchDripCampaign(sourceCampaignId, sourceKind);
+          if (!source) {
+            throw new Error("That campaign no longer exists.");
+          }
+          const sequences = campaignSequences(source).map((sequence) =>
+            sequence.id === sequenceId
+              ? {
+                  ...sequence,
+                  hasDesign: false,
+                  designHtml: "",
+                  designSourceCampaignId: "",
+                }
+              : sequence,
+          );
+          await patchDripCampaign(
+            sourceCampaignId,
+            sequenceCampaignPatch(
+              sequences,
+              source.windowStart || "09:00",
+              source.windowEnd || "18:00",
+              Math.max(0, Number(source.emailGapMinutes) || 0),
+            ),
+            sourceKind,
+          );
+        } else {
+          await patchDripCampaign(
+            sourceCampaignId,
+            { hasDesign: false, designHtml: "", designSourceCampaignId: "" },
+            sourceKind,
+          );
+        }
+      } else {
+        deleteEmailTemplate(item.id);
+      }
+      setCampaignEmails((current) =>
+        current.filter((entry) => entry.id !== item.id),
+      );
+    } catch (error) {
+      window.alert(
+        error instanceof Error ? error.message : "Failed to delete template",
+      );
+    } finally {
+      setDeletingTemplateId("");
+    }
+  }
+
   function templateDisplayId(id: string) {
     if (id.startsWith("edm-")) return "EDM";
     return `#${id.replace(/^campaign-/, "")}`;
@@ -3044,6 +3458,7 @@ function DesignEmailModal({
         sequenceId={sequenceId}
         contacts={contacts}
         initialHtml={campaign.designHtml ?? ""}
+        senderProviderId={senderProviderId}
         onQuit={startInEditor ? onClose : () => setHtmlEditorOpen(false)}
         onSaved={onHtmlSaved}
       />
@@ -3150,7 +3565,16 @@ function DesignEmailModal({
                   </button>
                 </div>
 
-                {filteredEmails.length === 0 ? (
+                {templatesLoading ? (
+                  <div
+                    className="drip-design-empty drip-design-loading"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <span className="drip-design-spinner" aria-hidden="true" />
+                    Loading templates…
+                  </div>
+                ) : filteredEmails.length === 0 ? (
                   <div className="drip-design-empty">
                     {campaignEmails.length === 0
                       ? "No saved campaign emails yet. Use Custom HTML Code to create your first design."
@@ -3170,25 +3594,42 @@ function DesignEmailModal({
                               {item.subject || "Saved email design"}
                             </div>
                           )}
-                          <button
-                            type="button"
-                            className="drip-design-card-eye"
-                            aria-label={`Preview ${item.name}`}
-                            onClick={() => setPreviewTemplate(item)}
-                          >
-                            <EyePreviewIcon />
-                          </button>
                         </div>
                         <div className="drip-design-card-meta">
                           <div className="drip-design-card-id">{templateDisplayId(item.id)}</div>
                           <div className="drip-design-card-name">{item.name}</div>
-                          <button
-                            type="button"
-                            className="drip-design-card-use"
-                            onClick={() => void handleUseTemplate(item.id)}
-                          >
-                            Use template
-                          </button>
+                          <div className="drip-design-card-actions">
+                            <button
+                              type="button"
+                              className="drip-design-card-eye"
+                              aria-label={`Preview ${item.name}`}
+                              title="Preview"
+                              onClick={() => setPreviewTemplate(item)}
+                            >
+                              <EyePreviewIcon />
+                            </button>
+                            <button
+                              type="button"
+                              className="drip-design-card-delete"
+                              aria-label={`Delete ${item.name}`}
+                              title="Delete"
+                              disabled={Boolean(deletingTemplateId)}
+                              onClick={() => void handleDeleteTemplate(item)}
+                            >
+                              {deletingTemplateId === item.id ? (
+                                <span className="drip-design-spinner" aria-hidden="true" />
+                              ) : (
+                                <TemplateTrashIcon />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              className="drip-design-card-use"
+                              onClick={() => void handleUseTemplate(item.id)}
+                            >
+                              Use template
+                            </button>
+                          </div>
                         </div>
                       </article>
                     ))}
@@ -3227,6 +3668,7 @@ function SettingsSavedCard({
   attachmentName,
   timezoneEnabled,
   timezone,
+  scheduleByOpenTime,
   openTrackingOff,
   clickTrackingOff,
   utmEnabled,
@@ -3238,6 +3680,7 @@ function SettingsSavedCard({
   attachmentName?: string;
   timezoneEnabled: boolean;
   timezone?: string;
+  scheduleByOpenTime: boolean;
   openTrackingOff: boolean;
   clickTrackingOff: boolean;
   utmEnabled: boolean;
@@ -3269,6 +3712,9 @@ function SettingsSavedCard({
           ) : null}
           {timezoneEnabled ? (
             <li>Time zone is {formatTimezoneLabel(timezone || "Asia/Kolkata")}.</li>
+          ) : null}
+          {scheduleByOpenTime ? (
+            <li>Emails are scheduled for each contact’s usual open time.</li>
           ) : null}
           {openTrackingOff ? (
             <li>Open tracking is off — opens will not be detected.</li>
@@ -3396,6 +3842,7 @@ function SettingsPanel({
   draftAttachmentName,
   draftTimezoneEnabled,
   draftTimezone,
+  draftScheduleByOpenTime,
   draftOpenTrackingOff,
   draftClickTrackingOff,
   draftUtmEnabled,
@@ -3412,6 +3859,7 @@ function SettingsPanel({
   onAttachmentNameChange,
   onTimezoneEnabledChange,
   onTimezoneChange,
+  onScheduleByOpenTimeChange,
   onOpenTrackingOffChange,
   onClickTrackingOffChange,
   onUtmEnabledChange,
@@ -3428,6 +3876,7 @@ function SettingsPanel({
   draftAttachmentName: string;
   draftTimezoneEnabled: boolean;
   draftTimezone: string;
+  draftScheduleByOpenTime: boolean;
   draftOpenTrackingOff: boolean;
   draftClickTrackingOff: boolean;
   draftUtmEnabled: boolean;
@@ -3444,6 +3893,7 @@ function SettingsPanel({
   onAttachmentNameChange: (value: string) => void;
   onTimezoneEnabledChange: (value: boolean) => void;
   onTimezoneChange: (value: string) => void;
+  onScheduleByOpenTimeChange: (value: boolean) => void;
   onOpenTrackingOffChange: (value: boolean) => void;
   onClickTrackingOffChange: (value: boolean) => void;
   onUtmEnabledChange: (value: boolean) => void;
@@ -3461,6 +3911,7 @@ function SettingsPanel({
     draftAttachmentName !== (campaign.attachmentName ?? "") ||
     draftTimezoneEnabled !== Boolean(campaign.timezoneEnabled) ||
     draftTimezone !== (campaign.timezone || "Asia/Kolkata") ||
+    draftScheduleByOpenTime !== Boolean(campaign.scheduleByOpenTime) ||
     draftOpenTrackingOff !== Boolean(campaign.openTrackingOff) ||
     draftClickTrackingOff !== Boolean(campaign.clickTrackingOff) ||
     draftUtmEnabled !== Boolean(campaign.utmEnabled) ||
@@ -3584,6 +4035,14 @@ function SettingsPanel({
               <ChevronDownIcon />
             </div>
           </SettingsToggle>
+
+          <SettingsToggle
+            on={draftScheduleByOpenTime}
+            label="Email schedule timing according to open time"
+            help="Send each contact near the time of day they usually open your past emails. Contacts with no open history use the normal campaign schedule."
+            description="Uses past opens in this project. Follow-ups also aim for that usual open time after their delay days."
+            onToggle={() => onScheduleByOpenTimeChange(!draftScheduleByOpenTime)}
+          />
 
           <SettingsToggle
             on={draftOpenTrackingOff}
@@ -3747,6 +4206,7 @@ function SequencesPanel({
   windowStart,
   windowEnd,
   emailGapMinutes,
+  senderProviderId,
   onClose,
   onSave,
   onChange,
@@ -3759,6 +4219,7 @@ function SequencesPanel({
   windowStart: string;
   windowEnd: string;
   emailGapMinutes: number;
+  senderProviderId?: SmtpSender["provider"] | null;
   onClose: () => void;
   onSave: () => void;
   onChange: (patch: {
@@ -4016,6 +4477,10 @@ function SequencesPanel({
                 <DesignSavedCard
                   compact
                   html={sequence.designHtml}
+                  noUnsubscribeWarning={
+                    isGmailOrOutlookProvider(senderProviderId) &&
+                    !emailHasUnsubscribe(sequence.designHtml ?? "")
+                  }
                   fileName={`${campaign.name}-sequence-${index + 1}`}
                   onEdit={() => onDesign(sequence.id)}
                   onPreview={() => onPreview(sequence.id)}
@@ -4336,6 +4801,7 @@ export default function PortalCampaignDetailPage({
   const [draftAttachmentName, setDraftAttachmentName] = useState("");
   const [draftTimezoneEnabled, setDraftTimezoneEnabled] = useState(false);
   const [draftTimezone, setDraftTimezone] = useState("Asia/Kolkata");
+  const [draftScheduleByOpenTime, setDraftScheduleByOpenTime] = useState(false);
   const [draftOpenTrackingOff, setDraftOpenTrackingOff] = useState(false);
   const [draftClickTrackingOff, setDraftClickTrackingOff] = useState(false);
   const [draftUtmEnabled, setDraftUtmEnabled] = useState(false);
@@ -4735,6 +5201,7 @@ export default function PortalCampaignDetailPage({
       patch.timezone = draftTimezoneEnabled
         ? draftTimezone.trim() || "Asia/Kolkata"
         : "Asia/Kolkata";
+      patch.scheduleByOpenTime = draftScheduleByOpenTime;
       patch.openTrackingOff = draftOpenTrackingOff;
       patch.clickTrackingOff = draftClickTrackingOff;
       patch.utmEnabled = draftUtmEnabled;
@@ -4865,6 +5332,7 @@ export default function PortalCampaignDetailPage({
     setDraftAttachmentName(campaign?.attachmentName ?? "");
     setDraftTimezoneEnabled(Boolean(campaign?.timezoneEnabled));
     setDraftTimezone(campaign?.timezone || "Asia/Kolkata");
+    setDraftScheduleByOpenTime(Boolean(campaign?.scheduleByOpenTime));
     setDraftOpenTrackingOff(Boolean(campaign?.openTrackingOff));
     setDraftClickTrackingOff(Boolean(campaign?.clickTrackingOff));
     setDraftUtmEnabled(Boolean(campaign?.utmEnabled));
@@ -4944,6 +5412,7 @@ export default function PortalCampaignDetailPage({
         attachmentName: draftAttachmentEnabled ? draftAttachmentName : "",
         timezoneEnabled: draftTimezoneEnabled,
         timezone: draftTimezoneEnabled ? draftTimezone : "Asia/Kolkata",
+        scheduleByOpenTime: draftScheduleByOpenTime,
         openTrackingOff: draftOpenTrackingOff,
         clickTrackingOff: draftClickTrackingOff,
         utmEnabled: draftUtmEnabled,
@@ -5023,6 +5492,41 @@ export default function PortalCampaignDetailPage({
         error instanceof Error ? error.message : "Failed to save campaign",
       );
     }
+  }
+
+  async function handleApplySpamFix(fixedHtml: string, fixedSubject: string) {
+    if (!campaign) {
+      return;
+    }
+    if (isOneOneCampaign(campaign) && previewSequence) {
+      const sequences = sequenceSource.map((sequence) =>
+        sequence.id === previewSequence.id
+          ? {
+              ...sequence,
+              hasDesign: true,
+              designHtml: fixedHtml,
+              subject: fixedSubject,
+            }
+          : sequence,
+      );
+      setDraftSequences(sequences);
+      await persistCampaign(
+        sequenceCampaignPatch(
+          sequences,
+          draftWindowStart || campaign.windowStart || "09:00",
+          draftWindowEnd || campaign.windowEnd || "18:00",
+          Number.isFinite(draftEmailGapMinutes)
+            ? draftEmailGapMinutes
+            : Math.max(0, Number(campaign.emailGapMinutes) || 0),
+        ),
+      );
+      return;
+    }
+    await persistCampaign({
+      hasDesign: true,
+      designHtml: fixedHtml,
+      subject: fixedSubject,
+    });
   }
 
   async function handleSaveDesign(
@@ -5653,6 +6157,11 @@ export default function PortalCampaignDetailPage({
                 <DesignSavedCard
                   key={`design-${campaign.updatedAt ?? ""}-${(campaign.designHtml ?? "").length}`}
                   html={campaign.designHtml ?? ""}
+                  noUnsubscribeWarning={
+                    isGmailOrOutlookProvider(selectedSenderProviderId) &&
+                    Boolean((campaign.designHtml ?? "").trim()) &&
+                    !emailHasUnsubscribe(campaign.designHtml ?? "")
+                  }
                   fileName={campaign.name}
                   onEdit={() => openDesignModal()}
                   onPreview={() => {
@@ -5676,6 +6185,7 @@ export default function PortalCampaignDetailPage({
                   windowStart={draftWindowStart}
                   windowEnd={draftWindowEnd}
                   emailGapMinutes={draftEmailGapMinutes}
+                  senderProviderId={selectedSenderProviderId}
                   onClose={closeSequencesPanel}
                   onSave={() => void handleSaveSequences()}
                   onChange={handleSequencesDraftChange}
@@ -5694,6 +6204,7 @@ export default function PortalCampaignDetailPage({
                   draftAttachmentName={draftAttachmentName}
                   draftTimezoneEnabled={draftTimezoneEnabled}
                   draftTimezone={draftTimezone}
+                  draftScheduleByOpenTime={draftScheduleByOpenTime}
                   draftOpenTrackingOff={draftOpenTrackingOff}
                   draftClickTrackingOff={draftClickTrackingOff}
                   draftUtmEnabled={draftUtmEnabled}
@@ -5710,6 +6221,7 @@ export default function PortalCampaignDetailPage({
                   onAttachmentNameChange={setDraftAttachmentName}
                   onTimezoneEnabledChange={setDraftTimezoneEnabled}
                   onTimezoneChange={setDraftTimezone}
+                  onScheduleByOpenTimeChange={setDraftScheduleByOpenTime}
                   onOpenTrackingOffChange={setDraftOpenTrackingOff}
                   onClickTrackingOffChange={setDraftClickTrackingOff}
                   onUtmEnabledChange={setDraftUtmEnabled}
@@ -5722,6 +6234,7 @@ export default function PortalCampaignDetailPage({
                   campaignCcList(campaign) ||
                   campaign.attachmentEnabled ||
                   campaign.timezoneEnabled ||
+                  campaign.scheduleByOpenTime ||
                   campaign.openTrackingOff ||
                   campaign.clickTrackingOff ||
                   campaign.utmEnabled) ? (
@@ -5732,6 +6245,7 @@ export default function PortalCampaignDetailPage({
                   attachmentName={campaign.attachmentName}
                   timezoneEnabled={Boolean(campaign.timezoneEnabled)}
                   timezone={campaign.timezone}
+                  scheduleByOpenTime={Boolean(campaign.scheduleByOpenTime)}
                   openTrackingOff={Boolean(campaign.openTrackingOff)}
                   clickTrackingOff={Boolean(campaign.clickTrackingOff)}
                   utmEnabled={Boolean(campaign.utmEnabled)}
@@ -5795,6 +6309,7 @@ export default function PortalCampaignDetailPage({
           }
           sequenceId={designSequenceId}
           contacts={contacts}
+          senderProviderId={selectedSenderProviderId}
           startInEditor={Boolean(designCampaign.designHtml?.trim())}
           onClose={closeDesignModal}
           onSaveDesign={handleSaveDesign}
@@ -5820,6 +6335,12 @@ export default function PortalCampaignDetailPage({
           campaign={previewCampaign}
           html={previewCampaign.designHtml ?? ""}
           contacts={contacts}
+          noUnsubscribeWarning={
+            isGmailOrOutlookProvider(selectedSenderProviderId) &&
+            Boolean((previewCampaign.designHtml ?? "").trim()) &&
+            !emailHasUnsubscribe(previewCampaign.designHtml ?? "")
+          }
+          onApplySpamFix={handleApplySpamFix}
           onClose={() => {
             setCampaignPreviewOpen(false);
             setPreviewSequenceId(null);

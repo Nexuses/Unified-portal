@@ -20,5 +20,6 @@ export default async function PublicUnsubscribePage({ params }: PageProps) {
     );
   }
 
-  return <UnsubscribePublicPage token={token} email={send.email} />;
+  // Do not pass the recipient email: the client types it manually.
+  return <UnsubscribePublicPage token={token} />;
 }

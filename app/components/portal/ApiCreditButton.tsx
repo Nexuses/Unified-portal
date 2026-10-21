@@ -9,6 +9,7 @@ type ApiCreditButtonProps = {
 
 function providerLabel(provider: string) {
   const names: Record<string, string> = {
+    claude: "Claude",
     openai: "OpenAI",
     deepseek: "DeepSeek",
     grok: "Grok",

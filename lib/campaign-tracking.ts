@@ -455,12 +455,22 @@ function hasUnsubscribeHref(html: string, unsubscribeUrl: string) {
   );
 }
 
+/** True when the email HTML already contains a user-added unsubscribe. */
+export function emailHasUnsubscribe(html: string) {
+  return htmlHasUnsubscribeIntent(html);
+}
+
 /**
  * Replace merge tags with a real unsubscribe link.
  * If the design already has {{ unsubscribe }} (or another unsub link), use that only.
- * Only append a footer unsubscribe when the HTML has none.
+ * Only append a footer unsubscribe when the HTML has none — and never when
+ * `autoAppendFooter` is false (Gmail / Outlook SMTP: user adds their own).
  */
-function injectUnsubscribe(html: string, unsubscribeUrl: string) {
+function injectUnsubscribe(
+  html: string,
+  unsubscribeUrl: string,
+  autoAppendFooter = true,
+) {
   const userProvided = htmlHasUnsubscribeIntent(html);
   let next = html;
 
@@ -491,6 +501,12 @@ function injectUnsubscribe(html: string, unsubscribeUrl: string) {
     return next;
   }
 
+  // Gmail / Outlook SMTP: never attach our own unsubscribe. The user must
+  // add theirs; the UI warns above the preview when it is missing.
+  if (!autoAppendFooter) {
+    return next;
+  }
+
   const footer = `<p style="margin:24px 0 0;font-size:12px;line-height:1.4;color:#666;">${link}</p>`;
   if (/<\/body>/i.test(next)) {
     return next.replace(/<\/body>/i, `${footer}</body>`);
@@ -509,12 +525,22 @@ export function injectCampaignTracking(
     trackOpens?: boolean;
     /** Default true. When false, links stay naked (optional UTM only). */
     trackClicks?: boolean;
+    /**
+     * Default true. When false, no footer unsubscribe is appended when the
+     * email has none (Gmail / Outlook SMTP — user adds their own only).
+     * User-added unsubscribe tags/links are still resolved to the real URL.
+     */
+    autoUnsubscribeFooter?: boolean;
   },
 ) {
   const trackOpens = options?.trackOpens !== false;
   const trackClicks = options?.trackClicks !== false;
   const urls = campaignTrackingUrls(origin, token);
-  const withUnsubscribe = injectUnsubscribe(html, urls.unsubscribe);
+  const withUnsubscribe = injectUnsubscribe(
+    html,
+    urls.unsubscribe,
+    options?.autoUnsubscribeFooter !== false,
+  );
   const utm = options?.utm;
   const campaignName = options?.campaignName ?? "";
 

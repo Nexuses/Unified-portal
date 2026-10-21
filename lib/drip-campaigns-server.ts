@@ -66,6 +66,7 @@ export type DripCampaignDoc = {
   attachmentName?: string;
   timezoneEnabled?: boolean;
   timezone?: string;
+  scheduleByOpenTime?: boolean;
   openTrackingOff?: boolean;
   clickTrackingOff?: boolean;
   utmEnabled?: boolean;
@@ -127,6 +128,7 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     attachmentName: doc.attachmentName,
     timezoneEnabled: doc.timezoneEnabled,
     timezone: doc.timezone?.trim() || "Asia/Kolkata",
+    scheduleByOpenTime: doc.scheduleByOpenTime,
     openTrackingOff: doc.openTrackingOff,
     clickTrackingOff: doc.clickTrackingOff,
     utmEnabled: doc.utmEnabled,
@@ -338,6 +340,74 @@ export async function listProjectDripCampaigns(
     }
     return mergeBlastReport(campaign, report);
   });
+}
+
+export type CampaignDesignItem = {
+  id: string;
+  name: string;
+  subject: string;
+  html: string;
+  kind: CampaignKind;
+};
+
+/**
+ * Saved email designs for the "Create an email" picker: campaign designs
+ * plus 1-1 sequence designs, with HTML. The campaign list endpoint strips
+ * designHtml for payload size, so the picker must use this instead of
+ * filtering the campaign list by designHtml (which is always empty there).
+ */
+export async function listProjectCampaignDesigns(
+  projectId: ObjectId,
+): Promise<CampaignDesignItem[]> {
+  const db = await getDb();
+  const docs = await db
+    .collection<DripCampaignDoc>("drip_campaigns")
+    .find(
+      {
+        projectId,
+        $or: [{ hasDesign: true }, { "sequences.hasDesign": true }],
+      },
+      {
+        projection: {
+          campaignId: 1,
+          name: 1,
+          kind: 1,
+          subject: 1,
+          hasDesign: 1,
+          designHtml: 1,
+          sequences: 1,
+        },
+      },
+    )
+    .sort({ updatedAt: -1 })
+    .limit(120)
+    .toArray();
+
+  const items: CampaignDesignItem[] = [];
+  for (const doc of docs) {
+    const kind = doc.kind === "oneone" ? "oneone" : "drip";
+    if (doc.hasDesign && doc.designHtml?.trim()) {
+      items.push({
+        id: `campaign-${doc.campaignId}`,
+        name: doc.name,
+        subject: doc.subject ?? "",
+        html: doc.designHtml,
+        kind,
+      });
+    }
+    (doc.sequences ?? []).forEach((sequence, index) => {
+      if (sequence.hasDesign && sequence.designHtml?.trim()) {
+        items.push({
+          id: `campaign-${doc.campaignId}-seq-${sequence.id}`,
+          name: `${doc.name} · Step ${index + 1}`,
+          subject: sequence.subject ?? doc.subject ?? "",
+          html: sequence.designHtml,
+          kind,
+        });
+      }
+    });
+  }
+  return items;
 }
 
 export async function getProjectDripCampaign(
@@ -712,6 +782,7 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "attachmentName",
   "timezoneEnabled",
   "timezone",
+  "scheduleByOpenTime",
   "openTrackingOff",
   "clickTrackingOff",
   "utmEnabled",
@@ -992,6 +1063,7 @@ export async function duplicateProjectDripCampaign(
     attachmentName: existing.attachmentName,
     timezoneEnabled: existing.timezoneEnabled,
     timezone: existing.timezone,
+    scheduleByOpenTime: existing.scheduleByOpenTime,
     openTrackingOff: existing.openTrackingOff,
     clickTrackingOff: existing.clickTrackingOff,
     utmEnabled: existing.utmEnabled,

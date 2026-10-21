@@ -114,33 +114,24 @@ export async function listProjectContacts(
   };
 }
 
-export async function listProjectListContacts(
+async function listMembershipContactIds(
   projectId: ObjectId,
   listId: ObjectId,
-  options?: { page?: number; pageSize?: number; q?: string },
 ) {
-  const pageSize = Math.min(100, Math.max(1, Math.floor(options?.pageSize ?? 50)));
-  const page = Math.max(1, Math.floor(options?.page ?? 1));
-  const q = String(options?.q ?? "").trim();
-
   const db = await getDb();
   const memberships = await db
     .collection<ListMembershipDoc>("list_memberships")
     .find({ projectId, listId })
     .project({ contactId: 1 })
     .toArray();
+  return memberships.map((item) => item.contactId);
+}
 
-  const contactIds = memberships.map((item) => item.contactId);
-  if (contactIds.length === 0) {
-    return {
-      items: [],
-      total: 0,
-      page,
-      pageSize,
-      totalPages: 1,
-    };
-  }
-
+function listContactsFilter(
+  projectId: ObjectId,
+  contactIds: ObjectId[],
+  q: string,
+) {
   const filter: Record<string, unknown> = {
     projectId,
     _id: { $in: contactIds },
@@ -156,7 +147,57 @@ export async function listProjectListContacts(
     ];
   }
 
-  const collection = db.collection<ContactDoc>("contacts");
+  return filter;
+}
+
+/** All contact ids in a list (optional search). For select-all bulk actions. */
+export async function listProjectListContactIds(
+  projectId: ObjectId,
+  listId: ObjectId,
+  options?: { q?: string },
+) {
+  const q = String(options?.q ?? "").trim();
+  const contactIds = await listMembershipContactIds(projectId, listId);
+  if (contactIds.length === 0) {
+    return { ids: [] as string[], total: 0 };
+  }
+
+  const db = await getDb();
+  const filter = listContactsFilter(projectId, contactIds, q);
+  const docs = await db
+    .collection<ContactDoc>("contacts")
+    .find(filter)
+    .project({ _id: 1 })
+    .toArray();
+
+  return {
+    ids: docs.map((doc) => String(doc._id)),
+    total: docs.length,
+  };
+}
+
+export async function listProjectListContacts(
+  projectId: ObjectId,
+  listId: ObjectId,
+  options?: { page?: number; pageSize?: number; q?: string },
+) {
+  const pageSize = Math.min(100, Math.max(1, Math.floor(options?.pageSize ?? 50)));
+  const page = Math.max(1, Math.floor(options?.page ?? 1));
+  const q = String(options?.q ?? "").trim();
+
+  const contactIds = await listMembershipContactIds(projectId, listId);
+  if (contactIds.length === 0) {
+    return {
+      items: [],
+      total: 0,
+      page,
+      pageSize,
+      totalPages: 1,
+    };
+  }
+
+  const filter = listContactsFilter(projectId, contactIds, q);
+  const collection = (await getDb()).collection<ContactDoc>("contacts");
   const [total, docs] = await Promise.all([
     collection.countDocuments(filter),
     collection
@@ -476,6 +517,46 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
   }
 
   return { events, stats };
+}
+
+/** Remove contacts from one list without deleting the CRM contact records. */
+export async function removeContactsFromList(
+  projectId: ObjectId,
+  listId: ObjectId,
+  ids: string[],
+) {
+  const contactIds = [...new Set(ids)]
+    .filter((id) => ObjectId.isValid(id))
+    .map((id) => new ObjectId(id));
+  if (contactIds.length === 0) {
+    return { removed: 0 };
+  }
+
+  const db = await getDb();
+  const list = await db.collection<ListDoc>("lists").findOne({
+    _id: listId,
+    projectId,
+  });
+  if (!list) {
+    throw new Error("List not found");
+  }
+
+  const result = await db.collection<ListMembershipDoc>("list_memberships").deleteMany({
+    projectId,
+    listId,
+    contactId: { $in: contactIds },
+  });
+
+  const remaining = await db.collection<ListMembershipDoc>("list_memberships").countDocuments({
+    projectId,
+    listId,
+  });
+  await db.collection<ListDoc>("lists").updateOne(
+    { _id: listId, projectId },
+    { $set: { contactCount: remaining, updatedAt: new Date() } },
+  );
+
+  return { removed: result.deletedCount ?? 0 };
 }
 
 export async function deleteContacts(projectId: ObjectId, ids: string[]) {

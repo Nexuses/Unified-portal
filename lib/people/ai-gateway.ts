@@ -4,6 +4,7 @@
  */
 
 import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
+import { chatWithClaude, claudeConfigured } from "@/lib/claude";
 
 export type AiGatewayMessage = {
   role: "system" | "user" | "assistant";
@@ -32,6 +33,29 @@ export async function callAiGatewayJson(args: {
   temperature?: number;
   signal?: AbortSignal;
 }): Promise<string> {
+  // Claude first for JSON work; fall back to the gateway/OpenAI below.
+  if (claudeConfigured() && !args.model) {
+    try {
+      const result = await chatWithClaude({
+        messages: args.messages.map((message) => ({
+          role: message.role,
+          content:
+            message.role === "system"
+              ? `${message.content}\n\nReturn JSON only.`
+              : message.content,
+        })),
+        temperature: args.temperature ?? 0.1,
+        maxTokens: 4096,
+      });
+      return result.content;
+    } catch (error) {
+      console.warn(
+        `[ai-gateway] Claude failed, switching provider: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
   const { apiKey, baseUrl, model: defaultModel } = getAiGatewayConfig();
   if (!apiKey) {
     throw new Error("AI_GATEWAY_API_KEY is not configured");

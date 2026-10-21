@@ -7,6 +7,7 @@ import {
   type AssistantToolContext,
 } from "@/lib/assistant-tools-server";
 import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
+import { claudeApiKey, claudeModel } from "@/lib/claude";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
 
 export type AssistantMessage = { role: "user" | "assistant"; content: string };
@@ -22,7 +23,12 @@ type ChatMessage =
   | { role: "assistant"; content: string | null; tool_calls?: ToolCall[] }
   | { role: "tool"; tool_call_id: string; content: string };
 
-type Provider = { name: "openai" | "deepseek"; url: string; key: string; model: string };
+type Provider = {
+  name: "claude" | "openai" | "deepseek";
+  url: string;
+  key: string;
+  model: string;
+};
 
 const MAX_TOOL_ROUNDS = 5;
 const MAX_TOOL_RESULT_CHARS = 24_000;
@@ -64,6 +70,17 @@ Rules:
 
 function providers(): Provider[] {
   const list: Provider[] = [];
+  // Claude first; if it fails (or is not configured) the loop in
+  // askPortalAssistant switches to OpenAI, then DeepSeek.
+  const claudeKey = claudeApiKey();
+  if (claudeKey) {
+    list.push({
+      name: "claude",
+      url: "https://api.anthropic.com/v1/messages",
+      key: claudeKey,
+      model: claudeModel(),
+    });
+  }
   const openAiKey = process.env.OPENAI_API_KEY?.trim();
   if (openAiKey) {
     list.push({
@@ -85,7 +102,130 @@ function providers(): Provider[] {
   return list;
 }
 
+type AnthropicBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; tool_use_id: string; content: string };
+
+async function completeWithClaude(provider: Provider, messages: ChatMessage[]) {
+  await guardApiCredit();
+  const system = messages
+    .filter((message) => message.role === "system")
+    .map((message) => String(message.content ?? ""))
+    .join("\n\n");
+
+  const converted: Array<{ role: "user" | "assistant"; content: string | AnthropicBlock[] }> = [];
+  for (const message of messages) {
+    if (message.role === "system") {
+      continue;
+    }
+    if (message.role === "user") {
+      converted.push({ role: "user", content: String(message.content ?? "") });
+      continue;
+    }
+    if (message.role === "assistant") {
+      const blocks: AnthropicBlock[] = [];
+      if (message.content) {
+        blocks.push({ type: "text", text: String(message.content) });
+      }
+      for (const call of message.tool_calls ?? []) {
+        let input: Record<string, unknown> = {};
+        try {
+          input = call.function.arguments
+            ? (JSON.parse(call.function.arguments) as Record<string, unknown>)
+            : {};
+        } catch {
+          input = {};
+        }
+        blocks.push({ type: "tool_use", id: call.id, name: call.function.name, input });
+      }
+      converted.push({
+        role: "assistant",
+        content: blocks.length > 0 ? blocks : String(message.content ?? ""),
+      });
+      continue;
+    }
+    if (message.role === "tool") {
+      // Tool results go back as a user turn with tool_result blocks; merge
+      // consecutive tool messages into one turn.
+      const block: AnthropicBlock = {
+        type: "tool_result",
+        tool_use_id: message.tool_call_id,
+        content: String(message.content ?? ""),
+      };
+      const last = converted[converted.length - 1];
+      if (last && last.role === "user" && Array.isArray(last.content)) {
+        last.content.push(block);
+      } else {
+        converted.push({ role: "user", content: [block] });
+      }
+    }
+  }
+
+  const response = await fetch(provider.url, {
+    method: "POST",
+    headers: {
+      "x-api-key": provider.key,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: provider.model,
+      max_tokens: 6000,
+      ...(system ? { system } : {}),
+      messages: converted,
+      tools: ASSISTANT_TOOLS.map((tool) => ({
+        name: tool.function.name,
+        description: tool.function.description,
+        input_schema: tool.function.parameters,
+      })),
+    }),
+  });
+  const data = (await response.json().catch(() => null)) as {
+    error?: { message?: string } | null;
+    content?: Array<{
+      type?: string;
+      text?: string;
+      id?: string;
+      name?: string;
+      input?: Record<string, unknown>;
+    }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  } | null;
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `claude request failed (${response.status})`);
+  }
+  const blocks = data?.content ?? [];
+  const text = blocks
+    .filter((block) => block.type === "text")
+    .map((block) => block.text ?? "")
+    .join("")
+    .trim();
+  const toolCalls: ToolCall[] = blocks
+    .filter((block) => block.type === "tool_use" && block.name)
+    .map((block, index) => ({
+      id: block.id || `claude-tool-${index}`,
+      type: "function" as const,
+      function: {
+        name: String(block.name),
+        arguments: JSON.stringify(block.input ?? {}),
+      },
+    }));
+  if (!text && toolCalls.length === 0) {
+    throw new Error("claude returned no answer");
+  }
+  const tokens = readTokenUsage(data?.usage);
+  await noteApiUsage({ provider: "claude", model: provider.model, ...tokens });
+  return {
+    content: text || null,
+    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+  };
+}
+
 async function complete(provider: Provider, messages: ChatMessage[]) {
+  if (provider.name === "claude") {
+    return completeWithClaude(provider, messages);
+  }
   await guardApiCredit();
   const response = await fetch(provider.url, {
     method: "POST",
@@ -170,7 +310,9 @@ export async function askPortalAssistant(input: {
 }) {
   const available = providers();
   if (available.length === 0) {
-    throw new Error("Set OPENAI_API_KEY or DEEPSEEK_API_KEY to use the assistant.");
+    throw new Error(
+      "Set ANTHROPIC_API_KEY, OPENAI_API_KEY or DEEPSEEK_API_KEY to use the assistant.",
+    );
   }
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt(input.projectName, input.userName) },

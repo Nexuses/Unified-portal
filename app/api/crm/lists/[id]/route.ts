@@ -3,7 +3,11 @@ import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import { mapList, type ListDoc } from "@/lib/crm";
 import { deleteLists, importContactsToList } from "@/lib/crm-import";
-import { listProjectListContacts } from "@/lib/crm-contacts-server";
+import {
+  listProjectListContactIds,
+  listProjectListContacts,
+  removeContactsFromList,
+} from "@/lib/crm-contacts-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -45,6 +49,17 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const page = Number(params.get("page") ?? "1");
     const pageSize = Number(params.get("pageSize") ?? "50");
     const q = params.get("q") ?? "";
+    const idsOnly =
+      params.get("idsOnly") === "1" || params.get("idsOnly") === "true";
+
+    if (idsOnly) {
+      const result = await listProjectListContactIds(projectId, listId, { q });
+      return NextResponse.json({
+        list: mapList(list),
+        ids: result.ids,
+        total: result.total,
+      });
+    }
 
     const contactsPage = await listProjectListContacts(projectId, listId, {
       page: Number.isFinite(page) ? page : 1,
@@ -146,7 +161,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
   }
 }
 
-export async function DELETE(_request: NextRequest, context: RouteContext) {
+export async function PATCH(request: NextRequest, context: RouteContext) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) {
@@ -158,12 +173,62 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Invalid list id" }, { status: 400 });
     }
 
-    const result = await deleteLists(new ObjectId(session.projectId), [id]);
+    const body = await request.json().catch(() => ({}));
+    const removeContactIds = Array.isArray(body.removeContactIds)
+      ? body.removeContactIds.map((value: unknown) => String(value))
+      : [];
+    if (removeContactIds.length === 0) {
+      return NextResponse.json(
+        { error: "No contacts selected" },
+        { status: 400 },
+      );
+    }
+
+    const projectId = new ObjectId(session.projectId);
+    const listId = new ObjectId(id);
+    const result = await removeContactsFromList(
+      projectId,
+      listId,
+      removeContactIds,
+    );
+    return NextResponse.json({ removed: result.removed });
+  } catch (error) {
+    console.error("Failed to remove list contacts:", error);
+    const message =
+      error instanceof Error ? error.message : "Failed to remove contacts";
+    return NextResponse.json(
+      { error: message },
+      { status: message === "List not found" ? 404 : 500 },
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest, context: RouteContext) {
+  try {
+    const session = await requirePortalSession();
+    if (isSessionError(session)) {
+      return session;
+    }
+
+    const { id } = await context.params;
+    if (!ObjectId.isValid(id)) {
+      return NextResponse.json({ error: "Invalid list id" }, { status: 400 });
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const deleteContacts = body?.deleteContacts === true;
+
+    const result = await deleteLists(new ObjectId(session.projectId), [id], {
+      deleteContacts,
+    });
     if (result.deleted === 0) {
       return NextResponse.json({ error: "List not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({
+      success: true,
+      contactsDeleted: result.contactsDeleted,
+    });
   } catch (error) {
     console.error("Failed to delete list:", error);
     return NextResponse.json(

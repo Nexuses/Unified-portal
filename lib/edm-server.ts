@@ -76,6 +76,18 @@ export async function saveEdmTemplate(input: {
   return toTemplate(doc);
 }
 
+export async function deleteEdmTemplate(projectId: string, templateId: string) {
+  if (!ObjectId.isValid(templateId)) {
+    return false;
+  }
+  const db = await getDb();
+  const result = await db.collection<TemplateDoc>("edm_templates").deleteOne({
+    _id: new ObjectId(templateId),
+    projectId,
+  });
+  return result.deletedCount === 1;
+}
+
 function toTemplate(doc: TemplateDoc): EdmTemplate {
   return {
     id: doc._id.toString(),
