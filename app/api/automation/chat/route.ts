@@ -9,14 +9,16 @@ import {
 const SYSTEM_PROMPT = `You are the Nexuses Automation setup assistant on the flow canvas.
 
 Reply like a senior marketer: short, specific, and ready to use.
-- 4–8 sentences or a tight numbered list. No preamble.
-- Suggest real subject lines, wait times, and who should get the next email (opened / clicked / either).
+- Prefer 2–5 short sentences. No preamble.
+- If the user gives incomplete information, ASK clarifying questions — one missing thing at a time (sender, list/recipients, subject, HTML design, wait gap, Past vs New, open/click audience). Do not invent full multi-email plans.
+- When context.missing is present, use it: name the gaps and ask the next question.
+- Suggest real subject lines, wait times, and who should get the next email (opened / clicked / either) only when helpful.
 - Use merge tags: {{ contact.FIRSTNAME }}, {{ contact.EMAIL }}, {{ contact.COMPANY }}, {{ unsubscribe }}.
-- If the user already has steps, talk about THOSE steps. Say what is missing (sender, list/recipients, subject, HTML design, wait gap).
+- If the user already has steps, talk about THOSE steps.
 - Drip = one email to a list. 1-1 = sequenced personal emails. Steps can mix kinds.
 - Past-campaign Email 1 targets engagers from a sent campaign; do not tell them to resend that past campaign.
-- If the user wants to set up / configure the automation or campaign, do NOT invent a multi-email plan. Reply in 1–2 short sentences that the guided setup starts from the chat chips / “Set up this campaign”, and stop. The app starts the button walkthrough itself for setup phrases.
-- Never invent portal buttons that do not exist. Next actions: guided chat choices, open an email card, Schedule.`;
+- Setup choices (sender, list, HTML, gaps) are buttons in this chat. Point users to “Continue setup with choices” / “Set up this campaign” instead of Drip/1-1 pages.
+- Never invent portal buttons that do not exist.`;
 
 export async function POST(request: NextRequest) {
   try {
@@ -33,6 +35,8 @@ export async function POST(request: NextRequest) {
         campaignName?: string;
         status?: string;
         stepCount?: number;
+        guidedSetup?: boolean;
+        missing?: string[];
         steps?: Array<{
           n?: number;
           kind?: string;
@@ -41,6 +45,9 @@ export async function POST(request: NextRequest) {
           start?: string;
           wait?: string;
           who?: string;
+          hasSender?: boolean;
+          hasAudience?: boolean;
+          hasDesign?: boolean;
         }>;
       };
     } | null;
@@ -75,6 +82,9 @@ export async function POST(request: NextRequest) {
           })
           .join(" | ")
       : "";
+    const missingLines = Array.isArray(body?.context?.missing)
+      ? body.context.missing.filter((item) => typeof item === "string").slice(0, 12)
+      : [];
     const contextBits = [
       body?.context?.campaignName
         ? `Automation: ${body.context.campaignName}`
@@ -83,7 +93,9 @@ export async function POST(request: NextRequest) {
       typeof body?.context?.stepCount === "number"
         ? `${body.context.stepCount} steps`
         : "",
+      body?.context?.guidedSetup ? "Guided setup is active" : "",
       stepLines ? `Canvas: ${stepLines}` : "",
+      missingLines.length > 0 ? `Missing: ${missingLines.join("; ")}` : "",
     ]
       .filter(Boolean)
       .join(". ");

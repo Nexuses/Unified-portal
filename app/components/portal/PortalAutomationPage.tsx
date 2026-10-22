@@ -51,8 +51,55 @@ import AutomationUnderDevelopment from "@/app/components/portal/AutomationUnderD
 import PortalAutomationHistoryPage from "@/app/components/portal/PortalAutomationHistoryPage";
 import PortalCampaignDetailPage from "@/app/components/portal/PortalCampaignDetailPage";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
+import { useSpeechInput } from "@/lib/use-speech-input";
 
 type ChatTurn = GuidedChatTurn;
+
+const AUTOMATION_CHAT_KEY = "unified_automation_chat_v1";
+const AUTOMATION_CHAT_PENDING_KEY = "unified_automation_chat_pending";
+
+type PersistedChatBundle = {
+  chat: ChatTurn[];
+  guide: GuideSession;
+  savedAt: number;
+};
+
+function readChatBundle(key: string): PersistedChatBundle | null {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as PersistedChatBundle;
+    if (!parsed || !Array.isArray(parsed.chat)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeChatBundle(key: string, chat: ChatTurn[], guide: GuideSession) {
+  try {
+    const payload: PersistedChatBundle = {
+      chat,
+      guide,
+      savedAt: Date.now(),
+    };
+    sessionStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+function clearChatBundle(key: string) {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
 
 type EngagementKind = "opens" | "clicks" | "opens_or_clicks";
 type WhoSource = "current" | "past";
@@ -72,11 +119,22 @@ type WizardPhase =
 
 type AutoStep = AutomationStep;
 
-const SUGGESTIONS = [
-  "Set up this campaign",
-  "Setup automation campaign",
-  "Plan a 3-email welcome drip",
-  "Audit this flow before I start",
+const SUGGESTIONS: Array<{ label: string; description: string; message: string }> = [
+  {
+    label: "Set up this campaign",
+    description: "Guided choices for sender, list, subject, and HTML",
+    message: "Set up this campaign",
+  },
+  {
+    label: "Plan a welcome drip",
+    description: "Outline a 3-email sequence with wait gaps",
+    message: "Plan a 3-email welcome drip",
+  },
+  {
+    label: "Audit this flow",
+    description: "Flag what is missing before you schedule",
+    message: "Audit this flow before I start",
+  },
 ];
 
 const AUTOMATION_LINK_KEY = "unified_automation_linked_campaign";
@@ -564,6 +622,8 @@ export default function PortalAutomationPage({
   const addWrapRef = useRef<HTMLDivElement | null>(null);
 
   const [recordId, setRecordId] = useState(automationId || "");
+  const recordIdRef = useRef(recordId);
+  recordIdRef.current = recordId;
   const [status, setStatus] = useState<AutomationStatus>("draft");
   const [bootstrapping, setBootstrapping] = useState(true);
   const persistEnabledRef = useRef(false);
@@ -636,12 +696,16 @@ export default function PortalAutomationPage({
   const [guide, setGuide] = useState<GuideSession>(() => newGuideSession());
   const guideRef = useRef(guide);
   guideRef.current = guide;
+  const chatRef = useRef(chat);
+  chatRef.current = chat;
+  const speech = useSpeechInput({ value: draft, onChange: setDraft });
   const [chatSenders, setChatSenders] = useState<
     Array<{ id: string; fromEmail: string; fromName?: string }>
   >([]);
   const [chatLists, setChatLists] = useState<
     Array<{ id: string; name: string; contactCount?: number }>
   >([]);
+  const chatHydratedRef = useRef(false);
 
   const selectedStep = steps.find((step) => step.id === selectedStepId) ?? null;
   const firstStep = steps[0] ?? null;
@@ -858,6 +922,7 @@ export default function PortalAutomationPage({
           if (cancelled) {
             return;
           }
+          recordIdRef.current = "";
           setRecordId("");
           setStatus("draft");
           setKind("drip");
@@ -869,6 +934,13 @@ export default function PortalAutomationPage({
           setLaunchError("");
           setLoadError("");
           persistEnabledRef.current = false;
+          // Fresh New automation — do not revive a prior thread.
+          clearChatBundle(AUTOMATION_CHAT_PENDING_KEY);
+          setChat([]);
+          setGuide(newGuideSession());
+          chatRef.current = [];
+          guideRef.current = newGuideSession();
+          chatHydratedRef.current = true;
 
           try {
             const [autoList, dripList] = await Promise.all([
@@ -968,6 +1040,44 @@ export default function PortalAutomationPage({
           );
         }
 
+        // Re-open campaign setup after create → /[id] remount (wizard "Set up campaign").
+        try {
+          const raw = sessionStorage.getItem(AUTOMATION_LINK_KEY);
+          if (raw && !cancelled) {
+            const link = JSON.parse(raw) as {
+              campaignId?: string;
+              kind?: CampaignKind;
+              stepId?: string;
+              followUp?: boolean;
+              automationId?: string;
+              openSetup?: boolean;
+              pastAudience?: {
+                campaignName: string;
+                engagement: EngagementKind;
+              };
+            };
+            if (
+              link.openSetup &&
+              link.automationId === id &&
+              link.campaignId &&
+              link.stepId &&
+              (link.kind === "drip" || link.kind === "oneone")
+            ) {
+              setCampaignSetup({
+                campaignId: link.campaignId,
+                kind: link.kind,
+                stepId: link.stepId,
+                followUp: Boolean(link.followUp),
+                pastAudience: link.pastAudience,
+              });
+              setSelectedStepId(link.stepId);
+              setWizardPhase("closed");
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+
         persistEnabledRef.current = record.status === "draft";
         if (
           !cancelled &&
@@ -1020,6 +1130,43 @@ export default function PortalAutomationPage({
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chat, chatting]);
 
+  // Restore chat after create → /automation/[id] remount (was wiping the thread).
+  useEffect(() => {
+    if (chatHydratedRef.current) {
+      return;
+    }
+    chatHydratedRef.current = true;
+    const pending = readChatBundle(AUTOMATION_CHAT_PENDING_KEY);
+    const byId = recordId
+      ? readChatBundle(`${AUTOMATION_CHAT_KEY}:${recordId}`)
+      : null;
+    const bundle =
+      pending && (!byId || pending.savedAt >= byId.savedAt) ? pending : byId;
+    if (!bundle || bundle.chat.length === 0) {
+      return;
+    }
+    setChat(bundle.chat);
+    setGuide(bundle.guide || newGuideSession());
+    if (recordId && pending) {
+      writeChatBundle(`${AUTOMATION_CHAT_KEY}:${recordId}`, bundle.chat, bundle.guide);
+      clearChatBundle(AUTOMATION_CHAT_PENDING_KEY);
+    }
+  }, [recordId]);
+
+  // Keep chat durable while guiding / talking.
+  useEffect(() => {
+    if (!chatHydratedRef.current) {
+      return;
+    }
+    if (chat.length === 0 && !guide.active) {
+      return;
+    }
+    const key = recordId
+      ? `${AUTOMATION_CHAT_KEY}:${recordId}`
+      : AUTOMATION_CHAT_PENDING_KEY;
+    writeChatBundle(key, chat, guide);
+  }, [chat, guide, recordId]);
+
   useEffect(() => {
     if (status !== "running" && status !== "scheduled") {
       return;
@@ -1069,9 +1216,34 @@ export default function PortalAutomationPage({
 
   const ensuringRef = useRef<Promise<string> | null>(null);
 
+  function flushAutomationChat(id?: string) {
+    const target = id || recordId;
+    writeChatBundle(
+      AUTOMATION_CHAT_PENDING_KEY,
+      chatRef.current,
+      guideRef.current,
+    );
+    if (target) {
+      writeChatBundle(
+        `${AUTOMATION_CHAT_KEY}:${target}`,
+        chatRef.current,
+        guideRef.current,
+      );
+    }
+  }
+
+  /** Navigate create → /[id] only after chat/steps are flushed (avoids wipe after ~step 3). */
+  function navigateToSavedAutomation(id: string) {
+    flushAutomationChat(id);
+    if (automationId === id) {
+      return;
+    }
+    router.replace(portalAutomationRoute(id));
+  }
+
   async function ensureAutomationRecord(nextSteps?: AutoStep[]): Promise<string> {
-    if (recordId) {
-      return recordId;
+    if (recordIdRef.current) {
+      return recordIdRef.current;
     }
     const initialSteps = nextSteps ?? steps;
     if (initialSteps.length === 0) {
@@ -1081,6 +1253,9 @@ export default function PortalAutomationPage({
       return ensuringRef.current;
     }
     ensuringRef.current = (async () => {
+      if (recordIdRef.current) {
+        return recordIdRef.current;
+      }
       const created = await createAutomation({
         name: name.trim() || "Untitled automation",
         kind,
@@ -1090,9 +1265,10 @@ export default function PortalAutomationPage({
       if (created.name && created.name !== name) {
         setName(created.name);
       }
+      recordIdRef.current = created.id;
       setRecordId(created.id);
       persistEnabledRef.current = true;
-      router.replace(portalAutomationRoute(created.id));
+      flushAutomationChat(created.id);
       return created.id;
     })();
     try {
@@ -1201,11 +1377,17 @@ export default function PortalAutomationPage({
     // Always advance to the audience question after a pick (including re-pick).
     setWizardPhase(patched.engagement ? "closed" : "past_freq");
     // Persist after the past campaign is chosen so history has a record.
-    void ensureAutomationRecord(nextSteps).catch((error) => {
-      setLoadError(
-        error instanceof Error ? error.message : "Failed to save automation",
-      );
-    });
+    // Navigate only after create — resumeWizardFromSteps restores past_freq.
+    void (async () => {
+      try {
+        const id = await ensureAutomationRecord(nextSteps);
+        navigateToSavedAutomation(id);
+      } catch (error) {
+        setLoadError(
+          error instanceof Error ? error.message : "Failed to save automation",
+        );
+      }
+    })();
   }
 
   function beginFollowUpWizard() {
@@ -1359,12 +1541,13 @@ export default function PortalAutomationPage({
   async function createAndOpenCampaign(
     step: AutoStep,
     stepsSnapshot?: AutoStep[],
-    options?: { openSetup?: boolean },
+    options?: { openSetup?: boolean; navigate?: boolean },
   ) {
     if (creating || locked) {
       return;
     }
     const openSetup = options?.openSetup !== false;
+    const shouldNavigate = options?.navigate !== false;
     setCreating(true);
     setLoadError("");
     try {
@@ -1375,11 +1558,10 @@ export default function PortalAutomationPage({
       }
       const isFollowUp = stepIndex > 0;
       const campaignKind = stepKind(step);
-      const autoId = await ensureAutomationRecord(
-        workingSteps.map((item) =>
-          item.id === step.id ? { ...item, ...step, campaignKind } : item,
-        ),
+      const seededSteps = workingSteps.map((item) =>
+        item.id === step.id ? { ...item, ...step, campaignKind } : item,
       );
+      const autoId = await ensureAutomationRecord(seededSteps);
       const desiredCampaignName =
         stepIndex <= 0
           ? name.trim() || "Untitled automation"
@@ -1403,9 +1585,6 @@ export default function PortalAutomationPage({
 
       if (data.name && data.name !== desiredCampaignName && stepIndex <= 0) {
         setName(data.name);
-        void patchAutomation(autoId, { name: data.name }).catch(() => {
-          /* ignore */
-        });
       }
 
       const existingTags = Array.isArray(data.tags) ? data.tags : [];
@@ -1457,13 +1636,22 @@ export default function PortalAutomationPage({
       await patchDripCampaign(data.id, patch, campaignKind);
 
       const targetStepId = step.id;
-      setSteps((prev) =>
-        prev.map((item) =>
-          item.id === targetStepId
-            ? { ...item, campaignId: data.id, campaignKind }
-            : item,
-        ),
+      const linkedSteps = seededSteps.map((item) =>
+        item.id === targetStepId
+          ? { ...item, campaignId: data.id as string, campaignKind }
+          : item,
       );
+      setSteps(linkedSteps);
+      // Persist campaign link before any remount so bootstrap sees campaignId.
+      await patchAutomation(autoId, {
+        name:
+          data.name && stepIndex <= 0
+            ? data.name
+            : name.trim() || "Untitled automation",
+        kind: campaignKind,
+        steps: linkedSteps,
+        status: "draft",
+      });
       // Cache under THIS step only — never reuse Email 1's entry for follow-ups.
       const createdCampaign =
         (await fetchDripCampaign(data.id, campaignKind)) ||
@@ -1478,20 +1666,6 @@ export default function PortalAutomationPage({
       }));
       setWizardPhase("closed");
 
-      sessionStorage.setItem(
-        AUTOMATION_LINK_KEY,
-        JSON.stringify({
-          campaignId: data.id,
-          kind: campaignKind,
-          stepId: targetStepId,
-          followUp: isFollowUp,
-          automationId: autoId,
-        }),
-      );
-
-      // Notice is set when they return from setup (closeCampaignSetup),
-      // not here — otherwise it lingers after sender/design are done.
-
       const pastAudience =
         !isFollowUp && step.whoSource === "past" && step.pastCampaignName
           ? {
@@ -1500,6 +1674,23 @@ export default function PortalAutomationPage({
                 "opens_or_clicks") as EngagementKind,
             }
           : undefined;
+
+      sessionStorage.setItem(
+        AUTOMATION_LINK_KEY,
+        JSON.stringify({
+          campaignId: data.id,
+          kind: campaignKind,
+          stepId: targetStepId,
+          followUp: isFollowUp,
+          automationId: autoId,
+          openSetup,
+          pastAudience,
+        }),
+      );
+
+      // Notice is set when they return from setup (closeCampaignSetup),
+      // not here — otherwise it lingers after sender/design are done.
+
       setSelectedStepId(targetStepId);
       if (openSetup) {
         setCampaignSetup({
@@ -1509,6 +1700,10 @@ export default function PortalAutomationPage({
           followUp: isFollowUp,
           pastAudience,
         });
+      }
+      flushAutomationChat(autoId);
+      if (shouldNavigate) {
+        navigateToSavedAutomation(autoId);
       }
       return data.id as string;
     } catch (error) {
@@ -1595,6 +1790,11 @@ export default function PortalAutomationPage({
     const open = campaignSetup;
     setCampaignSetup(null);
     setWizardPhase("closed");
+    try {
+      sessionStorage.removeItem(AUTOMATION_LINK_KEY);
+    } catch {
+      /* ignore */
+    }
     if (!open) {
       return;
     }
@@ -1718,23 +1918,29 @@ export default function PortalAutomationPage({
     choices?: ChatChoice[],
     guideStep?: GuideSession["step"],
   ) {
-    setChat((prev) => [
-      ...prev,
-      {
-        role: "assistant",
-        content,
-        choices,
-        guideStep,
-      },
-    ]);
+    setChat((prev) => {
+      const next: ChatTurn[] = [
+        ...prev,
+        {
+          role: "assistant",
+          content,
+          choices,
+          guideStep,
+        },
+      ];
+      chatRef.current = next;
+      return next;
+    });
   }
 
   function lockChoiceOnTurn(turnIndex: number, choiceId: string) {
-    setChat((prev) =>
-      prev.map((turn, index) =>
+    setChat((prev) => {
+      const next = prev.map((turn, index) =>
         index === turnIndex ? { ...turn, selectedChoiceId: choiceId } : turn,
-      ),
-    );
+      );
+      chatRef.current = next;
+      return next;
+    });
   }
 
   async function loadChatCatalogs() {
@@ -1854,7 +2060,16 @@ export default function PortalAutomationPage({
     if (!step) {
       throw new Error("Start the flow first.");
     }
-    if (step.campaignId && campaignByStep[step.id]) {
+    if (step.campaignId) {
+      if (!campaignByStep[step.id]) {
+        const existing = await fetchDripCampaign(
+          step.campaignId,
+          stepKind(step),
+        );
+        if (existing) {
+          setCampaignByStep((prev) => ({ ...prev, [step.id]: existing }));
+        }
+      }
       return step.campaignId;
     }
     const nextSteps = steps.map((item) =>
@@ -1864,7 +2079,7 @@ export default function PortalAutomationPage({
     const id = await createAndOpenCampaign(
       { ...step, campaignKind: stepKind(step) },
       nextSteps,
-      { openSetup: false },
+      { openSetup: false, navigate: false },
     );
     if (!id) {
       throw new Error("Failed to create campaign for this step.");
@@ -1955,7 +2170,11 @@ export default function PortalAutomationPage({
       return;
     }
     lockChoiceOnTurn(turnIndex, choice.id);
-    setChat((prev) => [...prev, { role: "user", content: choice.label }]);
+    setChat((prev) => {
+      const next: ChatTurn[] = [...prev, { role: "user", content: choice.label }];
+      chatRef.current = next;
+      return next;
+    });
     setChatting(true);
     setChatError("");
     setLoadError("");
@@ -2088,9 +2307,25 @@ export default function PortalAutomationPage({
           : [readyStep];
         setSteps(nextSteps);
         setWizardPhase("closed");
-        await createAndOpenCampaign(readyStep, nextSteps, { openSetup: false });
-        setGuide({ active: true, step: "sender", emailIndex: 0 });
+        // Create + link campaign first; navigate only after sender prompt is in chat
+        // (early replace was wiping the thread after ~step 3).
+        await createAndOpenCampaign(readyStep, nextSteps, {
+          openSetup: false,
+          navigate: false,
+        });
+        const autoId = recordIdRef.current;
+        if (!autoId) {
+          throw new Error("Automation was not saved.");
+        }
+        const senderGuide: GuideSession = {
+          active: true,
+          step: "sender",
+          emailIndex: 0,
+        };
+        guideRef.current = senderGuide;
+        setGuide(senderGuide);
         await askSenderStep(false);
+        navigateToSavedAutomation(autoId);
         return;
       }
 
@@ -2266,12 +2501,18 @@ export default function PortalAutomationPage({
           ? { ...step, waitDays: days, waitHours: 0 }
           : undefined;
         if (ready) {
-          await createAndOpenCampaign(ready, steps.map((s) => (s.id === ready.id ? ready : s)), {
-            openSetup: false,
-          });
+          await createAndOpenCampaign(
+            ready,
+            steps.map((s) => (s.id === ready.id ? ready : s)),
+            { openSetup: false, navigate: false },
+          );
         }
         // Follow-ups inherit sender — still allow pick.
         await askSenderStep(true);
+        const autoId = recordIdRef.current;
+        if (autoId) {
+          navigateToSavedAutomation(autoId);
+        }
         return;
       }
 
@@ -2288,6 +2529,31 @@ export default function PortalAutomationPage({
     }
   }
 
+  function clarifyGuideChoices(step: GuideSession["step"]): ChatChoice[] | undefined {
+    switch (step) {
+      case "start":
+        return startGuideChoices();
+      case "past_freq":
+      case "fu_freq":
+        return engagementChoices();
+      case "type":
+      case "fu_type":
+        return typeChoices();
+      case "fu_gap":
+        return gapChoices();
+      case "subject":
+      case "fu_subject":
+        return subjectQuickChoices();
+      case "design":
+      case "fu_design":
+        return designChoices();
+      case "fu_ask":
+        return afterEmailChoices();
+      default:
+        return undefined;
+    }
+  }
+
   async function sendChat(text: string) {
     const message = text.trim();
     if (!message || chatting) {
@@ -2295,10 +2561,19 @@ export default function PortalAutomationPage({
     }
     setChatError("");
     setDraft("");
+    speech.stop();
+
+    const appendUser = (content: string) => {
+      setChat((prev) => {
+        const next: ChatTurn[] = [...prev, { role: "user", content }];
+        chatRef.current = next;
+        return next;
+      });
+    };
 
     // Guided free-text answers (subject / HTML / custom gap).
     if (guideRef.current.active && guideRef.current.awaitingText) {
-      setChat((prev) => [...prev, { role: "user", content: message }]);
+      appendUser(message);
       await handleGuideText(message);
       return;
     }
@@ -2306,15 +2581,61 @@ export default function PortalAutomationPage({
     // Any “setup automation / campaign” intent → guided buttons immediately
     // (do not dump a long free-text plan first).
     if (!locked && isGuideStartMessage(message)) {
-      setChat((prev) => [...prev, { role: "user", content: message }]);
+      appendUser(message);
       await beginGuidedSetup();
+      return;
+    }
+
+    // Mid-guide free text that isn't the expected field → ask clarifying Q + choices.
+    if (guideRef.current.active && !guideRef.current.awaitingText && !locked) {
+      appendUser(message);
+      const step = guideRef.current.step;
+      const choices = clarifyGuideChoices(step);
+      pushAssistant(
+        `Got it — “${message.slice(0, 120)}${message.length > 120 ? "…" : ""}”. I still need a clear pick for this step. Tap one option below (or speak your answer).`,
+        choices,
+        step,
+      );
       return;
     }
 
     setChatting(true);
     const nextHistory = [...chat, { role: "user" as const, content: message }];
+    chatRef.current = nextHistory;
     setChat(nextHistory);
     try {
+      const gaps: string[] = [];
+      if (steps.length === 0) {
+        gaps.push("no emails on the canvas yet");
+      }
+      for (const [index, step] of steps.entries()) {
+        const campaign = campaignByStep[step.id];
+        const label = `Email ${index + 1}`;
+        if (!step.campaignId) {
+          gaps.push(`${label}: campaign not created`);
+        }
+        if (!campaign?.senderId) {
+          gaps.push(`${label}: sender missing`);
+        }
+        if (
+          !(
+            campaign?.listId ||
+            (campaign?.individualContacts?.length ?? 0) > 0
+          )
+        ) {
+          gaps.push(`${label}: recipients / list missing`);
+        }
+        if (!campaign?.subject?.trim()) {
+          gaps.push(`${label}: subject missing`);
+        }
+        if (!campaign?.designHtml && !campaign?.hasDesign) {
+          gaps.push(`${label}: HTML / design missing`);
+        }
+        if (index > 0 && (step.waitDays === undefined || step.waitDays === null)) {
+          gaps.push(`${label}: wait gap missing`);
+        }
+      }
+
       const response = await fetch("/api/automation/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2327,6 +2648,7 @@ export default function PortalAutomationPage({
             status,
             stepCount: steps.length,
             guidedSetup: guideRef.current.active,
+            missing: gaps,
             steps: steps.map((step, index) => {
               const campaign = campaignByStep[step.id];
               return {
@@ -2357,11 +2679,16 @@ export default function PortalAutomationPage({
           typeof data?.error === "string" ? data.error : "Chat failed",
         );
       }
+      const reply = String(data.reply || "");
+      const offerGuide = !locked && gaps.length > 0;
       setChat((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: String(data.reply || ""),
+          content: reply,
+          choices: offerGuide
+            ? [{ id: "start_guide", label: "Continue setup with choices" }]
+            : undefined,
         },
       ]);
     } catch (error) {
@@ -2536,12 +2863,13 @@ export default function PortalAutomationPage({
           <div className="auto-ai-suggestions">
             {SUGGESTIONS.map((item) => (
               <button
-                key={item}
+                key={item.message}
                 type="button"
                 className="auto-ai-chip"
-                onClick={() => void sendChat(item)}
+                onClick={() => void sendChat(item.message)}
               >
-                {item}
+                <strong>{item.label}</strong>
+                <span>{item.description}</span>
               </button>
             ))}
           </div>
@@ -2602,11 +2930,13 @@ export default function PortalAutomationPage({
         )}
 
         {chatError ? <p className="auto-ai-error">{chatError}</p> : null}
+        {speech.error ? <p className="auto-ai-error">{speech.error}</p> : null}
 
         <form
           className="auto-ai-composer"
           onSubmit={(event: FormEvent) => {
             event.preventDefault();
+            speech.stop();
             void sendChat(draft);
           }}
         >
@@ -2617,6 +2947,7 @@ export default function PortalAutomationPage({
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
+                  speech.stop();
                   void sendChat(draft);
                 }
               }}
@@ -2625,24 +2956,70 @@ export default function PortalAutomationPage({
                   ? "Paste email HTML here…"
                   : guide.awaitingText === "subject" ||
                       guide.awaitingText === "fu_subject"
-                    ? "Type the subject line…"
+                    ? "Type or speak the subject line…"
                     : guide.awaitingText === "fu_gap_custom"
-                      ? "Type number of days…"
+                      ? "Type or speak number of days…"
                       : guide.active
-                        ? "Or type an answer…"
-                        : "Ask anything, or say “Set up this campaign”…"
+                        ? "Type or speak an answer…"
+                        : "Ask, speak, or say “Set up this campaign”…"
               }
               disabled={chatting}
               rows={2}
             />
-            <button
-              type="submit"
-              className="auto-ai-send"
-              disabled={chatting || !draft.trim()}
-              aria-label="Send"
-            >
-              Send
-            </button>
+            <div className="auto-ai-box-actions">
+              {speech.supported ? (
+                <button
+                  type="button"
+                  className={`auto-ai-mic${speech.listening ? " is-listening" : ""}`}
+                  onClick={() => speech.toggle()}
+                  disabled={chatting || locked}
+                  aria-pressed={speech.listening}
+                  aria-label={speech.listening ? "Stop speaking" : "Speak"}
+                  title={
+                    speech.listening
+                      ? "Stop speaking"
+                      : "Speak instead of typing"
+                  }
+                >
+                  {speech.listening ? (
+                    <span className="auto-ai-mic-wave" aria-hidden="true">
+                      <i />
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                  ) : (
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+                      <rect
+                        x="9"
+                        y="3"
+                        width="6"
+                        height="11"
+                        rx="3"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                      />
+                      <path
+                        d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  )}
+                </button>
+              ) : null}
+              <button
+                type="submit"
+                className="auto-ai-send"
+                disabled={chatting || !draft.trim()}
+                aria-label="Send"
+              >
+                Send
+              </button>
+            </div>
           </div>
         </form>
       </aside>

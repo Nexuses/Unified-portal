@@ -11,6 +11,7 @@ import { importContactsToList, createList } from "@/lib/crm-import";
 import type { ContactDoc } from "@/lib/crm";
 import {
   createProjectDripCampaign,
+  getProjectDripCampaign,
   updateProjectDripCampaign,
 } from "@/lib/drip-campaigns-server";
 import {
@@ -35,6 +36,8 @@ import { getSuppressionSets, isSuppressedAddress } from "@/lib/unsubscribe-serve
 const LOCKED_SEQUENCE_AT = new Date("2099-01-01T00:00:00.000Z");
 
 export type PersonaliseRolloutInput = {
+  /** Reuse a draft created on file upload instead of making a second campaign. */
+  campaignId?: string;
   listName?: string;
   fileName?: string;
   contacts?: PersonaliseContact[];
@@ -238,13 +241,25 @@ export async function rolloutPersonaliseCampaign(input: {
 
   const signatureHtml = cleanSignatureHtml(String(input.body.signatureHtml ?? ""));
   const sequences = sequencesFromContacts(ready, signatureHtml);
-  const campaign = await createProjectDripCampaign(
-    input.projectId,
-    input.userId,
-    plan.listName,
-    "oneone",
-    { autoNumber: true },
-  );
+  const existingCampaignId = String(input.body.campaignId ?? "").trim();
+  let campaign =
+    existingCampaignId
+      ? await getProjectDripCampaign(input.projectId, existingCampaignId, "oneone")
+      : null;
+  if (campaign) {
+    const tags = campaign.tags ?? [];
+    if (!tags.includes("personalise") || campaign.status !== "draft") {
+      throw new Error("That draft cannot be scheduled from this upload.");
+    }
+  } else {
+    campaign = await createProjectDripCampaign(
+      input.projectId,
+      input.userId,
+      plan.listName,
+      "oneone",
+      { autoNumber: true },
+    );
+  }
 
   const senderName =
     formatSenderDisplayName(fromEmail).match(/^(.+?)\s*</)?.[1]?.trim() || fromEmail;
@@ -363,6 +378,9 @@ export async function rolloutPersonaliseCampaign(input: {
       designHtml: sequences[0]?.designHtml,
       timezone,
       timezoneEnabled: true,
+      // Draft upload payload is no longer needed after blast creation.
+      personalisePlan: undefined,
+      name: campaign.name || plan.listName,
     },
     "oneone",
   );

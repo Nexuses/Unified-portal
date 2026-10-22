@@ -47,6 +47,28 @@ export type DripCampaign = {
   scheduledAt?: string;
   sentAt?: string;
   tags: string[];
+  /**
+   * Personalise drafts only: uploaded file plan kept until schedule/rollout.
+   * Omitted from campaign list payloads.
+   */
+  personalisePlan?: {
+    listName: string;
+    fileName: string;
+    contacts: Array<{
+      firstName: string;
+      lastName: string;
+      email: string;
+      companyName: string;
+      position: string;
+      personalLinkedIn: string;
+      steps: Array<{
+        label: string;
+        day: number;
+        subject: string;
+        body: string;
+      }>;
+    }>;
+  };
   recipients: number;
   opens: number;
   clicks: number;

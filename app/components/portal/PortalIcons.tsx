@@ -79,6 +79,16 @@ export function IconKnowledge({ className }: IconProps) {
   );
 }
 
+export function IconFiles({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" {...stroke}>
+      <path d="M4.5 7.5V18a1.5 1.5 0 0 0 1.5 1.5h12A1.5 1.5 0 0 0 19.5 18V9.5L14.5 4.5H6A1.5 1.5 0 0 0 4.5 6v1.5z" />
+      <path d="M14.5 4.5V9.5H19.5" />
+      <path d="M8 13h8M8 16.5h5" />
+    </svg>
+  );
+}
+
 export function IconInbox({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
@@ -231,6 +241,8 @@ export function getNavIcon(pageId: string) {
       return IconKnowledge;
     case "inbox":
       return IconInbox;
+    case "files":
+      return IconFiles;
     case "unsub":
       return IconSuppression;
     case "integrations":

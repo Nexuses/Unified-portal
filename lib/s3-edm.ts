@@ -1,6 +1,7 @@
 import {
   GetBucketLocationCommand,
   ListBucketsCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -91,6 +92,270 @@ export async function uploadDataImage(bucket: EdmBucket, dataUrl: string) {
     }),
   );
   return `https://${bucket.name}.s3.${bucket.region}.amazonaws.com/${key}`;
+}
+
+export type BucketFile = {
+  key: string;
+  name: string;
+  size: number;
+  updatedAt?: string;
+  url: string;
+  bucket?: string;
+};
+
+const MAX_LISTED_OBJECTS = 5000;
+
+function mapBucketObject(
+  bucket: EdmBucket,
+  item: { Key?: string; Size?: number; LastModified?: Date },
+): BucketFile | null {
+  if (!item.Key || item.Key.endsWith("/")) {
+    return null;
+  }
+  const key = item.Key;
+  const name = key.includes("/") ? key.slice(key.lastIndexOf("/") + 1) : key;
+  return {
+    key,
+    name,
+    size: Number(item.Size) || 0,
+    updatedAt: item.LastModified?.toISOString(),
+    url: `https://${bucket.name}.s3.${bucket.region}.amazonaws.com/${key
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/")}`,
+    bucket: bucket.name,
+  };
+}
+
+function sortFilesNewestFirst(files: BucketFile[]) {
+  return [...files].sort((a, b) => {
+    const left = a.updatedAt ? Date.parse(a.updatedAt) : 0;
+    const right = b.updatedAt ? Date.parse(b.updatedAt) : 0;
+    return right - left;
+  });
+}
+
+/** Recent objects in a project bucket (newest first). */
+export async function listBucketFiles(bucket: EdmBucket, limit = 100) {
+  const listed = await listAllFilesInBucket(bucket, limit);
+  return listed.files;
+}
+
+/** Walk a bucket (capped) so we can paginate with a real total. */
+export async function listAllFilesInBucket(
+  bucket: EdmBucket,
+  maxObjects = MAX_LISTED_OBJECTS,
+) {
+  const files: BucketFile[] = [];
+  let token: string | undefined;
+  let truncated = false;
+  while (files.length < maxObjects) {
+    const listed = await s3(bucket.region).send(
+      new ListObjectsV2Command({
+        Bucket: bucket.name,
+        MaxKeys: Math.min(1000, maxObjects - files.length),
+        ContinuationToken: token,
+      }),
+    );
+    for (const item of listed.Contents ?? []) {
+      const mapped = mapBucketObject(bucket, item);
+      if (mapped) {
+        files.push(mapped);
+      }
+      if (files.length >= maxObjects) {
+        break;
+      }
+    }
+    if (!listed.IsTruncated || !listed.NextContinuationToken) {
+      token = undefined;
+      break;
+    }
+    truncated = true;
+    token = listed.NextContinuationToken;
+  }
+  if (token) {
+    truncated = true;
+  }
+  return {
+    files: sortFilesNewestFirst(files),
+    truncated,
+  };
+}
+
+export type FileTypeFilter =
+  | "all"
+  | "images"
+  | "video"
+  | "pdf"
+  | "html"
+  | "docs"
+  | "other";
+
+function extensionOfName(name: string) {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+export function matchesFileTypeFilter(
+  file: BucketFile,
+  filter: FileTypeFilter,
+) {
+  if (filter === "all") {
+    return true;
+  }
+  const ext = extensionOfName(file.name);
+  if (filter === "images") {
+    return ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"].includes(
+      ext,
+    );
+  }
+  if (filter === "video") {
+    return ["mp4", "webm", "mov", "m4v", "avi", "mkv"].includes(ext);
+  }
+  if (filter === "pdf") {
+    return ext === "pdf";
+  }
+  if (filter === "html") {
+    return ["html", "htm"].includes(ext);
+  }
+  if (filter === "docs") {
+    return ["doc", "docx", "txt", "md", "rtf", "csv", "xls", "xlsx", "ppt", "pptx"].includes(
+      ext,
+    );
+  }
+  // other
+  const known = [
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "svg",
+    "avif",
+    "bmp",
+    "ico",
+    "mp4",
+    "webm",
+    "mov",
+    "m4v",
+    "avi",
+    "mkv",
+    "pdf",
+    "html",
+    "htm",
+    "doc",
+    "docx",
+    "txt",
+    "md",
+    "rtf",
+    "csv",
+    "xls",
+    "xlsx",
+    "ppt",
+    "pptx",
+  ];
+  return !known.includes(ext);
+}
+
+function normalizeFileTypeFilter(value: unknown): FileTypeFilter {
+  const raw = String(value ?? "all").trim().toLowerCase();
+  if (
+    raw === "images" ||
+    raw === "video" ||
+    raw === "pdf" ||
+    raw === "html" ||
+    raw === "docs" ||
+    raw === "other"
+  ) {
+    return raw;
+  }
+  return "all";
+}
+
+function matchesFileSearch(file: BucketFile, query: string) {
+  const q = query.trim().toLowerCase();
+  if (!q) {
+    return true;
+  }
+  return (
+    file.name.toLowerCase().includes(q) ||
+    file.key.toLowerCase().includes(q) ||
+    (file.bucket || "").toLowerCase().includes(q)
+  );
+}
+
+/** One page across one bucket or all project buckets. */
+export async function listFilesCatalogPage(
+  buckets: EdmBucket[],
+  options?: {
+    bucketName?: string; // omit / "all" = every bucket
+    page?: number;
+    pageSize?: number;
+    type?: string;
+    q?: string;
+  },
+) {
+  const pageSize = Math.max(1, Math.min(200, options?.pageSize ?? 50));
+  const page = Math.max(1, Math.floor(options?.page ?? 1));
+  const type = normalizeFileTypeFilter(options?.type);
+  const q = String(options?.q ?? "").trim().slice(0, 200);
+  const requested = (options?.bucketName || "all").trim();
+  const scope =
+    !requested || requested === "all"
+      ? buckets
+      : buckets.filter((item) => item.name === requested);
+
+  const batches = await Promise.all(
+    scope.map((item) => listAllFilesInBucket(item)),
+  );
+  const merged = sortFilesNewestFirst(
+    batches
+      .flatMap((batch) => batch.files)
+      .filter(
+        (file) =>
+          matchesFileTypeFilter(file, type) && matchesFileSearch(file, q),
+      ),
+  );
+  const truncated = batches.some((batch) => batch.truncated);
+  const total = merged.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * pageSize;
+  return {
+    files: merged.slice(start, start + pageSize),
+    page: safePage,
+    pageSize,
+    total,
+    totalPages: total === 0 ? 0 : totalPages,
+    truncated,
+    bucket: requested === "all" || !requested ? "all" : requested,
+    type,
+    q,
+  };
+}
+
+/** One page of bucket objects (S3 continuation token for next page). */
+export async function listBucketFilesPage(
+  bucket: EdmBucket,
+  options?: { pageSize?: number; continuationToken?: string },
+) {
+  const pageSize = Math.max(1, Math.min(200, options?.pageSize ?? 50));
+  const listed = await s3(bucket.region).send(
+    new ListObjectsV2Command({
+      Bucket: bucket.name,
+      MaxKeys: pageSize,
+      ContinuationToken: options?.continuationToken || undefined,
+    }),
+  );
+  const files = (listed.Contents ?? [])
+    .map((item) => mapBucketObject(bucket, item))
+    .filter((item): item is BucketFile => Boolean(item));
+  return {
+    files,
+    nextToken: listed.IsTruncated ? listed.NextContinuationToken || "" : "",
+    hasMore: Boolean(listed.IsTruncated && listed.NextContinuationToken),
+    pageSize,
+  };
 }
 
 /** Upload one file to a project bucket and return its public URL. */

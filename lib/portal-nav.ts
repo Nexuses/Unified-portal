@@ -17,6 +17,7 @@ export type PortalPageId =
   | "branding"
   | "knowledge"
   | "inbox"
+  | "files"
   | "unsub"
   | "integrations";
 
@@ -62,6 +63,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   branding: "/portal/branding",
   knowledge: "/portal/knowledge-base",
   inbox: "/portal/inbox",
+  files: "/portal/file-manager",
   unsub: "/portal/unsub",
   integrations: "/portal/integrations",
 };
@@ -157,6 +159,12 @@ export const PORTAL_NAV: PortalNavItem[] = [
   },
   { type: "item", id: "inbox", label: "Master Inbox", href: PORTAL_ROUTES.inbox },
   {
+    type: "item",
+    id: "files",
+    label: "File Manager",
+    href: PORTAL_ROUTES.files,
+  },
+  {
     type: "group",
     id: "marketing",
     label: "Marketing",
@@ -212,6 +220,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   branding: "Branding",
   knowledge: "Knowledge Base",
   inbox: "Master Inbox",
+  files: "File Manager",
   unsub: "Suppression List",
   integrations: "Integrations",
 };
@@ -250,6 +259,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/branding")) return "branding";
   if (pathname.startsWith("/portal/knowledge-base")) return "knowledge";
   if (pathname.startsWith("/portal/inbox")) return "inbox";
+  if (pathname.startsWith("/portal/file-manager")) return "files";
   if (pathname.startsWith("/portal/unsub")) return "unsub";
   if (pathname.startsWith("/portal/integrations")) return "integrations";
   return "dashboard";

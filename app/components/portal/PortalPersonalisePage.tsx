@@ -20,7 +20,12 @@ import { formatTimezoneLabel, listCampaignTimezones } from "@/lib/campaign-timez
 import CampaignScheduleDrawer, {
   type CampaignScheduleInput,
 } from "@/app/components/portal/CampaignScheduleDrawer";
-import { SEND_WEEKDAYS } from "@/lib/drip-campaigns";
+import {
+  SEND_WEEKDAYS,
+  createDripCampaign,
+  patchDripCampaign,
+  type DripCampaign,
+} from "@/lib/drip-campaigns";
 
 const CONTACTS_PAGE_SIZE = 50;
 
@@ -153,31 +158,50 @@ function PitchPreview({ body, signature }: { body: string; signature: string }) 
 
 export default function PortalPersonalisePage({
   onCreated,
+  campaignId: initialCampaignId,
+  initialCampaign,
 }: {
   onCreated: (campaignId: string) => void;
+  /** Existing draft from the Personalise list (resume after upload). */
+  campaignId?: string;
+  initialCampaign?: DripCampaign | null;
 }) {
-  const [plan, setPlan] = useState<PersonalisePlan | null>(null);
+  const initialPlan = initialCampaign?.personalisePlan ?? null;
+  const [plan, setPlan] = useState<PersonalisePlan | null>(
+    initialPlan
+      ? {
+          listName: initialPlan.listName,
+          fileName: initialPlan.fileName,
+          contacts: initialPlan.contacts,
+        }
+      : null,
+  );
+  const [draftCampaignId, setDraftCampaignId] = useState(initialCampaignId || "");
   const [senders, setSenders] = useState<SenderOption[]>([]);
-  const [senderId, setSenderId] = useState("");
-  const [replyTo, setReplyTo] = useState("");
-  const [windowStart, setWindowStart] = useState("09:00");
-  const [windowEnd, setWindowEnd] = useState("18:00");
-  const [sendStartDay, setSendStartDay] = useState(1);
-  const [sendEndDay, setSendEndDay] = useState(0);
-  const [emailGapMinutes, setEmailGapMinutes] = useState(5);
+  const [senderId, setSenderId] = useState(initialCampaign?.senderId || "");
+  const [replyTo, setReplyTo] = useState(initialCampaign?.replyToEmail || "");
+  const [windowStart, setWindowStart] = useState(initialCampaign?.windowStart || "09:00");
+  const [windowEnd, setWindowEnd] = useState(initialCampaign?.windowEnd || "18:00");
+  const [sendStartDay, setSendStartDay] = useState(initialCampaign?.sendStartDay ?? 1);
+  const [sendEndDay, setSendEndDay] = useState(initialCampaign?.sendEndDay ?? 0);
+  const [emailGapMinutes, setEmailGapMinutes] = useState(
+    initialCampaign?.emailGapMinutes ?? 5,
+  );
   const [openIndex, setOpenIndex] = useState<number | null>(0);
   const [busy, setBusy] = useState<"extract" | "rollout" | null>(null);
   const [error, setError] = useState("");
-  const [fileLabel, setFileLabel] = useState("");
+  const [fileLabel, setFileLabel] = useState(initialPlan?.fileName || "");
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [suppressed, setSuppressed] = useState<Set<string>>(() => new Set());
   const [page, setPage] = useState(1);
-  const [stepGaps, setStepGaps] = useState<number[]>([]);
+  const [stepGaps, setStepGaps] = useState<number[]>(() =>
+    initialPlan ? defaultStepGaps(initialPlan.contacts) : [],
+  );
   const [signatureHtml, setSignatureHtml] = useState("");
   const [signatureOpen, setSignatureOpen] = useState(false);
   const [signatureDraft, setSignatureDraft] = useState("");
   const [signatureTab, setSignatureTab] = useState<"code" | "preview">("code");
-  const [timezone, setTimezone] = useState("Asia/Kolkata");
+  const [timezone, setTimezone] = useState(initialCampaign?.timezone || "Asia/Kolkata");
   const timezones = useMemo(() => listCampaignTimezones(timezone), [timezone]);
   const [signatureTouched, setSignatureTouched] = useState(false);
   const [savedSignatures, setSavedSignatures] = useState<Record<string, string>>({});
@@ -322,6 +346,39 @@ export default function PortalPersonalisePage({
     );
   }
 
+  async function persistDraft(nextPlan: PersonalisePlan, existingId = draftCampaignId) {
+    const name = nextPlan.listName.trim() || nextPlan.fileName.trim() || "Personalise campaign";
+    const firstSubject = nextPlan.contacts[0]?.steps[0]?.subject?.trim();
+    const patch = {
+      tags: ["personalise"],
+      status: "draft" as const,
+      personalisePlan: nextPlan,
+      listName: nextPlan.listName,
+      recipients: nextPlan.contacts.length,
+      subject: firstSubject || undefined,
+      senderId: senderId || undefined,
+      windowStart,
+      windowEnd,
+      sendStartDay,
+      sendEndDay,
+      emailGapMinutes,
+      timezone,
+      timezoneEnabled: true,
+      replyToEnabled: Boolean(cleanReplyTo(replyTo)),
+      replyToEmail: cleanReplyTo(replyTo) || undefined,
+    };
+
+    if (existingId) {
+      await patchDripCampaign(existingId, { ...patch, name }, "oneone");
+      return existingId;
+    }
+
+    const created = await createDripCampaign(name, "oneone", { autoNumber: true });
+    await patchDripCampaign(created.id, patch, "oneone");
+    setDraftCampaignId(created.id);
+    return created.id;
+  }
+
   async function onFile(file: File | null) {
     if (!file) {
       return;
@@ -341,10 +398,13 @@ export default function PortalPersonalisePage({
         throw new Error(data.error || "Could not read that file.");
       }
       const gaps = defaultStepGaps(data.contacts);
+      const nextPlan = { ...data, contacts: applyStepGaps(data.contacts, gaps) };
       setStepGaps(gaps);
-      setPlan({ ...data, contacts: applyStepGaps(data.contacts, gaps) });
+      setPlan(nextPlan);
       setOpenIndex(0);
       setPage(1);
+      // Save as a Personalise draft so it shows in the campaign list immediately.
+      await persistDraft(nextPlan);
     } catch (err) {
       setPlan(null);
       setError(err instanceof Error ? err.message : "Could not read that file.");
@@ -365,10 +425,17 @@ export default function PortalPersonalisePage({
     setBusy("rollout");
     setError("");
     try {
+      let campaignId = draftCampaignId;
+      if (!campaignId) {
+        campaignId = await persistDraft(plan);
+      } else {
+        await persistDraft(plan, campaignId);
+      }
       const response = await fetch("/api/personalise/rollout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          campaignId,
           listName: plan.listName,
           fileName: plan.fileName,
           contacts: plan.contacts,
@@ -463,7 +530,8 @@ export default function PortalPersonalisePage({
     <div className="personalise-create">
       <p className="personalise-lead">
         Upload a doc or spreadsheet. Contacts, subjects, pitches, and follow-up gaps are
-        read from the file, even when the layout changes.{" "}
+        read from the file, even when the layout changes. The upload is saved as a draft
+        campaign so you can leave and come back.{" "}
         <a className="pz-sample-link" href="/samples/personalise-sample.csv" download>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
             <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
@@ -525,6 +593,7 @@ export default function PortalPersonalisePage({
                     .reduce((sum, contact) => sum + contact.steps.length, 0)
                     .toLocaleString()}{" "}
                   emails
+                  {draftCampaignId ? " · Saved as draft" : ""}
                 </span>
               </div>
             </div>

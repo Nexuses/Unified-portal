@@ -50,6 +50,7 @@ import {
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
 import CampaignScheduleDrawer from "@/app/components/portal/CampaignScheduleDrawer";
 import PersonaliseCampaignView from "@/app/components/portal/PersonaliseCampaignView";
+import PortalPersonalisePage from "@/app/components/portal/PortalPersonalisePage";
 import {
   deleteEmailTemplate,
   getEmailTemplate,
@@ -5907,6 +5908,33 @@ export default function PortalCampaignDetailPage({
       campaign.status === "scheduled" ||
       campaign.status === "sending" ||
       (campaign.status === "paused" && !pausedEditing));
+
+  // Resume Personalise draft that was saved when the file was uploaded.
+  if (
+    personalise &&
+    campaign.status === "draft" &&
+    campaign.personalisePlan &&
+    campaign.personalisePlan.contacts.length > 0
+  ) {
+    return (
+      <div className="drip-detail-page">
+        <div className="drip-detail-breadcrumb">
+          <Link href={listHref} onClick={(event) => void goBackToList(event)}>
+            {listLabel}
+          </Link>
+          <span>/</span>
+          <span>Draft from upload</span>
+        </div>
+        <PortalPersonalisePage
+          campaignId={campaign.id}
+          initialCampaign={campaign}
+          onCreated={(id) => {
+            router.push(portalCampaignRoute(id, "oneone", ["personalise"]));
+          }}
+        />
+      </div>
+    );
+  }
 
   if (personalise && setupViewing) {
     return (

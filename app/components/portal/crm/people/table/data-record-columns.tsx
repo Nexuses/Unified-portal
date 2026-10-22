@@ -96,9 +96,9 @@ function TechnologiesCell({ value }: { value: string }) {
 
   return (
     <div className="flex min-w-0 items-center gap-1.5" title={items.join(", ")}>
-      {visible.map((tech) => (
+      {visible.map((tech, index) => (
         <span
-          key={tech}
+          key={`${tech}-${index}`}
           className={`inline-flex max-w-[9rem] shrink-0 truncate rounded-full px-2.5 py-0.5 text-xs font-medium ${techBadgeClass(tech)}`}
         >
           {tech}

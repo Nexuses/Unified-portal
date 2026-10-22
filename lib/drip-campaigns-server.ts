@@ -85,6 +85,7 @@ export type DripCampaignDoc = {
   sendEndDay?: number;
   emailGapMinutes?: number;
   timeline?: DripCampaign["timeline"];
+  personalisePlan?: DripCampaign["personalisePlan"];
   createdBy: ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
@@ -147,6 +148,7 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     sendEndDay: doc.sendEndDay,
     emailGapMinutes: doc.emailGapMinutes,
     timeline: doc.timeline,
+    personalisePlan: doc.personalisePlan,
     createdAt: doc.createdAt?.toISOString(),
     updatedAt: doc.updatedAt?.toISOString(),
   };
@@ -158,6 +160,7 @@ function mapCampaignListItem(doc: DripCampaignDoc): DripCampaign {
   return {
     ...campaign,
     designHtml: undefined,
+    personalisePlan: undefined,
     sequences: campaign.sequences?.map((sequence) => ({
       ...sequence,
       designHtml: undefined,
@@ -800,6 +803,7 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "sendEndDay",
   "emailGapMinutes",
   "timeline",
+  "personalisePlan",
 ];
 
 export async function updateProjectDripCampaign(
