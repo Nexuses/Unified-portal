@@ -1,4 +1,5 @@
 import {
+  fetchDripCampaign,
   patchDripCampaign,
   type CampaignKind,
   type DripCampaign,
@@ -13,7 +14,7 @@ export const AUTOMATION_CAMPAIGN_TAG = "automation";
 export const AUTOMATION_FOLLOW_UP_TAG = "automation-follow-up";
 
 /** Builder UI is gated while Automation is rebuilt. Existing code stays in place. */
-export const AUTOMATION_UNDER_DEVELOPMENT = true;
+export const AUTOMATION_UNDER_DEVELOPMENT = false;
 
 export type AutomationStep = {
   id: string;
@@ -143,6 +144,59 @@ export async function deleteAutomation(id: string): Promise<void> {
       typeof data?.error === "string" ? data.error : "Failed to delete automation",
     );
   }
+}
+
+/**
+ * Same idea as Edit on a scheduled Drip/1-1 campaign: move the automation
+ * back to draft and unlock linked campaigns that are not finished sending.
+ */
+export async function reopenAutomationForEdit(
+  automation: Pick<PortalAutomation, "id" | "status" | "steps">,
+): Promise<PortalAutomation> {
+  if (automation.status === "completed") {
+    throw new Error("Completed automations cannot be edited.");
+  }
+  if (automation.status === "draft") {
+    const current = await fetchAutomation(automation.id);
+    if (!current) {
+      throw new Error("Automation not found");
+    }
+    return current;
+  }
+
+  const updated = await patchAutomation(automation.id, { status: "draft" });
+
+  await Promise.all(
+    (automation.steps ?? []).map(async (step) => {
+      if (!step.campaignId) {
+        return;
+      }
+      const kind: CampaignKind =
+        step.campaignKind === "oneone" ? "oneone" : "drip";
+      try {
+        const campaign = await fetchDripCampaign(step.campaignId, kind);
+        if (!campaign) {
+          return;
+        }
+        if (campaign.status === "scheduled") {
+          await patchDripCampaign(campaign.id, { status: "draft" }, kind);
+        } else if (campaign.status === "sending") {
+          // Match 1-1: pause live sends so setup can be changed.
+          await patchDripCampaign(campaign.id, { status: "paused" }, kind);
+        }
+      } catch {
+        /* keep going — automation is already draft */
+      }
+    }),
+  );
+
+  return updated;
+}
+
+export function automationCanReopenForEdit(
+  status: AutomationStatus | string | undefined,
+) {
+  return status === "scheduled" || status === "running";
 }
 
 export function portalAutomationRoute(id: string) {

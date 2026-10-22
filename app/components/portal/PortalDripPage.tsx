@@ -19,6 +19,7 @@ import {
 } from "@/lib/drip-campaigns";
 import { portalCampaignRoute } from "@/lib/portal-nav";
 import {
+  campaignHasAutomationTag,
   ensureAutomationCampaignTags,
 } from "@/lib/automations";
 import PortalPersonalisePage from "@/app/components/portal/PortalPersonalisePage";
@@ -136,13 +137,17 @@ export default function PortalDripPage({
   const fetchKind: CampaignKind = personalise ? "oneone" : kind;
 
   function visibleCampaigns(items: DripCampaign[]) {
+    // Automation-owned campaigns stay on Automation only.
+    const withoutAutomation = items.filter(
+      (item) => !campaignHasAutomationTag(item),
+    );
     if (personalise) {
-      return items.filter(isPersonaliseCampaign);
+      return withoutAutomation.filter(isPersonaliseCampaign);
     }
     if (fetchKind === "oneone") {
-      return items.filter((item) => !isPersonaliseCampaign(item));
+      return withoutAutomation.filter((item) => !isPersonaliseCampaign(item));
     }
-    return items;
+    return withoutAutomation;
   }
 
   function campaignPath(campaign: DripCampaign, extra?: string) {

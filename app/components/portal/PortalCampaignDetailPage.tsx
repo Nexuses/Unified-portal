@@ -4629,6 +4629,18 @@ function SequencesPanel({
   );
 }
 
+function engagementAudienceLabel(
+  engagement?: "opens" | "clicks" | "opens_or_clicks",
+) {
+  if (engagement === "opens") {
+    return "Opened";
+  }
+  if (engagement === "clicks") {
+    return "Clicked";
+  }
+  return "Opened or clicked";
+}
+
 function buildSteps(
   campaign: DripCampaign,
   remainingEmails?: number,
@@ -4636,22 +4648,30 @@ function buildSteps(
     automationFollowUp?: boolean;
     senderProviderId?: SmtpSender["provider"] | null;
     senderAllowed?: boolean;
+    pastAudience?: {
+      campaignName: string;
+      engagement?: "opens" | "clicks" | "opens_or_clicks";
+    };
   },
 ): SetupStep[] {
   const followUp = Boolean(options?.automationFollowUp);
+  const pastAudience = options?.pastAudience;
+  const pastAudienceLocked = Boolean(pastAudience);
   const senderDone =
     Boolean(campaign.senderId && campaign.senderEmail) &&
     options?.senderAllowed !== false;
+  const individualCount = campaign.individualContacts?.length ?? 0;
   const recipientsCount =
     campaign.recipientMode === "individual"
-      ? campaign.individualContacts?.length ?? 0
+      ? individualCount
       : campaign.listId
         ? campaign.recipients
         : 0;
   const recipientsDone = followUp
     ? true
-    : Boolean(campaign.listId && campaign.listName) ||
-      (campaign.individualContacts?.length ?? 0) > 0;
+    : pastAudienceLocked
+      ? individualCount > 0
+      : Boolean(campaign.listId && campaign.listName) || individualCount > 0;
   const oneOne = isOneOneCampaign(campaign);
   const sequenceCount = campaignSequences(campaign).length;
 
@@ -4715,22 +4735,45 @@ function buildSteps(
         ? recipientsCount > 0
           ? `${recipientsCount.toLocaleString()} engagers so far · auto-filled from opens & clicks`
           : "Filled later automatically from opens & clicks (after the wait)"
-        : recipientsDone
-          ? `${campaign.listName ? `${campaign.listName} · ` : ""}${campaign.recipients.toLocaleString()} recipients${
-              remainingEmails !== undefined
-                ? ` • ${remainingEmails.toLocaleString()} remaining emails`
-                : ""
-            }`
-          : "The people who receive your campaign",
+        : pastAudience
+          ? (
+              <span className="drip-step-audience-line">
+                <strong>
+                  {recipientsCount.toLocaleString()} recipient
+                  {recipientsCount === 1 ? "" : "s"}
+                </strong>
+                <span className="drip-step-audience-meta">
+                  {pastAudience.campaignName}
+                  {" · "}
+                  {engagementAudienceLabel(pastAudience.engagement)}
+                </span>
+                {remainingEmails !== undefined ? (
+                  <span>
+                    {` · ${remainingEmails.toLocaleString()} remaining emails`}
+                  </span>
+                ) : null}
+              </span>
+            )
+          : recipientsDone
+            ? `${
+                campaign.listName ? `${campaign.listName} · ` : ""
+              }${recipientsCount.toLocaleString()} recipients${
+                remainingEmails !== undefined
+                  ? ` • ${remainingEmails.toLocaleString()} remaining emails`
+                  : ""
+              }`
+            : "The people who receive your campaign",
       action: followUp
         ? recipientsCount > 0
           ? "Auto audience"
           : "Pending engagers"
-        : recipientsDone
-          ? "Manage recipients"
-          : "Add recipients",
+        : pastAudience
+          ? "Past audience"
+          : recipientsDone
+            ? "Manage recipients"
+            : "Add recipients",
       done: recipientsDone,
-      locked: followUp,
+      locked: followUp || pastAudienceLocked,
     },
     ...contentSteps,
     {
@@ -4743,21 +4786,42 @@ function buildSteps(
   ];
 }
 
+export type AutomationCampaignEmbed = {
+  stepId?: string;
+  automationId?: string;
+  followUp?: boolean;
+  /** Past-campaign start: recipients are engagers from this source. */
+  pastAudience?: {
+    campaignName: string;
+    engagement?: "opens" | "clicks" | "opens_or_clicks";
+  };
+  /** Close the Automation drawer (or navigate back) when setup is done. */
+  onDone: () => void;
+};
+
 export default function PortalCampaignDetailPage({
   campaignId,
   kind = "drip",
   personalise = false,
+  automationEmbed,
 }: {
   campaignId: string;
   kind?: CampaignKind;
   personalise?: boolean;
+  /** When set, setup runs inside Automation’s right drawer (no Drip/1-1 navigation). */
+  automationEmbed?: AutomationCampaignEmbed;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const fromAutomation = searchParams.get("fromAutomation") === "1";
-  const automationStepId = searchParams.get("stepId");
-  const queryFollowUp = searchParams.get("automationFollowUp") === "1";
-  const automationRecordId = searchParams.get("automationId");
+  const fromAutomation =
+    Boolean(automationEmbed) || searchParams.get("fromAutomation") === "1";
+  const automationStepId =
+    automationEmbed?.stepId ?? searchParams.get("stepId") ?? null;
+  const queryFollowUp =
+    Boolean(automationEmbed?.followUp) ||
+    searchParams.get("automationFollowUp") === "1";
+  const automationRecordId =
+    automationEmbed?.automationId ?? searchParams.get("automationId") ?? null;
   const showRescheduleNotice = searchParams.get("reschedule") === "1";
   const [campaign, setCampaign] = useState<DripCampaign | null>(null);
   const [rescheduleNotice, setRescheduleNotice] = useState(showRescheduleNotice);
@@ -5053,9 +5117,17 @@ export default function PortalCampaignDetailPage({
             automationFollowUp,
             senderProviderId: selectedSenderProviderId,
             senderAllowed,
+            pastAudience: automationEmbed?.pastAudience,
           })
         : [],
-    [campaign, remainingEmails, automationFollowUp, selectedSenderProviderId, senderAllowed],
+    [
+      campaign,
+      remainingEmails,
+      automationFollowUp,
+      selectedSenderProviderId,
+      senderAllowed,
+      automationEmbed?.pastAudience,
+    ],
   );
   const requiredStepsComplete = steps.filter((step) => !step.noIcon).every((step) => step.done);
 
@@ -5722,6 +5794,9 @@ export default function PortalCampaignDetailPage({
     if (automationFollowUp && (stepId === "sender" || stepId === "recipients")) {
       return;
     }
+    if (automationEmbed?.pastAudience && stepId === "recipients") {
+      return;
+    }
     if (stepId === "sender") {
       if (senderPanelOpen) {
         closeSenderPanel();
@@ -5889,25 +5964,39 @@ export default function PortalCampaignDetailPage({
   const setupTitle = editingPaused
     ? "Campaign is paused"
     : setupReady
-      ? "Ready to schedule"
+      ? fromAutomation
+        ? "Campaign ready"
+        : "Ready to schedule"
       : `${doneStepCount} of ${requiredStepList.length} steps done`;
   const setupHint = editingPaused
     ? "Change the sender, list, or sequences, then go back and resume."
     : setupReady
-      ? "Preview the email, then choose Schedule."
+      ? fromAutomation
+        ? "Preview the email, then choose Done to return to the flow."
+        : "Preview the email, then choose Schedule."
       : nextStep
         ? `Next: ${nextStep.title}.`
         : "";
 
   return (
-    <div className="drip-detail-page">
-      <div className="drip-detail-breadcrumb">
-        <Link href={listHref} onClick={(event) => void goBackToList(event)}>
-          {listLabel}
-        </Link>
-        <span>/</span>
-        <span>{editingPaused ? "Edit campaign" : "Create an email campaign"}</span>
-      </div>
+    <div
+      className={`drip-detail-page${automationEmbed ? " drip-detail-page-embed" : ""}`}
+    >
+      {automationEmbed ? (
+        <div className="drip-detail-breadcrumb">
+          <span>Automation</span>
+          <span>/</span>
+          <span>Campaign setup</span>
+        </div>
+      ) : (
+        <div className="drip-detail-breadcrumb">
+          <Link href={listHref} onClick={(event) => void goBackToList(event)}>
+            {listLabel}
+          </Link>
+          <span>/</span>
+          <span>{editingPaused ? "Edit campaign" : "Create an email campaign"}</span>
+        </div>
+      )}
 
       {rescheduleNotice || showRescheduleNotice ? (
         <div className="drip-reschedule-alert" role="status">
@@ -5966,16 +6055,29 @@ export default function PortalCampaignDetailPage({
 
       <div className="drip-detail-head">
         <div className="drip-detail-title-wrap">
-          <Link
-            href={listHref}
-            className="drip-back"
-            aria-label="Back to campaigns"
-            onClick={(event) => void goBackToList(event)}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="m15 18-6-6 6-6" />
-            </svg>
-          </Link>
+          {automationEmbed ? (
+            <button
+              type="button"
+              className="drip-back"
+              aria-label="Back to Automation"
+              onClick={() => automationEmbed.onDone()}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </button>
+          ) : (
+            <Link
+              href={listHref}
+              className="drip-back"
+              aria-label="Back to campaigns"
+              onClick={(event) => void goBackToList(event)}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </Link>
+          )}
           {nameEditing ? (
             <input
               ref={nameInputRef}
@@ -6050,6 +6152,10 @@ export default function PortalCampaignDetailPage({
                     /* ignore */
                   }
                 }
+                if (automationEmbed?.onDone) {
+                  automationEmbed.onDone();
+                  return;
+                }
                 const stepQuery = automationStepId
                   ? `&stepId=${encodeURIComponent(automationStepId)}`
                   : "";
@@ -6065,8 +6171,8 @@ export default function PortalCampaignDetailPage({
               }}
             >
               {requiredStepsComplete
-                ? "Return to Automation ✓"
-                : "Return to Automation"}
+                ? "Done ✓"
+                : "Done"}
             </button>
           ) : editingPaused ? (
             <button
