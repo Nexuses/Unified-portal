@@ -100,7 +100,7 @@ function RunningSpinner() {
   );
 }
 
-function TimelineIcon({ type }: { type: "draft" | "scheduled" | "sent" }) {
+function TimelineIcon({ type }: { type?: string }) {
   if (type === "sent") {
     return (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -285,9 +285,12 @@ export default function PortalCampaignReport({
         if (cancelled || !response.ok) {
           return;
         }
-        const report = (
-          data.reports as Array<Parameters<typeof mergeBlastReport>[1] & { kind?: string }>
-        ).find(
+        const reports = Array.isArray(data?.reports)
+          ? (data.reports as Array<
+              Parameters<typeof mergeBlastReport>[1] & { kind?: string }
+            >)
+          : [];
+        const report = reports.find(
           (item) =>
             item.campaignId === campaign.id &&
             (item.kind || "drip") === (campaign.kind || "drip"),
@@ -817,9 +820,9 @@ export default function PortalCampaignReport({
       : []),
   ];
 
-  const timeline = [...(campaign.timeline ?? [])].sort(
-    (a, b) => new Date(b.at).getTime() - new Date(a.at).getTime(),
-  );
+  const timeline = (
+    Array.isArray(campaign.timeline) ? [...campaign.timeline] : []
+  ).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   const showSequence = isOneOne && sequenceScope === null && Boolean(peopleView);
   const peopleColSpan =
     3 +

@@ -128,13 +128,22 @@ export default function PortalCampaignReportTable({ url }: { url: string }) {
     if (!data) {
       return { companies: [], sent: [], clickers: [], opensOnly: [], bounces: [], summary: [] };
     }
+    const summaryRows = Array.isArray(data.summary)
+      ? data.summary.map((row) => {
+          if (Array.isArray(row)) {
+            const [metric, value] = row;
+            return { metric, value };
+          }
+          return { metric: "", value: "" };
+        })
+      : [];
     return {
-      companies: data.companies,
-      sent: data.sent,
-      clickers: data.clickers,
-      opensOnly: data.opensOnly,
-      bounces: data.bounces,
-      summary: data.summary.map(([metric, value]) => ({ metric, value })),
+      companies: Array.isArray(data.companies) ? data.companies : [],
+      sent: Array.isArray(data.sent) ? data.sent : [],
+      clickers: Array.isArray(data.clickers) ? data.clickers : [],
+      opensOnly: Array.isArray(data.opensOnly) ? data.opensOnly : [],
+      bounces: Array.isArray(data.bounces) ? data.bounces : [],
+      summary: summaryRows,
     };
   }, [data]);
 

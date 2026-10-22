@@ -67,7 +67,7 @@ function followUpGaps(contacts: PersonaliseSentContact[], count: number) {
   for (let step = 1; step <= count; step += 1) {
     const counts = new Map<number, number>();
     for (const contact of contacts) {
-      const delay = contact.steps[step]?.delayDays;
+      const delay = contact.steps?.[step]?.delayDays;
       if (typeof delay !== "number") continue;
       counts.set(delay, (counts.get(delay) ?? 0) + 1);
     }
@@ -211,7 +211,9 @@ export default function PersonaliseCampaignView({
       const match =
         senders.find((sender) => sender.id === snapshot.senderId) ??
         senders.find(
-          (sender) => sender.fromEmail.toLowerCase() === snapshot.senderEmail.toLowerCase(),
+          (sender) =>
+            sender.fromEmail.toLowerCase() ===
+            (snapshot.senderEmail || "").toLowerCase(),
         );
       return match?.id ?? "";
     });
@@ -287,7 +289,10 @@ export default function PersonaliseCampaignView({
   }
 
   const totalEmails = snapshot
-    ? snapshot.contacts.reduce((sum, contact) => sum + contact.steps.length, 0)
+    ? snapshot.contacts.reduce(
+        (sum, contact) => sum + (contact.steps?.length ?? 0),
+        0,
+      )
     : 0;
 
   return (
@@ -550,7 +555,8 @@ export default function PersonaliseCampaignView({
               {snapshot.contacts.map((contact, index) => {
                 const open = openIndex === index;
                 const meta = [contact.position, contact.companyName].filter(Boolean).join(" · ");
-                const sent = contact.steps.filter((step) => step.status === "sent").length;
+                const steps = contact.steps ?? [];
+                const sent = steps.filter((step) => step.status === "sent").length;
                 return (
                   <section
                     key={contact.email}
@@ -593,7 +599,7 @@ export default function PersonaliseCampaignView({
                         <span className="pz-chip pz-chip-danger">Unsubscribed</span>
                       ) : null}
                       <span className="pz-chip">
-                        {sent}/{contact.steps.length} sent
+                        {sent}/{steps.length} sent
                       </span>
                       <svg
                         className="pz-chevron"
@@ -609,7 +615,7 @@ export default function PersonaliseCampaignView({
 
                     {open ? (
                       <ol className="pz-steps">
-                        {contact.steps.map((step, stepIndex) => {
+                        {steps.map((step, stepIndex) => {
                           const status = stepStatus(step);
                           return (
                             <li key={stepIndex} className="pz-step">

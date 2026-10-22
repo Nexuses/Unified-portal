@@ -20,6 +20,11 @@ export default function WorkspaceError({
         Something went wrong while rendering this view. Try again, or open
         another section from the sidebar.
       </p>
+      {error?.message ? (
+        <p className="desc" style={{ marginBottom: 16, wordBreak: "break-word" }}>
+          {error.message}
+        </p>
+      ) : null}
       <button type="button" className="btn-dark" onClick={reset}>
         Try again
       </button>

@@ -5872,8 +5872,9 @@ export default function PortalCampaignDetailPage({
     );
   }
 
-  const statusLabel =
-    campaign.status.charAt(0).toUpperCase() + campaign.status.slice(1);
+  const statusLabel = campaign.status
+    ? campaign.status.charAt(0).toUpperCase() + campaign.status.slice(1)
+    : "Draft";
   const listHref = personalise
     ? PORTAL_ROUTES.personalise
     : campaignListRoute(
@@ -5913,8 +5914,7 @@ export default function PortalCampaignDetailPage({
   if (
     personalise &&
     campaign.status === "draft" &&
-    campaign.personalisePlan &&
-    campaign.personalisePlan.contacts.length > 0
+    (campaign.personalisePlan?.contacts?.length ?? 0) > 0
   ) {
     return (
       <div className="drip-detail-page">
