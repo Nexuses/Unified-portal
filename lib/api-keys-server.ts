@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "crypto";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
-import type { SessionUser } from "@/lib/auth";
+import { resolveInstantClick, type SessionUser } from "@/lib/auth";
 import {
   DEFAULT_PROJECT_SENDING_LIMIT,
   normalizeSendingLimit,
@@ -45,6 +45,8 @@ type ProjectDoc = {
   slug?: string;
   logoUrl?: string;
   sendingLimit?: number;
+  instantClick?: boolean;
+  instantOpenClick?: boolean;
 };
 
 export type ApiKeyAuthFailure = {
@@ -253,6 +255,7 @@ function sessionFromKey(doc: ApiKeyDoc, project: ProjectDoc): SessionUser {
     sendingLimit: normalizeSendingLimit(
       project.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
     ),
+    instantClick: resolveInstantClick(project),
   };
 }
 

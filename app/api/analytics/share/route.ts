@@ -27,7 +27,10 @@ export async function POST(request: NextRequest) {
       ObjectId.isValid(session.id) ? new ObjectId(session.id) : null,
       from,
       to,
-      { hideBotClicks: Boolean(body?.hideBotClicks) },
+      {
+        hideBotClicks:
+          session.instantClick && Boolean(body?.hideBotClicks),
+      },
     );
     const url = `${requestOrigin(request.url, request.headers)}${publicAnalyticsPath(share.token)}`;
     return NextResponse.json(

@@ -400,6 +400,26 @@ export function PortalAnalyticsPage() {
   const [shareCopied, setShareCopied] = useState(false);
 
   const [sharePromptOpen, setSharePromptOpen] = useState(false);
+  const [instantClickEnabled, setInstantClickEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store" });
+        const data = (await response.json()) as { instantClick?: boolean };
+        if (!cancelled && response.ok) {
+          setInstantClickEnabled(Boolean(data.instantClick));
+        }
+      } catch {
+        // Bot share prompt stays off if session lookup fails.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
 
@@ -498,7 +518,13 @@ export function PortalAnalyticsPage() {
           <button
             type="button"
             className="btn-dark"
-            onClick={() => setSharePromptOpen(true)}
+            onClick={() => {
+              if (instantClickEnabled) {
+                setSharePromptOpen(true);
+              } else {
+                void createPublicUrl(false);
+              }
+            }}
             disabled={sharing || loading}
           >
             {shareCopied ? "Public URL copied" : sharing ? "Creating…" : "Create public URL"}

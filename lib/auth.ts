@@ -18,6 +18,8 @@ export type SessionUser = {
   projectName: string;
   projectLogoUrl: string;
   sendingLimit: number;
+  /** Admin Action → Click ON: bot-click grace skipped; bot hide/tag UI enabled. */
+  instantClick: boolean;
 };
 
 export type { SessionAdmin };
@@ -34,7 +36,20 @@ type ProjectDoc = {
   name: string;
   logoUrl?: string;
   sendingLimit?: number;
+  instantClick?: boolean;
+  /** @deprecated Prefer instantClick. */
+  instantOpenClick?: boolean;
 };
+
+export function resolveInstantClick(project: {
+  instantClick?: boolean;
+  instantOpenClick?: boolean;
+} | null | undefined) {
+  if (typeof project?.instantClick === "boolean") {
+    return project.instantClick;
+  }
+  return Boolean(project?.instantOpenClick);
+}
 
 export async function getSessionUser(): Promise<SessionUser | null> {
   const cookieStore = await cookies();
@@ -67,6 +82,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     sendingLimit: normalizeSendingLimit(
       project?.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
     ),
+    instantClick: resolveInstantClick(project),
   };
 }
 

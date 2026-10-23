@@ -224,6 +224,8 @@ export default function PortalCampaignReport({
   const [openClickId, setOpenClickId] = useState<string | null>(null);
   /** When true, bot/scanner clicks are hidden in Clicks view and omitted from export. */
   const [hideBotClicks, setHideBotClicks] = useState(Boolean(initialHideBotClicks));
+  /** Admin Action → Click ON for this project (bot tags / hide UI only then). */
+  const [instantClickEnabled, setInstantClickEnabled] = useState(false);
   const [sharePromptOpen, setSharePromptOpen] = useState(false);
   const peoplePageSize = 50;
   const [exporting, setExporting] = useState(false);
@@ -243,8 +245,35 @@ export default function PortalCampaignReport({
     count: number;
   } | null>(null);
   const isPublic = Boolean(publicToken);
-  const botToggleLocked = isPublic;
+  const showBotClickUi = !isPublic && instantClickEnabled;
   const [tableView, setTableView] = useState(false);
+
+  useEffect(() => {
+    if (isPublic) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store" });
+        const data = (await response.json()) as { instantClick?: boolean };
+        if (!cancelled && response.ok) {
+          setInstantClickEnabled(Boolean(data.instantClick));
+        }
+      } catch {
+        // Keep bot UI hidden if session lookup fails.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPublic]);
+
+  useEffect(() => {
+    if (!instantClickEnabled && !isPublic) {
+      setHideBotClicks(false);
+    }
+  }, [instantClickEnabled, isPublic]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("campaign-report-table-view") === "1";
@@ -881,7 +910,8 @@ export default function PortalCampaignReport({
     Array.isArray(campaign.timeline) ? [...campaign.timeline] : []
   ).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   const showSequence = isOneOne && sequenceScope === null && Boolean(peopleView);
-  const showClickTagCol = peopleView === "clicks" && !hideBotClicks;
+  const showClickTagCol =
+    peopleView === "clicks" && showBotClickUi && !hideBotClicks;
   const peopleColSpan =
     3 +
     (showSequence ? 1 : 0) +
@@ -1017,7 +1047,13 @@ export default function PortalCampaignReport({
             className={`drip-report-share${shareCopied ? " copied" : ""}`}
             aria-label={shareCopied ? "Link copied" : "Copy report link"}
             title={shareCopied ? "Link copied" : "Copy report link"}
-            onClick={() => setSharePromptOpen(true)}
+            onClick={() => {
+              if (showBotClickUi) {
+                setSharePromptOpen(true);
+              } else {
+                void shareReport(false);
+              }
+            }}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
               <circle cx="18" cy="5" r="3" />
@@ -1173,7 +1209,7 @@ export default function PortalCampaignReport({
               ),
             )}
           </div>
-          {!botToggleLocked ? (
+          {showBotClickUi ? (
             <button
               type="button"
               role="switch"
@@ -1232,7 +1268,7 @@ export default function PortalCampaignReport({
                 ),
               )}
             </div>
-            {!botToggleLocked ? (
+            {showBotClickUi ? (
               <button
                 type="button"
                 role="switch"
@@ -1267,7 +1303,7 @@ export default function PortalCampaignReport({
               ),
             )}
           </div>
-          {!botToggleLocked ? (
+          {showBotClickUi ? (
             <button
               type="button"
               role="switch"
@@ -1454,9 +1490,13 @@ export default function PortalCampaignReport({
                   : peopleView === "clicks"
                     ? campaign.kind === "oneone"
                       ? sequenceScope === null
-                        ? "Each contact is one row, showing the link they clicked last. Bot clicks are tagged when instant click is on."
+                        ? showBotClickUi
+                          ? "Each contact is one row, showing the link they clicked last. Bot clicks are tagged."
+                          : "Each contact is one row, showing the link they clicked last."
                         : `Each contact is one row in sequence ${sequenceScope + 1}, showing the link they clicked last.`
-                      : "Each contact is one row, showing the link they clicked last. Bot clicks are tagged when instant click is on."
+                      : showBotClickUi
+                        ? "Each contact is one row, showing the link they clicked last. Bot clicks are tagged."
+                        : "Each contact is one row, showing the link they clicked last."
                     : peopleView === "bounces"
                       ? "Addresses that bounced (from delivery failures or bounce emails). Replies are not counted here."
                       : peopleView === "replies"
@@ -1473,7 +1513,7 @@ export default function PortalCampaignReport({
                 : `${visiblePeople.length} contacts`}
             </div>
             <div className="crm-meta-right drip-report-people-tools">
-              {peopleView === "clicks" && !botToggleLocked ? (
+              {peopleView === "clicks" && showBotClickUi ? (
                 <button
                   type="button"
                   role="switch"
