@@ -160,12 +160,6 @@ export const PORTAL_NAV: PortalNavItem[] = [
   },
   {
     type: "item",
-    id: "activity",
-    label: "Activity Feed",
-    href: PORTAL_ROUTES.activity,
-  },
-  {
-    type: "item",
     id: "branding",
     label: "Branding",
     href: PORTAL_ROUTES.branding,
@@ -201,6 +195,12 @@ export const PORTAL_NAV: PortalNavItem[] = [
     id: "analytics",
     label: "Analytics",
     href: PORTAL_ROUTES.analytics,
+  },
+  {
+    type: "item",
+    id: "activity",
+    label: "Activity Feed",
+    href: PORTAL_ROUTES.activity,
   },
   { type: "item", id: "smtp", label: "SMTP & Senders", href: PORTAL_ROUTES.smtp },
   { type: "item", id: "unsub", label: "Suppression List", href: PORTAL_ROUTES.unsub },
