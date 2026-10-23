@@ -210,11 +210,13 @@ export async function POST(request: NextRequest) {
       try {
         const generated = await fillGeneratedImages(output);
         output = generated.html;
-        if (generated.count) {
-          note = `Generated ${generated.count} image${generated.count === 1 ? "" : "s"}.`;
-        }
+        note = generated.note || "";
       } catch (error) {
-        note = error instanceof Error ? error.message : "Image generation failed";
+        // HTML chat (Claude → DeepSeek → OpenAI) already succeeded; image fill is separate.
+        note =
+          error instanceof Error
+            ? `Email HTML was created, but images were skipped: ${error.message}`
+            : "Email HTML was created, but image generation failed.";
       }
       if (/data:image\//.test(output)) output = await publishHtmlImages(output, bucket);
       return { html: stripEmDashes(output), note };
