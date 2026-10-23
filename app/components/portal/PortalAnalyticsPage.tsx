@@ -182,10 +182,12 @@ export function AnalyticsDashboardView({
   dashboard,
   variant,
   analyticsToken,
+  hideBotClicks = false,
 }: {
   dashboard: AnalyticsDashboard;
   variant: "portal" | "public";
   analyticsToken?: string;
+  hideBotClicks?: boolean;
 }) {
   const totals = dashboard.totals;
   const showPersonalise = (totals.personaliseCampaigns ?? 0) > 0;
@@ -397,6 +399,7 @@ export function PortalAnalyticsPage() {
   const [shareExpiresAt, setShareExpiresAt] = useState("");
   const [shareCopied, setShareCopied] = useState(false);
 
+  const [sharePromptOpen, setSharePromptOpen] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
 
@@ -450,14 +453,15 @@ export function PortalAnalyticsPage() {
     applyRange(range.from, range.to, next);
   }
 
-  async function createPublicUrl() {
+  async function createPublicUrl(hideBotClicks: boolean) {
+    setSharePromptOpen(false);
     setSharing(true);
     setError("");
     try {
       const response = await fetch("/api/analytics/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ from, to }),
+        body: JSON.stringify({ from, to, hideBotClicks }),
       });
       const data = (await response.json()) as {
         url?: string;
@@ -494,7 +498,7 @@ export function PortalAnalyticsPage() {
           <button
             type="button"
             className="btn-dark"
-            onClick={() => void createPublicUrl()}
+            onClick={() => setSharePromptOpen(true)}
             disabled={sharing || loading}
           >
             {shareCopied ? "Public URL copied" : sharing ? "Creating…" : "Create public URL"}
@@ -502,6 +506,58 @@ export function PortalAnalyticsPage() {
         </div>
       </div>
 
+      {sharePromptOpen ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => !sharing && setSharePromptOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="crm-modal an-share-bot-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="an-share-bot-title"
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="an-share-bot-title">Create public URL</h3>
+                <p>
+                  Hide bot clicks in linked campaign reports? Viewers will not see the
+                  Bot click tag when hidden.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                disabled={sharing}
+                onClick={() => setSharePromptOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-actions an-share-bot-actions">
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={sharing}
+                onClick={() => void createPublicUrl(false)}
+              >
+                Keep bot clicks
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                disabled={sharing}
+                onClick={() => void createPublicUrl(true)}
+              >
+                Hide bot clicks
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="an-filters">
         <div className="an-presets">
           {PRESETS.map((item) => (
@@ -567,9 +623,11 @@ export function PortalAnalyticsPage() {
 export function PublicAnalyticsReport({
   dashboard,
   analyticsToken,
+  hideBotClicks = false,
 }: {
   dashboard: AnalyticsDashboard;
   analyticsToken: string;
+  hideBotClicks?: boolean;
 }) {
   return (
     <div className="an-page an-public">
@@ -577,6 +635,7 @@ export function PublicAnalyticsReport({
         dashboard={dashboard}
         variant="public"
         analyticsToken={analyticsToken}
+        hideBotClicks={hideBotClicks}
       />
     </div>
   );

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { recordCampaignClick, requestOrigin } from "@/lib/campaign-blasts-server";
+import { clientMetaFromHeaders } from "@/lib/engagement-client-meta";
 
 type RouteContext = {
   params: Promise<{ token: string }>;
@@ -20,7 +21,11 @@ export async function GET(request: NextRequest, context: RouteContext) {
   }
 
   if (token && !token.startsWith("test-") && redirectTo) {
-    await recordCampaignClick(token, redirectTo).catch(() => undefined);
+    await recordCampaignClick(
+      token,
+      redirectTo,
+      clientMetaFromHeaders(request.headers),
+    ).catch(() => undefined);
   }
 
   const fallback = `${requestOrigin(request.url, request.headers)}/`;

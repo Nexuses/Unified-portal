@@ -5,6 +5,7 @@ import {
   requestOrigin,
 } from "@/lib/campaign-blasts-server";
 import { processDueAutomationFollowUps } from "@/lib/automations-server";
+import { processDueInboxReplies } from "@/lib/master-inbox-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -21,7 +22,8 @@ export async function POST(request: NextRequest) {
     const origin = requestOrigin(request.url, request.headers);
     const reports = await processDueCampaignBlasts(projectId, origin);
     const followUps = await processDueAutomationFollowUps(projectId, origin);
-    return NextResponse.json({ reports, followUps });
+    const inboxReplies = await processDueInboxReplies(projectId);
+    return NextResponse.json({ reports, followUps, inboxReplies });
   } catch (error) {
     console.error("Failed to process campaign sends:", error);
     return NextResponse.json(

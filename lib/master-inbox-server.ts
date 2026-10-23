@@ -916,13 +916,78 @@ export async function markInboxThreadRead(
   return listProjectInboxThreadMessages(projectId, threadKey);
 }
 
+export type InboxScheduledReplyDoc = {
+  _id: ObjectId;
+  projectId: ObjectId;
+  threadKey: string;
+  html: string;
+  text: string;
+  scheduledFor: Date;
+  status: "pending" | "sending" | "sent" | "failed";
+  error?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  sentAt?: Date;
+};
+
+function parseScheduledFor(value?: string | Date | null) {
+  if (!value) {
+    return null;
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Invalid schedule time");
+  }
+  return date;
+}
+
 export async function replyToInboxThread(
   projectId: ObjectId,
   threadKey: string,
-  input: { body?: string; html?: string },
+  input: { body?: string; html?: string; scheduledFor?: string | Date | null },
 ) {
   const content = normalizeReplyContent(input);
+  const scheduledFor = parseScheduledFor(input.scheduledFor ?? null);
 
+  // Schedule for later — worker sends when due.
+  if (scheduledFor && scheduledFor.getTime() > Date.now() + 15_000) {
+    const db = await getDb();
+    const threadExists = await db.collection<InboxMessageDoc>("inbox_messages").findOne({
+      projectId,
+      threadKey,
+      relatedSendId: { $exists: true },
+    });
+    if (!threadExists) {
+      throw new Error("Thread not found");
+    }
+    const now = new Date();
+    const doc: InboxScheduledReplyDoc = {
+      _id: new ObjectId(),
+      projectId,
+      threadKey,
+      html: content.html,
+      text: content.text,
+      scheduledFor,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    };
+    await db.collection<InboxScheduledReplyDoc>("inbox_scheduled_replies").insertOne(doc);
+    return {
+      scheduled: true as const,
+      scheduledFor: scheduledFor.toISOString(),
+      messages: await listProjectInboxThreadMessages(projectId, threadKey),
+    };
+  }
+
+  return sendInboxReplyNow(projectId, threadKey, content);
+}
+
+async function sendInboxReplyNow(
+  projectId: ObjectId,
+  threadKey: string,
+  content: { html: string; text: string },
+) {
   const db = await getDb();
   const docs = await db
     .collection<InboxMessageDoc>("inbox_messages")
@@ -1041,9 +1106,68 @@ export async function replyToInboxThread(
   await db.collection<InboxMessageDoc>("inbox_messages").insertOne(outboundDoc);
 
   return {
+    scheduled: false as const,
     message: mapInboxMessage(outboundDoc),
     messages: await listProjectInboxThreadMessages(projectId, threadKey),
   };
+}
+
+/** Send pending Master Inbox replies whose schedule time has passed. */
+export async function processDueInboxReplies(projectId?: ObjectId) {
+  const db = await getDb();
+  const now = new Date();
+  const query: Record<string, unknown> = {
+    status: "pending",
+    scheduledFor: { $lte: now },
+  };
+  if (projectId) {
+    query.projectId = projectId;
+  }
+  const due = await db
+    .collection<InboxScheduledReplyDoc>("inbox_scheduled_replies")
+    .find(query)
+    .sort({ scheduledFor: 1 })
+    .limit(25)
+    .toArray();
+
+  let sent = 0;
+  let failed = 0;
+  for (const item of due) {
+    const claimed = await db
+      .collection<InboxScheduledReplyDoc>("inbox_scheduled_replies")
+      .findOneAndUpdate(
+        { _id: item._id, status: "pending" },
+        { $set: { status: "sending", updatedAt: new Date() } },
+        { returnDocument: "after" },
+      );
+    if (!claimed) {
+      continue;
+    }
+    try {
+      await sendInboxReplyNow(item.projectId, item.threadKey, {
+        html: item.html,
+        text: item.text,
+      });
+      await db.collection<InboxScheduledReplyDoc>("inbox_scheduled_replies").updateOne(
+        { _id: item._id },
+        { $set: { status: "sent", sentAt: new Date(), updatedAt: new Date() }, $unset: { error: "" } },
+      );
+      sent += 1;
+    } catch (error) {
+      failed += 1;
+      await db.collection<InboxScheduledReplyDoc>("inbox_scheduled_replies").updateOne(
+        { _id: item._id },
+        {
+          $set: {
+            status: "failed",
+            error: error instanceof Error ? error.message : "Failed to send",
+            updatedAt: new Date(),
+          },
+        },
+      );
+    }
+  }
+  return { scanned: due.length, sent, failed };
 }
 
 async function resolveReplySender(

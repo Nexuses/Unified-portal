@@ -23,7 +23,7 @@ import {
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import { PORTAL_ROUTES, portalContactRoute } from "@/lib/portal-nav";
-import { ANALYTICS_SHARE_TTL_DAYS, formatAnalyticsExpiry } from "@/lib/analytics";
+import { formatAnalyticsExpiry } from "@/lib/analytics";
 
 const CARD_BATCH = 30;
 
@@ -144,6 +144,7 @@ export default function PortalAnalyticsKanban({
   const [shareUrl, setShareUrl] = useState("");
   const [shareExpiresAt, setShareExpiresAt] = useState("");
   const [shareCopied, setShareCopied] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [stageName, setStageName] = useState("");
@@ -301,6 +302,44 @@ export default function PortalAnalyticsKanban({
       setError(err instanceof Error ? err.message : "Failed to create public URL");
     } finally {
       setSharing(false);
+    }
+  }
+
+  async function exportCsv() {
+    if (!board || exportingCsv) {
+      return;
+    }
+    setExportingCsv(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/analytics/kanban/${encodeURIComponent(board.id)}/export`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(data?.error || "Failed to export CSV");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const matched = /filename\*=UTF-8''([^;]+)|filename="([^"]+)"/i.exec(
+        disposition,
+      );
+      const filename = matched
+        ? decodeURIComponent(matched[1] || matched[2])
+        : `${board.name || "pipeline"}.csv`;
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to export CSV");
+    } finally {
+      setExportingCsv(false);
     }
   }
 
@@ -689,11 +728,10 @@ export default function PortalAnalyticsKanban({
               </svg>
             </Link>
           )}
-          <h2>{board?.name || "Kanban"}</h2>
+          <h2>{board?.name || "Pipeline"}</h2>
         </div>
         {board && !readOnly ? (
           <div className="an-kanban-head-actions-top">
-            <span className="an-share-note">Expires in {ANALYTICS_SHARE_TTL_DAYS} days</span>
             <button
               type="button"
               className="btn-soft"
@@ -701,6 +739,14 @@ export default function PortalAnalyticsKanban({
               disabled={sharing}
             >
               {shareCopied ? "Public URL copied" : sharing ? "Creating…" : "Create public URL"}
+            </button>
+            <button
+              type="button"
+              className="btn-soft"
+              onClick={() => void exportCsv()}
+              disabled={exportingCsv}
+            >
+              {exportingCsv ? "Exporting…" : "Export CSV"}
             </button>
             <button
               type="button"

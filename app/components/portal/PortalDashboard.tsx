@@ -1,11 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Children,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import type { Contact } from "@/lib/crm";
 import type { CampaignStatus, DripCampaign } from "@/lib/drip-campaigns";
 import { DEFAULT_PROJECT_SENDING_LIMIT } from "@/lib/projects";
-import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
+import {
+  PORTAL_ROUTES,
+  portalCampaignRoute,
+  portalContactRoute,
+} from "@/lib/portal-nav";
+import type { ActivityFeedItem } from "@/lib/activity-feed-server";
 
 const SENDER_SOFT_LIMIT = 10;
 
@@ -14,47 +26,123 @@ type PortalDashboardProps = {
 };
 
 const PLANNED_PER_VIEW = 2;
-const PLANNED_GAP = 12;
 const PLANNED_AUTOPLAY_MS = 5000;
+const ACTIVITY_HOME_LIMIT = 12;
+
+function UsageBar({ value }: { value: number }) {
+  const [width, setWidth] = useState(0);
+
+  useEffect(() => {
+    setWidth(0);
+    let frame2 = 0;
+    const frame1 = window.requestAnimationFrame(() => {
+      frame2 = window.requestAnimationFrame(() => {
+        setWidth(Math.max(0, Math.min(100, value)));
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(frame1);
+      window.cancelAnimationFrame(frame2);
+    };
+  }, [value]);
+
+  return (
+    <div className="usage-bar">
+      <div className="usage-bar-fill" style={{ width: `${width}%` }} />
+    </div>
+  );
+}
+
+function formatActivityWhen(iso: string) {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function activityHref(item: ActivityFeedItem) {
+  if (item.contactId) {
+    return portalContactRoute(item.contactId);
+  }
+  if (item.campaignId) {
+    return portalCampaignRoute(item.campaignId, item.campaignKind);
+  }
+  if (item.type === "list_created" || item.listId) {
+    return PORTAL_ROUTES.lists;
+  }
+  return PORTAL_ROUTES.activity;
+}
+
+function activityBadge(item: ActivityFeedItem) {
+  switch (item.type) {
+    case "campaign_opened":
+      return { label: "Opened", className: "is-open" };
+    case "campaign_clicked":
+      return { label: "Clicked", className: "is-click" };
+    case "campaign_launched":
+      return { label: "Rolled out", className: "is-launch" };
+    case "campaign_scheduled":
+      return { label: "Scheduled", className: "is-schedule" };
+    case "campaign_created":
+      return { label: "Created", className: "is-create" };
+    default:
+      return { label: "Activity", className: "is-other" };
+  }
+}
 
 function PlannedCarousel({ children, count }: { children: ReactNode; count: number }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState(0);
   const [paused, setPaused] = useState(false);
-  const pages = Math.ceil(count / PLANNED_PER_VIEW);
+  const pageCount = Math.ceil(count / PLANNED_PER_VIEW);
+  const slides = useMemo(() => {
+    const list = Children.toArray(children);
+    const chunks: ReactNode[][] = [];
+    for (let i = 0; i < list.length; i += PLANNED_PER_VIEW) {
+      chunks.push(list.slice(i, i + PLANNED_PER_VIEW));
+    }
+    return chunks;
+  }, [children]);
 
   function currentPage() {
     const track = trackRef.current;
-    if (!track) {
+    if (!track || track.clientWidth <= 0) {
       return 0;
     }
-    return Math.round(track.scrollLeft / (track.clientWidth + PLANNED_GAP));
+    return Math.round(track.scrollLeft / track.clientWidth);
   }
 
   function goTo(next: number) {
     const track = trackRef.current;
-    if (!track) {
+    if (!track || pageCount < 1) {
       return;
     }
-    const target = ((next % pages) + pages) % pages;
-    track.scrollTo({ left: target * (track.clientWidth + PLANNED_GAP), behavior: "smooth" });
+    const target = ((next % pageCount) + pageCount) % pageCount;
+    track.scrollTo({ left: target * track.clientWidth, behavior: "smooth" });
+    setPage(target);
   }
 
   useEffect(() => {
-    if (paused || pages < 2) {
+    if (paused || pageCount < 2) {
       return;
     }
     const timer = window.setInterval(() => {
       const track = trackRef.current;
-      if (!track) {
+      if (!track || track.clientWidth <= 0) {
         return;
       }
-      const step = track.clientWidth + PLANNED_GAP;
-      const target = (Math.round(track.scrollLeft / step) + 1) % pages;
-      track.scrollTo({ left: target * step, behavior: "smooth" });
+      const next = (Math.round(track.scrollLeft / track.clientWidth) + 1) % pageCount;
+      track.scrollTo({ left: next * track.clientWidth, behavior: "smooth" });
+      setPage(next);
     }, PLANNED_AUTOPLAY_MS);
     return () => window.clearInterval(timer);
-  }, [paused, pages]);
+  }, [paused, pageCount]);
 
   return (
     <div
@@ -69,29 +157,24 @@ function PlannedCarousel({ children, count }: { children: ReactNode; count: numb
         className="planned-track"
         onScroll={() => setPage(currentPage())}
       >
-        {children}
+        {slides.map((slideItems, index) => (
+          <div key={`planned-page-${index}`} className="planned-page">
+            {slideItems}
+          </div>
+        ))}
       </div>
-      <div className="planned-controls">
-        <div className="planned-dots">
-          {Array.from({ length: pages }, (_, index) => (
-            <button
-              key={index}
-              type="button"
-              className={index === page ? "is-active" : ""}
-              aria-label={`Show page ${index + 1}`}
-              onClick={() => goTo(index)}
-            />
-          ))}
+      {pageCount > 1 ? (
+        <div className="planned-controls planned-controls-arrows-only">
+          <div className="planned-arrows">
+            <button type="button" aria-label="Previous" onClick={() => goTo(page - 1)}>
+              ‹
+            </button>
+            <button type="button" aria-label="Next" onClick={() => goTo(page + 1)}>
+              ›
+            </button>
+          </div>
         </div>
-        <div className="planned-arrows">
-          <button type="button" aria-label="Previous" onClick={() => goTo(page - 1)}>
-            ‹
-          </button>
-          <button type="button" aria-label="Next" onClick={() => goTo(page + 1)}>
-            ›
-          </button>
-        </div>
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -184,7 +267,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
   const [lastCampaigns, setLastCampaigns] = useState<DripCampaign[] | null>(
     null,
   );
-  const [allCampaigns, setAllCampaigns] = useState<DripCampaign[]>([]);
+  const [recentActivity, setRecentActivity] = useState<ActivityFeedItem[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -295,93 +378,62 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
           .filter((campaign) => campaign.status === "sent")
           .sort((a, b) => campaignTimestamp(b) - campaignTimestamp(a))
           .slice(0, 3);
-        setAllCampaigns(data);
         setLastCampaigns(latest);
       } catch {
         // Keep the empty state if campaigns fail to load.
       }
     }
 
+    async function loadRecentActivity() {
+      try {
+        const response = await fetch(
+          `/api/activity?group=engagement&page=1&pageSize=${ACTIVITY_HOME_LIMIT}`,
+          { cache: "no-store" },
+        );
+        const data = (await response.json()) as {
+          items?: ActivityFeedItem[];
+          error?: string;
+        };
+        if (!response.ok || !Array.isArray(data.items) || cancelled) {
+          return;
+        }
+        setRecentActivity(data.items);
+      } catch {
+        // Keep empty activity if the feed fails.
+      }
+    }
+
     void loadContacts();
     void loadUsage();
     void loadLastCampaigns();
+    void loadRecentActivity();
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const plannedToday = useMemo(() => {
-    const now = new Date();
-    const start = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-    ).getTime();
-    const end = start + DAY_MS;
-    return allCampaigns
-      .filter((campaign) => {
-        if (campaign.status !== "scheduled" && campaign.status !== "sending") {
-          return false;
-        }
-        const raw =
-          campaign.scheduledAt || campaign.updatedAt || campaign.createdAt;
-        const ms = raw ? new Date(raw).getTime() : 0;
-        return Number.isFinite(ms) && ms >= start && ms < end;
-      })
-      .sort((a, b) => campaignTimestamp(a) - campaignTimestamp(b));
-  }, [allCampaigns]);
-
-  const plannedCards = plannedToday.map((campaign) => {
-    const typeLabel = campaign.tags?.includes("personalise")
-      ? "Personalise"
-      : campaign.kind === "oneone"
-        ? "1-1"
-        : "Drip";
+  const activityCards = recentActivity.map((item) => {
+    const badge = activityBadge(item);
+    const who = item.fullName || item.email || item.title;
+    const detail =
+      item.campaignName ||
+      item.description ||
+      (item.type === "campaign_clicked" ? "Clicked a link" : item.title);
     return (
       <Link
-        key={`${campaign.kind ?? "drip"}-${campaign.id}`}
-        href={portalCampaignRoute(campaign.id, campaign.kind, campaign.tags)}
-        className="tip-card planned-card"
+        key={item.id}
+        href={activityHref(item)}
+        className="tip-card planned-card home-activity-card"
       >
-        <div className="tip-icon">
-          {campaign.kind === "oneone" ? (
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="12" cy="8" r="3.2" />
-              <path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" />
-            </svg>
-          ) : (
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M21 3 10 14" />
-              <path d="m21 3-7 18-4-7-7-4Z" />
-            </svg>
-          )}
+        <div className="home-activity-top">
+          <span className={`home-activity-badge ${badge.className}`}>
+            {badge.label}
+          </span>
+          <span className="home-activity-when">{formatActivityWhen(item.at)}</span>
         </div>
-        <h4>{campaign.name}</h4>
-        <p>
-          {STATUS_LABELS[campaign.status]}
-          {campaign.scheduledAt
-            ? ` · ${new Date(campaign.scheduledAt).toLocaleTimeString(undefined, {
-                hour: "numeric",
-                minute: "2-digit",
-              })}`
-            : ""}
-          {` · ${typeLabel}`}
-        </p>
-        <span className="link-purple">Open campaign →</span>
+        <h4>{who}</h4>
+        <p>{detail}</p>
+        <span className="link-purple">View →</span>
       </Link>
     );
   });
@@ -498,71 +550,19 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
 
         <div className="planner-day">
           <div className="planner-day-head">
-            <h3>Planned for today</h3>
-            <Link href={PORTAL_ROUTES.drip} className="btn-campaign">
-              Create campaign
+            <h3>Recent activity</h3>
+            <Link href={PORTAL_ROUTES.activity} className="link-purple">
+              View all →
             </Link>
           </div>
-          {plannedToday.length > PLANNED_PER_VIEW ? (
-            <PlannedCarousel count={plannedToday.length}>{plannedCards}</PlannedCarousel>
-          ) : plannedToday.length > 0 ? (
-            <div className="tip-row">{plannedCards}</div>
+          {activityCards.length > PLANNED_PER_VIEW ? (
+            <PlannedCarousel count={activityCards.length}>
+              {activityCards}
+            </PlannedCarousel>
+          ) : activityCards.length > 0 ? (
+            <div className="tip-row home-activity-row">{activityCards}</div>
           ) : (
-            <>
-              <div className="planned-empty">Nothing planned for today</div>
-              <div className="tip-row">
-                <div className="tip-card">
-                  <div className="tip-icon">
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <circle cx="12" cy="8" r="3.2" />
-                      <path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" />
-                    </svg>
-                  </div>
-                  <h4>Do you have new contacts to organize?</h4>
-                  <p>
-                    Use segmentation to send personalized messages and organize
-                    your contacts.
-                  </p>
-                  <Link href={PORTAL_ROUTES.segments} className="link-purple">
-                    Segment contacts →
-                  </Link>
-                </div>
-                <div className="tip-card">
-                  <div className="tip-icon">
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <rect x="3" y="4" width="5.5" height="16" rx="1.2" />
-                      <rect x="9.25" y="4" width="5.5" height="11" rx="1.2" />
-                      <rect x="15.5" y="4" width="5.5" height="14" rx="1.2" />
-                    </svg>
-                  </div>
-                  <h4>Track campaign leads on Kanban</h4>
-                  <p>
-                    Group sent campaigns into a board, move people by engagement,
-                    and follow up from Prospect to Engage to Cold.
-                  </p>
-                  <Link
-                    href={PORTAL_ROUTES["analytics-kanban"]}
-                    className="link-purple"
-                  >
-                    Open Kanban →
-                  </Link>
-                </div>
-              </div>
-            </>
+            <div className="planned-empty">No opens or clicks yet</div>
           )}
         </div>
       </div>
@@ -627,18 +627,14 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
               <span className="label">Emails</span>
               <span className="meta">{emailsMeta}</span>
             </div>
-            <div className="usage-bar">
-              <div style={{ width: `${emailsBarWidth}%` }} />
-            </div>
+            <UsageBar value={emailsBarWidth} />
           </div>
           <div className="usage-row">
             <div className="top">
               <span className="label">Senders</span>
               <span className="meta">{sendersMeta}</span>
             </div>
-            <div className="usage-bar">
-              <div style={{ width: `${sendersBarWidth}%` }} />
-            </div>
+            <UsageBar value={sendersBarWidth} />
           </div>
           <div className="usage-split">
             <div>

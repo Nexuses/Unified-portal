@@ -6,7 +6,7 @@ import { getDripCampaignByShareToken } from "@/lib/drip-campaigns-server";
 
 type PageProps = {
   params: Promise<{ token: string }>;
-  searchParams: Promise<{ a?: string }>;
+  searchParams: Promise<{ a?: string; hideBotClicks?: string }>;
 };
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
@@ -19,18 +19,22 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function PublicCampaignReportPage({ params, searchParams }: PageProps) {
   const { token } = await params;
-  const { a } = await searchParams;
+  const { a, hideBotClicks: hideBotParam } = await searchParams;
   const found = await getDripCampaignByShareToken(token);
   if (!found) {
     notFound();
   }
 
   let analyticsToken: string | undefined;
+  let hideBotClicks = hideBotParam === "1";
   const requested = a?.trim();
   if (requested) {
     const share = await getAnalyticsShareByToken(requested);
     if (share && share.projectId.toString() === found.projectId.toString()) {
       analyticsToken = requested;
+      if (share.hideBotClicks) {
+        hideBotClicks = true;
+      }
     }
   }
 
@@ -39,6 +43,7 @@ export default async function PublicCampaignReportPage({ params, searchParams }:
       campaign={found.campaign}
       publicToken={token}
       analyticsToken={analyticsToken}
+      hideBotClicks={hideBotClicks}
     />
   );
 }

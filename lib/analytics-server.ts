@@ -26,6 +26,8 @@ export type AnalyticsShareDoc = {
   createdBy: ObjectId | null;
   createdAt: Date;
   expiresAt?: Date;
+  /** When true, linked public campaign reports hide bot clicks / tags. */
+  hideBotClicks?: boolean;
 };
 
 const DASHBOARD_CACHE_TTL_MS = 45_000;
@@ -425,8 +427,10 @@ export async function createAnalyticsShare(
   userId: ObjectId | null,
   from: string,
   to: string,
+  options?: { hideBotClicks?: boolean },
 ) {
   analyticsRangeIso(from, to);
+  const hideBotClicks = Boolean(options?.hideBotClicks);
   const db = await getDb();
   void ensureAnalyticsIndexes();
   const shares = db.collection<AnalyticsShareDoc>("analytics_shares");
@@ -437,8 +441,8 @@ export async function createAnalyticsShare(
   const existing = candidates.find((item) => !isAnalyticsShareExpired(item));
   if (existing && !isAnalyticsShareExpired(existing)) {
     const expiresAt = resolveAnalyticsShareExpiry(existing);
-    const next: AnalyticsShareDoc = { ...existing, expiresAt };
-    const patch: Partial<AnalyticsShareDoc> = {};
+    const next: AnalyticsShareDoc = { ...existing, expiresAt, hideBotClicks };
+    const patch: Partial<AnalyticsShareDoc> = { hideBotClicks };
     if (existing.projectName !== projectName) {
       patch.projectName = projectName;
       next.projectName = projectName;
@@ -446,9 +450,7 @@ export async function createAnalyticsShare(
     if (!existing.expiresAt) {
       patch.expiresAt = expiresAt;
     }
-    if (Object.keys(patch).length > 0) {
-      await shares.updateOne({ _id: existing._id }, { $set: patch });
-    }
+    await shares.updateOne({ _id: existing._id }, { $set: patch });
     return next;
   }
 
@@ -464,6 +466,7 @@ export async function createAnalyticsShare(
     createdBy: userId,
     createdAt,
     expiresAt: analyticsShareExpiresAt(createdAt),
+    hideBotClicks,
   };
   await shares.insertOne(doc);
   return doc;

@@ -31,12 +31,15 @@ export async function GET(request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
 
+    const hideBotClicks =
+      request.nextUrl.searchParams.get("hideBotClicks") === "1";
     const sends = await listCampaignSendsForExport(projectId, id, kind);
     const buffer = await buildCampaignReportWorkbook({
       campaignName: campaign.name,
       timezone: campaign.timezone || "Asia/Kolkata",
       sentAt: campaign.sentAt,
       sends,
+      hideBotClicks,
     });
     const filename = campaignReportFilename(campaign.name);
 

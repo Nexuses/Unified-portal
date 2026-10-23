@@ -219,7 +219,7 @@ export default function PortalAnalyticsKanbanHistory() {
     <div className="an-page">
       <div className="crm-page-head an-page-head">
         <div>
-          <h2>Kanban</h2>
+          <h2>Pipeline</h2>
           <p className="desc">
             Saved boards. Create a list, pick sent or running Drip and 1-1
             campaigns, then open it to work the pipeline.

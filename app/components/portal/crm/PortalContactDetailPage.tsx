@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Monitor, Smartphone, Tablet } from "lucide-react";
 import {
   CONTACT_ATTRIBUTE_LABELS,
   formatCompanyDate,
@@ -14,6 +15,10 @@ import {
   type ContactHistoryEvent,
   type ContactListMembership,
 } from "@/lib/crm";
+import {
+  formatEngagementDevice,
+  type EngagementDevice,
+} from "@/lib/engagement-client-meta";
 import {
   portalCompanyRoute,
   portalContactRoute,
@@ -71,7 +76,9 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
   if (event.type === "campaign_sent" || event.type === "campaign_delivered") {
     return (
       <div className="company-history-copy">
-        {event.description}{" "}
+        {event.type === "campaign_sent" ? "Sent" : "Delivered"} on{" "}
+        <strong>{formatListDate(event.at)}</strong>
+        {". "}
         {event.campaignId ? (
           <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
             View campaign
@@ -84,7 +91,8 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
   if (event.type === "campaign_opened") {
     return (
       <div className="company-history-copy">
-        Opened campaign{" "}
+        Opened on <strong>{formatListDate(event.at)}</strong>
+        {" — "}
         {event.campaignId ? (
           <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
             {event.campaignName || event.campaignId}
@@ -100,7 +108,8 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
   if (event.type === "campaign_clicked") {
     return (
       <div className="company-history-copy">
-        Clicked{" "}
+        Clicked on <strong>{formatListDate(event.at)}</strong>
+        {": "}
         {event.clickedUrl ? (
           <a href={event.clickedUrl} target="_blank" rel="noreferrer" className="contact-history-link">
             {event.clickedUrl}
@@ -108,7 +117,7 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
         ) : (
           "a link"
         )}{" "}
-        in campaign{" "}
+        in{" "}
         {event.campaignId ? (
           <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
             {event.campaignName || event.campaignId}
@@ -140,6 +149,59 @@ function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
   return <div className="company-history-copy">{event.description}</div>;
 }
 
+/** Overview card: newest activity, skip noisy delivered duplicates. */
+function pickRecentHistory(events: ContactHistoryEvent[], limit = 12) {
+  return events
+    .filter((event) => event.type !== "campaign_delivered")
+    .slice(0, limit);
+}
+
+function EngagementDeviceIcon({ device }: { device: EngagementDevice }) {
+  const props = { size: 13, strokeWidth: 2.25, "aria-hidden": true as const };
+  if (device === "mobile") {
+    return <Smartphone {...props} />;
+  }
+  if (device === "tablet") {
+    return <Tablet {...props} />;
+  }
+  if (device === "desktop") {
+    return <Monitor {...props} />;
+  }
+  return null;
+}
+
+function EngagementMetaChips({
+  device,
+  ip,
+}: {
+  device?: EngagementDevice | string;
+  ip?: string;
+}) {
+  const normalized =
+    device === "mobile" ||
+    device === "tablet" ||
+    device === "desktop" ||
+    device === "unknown"
+      ? device
+      : undefined;
+  const label = formatEngagementDevice(normalized);
+  if (!label && !ip) {
+    return null;
+  }
+
+  return (
+    <div className="cd-event-meta">
+      {normalized && label ? (
+        <span className={`cd-device-chip cd-device-${normalized}`}>
+          <EngagementDeviceIcon device={normalized} />
+          {label}
+        </span>
+      ) : null}
+      {ip ? <span className="cd-ip-chip">IP {ip}</span> : null}
+    </div>
+  );
+}
+
 function ContactHistoryTimeline({
   events,
   contact,
@@ -168,9 +230,21 @@ function ContactHistoryTimeline({
                 <div className="cd-event-body">
                   <div className="cd-event-title">{event.title}</div>
                   <div className="cd-event-time">
-                    {formatRelativeTime(event.at)}
+                    {formatListDate(event.at)}
+                    <span className="cd-event-time-rel">
+                      {" "}
+                      · {formatRelativeTime(event.at)}
+                    </span>
                     {event.actor ? ` • ${event.actor}` : ""}
                   </div>
+                  <EngagementMetaChips device={event.device} ip={event.ip} />
+                  {event.openTag ? (
+                    <div className="cd-event-meta">
+                      <span className="af-type-badge af-type-pixel-blocked">
+                        {event.openTag}
+                      </span>
+                    </div>
+                  ) : null}
                   <ContactEventDescription event={event} />
                 </div>
               </div>
@@ -734,9 +808,18 @@ export default function PortalContactDetailPage({
             <div className="cd-card">
               <div className="cd-card-head">
                 <h3>Recent history</h3>
+                {contact.history.length > 0 ? (
+                  <button
+                    type="button"
+                    className="btn-link-purple"
+                    onClick={() => setTab("history")}
+                  >
+                    View all
+                  </button>
+                ) : null}
               </div>
               <ContactHistoryTimeline
-                events={contact.history.slice(0, 8)}
+                events={pickRecentHistory(contact.history, 12)}
                 contact={contact}
               />
             </div>

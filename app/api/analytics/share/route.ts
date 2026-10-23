@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = (await request.json().catch(() => null)) as
-      | { from?: string; to?: string }
+      | { from?: string; to?: string; hideBotClicks?: boolean }
       | null;
     const from = String(body?.from ?? "").trim();
     const to = String(body?.to ?? "").trim();
@@ -27,6 +27,7 @@ export async function POST(request: NextRequest) {
       ObjectId.isValid(session.id) ? new ObjectId(session.id) : null,
       from,
       to,
+      { hideBotClicks: Boolean(body?.hideBotClicks) },
     );
     const url = `${requestOrigin(request.url, request.headers)}${publicAnalyticsPath(share.token)}`;
     return NextResponse.json(

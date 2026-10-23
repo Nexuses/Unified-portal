@@ -193,6 +193,86 @@ export type ContactHistoryEvent = {
   campaignKind?: "drip" | "oneone";
   campaignName?: string;
   clickedUrl?: string;
+  /** Absolute sent/opened/clicked time already on `at`; extras for engagement. */
+  ip?: string;
+  device?: "mobile" | "tablet" | "desktop" | "unknown";
+  userAgent?: string;
+  /** e.g. "Image pixel blocked" when open was inferred from a click. */
+  openTag?: string;
+};
+
+export const CONTACT_PIPELINE_STAGES = [
+  "Warm",
+  "Hot",
+  "Meeting Scheduled",
+  "Meeting Rescheduled",
+  "Meeting Done",
+  "Contact Later",
+  "Client Manage",
+  "Client Unavailable",
+  "Client Rejected",
+  "Lost",
+] as const;
+
+export type ContactPipelineStage = (typeof CONTACT_PIPELINE_STAGES)[number];
+
+export type ContactProfileNote = {
+  id: string;
+  at: string;
+  body: string;
+};
+
+export type ContactProfileTimelineItem = {
+  id: string;
+  at: string;
+  body: string;
+  kind?: string;
+};
+
+export type ContactProfile = {
+  title?: string;
+  phone?: string;
+  linkedinUrl?: string;
+  location?: string;
+  about?: string;
+  leadStage?: string;
+  source?: string;
+  score?: number;
+  qualification?: {
+    decisionMaker?: boolean;
+    viewedDeck?: boolean;
+    haveBudget?: boolean;
+    need?: boolean;
+    overallScore?: number;
+  };
+  company?: {
+    industry?: string;
+    employees?: string;
+    location?: string;
+    website?: string;
+    linkedinUrl?: string;
+    description?: string;
+  };
+  meeting?: {
+    at?: string;
+    timezone?: string;
+    channel?: string;
+    title?: string;
+    joinUrl?: string;
+  };
+  brief?: {
+    problem?: string;
+    objective?: string;
+    stakes?: string;
+  };
+  news?: string;
+  notes?: ContactProfileNote[];
+  timeline?: ContactProfileTimelineItem[];
+  apollo?: {
+    personId?: string;
+    enrichedAt?: string;
+    raw?: Record<string, unknown>;
+  };
 };
 
 export type ContactDetail = Contact & {
@@ -202,6 +282,7 @@ export type ContactDetail = Contact & {
   lists: ContactListMembership[];
   history: ContactHistoryEvent[];
   campaignStats: ContactCampaignStats;
+  profile: ContactProfile;
   navigation: {
     index: number;
     total: number;
@@ -219,12 +300,17 @@ export type ContactDoc = {
   companyId: ObjectId | null;
   companyName: string;
   attributes?: Record<string, string>;
+  profile?: ContactProfile;
   subscribed: boolean;
   blocklisted: boolean;
   createdBy: ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
 };
+
+export function mapContactProfile(profile?: ContactProfile | null): ContactProfile {
+  return profile ? { ...profile } : {};
+}
 
 export type CompanyDoc = {
   _id: ObjectId;

@@ -82,14 +82,16 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
 
     const body = (await request.json().catch(() => null)) as
-      | { body?: string; html?: string }
+      | { body?: string; html?: string; scheduledFor?: string }
       | null;
+    const scheduledFor = String(body?.scheduledFor ?? "").trim();
     const result = await replyToInboxThread(
       new ObjectId(session.projectId),
       threadKey,
       {
         body: String(body?.body ?? ""),
         html: String(body?.html ?? ""),
+        ...(scheduledFor ? { scheduledFor } : {}),
       },
     );
     return NextResponse.json(result);

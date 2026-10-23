@@ -25,9 +25,12 @@ type SendRecipient = {
   error?: string;
   sentAt?: string;
   openedAt?: string;
+  openTag?: string;
   clickedAt?: string;
   clickedUrl?: string;
   clickedLinks?: Array<{ url: string; at?: string; sequenceNumber?: number }>;
+  clickTag?: string;
+  botClick?: boolean;
   unsubscribedAt?: string;
   repliedAt?: string;
   sequenceIndex?: number;
@@ -199,6 +202,7 @@ export default function PortalCampaignReport({
   onViewSetup,
   publicToken,
   analyticsToken,
+  initialHideBotClicks = false,
 }: {
   campaign: DripCampaign;
   onCampaignChange?: (campaign: DripCampaign) => void;
@@ -206,6 +210,8 @@ export default function PortalCampaignReport({
   onViewSetup?: () => void;
   publicToken?: string;
   analyticsToken?: string;
+  /** Locked preference for public links (no toggle on public reports). */
+  initialHideBotClicks?: boolean;
 }) {
   const [tab, setTab] = useState("overview");
   const [sequenceScope, setSequenceScope] = useState<number | null>(null);
@@ -216,6 +222,9 @@ export default function PortalCampaignReport({
   const [peopleSearch, setPeopleSearch] = useState("");
   const [peoplePage, setPeoplePage] = useState(1);
   const [openClickId, setOpenClickId] = useState<string | null>(null);
+  /** When true, bot/scanner clicks are hidden in Clicks view and omitted from export. */
+  const [hideBotClicks, setHideBotClicks] = useState(Boolean(initialHideBotClicks));
+  const [sharePromptOpen, setSharePromptOpen] = useState(false);
   const peoplePageSize = 50;
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
@@ -234,6 +243,7 @@ export default function PortalCampaignReport({
     count: number;
   } | null>(null);
   const isPublic = Boolean(publicToken);
+  const botToggleLocked = isPublic;
   const [tableView, setTableView] = useState(false);
 
   useEffect(() => {
@@ -249,11 +259,29 @@ export default function PortalCampaignReport({
     setPeopleView(null);
   }
 
-  const tableUrl = publicToken
-    ? `/api/public/reports/${encodeURIComponent(publicToken)}/table`
-    : `/api/campaigns/${encodeURIComponent(campaign.id)}/report-table${
-        campaign.kind === "oneone" || campaign.kind === "drip" ? `?kind=${campaign.kind}` : ""
+  const tableUrl = (() => {
+    if (publicToken) {
+      const params = new URLSearchParams();
+      if (hideBotClicks) {
+        params.set("hideBotClicks", "1");
+      }
+      const query = params.toString();
+      return `/api/public/reports/${encodeURIComponent(publicToken)}/table${
+        query ? `?${query}` : ""
       }`;
+    }
+    const params = new URLSearchParams();
+    if (campaign.kind === "oneone" || campaign.kind === "drip") {
+      params.set("kind", campaign.kind);
+    }
+    if (hideBotClicks) {
+      params.set("hideBotClicks", "1");
+    }
+    const query = params.toString();
+    return `/api/campaigns/${encodeURIComponent(campaign.id)}/report-table${
+      query ? `?${query}` : ""
+    }`;
+  })();
 
   useEffect(() => {
     let cancelled = false;
@@ -345,6 +373,9 @@ export default function PortalCampaignReport({
             params.set("sequence", String(sequenceScope));
           }
         }
+        if (activeView === "clicks" && hideBotClicks) {
+          params.set("hideBotClicks", "1");
+        }
         const response = await fetch(
           publicToken
             ? `/api/public/reports/${encodeURIComponent(publicToken)}/recipients?${params}`
@@ -379,7 +410,15 @@ export default function PortalCampaignReport({
     return () => {
       cancelled = true;
     };
-  }, [campaign.id, campaign.kind, campaign.clicks, peopleView, publicToken, sequenceScope]);
+  }, [
+    campaign.id,
+    campaign.kind,
+    campaign.clicks,
+    peopleView,
+    publicToken,
+    sequenceScope,
+    hideBotClicks,
+  ]);
 
   useEffect(() => {
     if (campaign.kind !== "oneone") {
@@ -397,6 +436,9 @@ export default function PortalCampaignReport({
         });
         if (sequenceScope !== null) {
           params.set("sequence", String(sequenceScope));
+        }
+        if (hideBotClicks) {
+          params.set("hideBotClicks", "1");
         }
         const response = await fetch(
           publicToken
@@ -418,7 +460,7 @@ export default function PortalCampaignReport({
     return () => {
       cancelled = true;
     };
-  }, [campaign.id, campaign.kind, campaign.clicks, publicToken, sequenceScope]);
+  }, [campaign.id, campaign.kind, campaign.clicks, publicToken, sequenceScope, hideBotClicks]);
 
   const reportPeople = people;
 
@@ -493,13 +535,21 @@ export default function PortalCampaignReport({
     setExporting(true);
     setExportError("");
     try {
+      const params = new URLSearchParams();
+      if (campaign.kind === "oneone" || campaign.kind === "drip") {
+        params.set("kind", campaign.kind);
+      }
+      if (hideBotClicks) {
+        params.set("hideBotClicks", "1");
+      }
+      const query = params.toString();
       const response = await fetch(
         publicToken
-          ? `/api/public/reports/${encodeURIComponent(publicToken)}/export`
+          ? `/api/public/reports/${encodeURIComponent(publicToken)}/export${
+              query ? `?${query}` : ""
+            }`
           : `/api/campaigns/${encodeURIComponent(campaign.id)}/export${
-              campaign.kind === "oneone" || campaign.kind === "drip"
-                ? `?kind=${campaign.kind}`
-                : ""
+              query ? `?${query}` : ""
             }`,
         { cache: "no-store" },
       );
@@ -549,9 +599,12 @@ export default function PortalCampaignReport({
     }
   }
 
-  async function shareReport() {
+  async function shareReport(hideBots: boolean) {
+    setSharePromptOpen(false);
     try {
-      let path = publicToken ? publicCampaignReportPath(publicToken) : "";
+      let path = publicToken
+        ? publicCampaignReportPath(publicToken, { hideBotClicks: hideBots })
+        : "";
       if (!publicToken) {
         const response = await fetch(
           `/api/campaigns/${encodeURIComponent(campaign.id)}/share${
@@ -567,9 +620,11 @@ export default function PortalCampaignReport({
             typeof data?.error === "string" ? data.error : "Failed to copy link",
           );
         }
-        path = publicCampaignReportPath(String(data.token ?? ""));
+        path = publicCampaignReportPath(String(data.token ?? ""), {
+          hideBotClicks: hideBots,
+        });
       }
-      if (!path || path === "/r/") {
+      if (!path || path.startsWith("/r/?") || path === "/r/") {
         throw new Error("Failed to copy link");
       }
       const url = `${window.location.origin}${path}`;
@@ -578,7 +633,9 @@ export default function PortalCampaignReport({
       setShareToast({
         key: Date.now(),
         variant: "success",
-        message: "Report link copied",
+        message: hideBots
+          ? "Report link copied (bot clicks hidden)"
+          : "Report link copied",
       });
       window.setTimeout(() => setShareCopied(false), 2000);
     } catch (error) {
@@ -824,10 +881,19 @@ export default function PortalCampaignReport({
     Array.isArray(campaign.timeline) ? [...campaign.timeline] : []
   ).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   const showSequence = isOneOne && sequenceScope === null && Boolean(peopleView);
+  const showClickTagCol = peopleView === "clicks" && !hideBotClicks;
   const peopleColSpan =
     3 +
     (showSequence ? 1 : 0) +
-    (peopleView === "clicks" ? 2 : peopleView ? 1 : 0);
+    (peopleView === "opens"
+      ? 2
+      : peopleView === "clicks"
+        ? showClickTagCol
+          ? 3
+          : 2
+        : peopleView
+          ? 1
+          : 0);
   const activeSequenceIndex = Math.min(
     Math.max(sequencePreviewIndex, 0),
     Math.max(sequences.length - 1, 0),
@@ -951,7 +1017,7 @@ export default function PortalCampaignReport({
             className={`drip-report-share${shareCopied ? " copied" : ""}`}
             aria-label={shareCopied ? "Link copied" : "Copy report link"}
             title={shareCopied ? "Link copied" : "Copy report link"}
-            onClick={() => void shareReport()}
+            onClick={() => setSharePromptOpen(true)}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
               <circle cx="18" cy="5" r="3" />
@@ -988,6 +1054,55 @@ export default function PortalCampaignReport({
           message={shareToast.message}
           onDone={() => setShareToast(null)}
         />
+      ) : null}
+      {sharePromptOpen ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => setSharePromptOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="crm-modal an-share-bot-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="drip-share-bot-title"
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="drip-share-bot-title">Copy public report link</h3>
+                <p>
+                  Hide bot clicks for people who open this link? The Bot click tag will not
+                  appear when hidden.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                onClick={() => setSharePromptOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-actions an-share-bot-actions">
+              <button
+                type="button"
+                className="btn-soft"
+                onClick={() => void shareReport(false)}
+              >
+                Keep bot clicks
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                onClick={() => void shareReport(true)}
+              >
+                Hide bot clicks
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {isRunning ? (
@@ -1043,19 +1158,38 @@ export default function PortalCampaignReport({
       ) : null}
 
       {tableView ? null : isPersonalise ? (
-        <div className="drip-report-tabs">
-          {["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
-            (label) => (
-              <button
-                key={label}
-                type="button"
-                className={tab === label.toLowerCase() ? "active" : ""}
-                onClick={() => handleTabChange(label)}
-              >
-                {label}
-              </button>
-            ),
-          )}
+        <div className="drip-report-tabs-row">
+          <div className="drip-report-tabs">
+            {["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
+              (label) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={tab === label.toLowerCase() ? "active" : ""}
+                  onClick={() => handleTabChange(label)}
+                >
+                  {label}
+                </button>
+              ),
+            )}
+          </div>
+          {!botToggleLocked ? (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={hideBotClicks}
+              className={`drip-report-table-toggle drip-report-bot-nav-toggle${hideBotClicks ? " is-on" : ""}`}
+              onClick={() => setHideBotClicks((value) => !value)}
+              title={
+                hideBotClicks
+                  ? "Bot clicks hidden in Clicks view and export"
+                  : "Bot clicks shown with tag; included in export"
+              }
+            >
+              <span className="drip-report-table-switch" aria-hidden="true" />
+              Hide bot clicks
+            </button>
+          ) : null}
         </div>
       ) : isOneOne ? (
         <div className="drip-report-tab-rows">
@@ -1083,8 +1217,44 @@ export default function PortalCampaignReport({
               ))}
             </div>
           </div>
+          <div className="drip-report-tabs-row">
+            <div className="drip-report-tabs">
+              {["Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
+                (label) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className={tab === label.toLowerCase() ? "active" : ""}
+                    onClick={() => handleTabChange(label)}
+                  >
+                    {label}
+                  </button>
+                ),
+              )}
+            </div>
+            {!botToggleLocked ? (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={hideBotClicks}
+                className={`drip-report-table-toggle drip-report-bot-nav-toggle${hideBotClicks ? " is-on" : ""}`}
+                onClick={() => setHideBotClicks((value) => !value)}
+                title={
+                  hideBotClicks
+                    ? "Bot clicks hidden in Clicks view and export"
+                    : "Bot clicks shown with tag; included in export"
+                }
+              >
+                <span className="drip-report-table-switch" aria-hidden="true" />
+                Hide bot clicks
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <div className="drip-report-tabs-row">
           <div className="drip-report-tabs">
-            {["Deliverability", "Opens", "Clicks", "Bounces", "Replies", "Unsubscribes"].map(
+            {["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Unsubscribes"].map(
               (label) => (
                 <button
                   key={label}
@@ -1097,21 +1267,23 @@ export default function PortalCampaignReport({
               ),
             )}
           </div>
-        </div>
-      ) : (
-        <div className="drip-report-tabs">
-          {["Overview", "Deliverability", "Opens", "Clicks", "Bounces", "Unsubscribes"].map(
-            (label) => (
-              <button
-                key={label}
-                type="button"
-                className={tab === label.toLowerCase() ? "active" : ""}
-                onClick={() => handleTabChange(label)}
-              >
-                {label}
-              </button>
-            ),
-          )}
+          {!botToggleLocked ? (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={hideBotClicks}
+              className={`drip-report-table-toggle drip-report-bot-nav-toggle${hideBotClicks ? " is-on" : ""}`}
+              onClick={() => setHideBotClicks((value) => !value)}
+              title={
+                hideBotClicks
+                  ? "Bot clicks hidden in Clicks view and export"
+                  : "Bot clicks shown with tag; included in export"
+              }
+            >
+              <span className="drip-report-table-switch" aria-hidden="true" />
+              Hide bot clicks
+            </button>
+          ) : null}
         </div>
       )}
 
@@ -1276,15 +1448,15 @@ export default function PortalCampaignReport({
                 {peopleView === "opens"
                   ? campaign.kind === "oneone"
                     ? sequenceScope === null
-                      ? "Each contact is counted once, even if they opened more than one sequence."
-                      : `Contacts who opened sequence ${sequenceScope + 1}.`
-                    : "Contacts who opened this campaign, with date and time."
+                      ? "All opens (including image-pixel-blocked). Each contact is counted once across sequences."
+                      : `All opens for sequence ${sequenceScope + 1}. Pixel-blocked opens show a tag.`
+                    : "All opens for this campaign. Pixel-blocked opens (click without image load) show a tag."
                   : peopleView === "clicks"
                     ? campaign.kind === "oneone"
                       ? sequenceScope === null
-                        ? "Each contact is one row, showing the link they clicked last."
+                        ? "Each contact is one row, showing the link they clicked last. Bot clicks are tagged when instant click is on."
                         : `Each contact is one row in sequence ${sequenceScope + 1}, showing the link they clicked last.`
-                      : "Each contact is one row, showing the link they clicked last."
+                      : "Each contact is one row, showing the link they clicked last. Bot clicks are tagged when instant click is on."
                     : peopleView === "bounces"
                       ? "Addresses that bounced (from delivery failures or bounce emails). Replies are not counted here."
                       : peopleView === "replies"
@@ -1300,7 +1472,24 @@ export default function PortalCampaignReport({
                 ? "Loading..."
                 : `${visiblePeople.length} contacts`}
             </div>
-            <div className="crm-meta-right">
+            <div className="crm-meta-right drip-report-people-tools">
+              {peopleView === "clicks" && !botToggleLocked ? (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={hideBotClicks}
+                  className={`drip-report-table-toggle${hideBotClicks ? " is-on" : ""}`}
+                  onClick={() => setHideBotClicks((value) => !value)}
+                  title={
+                    hideBotClicks
+                      ? "Bot clicks hidden in this list and export"
+                      : "Bot clicks shown with tag; included in export"
+                  }
+                >
+                  <span className="drip-report-table-switch" aria-hidden="true" />
+                  Hide bot clicks
+                </button>
+              ) : null}
               <div className="search-input">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <circle cx="11" cy="11" r="7" />
@@ -1330,11 +1519,19 @@ export default function PortalCampaignReport({
                   <th>Email</th>
                   {showSequence ? <th>Sequence</th> : null}
                   {peopleView === "delivered" ? <th>Delivered</th> : null}
-                  {peopleView === "opens" ? <th>Opened</th> : null}
+                  {peopleView === "opens" ? (
+                    <>
+                      <th>Opened</th>
+                      <th>Tag</th>
+                    </>
+                  ) : null}
                   {peopleView === "clicks" ? (
                     <>
                       <th>Link clicked</th>
                       <th>Clicked</th>
+                      {showClickTagCol ? (
+                        <th className="drip-report-tag-col">Tag</th>
+                      ) : null}
                     </>
                   ) : null}
                   {peopleView === "unsubscribes" ? <th>Unsubscribed</th> : null}
@@ -1409,11 +1606,22 @@ export default function PortalCampaignReport({
                         </td>
                       ) : null}
                       {peopleView === "opens" ? (
-                        <td data-label="Opened">
-                          {person.openedAt
-                            ? formatCampaignClock(person.openedAt, timezone)
-                            : "—"}
-                        </td>
+                        <>
+                          <td data-label="Opened">
+                            {person.openedAt
+                              ? formatCampaignClock(person.openedAt, timezone)
+                              : "—"}
+                          </td>
+                          <td data-label="Tag">
+                            {person.openTag ? (
+                              <span className="af-type-badge af-type-pixel-blocked">
+                                {person.openTag}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        </>
                       ) : null}
                       {peopleView === "clicks" ? (
                         <>
@@ -1474,6 +1682,17 @@ export default function PortalCampaignReport({
                               ? formatCampaignClock(person.clickedAt, timezone)
                               : "—"}
                           </td>
+                          {showClickTagCol ? (
+                            <td className="drip-report-tag-col" data-label="Tag">
+                              {person.clickTag ? (
+                                <span className="af-type-badge af-type-bot-click">
+                                  {person.clickTag}
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                          ) : null}
                         </>
                       ) : null}
                       {peopleView === "unsubscribes" ? (
@@ -1609,10 +1828,12 @@ export function SharedCampaignReport({
   campaign,
   publicToken,
   analyticsToken,
+  hideBotClicks = false,
 }: {
   campaign: DripCampaign;
   publicToken: string;
   analyticsToken?: string;
+  hideBotClicks?: boolean;
 }) {
   const [current, setCurrent] = useState(campaign);
   return (
@@ -1620,6 +1841,7 @@ export function SharedCampaignReport({
       campaign={current}
       publicToken={publicToken}
       analyticsToken={analyticsToken}
+      initialHideBotClicks={hideBotClicks}
       onCampaignChange={setCurrent}
     />
   );

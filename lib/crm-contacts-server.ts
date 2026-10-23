@@ -1,14 +1,20 @@
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import {
+  matchPersonByEmail,
+  profileFromApolloPerson,
+} from "@/lib/apollo";
+import {
   buildContactHistory,
   mapContact,
+  mapContactProfile,
   type CompanyDoc,
   type ContactCampaignStats,
   type ContactDetail,
   type ContactDoc,
   type ContactHistoryEvent,
   type ContactListMembership,
+  type ContactProfile,
   type ListDoc,
   type ListMembershipDoc,
 } from "@/lib/crm";
@@ -16,6 +22,11 @@ import type {
   CampaignBlastDoc,
   CampaignSendDoc,
 } from "@/lib/campaign-blasts-server";
+import {
+  OPEN_PIXEL_BLOCKED_TAG,
+  sendCountsAsOpen,
+  sendOpenPixelBlocked,
+} from "@/lib/open-pixel";
 
 export async function getProjectContacts(projectId: ObjectId) {
   const db = await getDb();
@@ -309,8 +320,166 @@ export async function getProjectContactDetail(
     lists: contactLists,
     history,
     campaignStats,
+    profile: mapContactProfile(doc.profile),
     navigation,
   };
+}
+
+export type ContactPatchInput = {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  companyName?: string;
+  attributes?: Record<string, string>;
+  subscribed?: boolean;
+  blocklisted?: boolean;
+  profile?: ContactProfile;
+};
+
+function normalizeEmail(value: string) {
+  return value.trim().toLowerCase();
+}
+
+export async function updateProjectContact(
+  projectId: ObjectId,
+  contactId: ObjectId,
+  owner: string,
+  patch: ContactPatchInput,
+): Promise<ContactDetail | null> {
+  const db = await getDb();
+  const existing = await db
+    .collection<ContactDoc>("contacts")
+    .findOne({ _id: contactId, projectId });
+  if (!existing) {
+    return null;
+  }
+
+  const $set: Record<string, unknown> = { updatedAt: new Date() };
+
+  if (typeof patch.firstName === "string") {
+    $set.firstName = patch.firstName.trim();
+  }
+  if (typeof patch.lastName === "string") {
+    $set.lastName = patch.lastName.trim();
+  }
+  if (typeof patch.email === "string") {
+    const email = normalizeEmail(patch.email);
+    if (!email) {
+      throw new Error("Email is required.");
+    }
+    if (email !== existing.email) {
+      const clash = await db.collection<ContactDoc>("contacts").findOne({
+        projectId,
+        email,
+        _id: { $ne: contactId },
+      });
+      if (clash) {
+        throw new Error("Another contact already uses that email.");
+      }
+    }
+    $set.email = email;
+  }
+  if (typeof patch.companyName === "string") {
+    $set.companyName = patch.companyName.trim();
+  }
+  if (patch.attributes && typeof patch.attributes === "object") {
+    $set.attributes = Object.fromEntries(
+      Object.entries(patch.attributes).map(([key, value]) => [
+        key,
+        String(value ?? "").trim(),
+      ]),
+    );
+  }
+  if (typeof patch.subscribed === "boolean") {
+    $set.subscribed = patch.subscribed;
+  }
+  if (typeof patch.blocklisted === "boolean") {
+    $set.blocklisted = patch.blocklisted;
+  }
+  if (patch.profile && typeof patch.profile === "object") {
+    $set.profile = patch.profile;
+  }
+
+  await db.collection<ContactDoc>("contacts").updateOne(
+    { _id: contactId, projectId },
+    { $set },
+  );
+
+  return getProjectContactDetail(projectId, contactId, owner);
+}
+
+export async function enrichContactWithApollo(
+  projectId: ObjectId,
+  contactId: ObjectId,
+  owner: string,
+): Promise<
+  | { ok: true; contact: ContactDetail }
+  | { ok: false; status: number; error: string }
+> {
+  const db = await getDb();
+  const existing = await db
+    .collection<ContactDoc>("contacts")
+    .findOne({ _id: contactId, projectId });
+  if (!existing) {
+    return { ok: false, status: 404, error: "Contact not found" };
+  }
+
+  if (existing.profile?.apollo?.enrichedAt) {
+    return {
+      ok: false,
+      status: 409,
+      error: "Already enriched with Apollo for this contact.",
+    };
+  }
+
+  const match = await matchPersonByEmail(existing.email);
+  if (!match.person) {
+    return {
+      ok: false,
+      status: 404,
+      error: "Apollo did not find a match for this email.",
+    };
+  }
+
+  const profile = profileFromApolloPerson(
+    match.person,
+    mapContactProfile(existing.profile),
+  );
+  profile.apollo = {
+    ...profile.apollo,
+    personId: match.person.id || profile.apollo?.personId,
+    enrichedAt: new Date().toISOString(),
+    raw: match.raw,
+  };
+
+  const $set: Record<string, unknown> = {
+    profile,
+    updatedAt: new Date(),
+  };
+
+  if (!existing.firstName?.trim() && match.person.first_name) {
+    $set.firstName = String(match.person.first_name).trim();
+  }
+  if (!existing.lastName?.trim() && match.person.last_name) {
+    $set.lastName = String(match.person.last_name).trim();
+  }
+  if (
+    !existing.companyName?.trim() &&
+    match.person.organization?.name
+  ) {
+    $set.companyName = String(match.person.organization.name).trim();
+  }
+
+  await db.collection<ContactDoc>("contacts").updateOne(
+    { _id: contactId, projectId },
+    { $set },
+  );
+
+  const contact = await getProjectContactDetail(projectId, contactId, owner);
+  if (!contact) {
+    return { ok: false, status: 404, error: "Contact not found" };
+  }
+  return { ok: true, contact };
 }
 
 const CONTACT_SORT_FIELDS = ["lastName", "firstName", "email"] as const;
@@ -442,41 +611,57 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
       });
     }
 
+    // Count delivery for stats only — do not emit a separate history row.
+    // Delivered currently uses the same timestamp as sent, which duplicated
+    // every send and pushed real opens/clicks out of the Recent history card.
     if (send.status === "sent") {
       stats.delivered += 1;
-      events.push({
-        id: `campaign-delivered-${send._id.toString()}`,
-        type: "campaign_delivered",
-        title: "Email campaign delivered",
-        description: `Campaign ${label} was delivered.`,
-        at: toIso(send.sentAt),
-        actor,
-        campaignId: send.campaignId,
-        campaignKind,
-        campaignName,
-      });
     }
 
-    if (send.openedAt || send.openCount > 0) {
+    if (sendCountsAsOpen(send)) {
       stats.opens += 1;
+      const firstOpenEvent = send.openEvents?.[0];
+      const pixelBlocked = sendOpenPixelBlocked(send);
+      const openIp =
+        firstOpenEvent?.ip || send.openedIp || send.clickedIp;
+      const openDevice =
+        firstOpenEvent?.device || send.openedDevice || send.clickedDevice;
+      const openUa =
+        firstOpenEvent?.userAgent || send.openedUserAgent || send.clickedUserAgent;
       events.push({
         id: `campaign-opened-${send._id.toString()}`,
         type: "campaign_opened",
-        title: "Email campaign opened",
-        description: `Opened campaign ${label}.`,
-        at: toIso(send.openedAt),
+        title: pixelBlocked
+          ? "Email campaign opened (pixel blocked)"
+          : "Email campaign opened",
+        description: pixelBlocked
+          ? `Opened campaign ${label} (${OPEN_PIXEL_BLOCKED_TAG}).`
+          : `Opened campaign ${label}.`,
+        at: toIso(send.openedAt || firstOpenEvent?.at || send.clickedAt),
         actor,
         campaignId: send.campaignId,
         campaignKind,
         campaignName,
+        ...(pixelBlocked ? { openTag: OPEN_PIXEL_BLOCKED_TAG } : {}),
+        ...(openIp ? { ip: openIp } : {}),
+        ...(openDevice ? { device: openDevice } : {}),
+        ...(openUa ? { userAgent: openUa } : {}),
       });
     }
 
     const clickEvents =
       send.clickEvents && send.clickEvents.length > 0
-        ? send.clickEvents
+        ? send.clickEvents.filter((click) => !click.ignored)
         : send.clickedAt
-          ? [{ url: send.clickedUrl || "", at: send.clickedAt }]
+          ? [
+              {
+                url: send.clickedUrl || "",
+                at: send.clickedAt,
+                ip: send.clickedIp,
+                device: send.clickedDevice,
+                userAgent: send.clickedUserAgent,
+              },
+            ]
           : [];
 
     if (clickEvents.length > 0 || send.clickCount > 0) {
@@ -498,6 +683,9 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         campaignKind,
         campaignName,
         clickedUrl: url,
+        ...(click.ip ? { ip: click.ip } : {}),
+        ...(click.device ? { device: click.device } : {}),
+        ...(click.userAgent ? { userAgent: click.userAgent } : {}),
       });
     }
 

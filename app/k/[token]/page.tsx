@@ -12,7 +12,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const { token } = await params;
   const share = await findKanbanShareByToken(token);
   if (!share || isAnalyticsShareExpired(share)) {
-    return { title: share ? "Board expired" : "Kanban board" };
+    return { title: share ? "Board expired" : "Pipeline board" };
   }
   return { title: `${share.projectName} lead pipeline` };
 }

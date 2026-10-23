@@ -8,6 +8,10 @@ import {
   processDueAutomationFollowUps,
   type AutomationDoc,
 } from "@/lib/automations-server";
+import {
+  processDueInboxReplies,
+  type InboxScheduledReplyDoc,
+} from "@/lib/master-inbox-server";
 
 const DEFAULT_INTERVAL_MS = 15_000;
 
@@ -67,7 +71,7 @@ export function campaignWorkerIntervalMs() {
 
 async function projectIdsWithDueWork(now = new Date()) {
   const db = await getDb();
-  const [blastIds, automationIds] = await Promise.all([
+  const [blastIds, automationIds, inboxReplyIds] = await Promise.all([
     db.collection<CampaignBlastDoc>("campaign_blasts").distinct("projectId", {
       $or: [
         { status: "sending" },
@@ -77,10 +81,16 @@ async function projectIdsWithDueWork(now = new Date()) {
     db.collection<AutomationDoc>("automations").distinct("projectId", {
       status: { $in: ["running", "scheduled"] },
     }),
+    db
+      .collection<InboxScheduledReplyDoc>("inbox_scheduled_replies")
+      .distinct("projectId", {
+        status: "pending",
+        scheduledFor: { $lte: now },
+      }),
   ]);
 
   const unique = new Map<string, ObjectId>();
-  for (const id of [...blastIds, ...automationIds]) {
+  for (const id of [...blastIds, ...automationIds, ...inboxReplyIds]) {
     if (id instanceof ObjectId) {
       unique.set(id.toString(), id);
     } else if (typeof id === "string" && ObjectId.isValid(id)) {
@@ -94,6 +104,7 @@ export type CampaignSendTickResult = {
   projects: number;
   reports: number;
   followUps: number;
+  inboxReplies: number;
   errors: Array<{ projectId: string; error: string }>;
 };
 
@@ -109,6 +120,7 @@ export async function processAllDueCampaignSends(
     projects: projectIds.length,
     reports: 0,
     followUps: 0,
+    inboxReplies: 0,
     errors: [],
   };
 
@@ -118,8 +130,10 @@ export async function processAllDueCampaignSends(
         maxBatchesPerBlast: campaignWorkerBatchesPerTick(),
       });
       const followUps = await processDueAutomationFollowUps(projectId, origin);
+      const inboxReplies = await processDueInboxReplies(projectId);
       result.reports += reports.length;
       result.followUps += Number(followUps?.launched || 0);
+      result.inboxReplies += Number(inboxReplies?.sent || 0);
     } catch (error) {
       result.errors.push({
         projectId: projectId.toString(),

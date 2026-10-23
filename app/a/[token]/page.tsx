@@ -46,5 +46,11 @@ export default async function PublicAnalyticsPage({ params }: PageProps) {
     { withShareTokens: true },
   );
 
-  return <PublicAnalyticsReport dashboard={dashboard} analyticsToken={token} />;
+  return (
+    <PublicAnalyticsReport
+      dashboard={dashboard}
+      analyticsToken={token}
+      hideBotClicks={Boolean(share.hideBotClicks)}
+    />
+  );
 }

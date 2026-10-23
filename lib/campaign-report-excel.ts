@@ -106,13 +106,21 @@ export async function buildCampaignReportWorkbook({
   timezone,
   sentAt,
   sends,
+  hideBotClicks = false,
 }: {
   campaignName: string;
   timezone: string;
   sentAt?: string | Date;
   sends: CampaignSendDoc[];
+  hideBotClicks?: boolean;
 }) {
-  const tables = buildCampaignReportTables({ campaignName, timezone, sentAt, sends });
+  const tables = buildCampaignReportTables({
+    campaignName,
+    timezone,
+    sentAt,
+    sends,
+    hideBotClicks,
+  });
   const { sentLong, clickers, opensOnly, bounces, unsubscribes } = tables;
   const { sent: totalSent, opens: uniqueOpens, clicks: uniqueClicks } = tables.totals;
 
@@ -122,14 +130,14 @@ export async function buildCampaignReportWorkbook({
 
   const main = workbook.addWorksheet("Sent, Open, Click");
   main.views = [{ showGridLines: false }];
-  [5, 22, 34, 22, 22, 18, 12, 10, 7, 26, 11].forEach((width, index) => {
+  [5, 22, 34, 22, 22, 14, 12, 12, 12, 20, 14, 10, 7, 26, 11].forEach((width, index) => {
     main.getColumn(index + 1).width = width;
   });
 
   paintMergedBanner(
     main,
     2,
-    11,
+    15,
     `${campaignName} · Sent, Open & Click Tracker`,
     COLORS.titleNavy,
     14,
@@ -138,7 +146,7 @@ export async function buildCampaignReportWorkbook({
   paintMergedBanner(
     main,
     3,
-    11,
+    15,
     `${campaignName} · ${sentLong} · ${totalSent} Total Sent · ${uniqueOpens} Opens · ${uniqueClicks} Clicks`,
     COLORS.subtitleBlue,
     11,
@@ -146,7 +154,7 @@ export async function buildCampaignReportWorkbook({
   );
 
   let row = 6;
-  paintMergedBanner(main, row, 11, "SENT — All Emails Delivered", COLORS.sentGreen, 12, 24);
+  paintMergedBanner(main, row, 14, "SENT — All Emails Delivered", COLORS.sentGreen, 12, 24);
   row += 1;
   paintHeaderRow(main, row, [
     "#",
@@ -177,6 +185,10 @@ export async function buildCampaignReportWorkbook({
     "Domain",
     "Open Date",
     "Open Time",
+    "Open Device",
+    "Click Device",
+    "Open Tag",
+    "Click Tag",
     "Opens",
     "Clicks",
     "CTA Clicked",
@@ -184,11 +196,11 @@ export async function buildCampaignReportWorkbook({
   ];
   const engageSections = [
     { title: "CLICKERS — Opened & Clicked a Link", color: COLORS.clickersGreen, rows: clickers },
-    { title: "OPENS ONLY — Opened Email, No Click", color: COLORS.opensBlue, rows: opensOnly },
+    { title: "OPENS — All Opens (incl. Image pixel blocked)", color: COLORS.opensBlue, rows: opensOnly },
   ];
   for (const section of engageSections) {
     row += 1;
-    paintMergedBanner(main, row, 11, section.title, section.color, 12, 24);
+    paintMergedBanner(main, row, 15, section.title, section.color, 12, 24);
     row += 1;
     paintHeaderRow(main, row, engageHeaders);
     row += 1;
@@ -203,6 +215,11 @@ export async function buildCampaignReportWorkbook({
         person.domain,
         person.openDate,
         person.openTime,
+        person.openDevice,
+        person.clickDevice,
+        person.openTag,
+        // Toggle OFF: bot clickers get "Bot click". Toggle ON: bots excluded, tag is dash.
+        person.clickTag,
         person.opens,
         person.clicks,
         person.cta,
@@ -210,7 +227,7 @@ export async function buildCampaignReportWorkbook({
       values.forEach((value, col) => {
         paintCell(main, row, col + 1, value, { fill, size: 10 });
       });
-      paintCell(main, row, 11, person.status, {
+      paintCell(main, row, 15, person.status, {
         fill: clicked ? COLORS.clickedBg : COLORS.openedBg,
         fontColor: clicked ? COLORS.clickedInk : COLORS.openedInk,
         bold: true,

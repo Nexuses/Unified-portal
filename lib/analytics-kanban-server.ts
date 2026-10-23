@@ -24,6 +24,11 @@ import {
   type KanbanStage,
 } from "@/lib/analytics-kanban";
 import { deriveCompanyDomain } from "@/lib/crm";
+import {
+  isEngagementDevice,
+  preferEarlierDevice,
+} from "@/lib/engagement-client-meta";
+import { sendCountsAsOpen, sendOpenPixelBlocked } from "@/lib/open-pixel";
 
 const DOT_COLOR_SET = new Set<string>(KANBAN_DOT_COLORS);
 
@@ -320,9 +325,27 @@ async function loadPeople(
       clicked: boolean;
       replied: boolean;
       campaigns: string[];
+      sentAt?: string;
+      openedAt?: string;
+      openedDevice?: string;
+      openPixelBlocked?: boolean;
+      clickedAt?: string;
+      clickedDevice?: string;
+      repliedAt?: string;
       lastActivityAt?: string;
     }
   >();
+
+  function toIso(value?: Date | string | null) {
+    if (!value) {
+      return undefined;
+    }
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return undefined;
+    }
+    return date.toISOString();
+  }
 
   function activityIso(doc: CampaignSendDoc) {
     const latest = [doc.repliedAt, doc.clickedAt, doc.openedAt, doc.sentAt]
@@ -342,6 +365,17 @@ async function loadPeople(
       return left;
     }
     return left > right ? left : right;
+  }
+
+  /** Keep the earliest timestamp (first send / first open / first click). */
+  function earlierIso(left?: string, right?: string) {
+    if (!left) {
+      return right;
+    }
+    if (!right) {
+      return left;
+    }
+    return left < right ? left : right;
   }
 
   void ensureKanbanIndexes();
@@ -370,8 +404,13 @@ async function loadPeople(
           companyName: 1,
           openCount: 1,
           openedAt: 1,
+          openedDevice: 1,
+          openEvents: 1,
+          openPixelBlocked: 1,
           clickCount: 1,
           clickedAt: 1,
+          clickedDevice: 1,
+          clickEvents: 1,
           clickBurstIgnored: 1,
           sentAt: 1,
           repliedAt: 1,
@@ -381,6 +420,18 @@ async function loadPeople(
     }),
   );
 
+  function deviceFromOpen(doc: CampaignSendDoc) {
+    const fromEvent = doc.openEvents?.[0]?.device;
+    const value = fromEvent || doc.openedDevice;
+    return isEngagementDevice(value) && value !== "unknown" ? value : undefined;
+  }
+
+  function deviceFromClick(doc: CampaignSendDoc) {
+    const fromEvent = doc.clickEvents?.find((event) => !event.ignored)?.device;
+    const value = fromEvent || doc.clickedDevice;
+    return isEngagementDevice(value) && value !== "unknown" ? value : undefined;
+  }
+
   for (const { campaign, docs } of sendsByCampaign) {
     for (const doc of docs) {
       const email = String(doc.email ?? "")
@@ -389,12 +440,23 @@ async function loadPeople(
       if (!email) {
         continue;
       }
-      const opened = (doc.openCount ?? 0) > 0 || Boolean(doc.openedAt);
       const clicked =
         !doc.clickBurstIgnored &&
         ((doc.clickCount ?? 0) > 0 || Boolean(doc.clickedAt));
+      const opened = sendCountsAsOpen(doc);
+      const pixelBlocked = sendOpenPixelBlocked(doc);
       const current = merged.get(email);
       const replied = Boolean(doc.repliedAt);
+      const sentAt = toIso(doc.sentAt);
+      const openedAt = opened
+        ? toIso(doc.openedAt) || (clicked ? toIso(doc.clickedAt) : undefined)
+        : undefined;
+      const clickedAt = clicked ? toIso(doc.clickedAt) : undefined;
+      const openedDevice = opened
+        ? deviceFromOpen(doc) || (clicked ? deviceFromClick(doc) : undefined)
+        : undefined;
+      const clickedDevice = clicked ? deviceFromClick(doc) : undefined;
+      const repliedAt = replied ? toIso(doc.repliedAt) : undefined;
       const lastActivityAt = activityIso(doc);
       if (!current) {
         merged.set(email, {
@@ -406,6 +468,13 @@ async function loadPeople(
           clicked,
           replied,
           campaigns: [campaign.name],
+          sentAt,
+          openedAt,
+          openedDevice,
+          openPixelBlocked: pixelBlocked,
+          clickedAt,
+          clickedDevice,
+          repliedAt,
           lastActivityAt,
         });
         continue;
@@ -413,6 +482,25 @@ async function loadPeople(
       current.opened = current.opened || opened;
       current.clicked = current.clicked || clicked;
       current.replied = current.replied || replied;
+      current.openPixelBlocked = Boolean(current.openPixelBlocked || pixelBlocked);
+      current.sentAt = earlierIso(current.sentAt, sentAt);
+      const openPick = preferEarlierDevice(
+        current.openedAt,
+        current.openedDevice,
+        openedAt,
+        openedDevice,
+      );
+      current.openedAt = openPick.at;
+      current.openedDevice = openPick.device;
+      const clickPick = preferEarlierDevice(
+        current.clickedAt,
+        current.clickedDevice,
+        clickedAt,
+        clickedDevice,
+      );
+      current.clickedAt = clickPick.at;
+      current.clickedDevice = clickPick.device;
+      current.repliedAt = earlierIso(current.repliedAt, repliedAt);
       current.lastActivityAt = laterIso(current.lastActivityAt, lastActivityAt);
       if (!current.campaigns.includes(campaign.name)) {
         current.campaigns.push(campaign.name);
@@ -568,6 +656,7 @@ export async function createProjectKanbanBoard(
 export async function getProjectKanbanBoard(
   projectId: ObjectId,
   id: string,
+  options?: { freshPeople?: boolean },
 ): Promise<KanbanBoard | null> {
   if (!ObjectId.isValid(id)) {
     return null;
@@ -580,7 +669,10 @@ export async function getProjectKanbanBoard(
   if (!doc?.name) {
     return null;
   }
-  const people = await loadPeopleCached(projectId, doc.campaigns || []);
+  const campaigns = doc.campaigns || [];
+  const people = options?.freshPeople
+    ? await rebuildPeople(projectId, campaigns, peopleCacheKey(projectId, campaigns))
+    : await loadPeopleCached(projectId, campaigns);
   return {
     ...mapList(doc),
     stages: normalizeStages(doc.stages),

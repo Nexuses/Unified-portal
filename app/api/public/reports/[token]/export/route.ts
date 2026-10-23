@@ -10,7 +10,7 @@ type RouteContext = {
   params: Promise<{ token: string }>;
 };
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
   try {
     const { token } = await context.params;
     const found = await getDripCampaignByShareToken(token);
@@ -18,6 +18,8 @@ export async function GET(_request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Report not found" }, { status: 404 });
     }
 
+    const hideBotClicks =
+      new URL(request.url).searchParams.get("hideBotClicks") === "1";
     const sends = await listCampaignSendsForExport(
       found.projectId,
       found.campaign.id,
@@ -28,6 +30,7 @@ export async function GET(_request: Request, context: RouteContext) {
       timezone: found.campaign.timezone || "Asia/Kolkata",
       sentAt: found.campaign.sentAt,
       sends,
+      hideBotClicks,
     });
     const filename = campaignReportFilename(found.campaign.name);
 

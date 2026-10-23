@@ -18,6 +18,10 @@ import type {
 } from "@/lib/master-inbox-server";
 import type { InboxSignature } from "@/lib/inbox-signatures-server";
 import { portalCampaignRoute } from "@/lib/portal-nav";
+import CampaignScheduleDrawer, {
+  type CampaignScheduleInput,
+} from "@/app/components/portal/CampaignScheduleDrawer";
+import { useSpeechInput } from "@/lib/use-speech-input";
 
 const HTML_SIGNATURE_STORAGE_KEY = "portal-inbox-html-signature";
 const AUTO_REFRESH_MS = 10 * 60 * 1000;
@@ -533,6 +537,12 @@ export default function PortalMasterInboxPage() {
   const [suggesting, setSuggesting] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [suggestError, setSuggestError] = useState("");
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleNote, setScheduleNote] = useState("");
+  const aiSpeech = useSpeechInput({
+    value: aiInstruction,
+    onChange: setAiInstruction,
+  });
   const selectedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     selectedKeyRef.current = selectedKey;
@@ -807,12 +817,13 @@ export default function PortalMasterInboxPage() {
     }
   }
 
-  async function sendReply() {
+  async function sendReply(options?: { scheduledFor?: string }) {
     if (!selectedKey || isEmptyReplyHtml(replyHtml) || sendingReply) {
-      return;
+      throw new Error("Reply is empty or already sending");
     }
     setSendingReply(true);
     setError("");
+    setScheduleNote("");
     const bodyHtml = replyHtml;
     const outgoingHtml =
       includeSignature && currentSignature
@@ -824,12 +835,22 @@ export default function PortalMasterInboxPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ html: outgoingHtml }),
+          body: JSON.stringify({
+            html: outgoingHtml,
+            ...(options?.scheduledFor
+              ? { scheduledFor: options.scheduledFor }
+              : {}),
+          }),
         },
       );
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || "Failed to send reply");
+        throw new Error(
+          data.error ||
+            (options?.scheduledFor
+              ? "Failed to schedule reply"
+              : "Failed to send reply"),
+        );
       }
       const nextMessages = Array.isArray(data.messages) ? data.messages : [];
       setMessages(nextMessages);
@@ -837,31 +858,59 @@ export default function PortalMasterInboxPage() {
       setSignatureChoice(null);
       setReplyEditorKey((key) => key + 1);
       setComposerOpen(false);
-      const preview =
-        stripHtmlToText(bodyHtml).slice(0, 140) ||
-        (/<img\b/i.test(bodyHtml) ? "(image)" : "(no preview)");
-      setThreads((current) => {
-        const updated = current.map((thread) =>
-          thread.threadKey === selectedKey
-            ? {
-                ...thread,
-                preview: `You: ${preview}`,
-                messageCount: nextMessages.length || thread.messageCount + 1,
-                latestAt: new Date().toISOString(),
-                unreadCount: 0,
-              }
-            : thread,
+      setScheduleOpen(false);
+      if (data.scheduled && data.scheduledFor) {
+        setScheduleNote(
+          `Reply scheduled for ${formatWhen(String(data.scheduledFor))}. It will send automatically.`,
         );
-        return updated.sort(
-          (a, b) =>
-            new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime(),
+        void fetch("/api/campaigns/process-due", { method: "POST" }).catch(
+          () => undefined,
         );
-      });
+      } else {
+        const preview =
+          stripHtmlToText(bodyHtml).slice(0, 140) ||
+          (/<img\b/i.test(bodyHtml) ? "(image)" : "(no preview)");
+        setThreads((current) => {
+          const updated = current.map((thread) =>
+            thread.threadKey === selectedKey
+              ? {
+                  ...thread,
+                  preview: `You: ${preview}`,
+                  messageCount: nextMessages.length || thread.messageCount + 1,
+                  latestAt: new Date().toISOString(),
+                  unreadCount: 0,
+                }
+              : thread,
+          );
+          return updated.sort(
+            (a, b) =>
+              new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime(),
+          );
+        });
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send reply");
+      const message =
+        err instanceof Error
+          ? err.message
+          : options?.scheduledFor
+            ? "Failed to schedule reply"
+            : "Failed to send reply";
+      setError(message);
+      throw err instanceof Error ? err : new Error(message);
     } finally {
       setSendingReply(false);
     }
+  }
+
+  async function confirmScheduleReply(input: CampaignScheduleInput) {
+    if (input.mode === "later") {
+      if (!input.scheduledFor) {
+        throw new Error("Pick a date and time");
+      }
+      await sendReply({ scheduledFor: input.scheduledFor });
+      return;
+    }
+    await sendReply();
   }
 
   function onInboxChange(nextId: string) {
@@ -1083,7 +1132,7 @@ export default function PortalMasterInboxPage() {
                 className={`inbox-reply${composerOpen ? " is-open" : ""}`}
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void sendReply();
+                  void sendReply().catch(() => undefined);
                 }}
               >
                 <div className="inbox-reply-top">
@@ -1126,6 +1175,47 @@ export default function PortalMasterInboxPage() {
                       }
                     }}
                   />
+                  {aiSpeech.supported ? (
+                    <button
+                      type="button"
+                      className={`inbox-ai-mic${aiSpeech.listening ? " is-listening" : ""}`}
+                      onClick={aiSpeech.toggle}
+                      disabled={suggesting || sendingReply}
+                      aria-pressed={aiSpeech.listening}
+                      aria-label={aiSpeech.listening ? "Stop speaking" : "Speak"}
+                      title={
+                        aiSpeech.listening
+                          ? "Stop speaking"
+                          : "Speak instead of typing"
+                      }
+                    >
+                      {aiSpeech.listening ? (
+                        <span className="inbox-ai-mic-wave" aria-hidden="true">
+                          <i />
+                          <i />
+                          <i />
+                          <i />
+                        </span>
+                      ) : (
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <rect x="9" y="2" width="6" height="12" rx="3" />
+                          <path d="M5 10a7 7 0 0 0 14 0" />
+                          <path d="M12 17v4" />
+                          <path d="M8 21h8" />
+                        </svg>
+                      )}
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="inbox-ai-btn"
@@ -1135,6 +1225,9 @@ export default function PortalMasterInboxPage() {
                     {suggesting ? "Writing…" : "Suggest reply"}
                   </button>
                 </div>
+                {aiSpeech.error ? (
+                  <div className="inbox-ai-error">{aiSpeech.error}</div>
+                ) : null}
                 {suggestError ? <div className="inbox-ai-error">{suggestError}</div> : null}
                 <InboxReplyEditor
                   key={`${selectedKey}-${replyEditorKey}`}
@@ -1143,7 +1236,7 @@ export default function PortalMasterInboxPage() {
                   disabled={sendingReply}
                   onHtmlChange={handleReplyHtmlChange}
                   onSubmitShortcut={() => {
-                    void sendReply();
+                    void sendReply().catch(() => undefined);
                   }}
                 />
                 {currentSignature ? (
@@ -1176,19 +1269,50 @@ export default function PortalMasterInboxPage() {
                   >
                     {currentSignature ? "Edit signature" : "Add signature"}
                   </button>
-                  <button
-                    type="submit"
-                    className="btn-dark"
-                    disabled={!canSendReply}
-                  >
-                    {sendingReply ? "Sending…" : "Send reply"}
-                  </button>
+                  <div className="inbox-reply-send-group">
+                    <button
+                      type="button"
+                      className="inbox-sig-btn"
+                      disabled={!canSendReply}
+                      onClick={() => setScheduleOpen(true)}
+                    >
+                      Schedule
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn-dark"
+                      disabled={!canSendReply}
+                    >
+                      {sendingReply ? "Sending…" : "Send reply"}
+                    </button>
+                  </div>
                 </div>
               </form>
             </>
           )}
+          {scheduleNote ? (
+            <div className="inbox-schedule-note" role="status">
+              {scheduleNote}
+            </div>
+          ) : null}
         </section>
       </div>
+
+      {scheduleOpen ? (
+        <CampaignScheduleDrawer
+          timezone={
+            typeof Intl !== "undefined"
+              ? Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Kolkata"
+              : "Asia/Kolkata"
+          }
+          title="Schedule reply"
+          question="When should this reply send?"
+          confirmNowLabel="Send now"
+          confirmLaterLabel="Schedule reply"
+          onClose={() => setScheduleOpen(false)}
+          onConfirm={confirmScheduleReply}
+        />
+      ) : null}
 
       {signatureModalOpen ? (
         <div className="crm-modal-backdrop" onClick={closeSignatureModal}>

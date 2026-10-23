@@ -22,10 +22,18 @@ export default function CampaignScheduleDrawer({
   timezone,
   onClose,
   onConfirm,
+  title = "Schedule",
+  question = "When would you like to send the campaign?",
+  confirmNowLabel = "Send now",
+  confirmLaterLabel = "Schedule",
 }: {
   timezone: string;
   onClose: () => void;
   onConfirm: (input: CampaignScheduleInput) => Promise<void>;
+  title?: string;
+  question?: string;
+  confirmNowLabel?: string;
+  confirmLaterLabel?: string;
 }) {
   const now = new Date();
   const [mode, setMode] = useState<"now" | "later">("now");
@@ -67,14 +75,14 @@ export default function CampaignScheduleDrawer({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="drip-schedule-head">
-          <h3 id="drip-schedule-title">Schedule</h3>
+          <h3 id="drip-schedule-title">{title}</h3>
           <button type="button" className="crm-modal-close" onClick={onClose} aria-label="Close">
             ×
           </button>
         </div>
 
         <div className="drip-schedule-body">
-          <div className="drip-schedule-question">When would you like to send the campaign?</div>
+          <div className="drip-schedule-question">{question}</div>
 
           <label className="drip-schedule-option">
             <input
@@ -145,9 +153,9 @@ export default function CampaignScheduleDrawer({
                 {mode === "now" ? "Sending..." : "Scheduling..."}
               </>
             ) : mode === "now" ? (
-              "Send now"
+              confirmNowLabel
             ) : (
-              "Schedule"
+              confirmLaterLabel
             )}
           </button>
         </div>

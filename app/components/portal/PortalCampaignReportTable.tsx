@@ -47,6 +47,10 @@ const TABLES: Array<{ key: TableKey; label: string; columns: Column[] }> = [
       { label: "Domain", key: "domain" },
       { label: "Open date", key: "openDate" },
       { label: "Open time", key: "openTime" },
+      { label: "Open device", key: "openDevice" },
+      { label: "Click device", key: "clickDevice" },
+      { label: "Open tag", key: "openTag" },
+      { label: "Click tag", key: "clickTag" },
       { label: "Opens", key: "opens", numeric: true },
       { label: "Clicks", key: "clicks", numeric: true },
       { label: "CTA clicked", key: "cta" },
@@ -55,7 +59,7 @@ const TABLES: Array<{ key: TableKey; label: string; columns: Column[] }> = [
   },
   {
     key: "opensOnly",
-    label: "Opens only",
+    label: "Opens",
     columns: [
       { label: "Person", key: "name" },
       { label: "Email", key: "email" },
@@ -63,6 +67,8 @@ const TABLES: Array<{ key: TableKey; label: string; columns: Column[] }> = [
       { label: "Domain", key: "domain" },
       { label: "Open date", key: "openDate" },
       { label: "Open time", key: "openTime" },
+      { label: "Device", key: "openDevice" },
+      { label: "Open tag", key: "openTag" },
       { label: "Opens", key: "opens", numeric: true },
       { label: "Status", key: "status" },
     ],
@@ -235,6 +241,28 @@ export default function PortalCampaignReportTable({ url }: { url: string }) {
                       >
                         {column.key === "status" ? (
                           <span className={`drip-report-status is-${text.toLowerCase()}`}>{text}</span>
+                        ) : column.key === "openTag" ? (
+                          text !== "—" ? (
+                            <span className="af-type-badge af-type-pixel-blocked">{text}</span>
+                          ) : (
+                            text
+                          )
+                        ) : column.key === "clickTag" ? (
+                          text !== "—" ? (
+                            <span className="af-type-badge af-type-bot-click">{text}</span>
+                          ) : (
+                            text
+                          )
+                        ) : column.key === "openDevice" || column.key === "clickDevice" ? (
+                          text !== "—" ? (
+                            <span
+                              className={`cd-device-chip cd-device-${text.toLowerCase()} drip-report-device`}
+                            >
+                              {text}
+                            </span>
+                          ) : (
+                            text
+                          )
                         ) : (
                           text
                         )}

@@ -47,6 +47,16 @@ export function IconAnalytics({ className }: IconProps) {
   );
 }
 
+/** Sales funnel — used for Pipeline. */
+export function IconPipeline({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" {...stroke}>
+      <path d="M4 5.5h16l-4.2 5.2v5.6L12 19.5l-3.8-3.2v-5.6L4 5.5z" />
+      <path d="M8.5 10.7h7" />
+    </svg>
+  );
+}
+
 export function IconSmtp({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
@@ -95,6 +105,15 @@ export function IconInbox({ className }: IconProps) {
       <path d="M4 13h3.8l1.4 2.4h5.6L16.2 13H20v5.2A1.8 1.8 0 0 1 18.2 20H5.8A1.8 1.8 0 0 1 4 18.2V13z" />
       <path d="m4 13 2.6-7.2h10.8L20 13" />
       <path d="M9.5 8.5h5" />
+    </svg>
+  );
+}
+
+/** Pulse / activity stream — used for Activity Feed. */
+export function IconActivity({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" {...stroke}>
+      <path d="M4 12h3.2l2.1-5.2L13.2 17l2.2-5H20" />
     </svg>
   );
 }
@@ -243,6 +262,8 @@ export function getNavIcon(pageId: string) {
       return IconInbox;
     case "files":
       return IconFiles;
+    case "activity":
+      return IconActivity;
     case "unsub":
       return IconSuppression;
     case "integrations":

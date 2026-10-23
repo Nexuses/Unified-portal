@@ -63,6 +63,20 @@ export type KanbanPerson = {
   clicked: boolean;
   replied?: boolean;
   campaigns: string[];
+  /** Earliest send time across linked campaigns. */
+  sentAt?: string;
+  /** Earliest open time across linked campaigns. */
+  openedAt?: string;
+  /** Device for the earliest open (mobile / tablet / desktop). */
+  openedDevice?: string;
+  /** True when open was inferred from a click (image pixel blocked). */
+  openPixelBlocked?: boolean;
+  /** Earliest click time across linked campaigns. */
+  clickedAt?: string;
+  /** Device for the earliest click (mobile / tablet / desktop). */
+  clickedDevice?: string;
+  /** Earliest reply time across linked campaigns. */
+  repliedAt?: string;
   lastActivityAt?: string;
 };
 

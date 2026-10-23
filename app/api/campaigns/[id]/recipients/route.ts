@@ -46,6 +46,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       {
         sequenceIndex,
         uniqueContacts: request.nextUrl.searchParams.get("unique") === "1",
+        hideBotClicks: request.nextUrl.searchParams.get("hideBotClicks") === "1",
       },
     );
 

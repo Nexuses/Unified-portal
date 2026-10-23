@@ -32,6 +32,13 @@ import {
 } from "@/lib/master-inbox-server";
 import { normalizeEmailMergeTags } from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
+import type { EngagementClientMeta } from "@/lib/engagement-client-meta";
+import {
+  OPEN_PIXEL_BLOCKED_TAG,
+  sendCountsAsOpen,
+  sendOpenPixelBlocked,
+} from "@/lib/open-pixel";
+import { BOT_CLICK_TAG, clickEventIsBot, sendIsBotClick } from "@/lib/bot-click";
 import {
   GMAIL_DAILY_LIMIT_DEFAULT,
   isGmailOrOutlookProvider,
@@ -124,12 +131,47 @@ export type CampaignSendDoc = {
   sentAt?: Date;
   openedAt?: Date;
   openCount: number;
+  /** First counted open client hints. */
+  openedIp?: string;
+  openedDevice?: "mobile" | "tablet" | "desktop" | "unknown";
+  openedUserAgent?: string;
+  openEvents?: Array<{
+    at: Date;
+    ip?: string;
+    userAgent?: string;
+    device?: "mobile" | "tablet" | "desktop" | "unknown";
+    /** Open was inferred from a click (tracking pixel never loaded). */
+    inferredFromClick?: boolean;
+  }>;
+  /**
+   * True when the open was counted because the contact clicked a link
+   * but the open tracking pixel never fired (images blocked).
+   */
+  openPixelBlocked?: boolean;
   clickedAt?: Date;
   clickedUrl?: string;
-  clickEvents?: Array<{ url: string; at: Date; ignored?: boolean }>;
+  /** First counted click client hints. */
+  clickedIp?: string;
+  clickedDevice?: "mobile" | "tablet" | "desktop" | "unknown";
+  clickedUserAgent?: string;
+  clickEvents?: Array<{
+    url: string;
+    at: Date;
+    ignored?: boolean;
+    /** Instant-click projects: counted but tagged as bot (grace/burst). */
+    bot?: boolean;
+    ip?: string;
+    userAgent?: string;
+    device?: "mobile" | "tablet" | "desktop" | "unknown";
+  }>;
   clickCount: number;
   /** True when multi-link burst scanning was detected for this send. */
   clickBurstIgnored?: boolean;
+  /**
+   * Instant-click projects: send has at least one counted bot/scanner click
+   * (within grace or burst) that should show the Bot click tag.
+   */
+  botClick?: boolean;
   unsubscribedAt?: Date;
   /** Set when a real reply is matched via Master Inbox. */
   repliedAt?: Date;
@@ -928,7 +970,18 @@ async function refreshBlastCounts(blastId: ObjectId) {
       status: "sent",
       bouncedAt: { $exists: false },
     }),
-    sends.distinct("email", { blastId, openCount: { $gt: 0 } }),
+    sends.distinct("email", {
+      blastId,
+      $or: [
+        { openCount: { $gt: 0 } },
+        { openedAt: { $exists: true } },
+        { openPixelBlocked: true },
+        {
+          clickBurstIgnored: { $ne: true },
+          $or: [{ clickCount: { $gt: 0 } }, { clickedAt: { $exists: true } }],
+        },
+      ],
+    }),
     sends
       .find({
         blastId,
@@ -1912,6 +1965,8 @@ async function loadOneOneSequenceReports(blastId: ObjectId): Promise<{
       bouncedAt: 1,
       error: 1,
       openCount: 1,
+      openedAt: 1,
+      openPixelBlocked: 1,
       clickCount: 1,
       clickEvents: 1,
       clickedAt: 1,
@@ -1948,7 +2003,7 @@ async function loadOneOneSequenceReports(blastId: ObjectId): Promise<{
       row.delivered.add(email);
       overview.delivered.add(email);
     }
-    if ((doc.openCount ?? 0) > 0) {
+    if (sendCountsAsOpen(doc)) {
       row.opens.add(email);
       overview.opens.add(email);
     }
@@ -2621,7 +2676,11 @@ export async function restoreClickBurstsForProject(projectId: ObjectId) {
   const blastIds = new Map<string, ObjectId>();
   const updates = docs.map((doc) => {
     blastIds.set(doc.blastId.toString(), doc.blastId);
-    const events = (doc.clickEvents ?? []).map((event) => ({ url: event.url, at: event.at }));
+    const events = (doc.clickEvents ?? []).map((event) => ({
+      url: event.url,
+      at: event.at,
+      bot: true as const,
+    }));
     const countable = events
       .filter((event) => !isNonNavigationalTrackedUrl(event.url ?? ""))
       .sort((left, right) => asTimeMs(left.at) - asTimeMs(right.at));
@@ -2636,10 +2695,14 @@ export async function restoreClickBurstsForProject(projectId: ObjectId) {
                 clickCount: countable.length,
                 clickedAt: new Date(first.at),
                 clickedUrl: first.url,
+                botClick: true,
               },
               $unset: { clickBurstIgnored: "" as const },
             }
-          : { $set: { clickEvents: events }, $unset: { clickBurstIgnored: "" as const } },
+          : {
+              $set: { clickEvents: events, botClick: true },
+              $unset: { clickBurstIgnored: "" as const },
+            },
       },
     };
   });
@@ -2719,7 +2782,21 @@ export async function repairClickBursts(options?: { dryRun?: boolean }) {
   return { scanned, flaggedSends: flaggedIds.length, campaigns };
 }
 
-export async function recordCampaignOpen(token: string) {
+function engagementMetaFields(meta?: EngagementClientMeta) {
+  const ip = meta?.ip?.trim().slice(0, 64) || undefined;
+  const userAgent = meta?.userAgent?.trim().slice(0, 400) || undefined;
+  const device = meta?.device;
+  return {
+    ...(ip ? { ip } : {}),
+    ...(userAgent ? { userAgent } : {}),
+    ...(device ? { device } : {}),
+  };
+}
+
+export async function recordCampaignOpen(
+  token: string,
+  meta?: EngagementClientMeta,
+) {
   const db = await getDb();
   const send = await db.collection<CampaignSendDoc>("campaign_sends").findOne({ token });
   if (!send) {
@@ -2730,18 +2807,31 @@ export async function recordCampaignOpen(token: string) {
     return;
   }
 
+  const now = new Date();
   const firstOpen = !send.openedAt;
+  const client = engagementMetaFields(meta);
   await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
     { _id: send._id },
     {
       $inc: { openCount: 1 },
-      $set: { openedAt: send.openedAt ?? new Date() },
+      $set: {
+        openedAt: send.openedAt ?? now,
+        ...(firstOpen && client.ip ? { openedIp: client.ip } : {}),
+        ...(firstOpen && client.device ? { openedDevice: client.device } : {}),
+        ...(firstOpen && client.userAgent ? { openedUserAgent: client.userAgent } : {}),
+      },
+      $push: {
+        openEvents: {
+          $each: [{ at: now, ...client }],
+          $slice: -25,
+        },
+      },
     },
   );
   if (firstOpen) {
     await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
       { _id: send.blastId },
-      { $inc: { opens: 1 }, $set: { updatedAt: new Date() } },
+      { $inc: { opens: 1 }, $set: { updatedAt: now } },
     );
     const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
       _id: send.blastId,
@@ -2757,6 +2847,8 @@ export async function recordCampaignOpen(token: string) {
         fullName: send.fullName,
         sendId: send._id.toString(),
         sequenceIndex: send.sequenceIndex,
+        ...(client.ip ? { ip: client.ip } : {}),
+        ...(client.device ? { device: client.device } : {}),
       },
     });
   }
@@ -2767,7 +2859,11 @@ export async function getCampaignSendByToken(token: string) {
   return db.collection<CampaignSendDoc>("campaign_sends").findOne({ token });
 }
 
-export async function recordCampaignClick(token: string, url?: string) {
+export async function recordCampaignClick(
+  token: string,
+  url?: string,
+  meta?: EngagementClientMeta,
+) {
   const db = await getDb();
   const send = await db.collection<CampaignSendDoc>("campaign_sends").findOne({ token });
   if (!send) {
@@ -2785,17 +2881,39 @@ export async function recordCampaignClick(token: string, url?: string) {
   }
 
   const sends = db.collection<CampaignSendDoc>("campaign_sends");
+  const client = engagementMetaFields(meta);
+  const clickEventBase = { at: now, ...client };
 
-  // Instant-click projects count every click, including multi-link bursts.
+  // Instant-click projects count every click, including multi-link bursts,
+  // but tag grace/burst hits as bot clicks for the report toggle.
   if (skipClickGrace) {
+    const priorEvents = send.clickEvents ?? [];
+    const withinGrace = isWithinBotGracePeriod(send, CLICK_BOT_GRACE_MS);
+    const burst = detectClickBurst({
+      events: priorEvents,
+      now,
+      nextUrl: clickedUrl,
+    });
+    const isBot = withinGrace || burst.ignore;
     await sends.updateOne(
       { _id: send._id },
       {
-        ...(clickedUrl ? { $push: { clickEvents: { url: clickedUrl, at: now } } } : {}),
+        ...(clickedUrl
+          ? {
+              $push: {
+                clickEvents: {
+                  url: clickedUrl,
+                  ...clickEventBase,
+                  ...(isBot ? { bot: true as const } : {}),
+                },
+              },
+            }
+          : {}),
         $unset: { clickBurstIgnored: "" },
+        ...(isBot ? { $set: { botClick: true } } : {}),
       },
     );
-    await countClick({ db, send, now, clickedUrl, burstFilter: {} });
+    await countClick({ db, send, now, clickedUrl, burstFilter: {}, client });
     return;
   }
 
@@ -2806,7 +2924,7 @@ export async function recordCampaignClick(token: string, url?: string) {
         { _id: send._id },
         {
           $push: {
-            clickEvents: { url: clickedUrl, at: now, ignored: true },
+            clickEvents: { url: clickedUrl, ...clickEventBase, ignored: true },
           },
         },
       );
@@ -2819,7 +2937,7 @@ export async function recordCampaignClick(token: string, url?: string) {
   const saved = clickedUrl
     ? await sends.findOneAndUpdate(
         { _id: send._id },
-        { $push: { clickEvents: { url: clickedUrl, at: now } } },
+        { $push: { clickEvents: { url: clickedUrl, ...clickEventBase } } },
         { returnDocument: "after" },
       )
     : send;
@@ -2877,6 +2995,7 @@ export async function recordCampaignClick(token: string, url?: string) {
     now,
     clickedUrl,
     burstFilter: { clickBurstIgnored: { $ne: true } },
+    client,
   });
 }
 
@@ -2886,14 +3005,21 @@ async function countClick(input: {
   now: Date;
   clickedUrl: string;
   burstFilter: Record<string, unknown>;
+  client?: ReturnType<typeof engagementMetaFields>;
 }) {
-  const { db, send, now, clickedUrl, burstFilter } = input;
+  const { db, send, now, clickedUrl, burstFilter, client } = input;
   const sends = db.collection<CampaignSendDoc>("campaign_sends");
   const first = await sends.updateOne(
     { _id: send._id, ...burstFilter, clickedAt: { $exists: false } },
     {
       $inc: { clickCount: 1 },
-      $set: { clickedAt: now, ...(clickedUrl ? { clickedUrl } : {}) },
+      $set: {
+        clickedAt: now,
+        ...(clickedUrl ? { clickedUrl } : {}),
+        ...(client?.ip ? { clickedIp: client.ip } : {}),
+        ...(client?.device ? { clickedDevice: client.device } : {}),
+        ...(client?.userAgent ? { clickedUserAgent: client.userAgent } : {}),
+      },
     },
   );
   const firstClick = first.modifiedCount > 0;
@@ -2905,6 +3031,48 @@ async function countClick(input: {
       { _id: send.blastId },
       { $inc: { clicks: 1 }, $set: { updatedAt: now } },
     );
+
+    // Click without a prior open → images/pixel blocked; still count as open.
+    const missingOpen = !send.openedAt && (send.openCount ?? 0) <= 0;
+    if (missingOpen) {
+      const openClient = client ?? {};
+      const inferred = await sends.updateOne(
+        {
+          _id: send._id,
+          openedAt: { $exists: false },
+          $or: [{ openCount: { $exists: false } }, { openCount: { $lte: 0 } }],
+        },
+        {
+          $inc: { openCount: 1 },
+          $set: {
+            openedAt: now,
+            openPixelBlocked: true,
+            ...(openClient.ip ? { openedIp: openClient.ip } : {}),
+            ...(openClient.device ? { openedDevice: openClient.device } : {}),
+            ...(openClient.userAgent ? { openedUserAgent: openClient.userAgent } : {}),
+          },
+          $push: {
+            openEvents: {
+              $each: [
+                {
+                  at: now,
+                  inferredFromClick: true as const,
+                  ...openClient,
+                },
+              ],
+              $slice: -25,
+            },
+          },
+        },
+      );
+      if (inferred.modifiedCount > 0) {
+        await db.collection<CampaignBlastDoc>("campaign_blasts").updateOne(
+          { _id: send.blastId },
+          { $inc: { opens: 1 }, $set: { updatedAt: now } },
+        );
+      }
+    }
+
     const latest = await sends.findOne(
       { _id: send._id },
       { projection: { clickBurstIgnored: 1 } },
@@ -2928,6 +3096,9 @@ async function countClick(input: {
         sendId: send._id.toString(),
         url: clickedUrl || send.clickedUrl || undefined,
         sequenceIndex: send.sequenceIndex,
+        ...(client?.ip ? { ip: client.ip } : {}),
+        ...(client?.device ? { device: client.device } : {}),
+        ...(missingOpen ? { openPixelBlocked: true } : {}),
       },
     });
   }
@@ -2961,9 +3132,15 @@ export type CampaignSendRecipient = {
   error?: string;
   sentAt?: string;
   openedAt?: string;
+  /** e.g. "Image pixel blocked" when open was inferred from a click. */
+  openTag?: string;
+  openPixelBlocked?: boolean;
   clickedAt?: string;
   clickedUrl?: string;
   clickedLinks?: Array<{ url: string; at?: string; sequenceNumber?: number }>;
+  /** e.g. "Bot click" for grace/burst clicks on instant-click projects. */
+  clickTag?: string;
+  botClick?: boolean;
   unsubscribedAt?: string;
   repliedAt?: string;
   sequenceIndex?: number;
@@ -2991,7 +3168,12 @@ export async function listCampaignSendRecipients(
   campaignId: string,
   filter: CampaignRecipientFilter,
   kind?: "drip" | "oneone",
-  options?: { sequenceIndex?: number; uniqueContacts?: boolean },
+  options?: {
+    sequenceIndex?: number;
+    uniqueContacts?: boolean;
+    /** When true, omit bot/scanner clicks from the clicks list. */
+    hideBotClicks?: boolean;
+  },
 ) {
   const db = await getDb();
   const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
@@ -3007,7 +3189,16 @@ export async function listCampaignSendRecipients(
     query.status = "sent";
     query.bouncedAt = { $exists: false };
   } else if (filter === "opens") {
-    query.openCount = { $gt: 0 };
+    // Real pixel opens + clicks counted as opens when images were blocked.
+    query.$or = [
+      { openCount: { $gt: 0 } },
+      { openedAt: { $exists: true } },
+      { openPixelBlocked: true },
+      {
+        clickBurstIgnored: { $ne: true },
+        $or: [{ clickCount: { $gt: 0 } }, { clickedAt: { $exists: true } }],
+      },
+    ];
   } else if (filter === "clicks") {
     query.clickCount = { $gt: 0 };
     query.clickBurstIgnored = { $ne: true };
@@ -3073,6 +3264,10 @@ export async function listCampaignSendRecipients(
     const email = doc.email.trim().toLowerCase();
     const sequenceIndex =
       typeof doc.sequenceIndex === "number" ? doc.sequenceIndex : undefined;
+    const pixelBlocked = sendOpenPixelBlocked(doc);
+    const openedAt =
+      doc.openedAt?.toISOString() ||
+      (pixelBlocked ? doc.clickedAt?.toISOString() : undefined);
     return {
       id: extra?.id ?? doc._id.toString(),
       email: doc.email,
@@ -3082,7 +3277,10 @@ export async function listCampaignSendRecipients(
       status: doc.status,
       error: doc.error || "",
       sentAt: doc.sentAt?.toISOString(),
-      openedAt: doc.openedAt?.toISOString(),
+      openedAt,
+      ...(pixelBlocked
+        ? { openPixelBlocked: true, openTag: OPEN_PIXEL_BLOCKED_TAG }
+        : {}),
       clickedAt: doc.clickedAt?.toISOString(),
       clickedUrl: doc.clickedUrl || "",
       unsubscribedAt: doc.unsubscribedAt?.toISOString(),
@@ -3112,6 +3310,7 @@ export async function listCampaignSendRecipients(
   }
 
   if (filter === "clicks") {
+    const hideBotClicks = Boolean(options?.hideBotClicks);
     const byEmail = new Map<
       string,
       {
@@ -3134,8 +3333,19 @@ export async function listCampaignSendRecipients(
             : [];
       const sequenceNumber =
         typeof doc.sequenceIndex === "number" ? doc.sequenceIndex + 1 : undefined;
-      const countable = events.filter((event) => isCountableClickEvent(event));
+      const countable = events.filter((event) => {
+        if (!isCountableClickEvent(event)) {
+          return false;
+        }
+        if (hideBotClicks && clickEventIsBot(doc, event)) {
+          return false;
+        }
+        return true;
+      });
       if (countable.length === 0) {
+        continue;
+      }
+      if (hideBotClicks && sendIsBotClick(doc) && countable.every((event) => clickEventIsBot(doc, event))) {
         continue;
       }
 
@@ -3170,11 +3380,15 @@ export async function listCampaignSendRecipients(
           .slice()
           .sort((left, right) => (right.at ?? "").localeCompare(left.at ?? ""));
         const latest = clickedLinks[0];
+        const bot = sendIsBotClick(doc);
         return mapRecipient(doc, {
           id: doc.email.trim().toLowerCase(),
           clickedAt: latest?.at,
           clickedUrl: latest?.url ?? "",
           clickedLinks,
+          ...(bot && !hideBotClicks
+            ? { botClick: true, clickTag: BOT_CLICK_TAG }
+            : {}),
           ...(typeof latest?.sequenceNumber === "number"
             ? {
                 sequenceIndex: latest.sequenceNumber - 1,
@@ -3229,13 +3443,35 @@ export async function listCampaignSendsForExport(
         sentAt: 1,
         openedAt: 1,
         openCount: 1,
+        openPixelBlocked: 1,
+        openedDevice: 1,
+        openEvents: {
+          $map: {
+            input: { $slice: [{ $ifNull: ["$openEvents", []] }, 3] },
+            as: "event",
+            in: {
+              at: "$$event.at",
+              device: "$$event.device",
+              inferredFromClick: "$$event.inferredFromClick",
+            },
+          },
+        },
         clickedAt: 1,
         clickedUrl: 1,
+        clickedDevice: 1,
+        clickBurstIgnored: 1,
+        botClick: 1,
         clickEvents: {
           $map: {
-            input: { $slice: [{ $ifNull: ["$clickEvents", []] }, 2] },
+            input: { $slice: [{ $ifNull: ["$clickEvents", []] }, 8] },
             as: "event",
-            in: { url: "$$event.url" },
+            in: {
+              url: "$$event.url",
+              at: "$$event.at",
+              device: "$$event.device",
+              ignored: "$$event.ignored",
+              bot: "$$event.bot",
+            },
           },
         },
         clickCount: 1,

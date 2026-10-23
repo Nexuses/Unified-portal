@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import PortalPeopleSearchCard from "@/app/components/portal/PortalPeopleSearchCard";
@@ -221,6 +228,21 @@ export default function PortalAssistant({
   projectName: string;
 }) {
   const [open, setOpen] = useState(false);
+  /** Session-only: refresh shows the launcher again. */
+  const [launcherHidden, setLauncherHidden] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [overDismiss, setOverDismiss] = useState(false);
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originLeft: number;
+    originTop: number;
+    moved: boolean;
+    overDismiss: boolean;
+  } | null>(null);
+  const launcherWrapRef = useRef<HTMLDivElement>(null);
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     if (typeof window === "undefined") {
       return [];
@@ -568,17 +590,156 @@ export default function PortalAssistant({
     ),
   };
 
+  const DISMISS_RADIUS = 72;
+  const DRAG_THRESHOLD = 8;
+
+  const isOverDismissZone = useCallback((clientX: number, clientY: number) => {
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    const dx = clientX - cx;
+    const dy = clientY - cy;
+    return Math.hypot(dx, dy) <= DISMISS_RADIUS;
+  }, []);
+
+  function onLauncherPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+    const wrap = launcherWrapRef.current;
+    if (!wrap) {
+      return;
+    }
+    const rect = wrap.getBoundingClientRect();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originLeft: rect.left,
+      originTop: rect.top,
+      moved: false,
+      overDismiss: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function onLauncherPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) {
+      return;
+    }
+    if (!drag.moved) {
+      drag.moved = true;
+      setDragging(true);
+      setOpen(false);
+    }
+    const nextOver = isOverDismissZone(event.clientX, event.clientY);
+    drag.overDismiss = nextOver;
+    setOverDismiss(nextOver);
+    setDragPos({
+      x: drag.originLeft + dx,
+      y: drag.originTop + dy,
+    });
+  }
+
+  function endLauncherPointer(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    dragRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Already released.
+    }
+    if (drag.moved) {
+      if (drag.overDismiss || isOverDismissZone(event.clientX, event.clientY)) {
+        setLauncherHidden(true);
+        setOpen(false);
+      }
+      setDragging(false);
+      setOverDismiss(false);
+      setDragPos(null);
+      return;
+    }
+    setDragging(false);
+    setOverDismiss(false);
+    setDragPos(null);
+    setOpen((value) => !value);
+  }
+
+  if (launcherHidden && !open) {
+    return null;
+  }
+
+  const launcherStyle: CSSProperties | undefined = dragPos
+    ? {
+        left: dragPos.x,
+        top: dragPos.y,
+        right: "auto",
+        bottom: "auto",
+      }
+    : undefined;
+
   return (
     <>
-      <button
-        type="button"
-        className={`pa-launcher${open ? " is-open" : ""}`}
-        onClick={() => setOpen((value) => !value)}
-        aria-label={open ? "Close assistant" : "Open assistant"}
-        title="Ask the assistant"
-      >
-        <BotIcon size={64} />
-      </button>
+      {dragging ? (
+        <div
+          className={`pa-dismiss-scrim${overDismiss ? " is-hot" : ""}`}
+          aria-hidden="true"
+        >
+          <div className={`pa-dismiss-zone${overDismiss ? " is-hot" : ""}`}>
+            <span className="pa-dismiss-ring" />
+            <span className="pa-dismiss-ring is-outer" />
+            <span className="pa-dismiss-core">
+              <svg
+                width="28"
+                height="28"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </span>
+            <span className="pa-dismiss-label">
+              {overDismiss ? "Release to hide" : "Drag here to hide"}
+            </span>
+          </div>
+        </div>
+      ) : null}
+
+      {!launcherHidden ? (
+        <div
+          ref={launcherWrapRef}
+          className={`pa-launcher-wrap${open ? " is-open" : ""}${
+            dragging ? " is-dragging" : ""
+          }${overDismiss ? " is-over-dismiss" : ""}`}
+          style={launcherStyle}
+        >
+          <button
+            type="button"
+            className={`pa-launcher${open ? " is-open" : ""}`}
+            aria-label={open ? "Close assistant" : "Open assistant"}
+            title="Ask the assistant · drag to center to hide"
+            onPointerDown={onLauncherPointerDown}
+            onPointerMove={onLauncherPointerMove}
+            onPointerUp={endLauncherPointer}
+            onPointerCancel={endLauncherPointer}
+          >
+            <BotIcon size={64} />
+          </button>
+        </div>
+      ) : null}
 
       {open ? (
         <div className="pa-backdrop" onClick={() => setOpen(false)}>

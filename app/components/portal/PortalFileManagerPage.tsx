@@ -276,14 +276,29 @@ export default function PortalFileManagerPage() {
       });
       const data = (await response.json()) as {
         url?: string;
+        name?: string;
+        compressed?: boolean;
+        originalBytes?: number;
+        bytes?: number;
         error?: string;
       };
       if (!response.ok) {
         throw new Error(data.error || "Upload failed");
       }
+      const uploadedName = data.name || uploadFile.name;
       setUploadOpen(false);
       setUploadFile(null);
-      setNotice(`Uploaded ${uploadFile.name} to ${uploadBucket}`);
+      if (
+        data.compressed &&
+        typeof data.originalBytes === "number" &&
+        typeof data.bytes === "number"
+      ) {
+        setNotice(
+          `Uploaded ${uploadedName} to ${uploadBucket} (compressed ${formatBytes(data.originalBytes)} → ${formatBytes(data.bytes)})`,
+        );
+      } else {
+        setNotice(`Uploaded ${uploadedName} to ${uploadBucket}`);
+      }
       if (data.url) {
         try {
           await navigator.clipboard.writeText(data.url);
@@ -362,7 +377,7 @@ export default function PortalFileManagerPage() {
             }
             onClick={openUploadModal}
           >
-            {uploading ? "Uploading…" : "Upload file"}
+            {uploading ? "Compressing…" : "Upload file"}
           </button>
         </div>
       </div>
@@ -619,7 +634,10 @@ export default function PortalFileManagerPage() {
             <div className="crm-modal-head">
               <div>
                 <h3 id="fm-upload-title">Upload file</h3>
-                <p>Choose a bucket, then pick the file to upload.</p>
+                <p>
+                  Choose a bucket, then pick the file. Images and compressible
+                  files are auto-compressed before upload.
+                </p>
               </div>
               <button
                 type="button"
@@ -691,7 +709,7 @@ export default function PortalFileManagerPage() {
                 }
                 onClick={() => void submitUpload()}
               >
-                {uploading ? "Uploading…" : "Upload"}
+                {uploading ? "Compressing & uploading…" : "Upload"}
               </button>
             </div>
           </div>

@@ -1,4 +1,14 @@
 import type { CampaignSendDoc } from "@/lib/campaign-blasts-server";
+import {
+  formatEngagementDevice,
+  isEngagementDevice,
+} from "@/lib/engagement-client-meta";
+import {
+  OPEN_PIXEL_BLOCKED_TAG,
+  sendCountsAsOpen,
+  sendOpenPixelBlocked,
+} from "@/lib/open-pixel";
+import { BOT_CLICK_TAG, sendIsBotClick } from "@/lib/bot-click";
 
 export const REPORT_DASH = "—";
 
@@ -19,10 +29,19 @@ export type ReportEngageRow = {
   domain: string;
   openDate: string;
   openTime: string;
+  openDevice: string;
+  clickDevice: string;
   opens: number;
   clicks: number;
   cta: string;
   status: "Clicked" | "Opened";
+  /** e.g. "Image pixel blocked" when open was inferred from a click. */
+  openTag: string;
+  /**
+   * e.g. "Bot click" when toggle is off and this clicker is bot/scanner.
+   * Empty dash when Hide bot clicks is on (bots excluded) or not a bot.
+   */
+  clickTag: string;
 };
 
 export type ReportBounceRow = {
@@ -65,6 +84,7 @@ export type CampaignReportTables = {
   companies: ReportCompanyRow[];
   sent: ReportSentRow[];
   clickers: ReportEngageRow[];
+  /** Everyone who counts as an open (pixel + click-inferred). */
   opensOnly: ReportEngageRow[];
   bounces: ReportBounceRow[];
   unsubscribes: ReportUnsubscribeRow[];
@@ -163,6 +183,49 @@ function ctaLabel(send: CampaignSendDoc) {
   return REPORT_DASH;
 }
 
+function labelDevice(value?: string) {
+  if (!isEngagementDevice(value) || value === "unknown") {
+    return REPORT_DASH;
+  }
+  return formatEngagementDevice(value) || REPORT_DASH;
+}
+
+function openDeviceFromGroup(group: CampaignSendDoc[]) {
+  const withOpen = [...group]
+    .filter((item) => sendCountsAsOpen(item))
+    .sort((a, b) => {
+      const left =
+        asDate(a.openedAt)?.getTime() ??
+        asDate(a.clickedAt)?.getTime() ??
+        Number.POSITIVE_INFINITY;
+      const right =
+        asDate(b.openedAt)?.getTime() ??
+        asDate(b.clickedAt)?.getTime() ??
+        Number.POSITIVE_INFINITY;
+      return left - right;
+    })[0];
+  if (!withOpen) {
+    return REPORT_DASH;
+  }
+  const fromEvent = withOpen.openEvents?.[0]?.device;
+  return labelDevice(fromEvent || withOpen.openedDevice);
+}
+
+function clickDeviceFromGroup(group: CampaignSendDoc[]) {
+  const withClick = [...group]
+    .filter((item) => item.clickedAt || (item.clickCount || 0) > 0)
+    .sort((a, b) => {
+      const left = asDate(a.clickedAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+      const right = asDate(b.clickedAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+      return left - right;
+    })[0];
+  if (!withClick) {
+    return REPORT_DASH;
+  }
+  const fromEvent = withClick.clickEvents?.find((event) => !event.ignored)?.device;
+  return labelDevice(fromEvent || withClick.clickedDevice);
+}
+
 function percent(part: number, total: number) {
   return total ? `${Math.round((part / total) * 100)}%` : "0%";
 }
@@ -176,11 +239,14 @@ export function buildCampaignReportTables({
   timezone,
   sentAt,
   sends,
+  hideBotClicks = false,
 }: {
   campaignName: string;
   timezone: string;
   sentAt?: string | Date;
   sends: CampaignSendDoc[];
+  /** When true, exclude bot/scanner clicks from the Clickers section (and export). */
+  hideBotClicks?: boolean;
 }): CampaignReportTables {
   const timeZone = timezone || "Asia/Kolkata";
   const sentDate =
@@ -205,18 +271,50 @@ export function buildCampaignReportTables({
 
   const engaged: Array<ReportEngageRow & { openedAtMs: number }> = [];
   for (const group of byEmail.values()) {
-    const opens = group.reduce((sum, item) => sum + (item.openCount || 0), 0);
-    const clicks = group.some((item) => (item.clickCount || 0) > 0 || item.clickedAt) ? 1 : 0;
-    if (opens <= 0 && clicks <= 0) continue;
+    const humanClick = group.some(
+      (item) =>
+        ((item.clickCount || 0) > 0 || item.clickedAt) &&
+        !item.clickBurstIgnored &&
+        !sendIsBotClick(item),
+    );
+    const anyClick = group.some(
+      (item) =>
+        ((item.clickCount || 0) > 0 || item.clickedAt) && !item.clickBurstIgnored,
+    );
+    const clicks =
+      hideBotClicks ? (humanClick ? 1 : 0) : anyClick ? 1 : 0;
+    const countsAsOpen = group.some((item) => sendCountsAsOpen(item));
+    if (!countsAsOpen && clicks <= 0) continue;
     const opened =
       group
-        .map((item) => asDate(item.openedAt))
+        .map((item) => asDate(item.openedAt) ?? asDate(item.clickedAt))
         .filter((date): date is Date => Boolean(date))
         .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
     const primary =
+      group.find(
+        (item) =>
+          ((item.clickCount || 0) > 0 || item.clickedAt) &&
+          (!hideBotClicks || !sendIsBotClick(item)),
+      ) ??
       group.find((item) => item.clickCount > 0) ??
-      group.find((item) => item.openCount > 0) ??
+      group.find((item) => sendCountsAsOpen(item)) ??
       group[0];
+    const pixelBlocked = group.some((item) => sendOpenPixelBlocked(item));
+    const botClick =
+      !hideBotClicks &&
+      clicks > 0 &&
+      group.some(
+        (item) =>
+          ((item.clickCount || 0) > 0 || item.clickedAt) &&
+          !item.clickBurstIgnored &&
+          sendIsBotClick(item),
+      );
+    const openCountSum = group.reduce((sum, item) => {
+      if (sendCountsAsOpen(item)) {
+        return sum + Math.max(item.openCount || 0, 1);
+      }
+      return sum;
+    }, 0);
     engaged.push({
       name: personName(primary),
       email: primary.email,
@@ -224,10 +322,14 @@ export function buildCampaignReportTables({
       domain: emailDomain(primary.email),
       openDate: formatInZone(opened ?? undefined, timeZone, "date"),
       openTime: formatInZone(opened ?? undefined, timeZone, "time"),
-      opens: opens || (opened ? 1 : 0),
+      openDevice: openDeviceFromGroup(group),
+      clickDevice: clicks > 0 ? clickDeviceFromGroup(group) : REPORT_DASH,
+      opens: openCountSum || (countsAsOpen ? 1 : 0),
       clicks,
       cta: clicks ? ctaLabel(primary) : REPORT_DASH,
       status: clicks ? "Clicked" : "Opened",
+      openTag: pixelBlocked ? OPEN_PIXEL_BLOCKED_TAG : REPORT_DASH,
+      clickTag: botClick ? BOT_CLICK_TAG : REPORT_DASH,
       openedAtMs: opened?.getTime() ?? 0,
     });
   }
@@ -239,7 +341,16 @@ export function buildCampaignReportTables({
     return row;
   };
   const clickers = engaged.filter((row) => row.clicks > 0).map(strip);
-  const opensOnly = engaged.filter((row) => row.opens > 0 && row.clicks <= 0).map(strip);
+  // All opens (including clickers / pixel-blocked inferred opens).
+  // Opens sheet always uses Opened — Clicked stays on the Clickers section.
+  const opensOnly = engaged
+    .filter((row) => row.opens > 0)
+    .map(strip)
+    .map((row) => ({
+      ...row,
+      status: "Opened" as const,
+      clickTag: REPORT_DASH,
+    }));
 
   const sent = [...delivered]
     .sort((a, b) => {

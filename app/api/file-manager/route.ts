@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { compressFileForUpload } from "@/lib/file-manager-compress";
 import {
   listFilesCatalogPage,
   listProjectBuckets,
@@ -96,10 +97,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const url = await uploadFileToBucket(bucket, {
+    const compressed = await compressFileForUpload({
       name: file.name,
       type: file.type,
       bytes: Buffer.from(await file.arrayBuffer()),
+    });
+    const url = await uploadFileToBucket(bucket, {
+      name: compressed.name,
+      type: compressed.type,
+      bytes: compressed.bytes,
     });
     const type = String(form?.get("type") ?? "all").trim() || "all";
     const q = String(form?.get("q") ?? "").trim();
@@ -116,7 +122,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       url,
       bucket: bucket.name,
-      name: file.name,
+      name: compressed.name,
+      originalName: file.name,
+      compressed: compressed.compressed,
+      originalBytes: compressed.originalBytes,
+      bytes: compressed.bytes.length,
       type: catalog.type,
       q: catalog.q,
       files: catalog.files,

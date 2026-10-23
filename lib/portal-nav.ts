@@ -17,11 +17,12 @@ export type PortalPageId =
   | "branding"
   | "knowledge"
   | "inbox"
+  | "activity"
   | "files"
   | "unsub"
   | "integrations";
 
-export type PortalNavGroupId = "crm" | "marketing" | "analytics";
+export type PortalNavGroupId = "crm" | "marketing";
 
 export type PortalSubNavItem = {
   id: PortalPageId;
@@ -63,6 +64,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   branding: "/portal/branding",
   knowledge: "/portal/knowledge-base",
   inbox: "/portal/inbox",
+  activity: "/portal/activity",
   files: "/portal/file-manager",
   unsub: "/portal/unsub",
   integrations: "/portal/integrations",
@@ -90,13 +92,18 @@ export function campaignListRoute(kind?: string, tags?: string[]) {
 
 export function publicCampaignReportPath(
   token: string,
-  options?: { analyticsToken?: string },
+  options?: { analyticsToken?: string; hideBotClicks?: boolean },
 ) {
   const path = `/r/${encodeURIComponent(token)}`;
+  const params = new URLSearchParams();
   if (options?.analyticsToken) {
-    return `${path}?a=${encodeURIComponent(options.analyticsToken)}`;
+    params.set("a", options.analyticsToken);
   }
-  return path;
+  if (options?.hideBotClicks) {
+    params.set("hideBotClicks", "1");
+  }
+  const query = params.toString();
+  return query ? `${path}?${query}` : path;
 }
 
 export function publicAnalyticsPath(token: string) {
@@ -147,6 +154,18 @@ export const PORTAL_NAV: PortalNavItem[] = [
   },
   {
     type: "item",
+    id: "analytics-kanban",
+    label: "Pipeline",
+    href: PORTAL_ROUTES["analytics-kanban"],
+  },
+  {
+    type: "item",
+    id: "activity",
+    label: "Activity Feed",
+    href: PORTAL_ROUTES.activity,
+  },
+  {
+    type: "item",
     id: "branding",
     label: "Branding",
     href: PORTAL_ROUTES.branding,
@@ -178,18 +197,10 @@ export const PORTAL_NAV: PortalNavItem[] = [
     ],
   },
   {
-    type: "group",
+    type: "item",
     id: "analytics",
     label: "Analytics",
     href: PORTAL_ROUTES.analytics,
-    children: [
-      { id: "analytics", label: "Report", href: PORTAL_ROUTES.analytics },
-      {
-        id: "analytics-kanban",
-        label: "Kanban",
-        href: PORTAL_ROUTES["analytics-kanban"],
-      },
-    ],
   },
   { type: "item", id: "smtp", label: "SMTP & Senders", href: PORTAL_ROUTES.smtp },
   { type: "item", id: "unsub", label: "Suppression List", href: PORTAL_ROUTES.unsub },
@@ -214,12 +225,13 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   automation: "Automation",
   "automation-history": "Automation history",
   edm: "EDM generation",
-  analytics: "Report",
-  "analytics-kanban": "Kanban",
+  analytics: "Analytics",
+  "analytics-kanban": "Pipeline",
   smtp: "SMTP & Senders",
   branding: "Branding",
   knowledge: "Knowledge Base",
   inbox: "Master Inbox",
+  activity: "Activity Feed",
   files: "File Manager",
   unsub: "Suppression List",
   integrations: "Integrations",
@@ -228,7 +240,6 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
 export const PORTAL_GROUP_DEFAULTS: Record<PortalNavGroupId, string> = {
   crm: PORTAL_ROUTES.contacts,
   marketing: PORTAL_ROUTES.drip,
-  analytics: PORTAL_ROUTES.analytics,
 };
 
 const DETAIL_TITLES: Record<string, string> = {
@@ -259,6 +270,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/branding")) return "branding";
   if (pathname.startsWith("/portal/knowledge-base")) return "knowledge";
   if (pathname.startsWith("/portal/inbox")) return "inbox";
+  if (pathname.startsWith("/portal/activity")) return "activity";
   if (pathname.startsWith("/portal/file-manager")) return "files";
   if (pathname.startsWith("/portal/unsub")) return "unsub";
   if (pathname.startsWith("/portal/integrations")) return "integrations";
@@ -271,7 +283,6 @@ export function getOpenGroupsFromPathname(
   return {
     crm: pathname.startsWith("/portal/crm"),
     marketing: pathname.startsWith("/portal/marketing"),
-    analytics: pathname.startsWith("/portal/analytics"),
   };
 }
 
@@ -284,7 +295,7 @@ export function getPageTitleFromPathname(pathname: string): string {
   if (pathname.startsWith("/portal/marketing/campaigns/")) {
     return DETAIL_TITLES.campaign;
   }
-  if (pathname.startsWith("/portal/analytics/kanban/")) return "Kanban";
+  if (pathname.startsWith("/portal/analytics/kanban")) return "Pipeline";
 
   const pageId = getHighlightPageFromPathname(pathname);
   return PORTAL_PAGE_TITLES[pageId] ?? "Home";

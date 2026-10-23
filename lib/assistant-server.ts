@@ -40,7 +40,8 @@ function systemPrompt(projectName: string, userName: string) {
 The portal has:
 - CRM: Contacts (${PORTAL_ROUTES.contacts}), Lists (${PORTAL_ROUTES.lists}), Companies (${PORTAL_ROUTES.companies}), Enrich (${PORTAL_ROUTES.enrich}).
 - Marketing: Drip campaigns (${PORTAL_ROUTES.drip}) for bulk emails, 1-1 campaigns (${PORTAL_ROUTES.oneone}) for personal sequences, Personalise campaigns (${PORTAL_ROUTES.personalise}) built from an uploaded doc or sheet with a unique email per contact, Automation (${PORTAL_ROUTES.automation}), EDM generator (${PORTAL_ROUTES.edm}) for designing HTML emails with AI.
-- Analytics (${PORTAL_ROUTES.analytics}) and Kanban boards (${PORTAL_ROUTES["analytics-kanban"]}) that sort contacts into stages by sent, open, click and reply.
+- Analytics report (${PORTAL_ROUTES.analytics}) and Pipeline boards (${PORTAL_ROUTES["analytics-kanban"]}) that sort contacts into stages by sent, open, click and reply.
+- Activity Feed (${PORTAL_ROUTES.activity}) for platform activity: campaign created/scheduled/rolled out, list & company adds, sender added, pipeline created, plus opens and clicks.
 - Branding (${PORTAL_ROUTES.branding}) for the project logo and brand colors, Knowledge Base (${PORTAL_ROUTES.knowledge}).
 - SMTP senders (${PORTAL_ROUTES.smtp}), Master inbox (${PORTAL_ROUTES.inbox}) with campaign replies and AI reply drafts, Suppression list (${PORTAL_ROUTES.unsub}), Integrations (${PORTAL_ROUTES.integrations}).
 - Drip campaigns cannot send from Gmail. 1-1 and Personalise can use any sender. Clicks from link scanners and opens within the first seconds after sending are filtered out of reports.
