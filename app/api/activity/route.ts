@@ -13,6 +13,7 @@ import {
 const GROUPS = new Set<ActivityFeedGroup>([
   "all",
   "engagement",
+  "unsubscribes",
   "campaigns",
   "lists",
   "senders",
@@ -22,6 +23,7 @@ const GROUPS = new Set<ActivityFeedGroup>([
 const TYPES = new Set<ActivityFeedType>([
   "campaign_opened",
   "campaign_clicked",
+  "campaign_unsubscribed",
   "campaign_launched",
   "campaign_scheduled",
   "campaign_created",

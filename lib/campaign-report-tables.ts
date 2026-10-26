@@ -31,6 +31,8 @@ export type ReportEngageRow = {
   openTime: string;
   openDevice: string;
   clickDevice: string;
+  /** Client IP from the counted click (Clickers); dash when unknown / opens-only. */
+  clickIp: string;
   opens: number;
   clicks: number;
   cta: string;
@@ -211,19 +213,35 @@ function openDeviceFromGroup(group: CampaignSendDoc[]) {
   return labelDevice(fromEvent || withOpen.openedDevice);
 }
 
-function clickDeviceFromGroup(group: CampaignSendDoc[]) {
-  const withClick = [...group]
+function firstCountedClick(group: CampaignSendDoc[]) {
+  return [...group]
     .filter((item) => item.clickedAt || (item.clickCount || 0) > 0)
     .sort((a, b) => {
       const left = asDate(a.clickedAt)?.getTime() ?? Number.POSITIVE_INFINITY;
       const right = asDate(b.clickedAt)?.getTime() ?? Number.POSITIVE_INFINITY;
       return left - right;
     })[0];
+}
+
+function clickDeviceFromGroup(group: CampaignSendDoc[]) {
+  const withClick = firstCountedClick(group);
   if (!withClick) {
     return REPORT_DASH;
   }
   const fromEvent = withClick.clickEvents?.find((event) => !event.ignored)?.device;
   return labelDevice(fromEvent || withClick.clickedDevice);
+}
+
+function clickIpFromGroup(group: CampaignSendDoc[]) {
+  const withClick = firstCountedClick(group);
+  if (!withClick) {
+    return REPORT_DASH;
+  }
+  const fromEvent = withClick.clickEvents?.find(
+    (event) => !event.ignored && event.ip?.trim(),
+  )?.ip;
+  const ip = (fromEvent || withClick.clickedIp || "").trim();
+  return ip || REPORT_DASH;
 }
 
 function percent(part: number, total: number) {
@@ -324,6 +342,7 @@ export function buildCampaignReportTables({
       openTime: formatInZone(opened ?? undefined, timeZone, "time"),
       openDevice: openDeviceFromGroup(group),
       clickDevice: clicks > 0 ? clickDeviceFromGroup(group) : REPORT_DASH,
+      clickIp: clicks > 0 ? clickIpFromGroup(group) : REPORT_DASH,
       opens: openCountSum || (countsAsOpen ? 1 : 0),
       clicks,
       cta: clicks ? ctaLabel(primary) : REPORT_DASH,

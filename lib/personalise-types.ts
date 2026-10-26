@@ -1,3 +1,5 @@
+import { splitPersonName } from "@/lib/email-variables";
+
 export type PersonaliseStep = {
   label: string;
   /** Days after the first email. The first email is 0. */
@@ -337,6 +339,33 @@ export function contactNeedsEmail(contact: PersonaliseContact) {
   return !cleanEmail(contact.email);
 }
 
+export function resolvePersonaliseNames(row: {
+  firstName?: unknown;
+  lastName?: unknown;
+  name?: unknown;
+  fullName?: unknown;
+}): { firstName: string; lastName: string } {
+  let firstName = asText(row.firstName);
+  let lastName = asText(row.lastName);
+  const name = asText(row.name) || asText(row.fullName);
+
+  // Prefer explicit first/last columns; otherwise split Name / Full name.
+  if (!firstName && !lastName && name) {
+    return splitPersonName(name);
+  }
+  if (firstName && !lastName && /\s/.test(firstName)) {
+    return splitPersonName(firstName);
+  }
+  if (!firstName && lastName && /\s/.test(lastName) && !name) {
+    return splitPersonName(lastName);
+  }
+  if (!firstName && name) {
+    const fromName = splitPersonName(name);
+    return { firstName: fromName.firstName, lastName: lastName || fromName.lastName };
+  }
+  return { firstName, lastName };
+}
+
 export function normalizePersonalisePlan(
   input: unknown,
   fileName = "",
@@ -352,8 +381,7 @@ export function normalizePersonalisePlan(
       continue;
     }
     const row = item as Record<string, unknown>;
-    const firstName = asText(row.firstName);
-    const lastName = asText(row.lastName);
+    const { firstName, lastName } = resolvePersonaliseNames(row);
     if (!firstName && !lastName) {
       continue;
     }

@@ -49,6 +49,7 @@ const TABLES: Array<{ key: TableKey; label: string; columns: Column[] }> = [
       { label: "Open time", key: "openTime" },
       { label: "Open device", key: "openDevice" },
       { label: "Click device", key: "clickDevice" },
+      { label: "Click IP", key: "clickIp" },
       { label: "Open tag", key: "openTag" },
       { label: "Click tag", key: "clickTag" },
       { label: "Opens", key: "opens", numeric: true },

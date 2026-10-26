@@ -114,6 +114,10 @@ export function publicKanbanPath(token: string) {
   return `/k/${token}`;
 }
 
+export function publicLeadReportPath(token: string) {
+  return `/l/${encodeURIComponent(token)}`;
+}
+
 export function portalListRoute(id: string) {
   return `/portal/crm/lists/${id}`;
 }

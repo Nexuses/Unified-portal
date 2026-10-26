@@ -1,12 +1,25 @@
 export const EMAIL_VARIABLE_TAGS = {
   FIRSTNAME: "{{ contact.FIRSTNAME }}",
   LASTNAME: "{{ contact.LASTNAME }}",
+  FULLNAME: "{{ contact.FULLNAME }}",
   EMAIL: "{{ contact.EMAIL }}",
   COMPANY: "{{ contact.COMPANY }}",
+  POSITION: "{{ contact.POSITION }}",
+  LINKEDIN: "{{ contact.LINKEDIN }}",
   UNSUBSCRIBE: "{{ unsubscribe }}",
 } as const;
 
-type EmailVariableName = keyof typeof EMAIL_VARIABLE_TAGS;
+export type EmailVariableName = keyof typeof EMAIL_VARIABLE_TAGS;
+
+export type ContactMergeFields = {
+  firstName?: string;
+  lastName?: string;
+  fullName?: string;
+  email?: string;
+  companyName?: string;
+  position?: string;
+  personalLinkedIn?: string;
+};
 
 function compactToken(value: string) {
   return value
@@ -16,7 +29,22 @@ function compactToken(value: string) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-function classifyMergeToken(inner: string): EmailVariableName | null {
+/** Split "Ada Lovelace" → first / last for {{firstname}} when only a Name column exists. */
+export function splitPersonName(raw: string): { firstName: string; lastName: string } {
+  const cleaned = String(raw ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) {
+    return { firstName: "", lastName: "" };
+  }
+  const parts = cleaned.split(" ");
+  if (parts.length === 1) {
+    return { firstName: parts[0], lastName: "" };
+  }
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+export function classifyMergeToken(inner: string): EmailVariableName | null {
   const compact = compactToken(inner);
   if (!compact) {
     return null;
@@ -44,7 +72,9 @@ function classifyMergeToken(inner: string): EmailVariableName | null {
     key === "firstname" ||
     key === "first" ||
     key === "prenom" ||
-    key === "givenname"
+    key === "givenname" ||
+    // Greeting-style {{name}} usually means first name in outreach sheets.
+    key === "name"
   ) {
     return "FIRSTNAME";
   }
@@ -57,6 +87,15 @@ function classifyMergeToken(inner: string): EmailVariableName | null {
   ) {
     return "LASTNAME";
   }
+  if (
+    key === "fullname" ||
+    key === "full" ||
+    key === "displayname" ||
+    key === "contactname" ||
+    key === "personname"
+  ) {
+    return "FULLNAME";
+  }
   if (key === "email" || key === "emailaddress" || key === "mail") {
     return "EMAIL";
   }
@@ -68,6 +107,23 @@ function classifyMergeToken(inner: string): EmailVariableName | null {
     key === "org"
   ) {
     return "COMPANY";
+  }
+  if (
+    key === "position" ||
+    key === "title" ||
+    key === "jobtitle" ||
+    key === "role" ||
+    key === "designation"
+  ) {
+    return "POSITION";
+  }
+  if (
+    key === "linkedin" ||
+    key === "linkedinurl" ||
+    key === "personallinkedin" ||
+    key === "li"
+  ) {
+    return "LINKEDIN";
   }
 
   return null;
@@ -98,6 +154,21 @@ function replaceKnownTags(html: string, pattern: RegExp) {
   });
 }
 
+/** Undo entity / fullwidth braces so {{name}} from sheets still matches. */
+function decodeMergeBraces(html: string) {
+  return html
+    .replace(/&#0*123;/g, "{")
+    .replace(/&#0*125;/g, "}")
+    .replace(/&#x0*7b;/gi, "{")
+    .replace(/&#x0*7d;/gi, "}")
+    .replace(/&lbrace;/gi, "{")
+    .replace(/&rbrace;/gi, "}")
+    .replace(/\uFF5B/g, "{")
+    .replace(/\uFF5D/g, "}")
+    .replace(/\uFE5B/g, "{")
+    .replace(/\uFE5C/g, "}");
+}
+
 export function normalizeEmailMergeTags(html: string) {
   if (!html) {
     return html;
@@ -105,11 +176,89 @@ export function normalizeEmailMergeTags(html: string) {
 
   // Only rewrite explicit merge-tag formats. Do not touch bare `{foo}` or `%foo%`
   // — those appear in CSS and break HTML when rewritten.
-  let next = html;
+  let next = decodeMergeBraces(html);
   next = replaceKnownTags(next, /\{\{\{\s*([^}]+?)\s*\}\}\}/g);
   next = replaceKnownTags(next, /\{\{\s*([^}]+?)\s*\}\}/g);
   next = replaceKnownTags(next, /\*\|([^|*]+)\|\*/g);
   next = replaceKnownTags(next, /%%([^%]+)%%/g);
   next = replaceKnownTags(next, /\[\[([^\]]+)\]\]/g);
+  return next;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+/** Resolve merge values; firstName falls back to the first word of Name / fullName. */
+export function contactMergeValues(
+  contact: ContactMergeFields | null | undefined,
+): Record<Exclude<EmailVariableName, "UNSUBSCRIBE">, string> {
+  let firstName = String(contact?.firstName ?? "").trim();
+  let lastName = String(contact?.lastName ?? "").trim();
+  const fullNameRaw = String(contact?.fullName ?? "").trim();
+  const combined = fullNameRaw || [firstName, lastName].filter(Boolean).join(" ");
+
+  if (!firstName && combined) {
+    const split = splitPersonName(combined);
+    firstName = split.firstName;
+    if (!lastName) lastName = split.lastName;
+  } else if (firstName && !lastName && /\s/.test(firstName)) {
+    const split = splitPersonName(firstName);
+    firstName = split.firstName;
+    lastName = split.lastName;
+  }
+
+  const fullName = [firstName, lastName].filter(Boolean).join(" ") || combined;
+
+  return {
+    FIRSTNAME: firstName,
+    LASTNAME: lastName,
+    FULLNAME: fullName,
+    EMAIL: String(contact?.email ?? "").trim(),
+    COMPANY: String(contact?.companyName ?? "").trim(),
+    POSITION: String(contact?.position ?? "").trim(),
+    LINKEDIN: String(contact?.personalLinkedIn ?? "").trim(),
+  };
+}
+
+/**
+ * Replace {{firstname}}, {{name}}, {{ contact.FIRSTNAME }}, *|FNAME|*, etc. with contact data.
+ * Unknown tags are left unchanged.
+ */
+export function applyContactVariables(
+  text: string,
+  contact: ContactMergeFields | null | undefined,
+  forHtml = true,
+) {
+  if (!text) {
+    return text;
+  }
+  const values = contactMergeValues(contact);
+  const fill = (name: EmailVariableName) => {
+    if (name === "UNSUBSCRIBE") {
+      return null;
+    }
+    const value = values[name] ?? "";
+    return forHtml ? escapeHtml(value) : value;
+  };
+
+  let next = normalizeEmailMergeTags(text);
+  next = next.replace(/\{\{\s*contact\.([A-Za-z]+)\s*\}\}/g, (full, key: string) => {
+    const name = key.toUpperCase() as EmailVariableName;
+    return fill(name) ?? full;
+  });
+  // Safety net for any leftover {{name}} / {{ first name }} that normalize missed.
+  next = next.replace(/\{\{\{\s*([^}]+?)\s*\}\}\}/g, (full, inner: string) => {
+    const name = classifyMergeToken(String(inner ?? ""));
+    return name ? fill(name) ?? full : full;
+  });
+  next = next.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (full, inner: string) => {
+    const name = classifyMergeToken(String(inner ?? ""));
+    return name ? fill(name) ?? full : full;
+  });
   return next;
 }

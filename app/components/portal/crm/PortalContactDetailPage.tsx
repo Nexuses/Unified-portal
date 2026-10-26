@@ -1,421 +1,71 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Monitor, Smartphone, Tablet } from "lucide-react";
+import type { ContactDetail, ContactProfile } from "@/lib/crm";
 import {
-  CONTACT_ATTRIBUTE_LABELS,
-  formatCompanyDate,
-  formatListDate,
-  formatRelativeTime,
-  groupHistoryByDay,
-  type ContactCampaignStats,
-  type ContactDetail,
-  type ContactHistoryEvent,
-  type ContactListMembership,
-} from "@/lib/crm";
-import {
-  formatEngagementDevice,
-  type EngagementDevice,
-} from "@/lib/engagement-client-meta";
-import {
-  portalCompanyRoute,
   portalContactRoute,
-  portalListRoute,
   portalReturnPath,
   PORTAL_ROUTES,
-  portalCampaignRoute,
 } from "@/lib/portal-nav";
+import LeadReportOverview, {
+  type LeadSectionKey,
+} from "@/app/components/portal/crm/LeadReportOverview";
 
 type PortalContactDetailPageProps = {
   contactId: string;
   from?: string;
 };
 
-type DetailTab = "overview" | "history" | "lists" | "preferences";
+type SectionKey = LeadSectionKey;
 
-function pct(part: number, total: number) {
-  if (total <= 0) {
-    return "0%";
-  }
-  return `${Math.round((part / total) * 100)}%`;
+function emptyProfile(): ContactProfile {
+  return {
+    qualification: {},
+    company: {},
+    meeting: {},
+    brief: {},
+    notes: [],
+    timeline: [],
+  };
 }
 
-function ContactEventDescription({ event }: { event: ContactHistoryEvent }) {
-  if (event.type === "company_associated" && event.companyId) {
-    return (
-      <div className="company-history-copy">
-        This contact has been associated to the company:{" "}
-        <Link href={portalCompanyRoute(event.companyId)} className="contact-history-link">
-          {event.companyName}
-        </Link>
-      </div>
-    );
-  }
-
-  if (event.type === "list_added" && event.listId) {
-    return (
-      <div className="company-history-copy">
-        <Link href={portalListRoute(event.listId)} className="contact-history-link">
-          (#{event.listDisplayId}) {event.listName}
-        </Link>
-      </div>
-    );
-  }
-
-  if (event.type === "import" && event.importFileName) {
-    return (
-      <div className="company-history-copy">
-        Added via a contacts import by {event.actor}: via the file{" "}
-        <strong>{event.importFileName}</strong>
-      </div>
-    );
-  }
-
-  if (event.type === "campaign_sent" || event.type === "campaign_delivered") {
-    return (
-      <div className="company-history-copy">
-        {event.type === "campaign_sent" ? "Sent" : "Delivered"} on{" "}
-        <strong>{formatListDate(event.at)}</strong>
-        {". "}
-        {event.campaignId ? (
-          <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
-            View campaign
-          </Link>
-        ) : null}
-      </div>
-    );
-  }
-
-  if (event.type === "campaign_opened") {
-    return (
-      <div className="company-history-copy">
-        Opened on <strong>{formatListDate(event.at)}</strong>
-        {" — "}
-        {event.campaignId ? (
-          <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
-            {event.campaignName || event.campaignId}
-          </Link>
-        ) : (
-          event.campaignName
-        )}
-        .
-      </div>
-    );
-  }
-
-  if (event.type === "campaign_clicked") {
-    return (
-      <div className="company-history-copy">
-        Clicked on <strong>{formatListDate(event.at)}</strong>
-        {": "}
-        {event.clickedUrl ? (
-          <a href={event.clickedUrl} target="_blank" rel="noreferrer" className="contact-history-link">
-            {event.clickedUrl}
-          </a>
-        ) : (
-          "a link"
-        )}{" "}
-        in{" "}
-        {event.campaignId ? (
-          <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
-            {event.campaignName || event.campaignId}
-          </Link>
-        ) : (
-          event.campaignName
-        )}
-        .
-      </div>
-    );
-  }
-
-  if (event.type === "campaign_unsubscribed") {
-    return (
-      <div className="company-history-copy">
-        Unsubscribed from campaign{" "}
-        {event.campaignId ? (
-          <Link href={portalCampaignRoute(event.campaignId, event.campaignKind)} className="contact-history-link">
-            {event.campaignName || event.campaignId}
-          </Link>
-        ) : (
-          event.campaignName
-        )}
-        .
-      </div>
-    );
-  }
-
-  return <div className="company-history-copy">{event.description}</div>;
+function cloneProfile(profile?: ContactProfile | null): ContactProfile {
+  const base = profile || {};
+  return {
+    ...emptyProfile(),
+    ...base,
+    qualification: { ...(base.qualification || {}) },
+    company: { ...(base.company || {}) },
+    meeting: { ...(base.meeting || {}) },
+    brief: { ...(base.brief || {}) },
+    notes: [...(base.notes || [])],
+    timeline: [...(base.timeline || [])],
+    apollo: base.apollo ? { ...base.apollo } : undefined,
+  };
 }
 
-/** Overview card: newest activity, skip noisy delivered duplicates. */
-function pickRecentHistory(events: ContactHistoryEvent[], limit = 12) {
-  return events
-    .filter((event) => event.type !== "campaign_delivered")
-    .slice(0, limit);
-}
-
-function EngagementDeviceIcon({ device }: { device: EngagementDevice }) {
-  const props = { size: 13, strokeWidth: 2.25, "aria-hidden": true as const };
-  if (device === "mobile") {
-    return <Smartphone {...props} />;
-  }
-  if (device === "tablet") {
-    return <Tablet {...props} />;
-  }
-  if (device === "desktop") {
-    return <Monitor {...props} />;
-  }
-  return null;
-}
-
-function EngagementMetaChips({
-  device,
-  ip,
-}: {
-  device?: EngagementDevice | string;
-  ip?: string;
-}) {
-  const normalized =
-    device === "mobile" ||
-    device === "tablet" ||
-    device === "desktop" ||
-    device === "unknown"
-      ? device
-      : undefined;
-  const label = formatEngagementDevice(normalized);
-  if (!label && !ip) {
-    return null;
-  }
-
-  return (
-    <div className="cd-event-meta">
-      {normalized && label ? (
-        <span className={`cd-device-chip cd-device-${normalized}`}>
-          <EngagementDeviceIcon device={normalized} />
-          {label}
-        </span>
-      ) : null}
-      {ip ? <span className="cd-ip-chip">IP {ip}</span> : null}
-    </div>
-  );
-}
-
-function ContactHistoryTimeline({
-  events,
-  contact,
-}: {
-  events: ContactHistoryEvent[];
-  contact: ContactDetail;
-}) {
-  const groups = groupHistoryByDay(events);
-  const importEvent = events.find((event) => event.type === "import" && event.importFileName);
-
-  if (events.length === 0) {
-    return <p className="cd-empty">No activity yet.</p>;
-  }
-
-  return (
-    <div className="cd-history-animate">
-      {groups.map((group) => (
-        <div key={group.label}>
-          <div className="cd-history-day">{group.label}</div>
-          <div className="cd-timeline">
-            {group.events.map((event) => (
-              <div className="cd-event" key={event.id}>
-                <div className="cd-event-rail">
-                  <span className="cd-event-dot" />
-                </div>
-                <div className="cd-event-body">
-                  <div className="cd-event-title">{event.title}</div>
-                  <div className="cd-event-time">
-                    {formatListDate(event.at)}
-                    <span className="cd-event-time-rel">
-                      {" "}
-                      · {formatRelativeTime(event.at)}
-                    </span>
-                    {event.actor ? ` • ${event.actor}` : ""}
-                  </div>
-                  <EngagementMetaChips device={event.device} ip={event.ip} />
-                  {event.openTag ? (
-                    <div className="cd-event-meta">
-                      <span className="af-type-badge af-type-pixel-blocked">
-                        {event.openTag}
-                      </span>
-                    </div>
-                  ) : null}
-                  <ContactEventDescription event={event} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-      <div className="cd-foot-note">
-        {importEvent
-          ? `Added via a contacts import on ${formatCompanyDate(contact.createdAt)}`
-          : `Added on ${formatCompanyDate(contact.createdAt)}`}
-      </div>
-    </div>
-  );
-}
-
-function ContactListsPanel({
-  lists,
-  folder,
-}: {
-  lists: ContactListMembership[];
-  folder: string;
-}) {
-  const [rowsPerPage, setRowsPerPage] = useState(20);
-  const [page, setPage] = useState(1);
-
-  const total = lists.length;
-  const totalPages = Math.max(1, Math.ceil(total / rowsPerPage));
-  const safePage = Math.min(page, totalPages);
-  const startIndex = total === 0 ? 0 : (safePage - 1) * rowsPerPage;
-  const endIndex = Math.min(startIndex + rowsPerPage, total);
-  const pageLists = lists.slice(startIndex, endIndex);
-
-  useEffect(() => {
-    setPage(1);
-  }, [lists.length, rowsPerPage]);
-
-  return (
-    <div className="contact-lists-panel">
-      <Link href={PORTAL_ROUTES.lists} className="link-purple contact-manage-lists">
-        Manage lists
-      </Link>
-
-      <div className="data-table-wrap contact-lists-table-wrap">
-        <table className="data-table contact-lists-table">
-          <thead>
-            <tr>
-              <th>Lists</th>
-              <th>ID</th>
-              <th>Folder</th>
-              <th>Creation date</th>
-            </tr>
-          </thead>
-          <tbody>
-            {total === 0 ? (
-              <tr>
-                <td colSpan={4} className="crm-empty">
-                  This contact is not in any list yet.
-                </td>
-              </tr>
-            ) : (
-              pageLists.map((list) => (
-                <tr key={list.id}>
-                  <td>
-                    <Link href={portalListRoute(list.id)} className="name-link">
-                      {list.name}
-                    </Link>
-                  </td>
-                  <td className="id-cell">#{list.displayId}</td>
-                  <td>{folder}</td>
-                  <td>{formatListDate(list.createdAt)}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-
-        <div className="contact-lists-footer">
-          <div className="contact-lists-footer-group">
-            <span className="contact-lists-footer-label">Rows per page</span>
-            <select
-              className="contact-lists-select"
-              value={rowsPerPage}
-              onChange={(event) => setRowsPerPage(Number(event.target.value))}
-            >
-              <option value={20}>20</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-            </select>
-          </div>
-
-          <span className="contact-lists-range">
-            {total === 0 ? "0-0 of 0" : `${startIndex + 1}-${endIndex} of ${total}`}
-          </span>
-
-          <div className="contact-lists-footer-group">
-            <select
-              className="contact-lists-select"
-              value={safePage}
-              onChange={(event) => setPage(Number(event.target.value))}
-              disabled={totalPages <= 1}
-            >
-              {Array.from({ length: totalPages }, (_, index) => (
-                <option key={index + 1} value={index + 1}>
-                  {index + 1} of {totalPages} pages
-                </option>
-              ))}
-            </select>
-            <div className="contact-lists-nav">
-              <button
-                type="button"
-                aria-label="Previous page"
-                disabled={safePage <= 1}
-                onClick={() => setPage((current) => Math.max(1, current - 1))}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="m15 18-6-6 6-6" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                aria-label="Next page"
-                disabled={safePage >= totalPages}
-                onClick={() =>
-                  setPage((current) => Math.min(totalPages, current + 1))
-                }
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="m9 18 6-6-6-6" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CampaignStatsBar({ stats }: { stats: ContactCampaignStats }) {
-  const items = [
-    { label: "Sent", value: stats.sent, pct: null as string | null },
-    {
-      label: "Delivered",
-      value: stats.delivered,
-      pct: pct(stats.delivered, stats.sent),
-    },
-    {
-      label: "Unique opening",
-      value: stats.opens,
-      pct: pct(stats.opens, stats.sent),
-    },
-    {
-      label: "Unique clicks",
-      value: stats.clicks,
-      pct: pct(stats.clicks, stats.sent),
-    },
-  ];
-
-  return (
-    <div className="cd-stats">
-      {items.map((item) => (
-        <div className="cd-stat" key={item.label}>
-          <div className="k">{item.label}</div>
-          <div className="v">
-            {item.pct ? `${item.pct} (${item.value})` : item.value}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+function applyContact(
+  data: ContactDetail,
+  setContact: (value: ContactDetail) => void,
+  setDraftProfile: (value: ContactProfile) => void,
+  setDraftCore: (value: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    companyName: string;
+    attributes: Record<string, string>;
+  }) => void,
+) {
+  setContact(data);
+  setDraftProfile(cloneProfile(data.profile));
+  setDraftCore({
+    firstName: data.firstName || "",
+    lastName: data.lastName || "",
+    email: data.email || "",
+    companyName: data.companyName || "",
+    attributes: { ...(data.attributes || {}) },
+  });
 }
 
 export default function PortalContactDetailPage({
@@ -424,19 +74,70 @@ export default function PortalContactDetailPage({
 }: PortalContactDetailPageProps) {
   const router = useRouter();
   const backHref = portalReturnPath(from, PORTAL_ROUTES.contacts);
+  const enrichAttemptedFor = useRef<string | null>(null);
   const [contact, setContact] = useState<ContactDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<DetailTab>("overview");
-  const [historyFilter, setHistoryFilter] = useState<"all" | "campaigns">("all");
+  const [notice, setNotice] = useState("");
+  const [editing, setEditing] = useState<SectionKey | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [enriching, setEnriching] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
+  const [draftProfile, setDraftProfile] = useState<ContactProfile>(emptyProfile());
+  const [draftCore, setDraftCore] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    companyName: "",
+    attributes: {} as Record<string, string>,
+  });
 
   useEffect(() => {
-    setTab("overview");
-    setHistoryFilter("all");
+    setEditing(null);
+    setNotice("");
+    setShareCopied(false);
+    setShareUrl("");
+    enrichAttemptedFor.current = null;
   }, [contactId]);
 
+  async function createPublicUrl() {
+    if (!contactId || shareBusy) return;
+    setShareBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/crm/contacts/${contactId}/share`, {
+        method: "POST",
+      });
+      const data = (await response.json()) as {
+        url?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.url) {
+        throw new Error(data.error || "Failed to create public URL");
+      }
+      setShareUrl(data.url);
+      try {
+        await navigator.clipboard.writeText(data.url);
+        setShareCopied(true);
+        window.setTimeout(() => setShareCopied(false), 2400);
+      } catch {
+        /* banner still shows the URL for manual copy */
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to create public URL",
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
   useEffect(() => {
-    async function loadContact() {
+    let cancelled = false;
+
+    async function loadAndEnrich() {
       if (!contactId) {
         setLoading(false);
         return;
@@ -446,48 +147,150 @@ export default function PortalContactDetailPage({
       setError("");
       try {
         const response = await fetch(`/api/crm/contacts/${contactId}`);
-        const data = await response.json();
+        const data = (await response.json()) as ContactDetail & { error?: string };
         if (!response.ok) {
           throw new Error(data.error || "Failed to load contact");
         }
-        setContact(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load contact");
-      } finally {
+        if (cancelled) {
+          return;
+        }
+        applyContact(data, setContact, setDraftProfile, setDraftCore);
         setLoading(false);
+
+        const alreadyEnriched = Boolean(data.profile?.apollo?.enrichedAt);
+        if (alreadyEnriched || enrichAttemptedFor.current === contactId) {
+          return;
+        }
+        enrichAttemptedFor.current = contactId;
+        setEnriching(true);
+        setNotice("Enriching with Apollo…");
+        try {
+          const enrichResponse = await fetch(
+            `/api/crm/contacts/${contactId}/apollo-enrich`,
+            { method: "POST" },
+          );
+          const enrichData = (await enrichResponse.json()) as ContactDetail & {
+            error?: string;
+          };
+          if (cancelled) {
+            return;
+          }
+          if (enrichResponse.ok) {
+            applyContact(enrichData, setContact, setDraftProfile, setDraftCore);
+            setNotice("Enriched with Apollo");
+            window.setTimeout(() => {
+              if (!cancelled) setNotice("");
+            }, 2400);
+          } else if (enrichResponse.status === 409) {
+            setNotice("");
+          } else {
+            setNotice("");
+            setError(enrichData.error || "Apollo enrich failed");
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setNotice("");
+            setError(
+              err instanceof Error ? err.message : "Apollo enrich failed",
+            );
+          }
+        } finally {
+          if (!cancelled) {
+            setEnriching(false);
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load contact");
+          setLoading(false);
+        }
       }
     }
 
-    void loadContact();
+    void loadAndEnrich();
+    return () => {
+      cancelled = true;
+    };
   }, [contactId]);
 
   const navigation = contact?.navigation;
 
-  const pagerLabel = useMemo(() => {
-    if (!navigation || navigation.total === 0) {
-      return "0 of 0";
+  function beginEdit(section: SectionKey) {
+    if (!contact) return;
+    setDraftProfile(cloneProfile(contact.profile));
+    setDraftCore({
+      firstName: contact.firstName || "",
+      lastName: contact.lastName || "",
+      email: contact.email || "",
+      companyName: contact.companyName || "",
+      attributes: { ...(contact.attributes || {}) },
+    });
+    setEditing(section);
+    setError("");
+    setNotice("");
+  }
+
+  function cancelEdit() {
+    if (!contact) return;
+    setDraftProfile(cloneProfile(contact.profile));
+    setDraftCore({
+      firstName: contact.firstName || "",
+      lastName: contact.lastName || "",
+      email: contact.email || "",
+      companyName: contact.companyName || "",
+      attributes: { ...(contact.attributes || {}) },
+    });
+    setEditing(null);
+  }
+
+  async function saveSection() {
+    if (!contact || !editing) return;
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      const body =
+        editing === "information" ||
+        editing === "identity" ||
+        editing === "contactDetails"
+          ? {
+              firstName: draftCore.firstName,
+              lastName: draftCore.lastName,
+              email: draftCore.email,
+              companyName: draftCore.companyName,
+              attributes: draftCore.attributes,
+              profile: draftProfile,
+            }
+          : { profile: draftProfile };
+
+      const response = await fetch(`/api/crm/contacts/${contact.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = (await response.json()) as ContactDetail & { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to save");
+      }
+      applyContact(data, setContact, setDraftProfile, setDraftCore);
+      setEditing(null);
+      setNotice("Saved");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
     }
-    return `${navigation.index + 1} of ${navigation.total}`;
-  }, [navigation]);
+  }
 
-  const campaignHistory = useMemo(
-    () => (contact?.history ?? []).filter((event) => event.type.startsWith("campaign_")),
-    [contact?.history],
-  );
-
-  const visibleHistory = useMemo(
-    () =>
-      historyFilter === "campaigns"
-        ? campaignHistory
-        : (contact?.history ?? []),
-    [campaignHistory, contact?.history, historyFilter],
-  );
+  function patchProfile(updater: (current: ContactProfile) => ContactProfile) {
+    setDraftProfile((current) => updater(cloneProfile(current)));
+  }
 
   if (loading) {
     return <div className="crm-empty">Loading contact...</div>;
   }
 
-  if (error || !contact) {
+  if (error && !contact) {
     return (
       <>
         <div className="cd-top">
@@ -498,71 +301,39 @@ export default function PortalContactDetailPage({
               aria-label="Back"
               onClick={() => router.push(backHref)}
             >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="m15 18-6-6 6-6" />
               </svg>
             </button>
           </div>
         </div>
-        <div className="crm-error">{error || "Contact not found."}</div>
+        <div className="crm-error">{error}</div>
       </>
     );
   }
 
+  if (!contact) {
+    return <div className="crm-error">Contact not found.</div>;
+  }
+
   return (
     <>
-      <div className="cd-top">
-        <div className="cd-identity">
-          <button
-            type="button"
-            className="cd-back"
-            aria-label="Back"
-            onClick={() => router.push(backHref)}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="m15 18-6-6 6-6" />
-            </svg>
-          </button>
-          <div className="cd-avatar">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-            >
-              <circle cx="12" cy="8" r="4" />
-              <path d="M4 20c0-4 4-6 8-6s8 2 8 6" />
-            </svg>
-          </div>
-          <div>
-            <div className="cd-name-row">
-              <h2 className="cd-name">{contact.fullName}</h2>
-              {contact.companyName ? (
-                contact.company?.id ? (
-                  <Link
-                    href={portalCompanyRoute(contact.company.id)}
-                    className="cd-role"
-                  >
-                    {contact.companyName}
-                  </Link>
-                ) : (
-                  <span className="cd-role">{contact.companyName}</span>
-                )
-              ) : null}
-            </div>
-          </div>
-        </div>
-
+      <div className="lead-top-actions cd-contact-tools">
+        <button
+          type="button"
+          className="cd-back"
+          aria-label="Back"
+          onClick={() => router.push(backHref)}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+        </button>
+        {enriching ? (
+          <span className="lead-enrich-status" role="status">
+            Enriching with Apollo…
+          </span>
+        ) : null}
         <div className="cd-pager">
           <button
             type="button"
@@ -574,16 +345,15 @@ export default function PortalContactDetailPage({
                 : undefined
             }
           >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="m15 18-6-6 6-6" />
             </svg>
           </button>
-          <span>{pagerLabel}</span>
+          <span>
+            {navigation && navigation.total > 0
+              ? `${navigation.index + 1} of ${navigation.total}`
+              : "0 of 0"}
+          </span>
           <button
             type="button"
             aria-label="Next contact"
@@ -594,264 +364,52 @@ export default function PortalContactDetailPage({
                 : undefined
             }
           >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="m9 18 6-6-6-6" />
             </svg>
           </button>
         </div>
-      </div>
-
-      <div className="cd-tabs">
         <button
           type="button"
-          className={`cd-tab ${tab === "overview" ? "active" : ""}`}
-          onClick={() => setTab("overview")}
+          className="btn-soft lead-share-btn"
+          disabled={shareBusy}
+          onClick={() => void createPublicUrl()}
         >
-          Overview
-        </button>
-        <button
-          type="button"
-          className={`cd-tab ${tab === "history" ? "active" : ""}`}
-          onClick={() => setTab("history")}
-        >
-          History
-        </button>
-        <button
-          type="button"
-          className={`cd-tab ${tab === "lists" ? "active" : ""}`}
-          onClick={() => setTab("lists")}
-        >
-          Lists
-          {contact.lists.length > 0 ? (
-            <span className="badge">{contact.lists.length}</span>
-          ) : null}
-        </button>
-        <button
-          type="button"
-          className={`cd-tab ${tab === "preferences" ? "active" : ""}`}
-          onClick={() => setTab("preferences")}
-        >
-          Preferences
+          {shareCopied
+            ? "Public URL copied"
+            : shareBusy
+              ? "Creating…"
+              : "Create public URL"}
         </button>
       </div>
 
-      {tab === "history" ? (
-        <div className="company-history-panel">
-          <div className="company-history-filters">
-            <button
-              type="button"
-              className={`company-filter-pill${historyFilter === "all" ? " active" : ""}`}
-              onClick={() => setHistoryFilter("all")}
-            >
-              All activities
-            </button>
-            <button
-              type="button"
-              className={`company-filter-pill${historyFilter === "campaigns" ? " active" : ""}`}
-              onClick={() => setHistoryFilter("campaigns")}
-            >
-              Email campaigns
-            </button>
-            <button type="button" className="company-filter-pill" disabled>
-              Notes
-            </button>
-            <button type="button" className="company-filter-pill" disabled>
-              Conversations
-            </button>
-          </div>
-
-          <div className="cd-card">
-            <ContactHistoryTimeline events={visibleHistory} contact={contact} />
-          </div>
+      {error ? <p className="crm-error">{error}</p> : null}
+      {notice ? <p className="fm-notice">{notice}</p> : null}
+      {shareUrl ? (
+        <div className="an-share-banner">
+          <span>Share this lead report with a client:</span>
+          <input
+            readOnly
+            value={shareUrl}
+            onFocus={(event) => event.currentTarget.select()}
+          />
         </div>
       ) : null}
 
-      {tab === "lists" ? (
-        <ContactListsPanel lists={contact.lists} folder={contact.owner} />
-      ) : null}
-
-      {tab === "preferences" ? (
-        <div className="cd-grid">
-          <div className="cd-col">
-            <div className="cd-card">
-              <div className="cd-card-head">
-                <h3>Preferences</h3>
-              </div>
-              <div className="cd-sub-row">
-                {contact.subscribed ? (
-                  <>
-                    <span className="cd-check">
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.2"
-                      >
-                        <path d="M20 6 9 17l-5-5" />
-                      </svg>
-                    </span>
-                    Subscribed
-                  </>
-                ) : (
-                  <span className="cd-value muted">Not subscribed</span>
-                )}
-              </div>
-              <div className="cd-pills">
-                <span className="cd-pill">Email campaigns</span>
-                <span className="cd-pill">Transactional emails</span>
-              </div>
-              {contact.blocklisted ? (
-                <p className="cd-empty">This contact is blocklisted.</p>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {tab === "overview" ? (
-        <div className="cd-grid">
-          <div className="cd-col">
-            <div className="cd-card">
-              <div className="cd-card-head">
-                <h3>Preferences</h3>
-              </div>
-              <div className="cd-sub-row">
-                {contact.subscribed ? (
-                  <>
-                    <span className="cd-check">
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.2"
-                      >
-                        <path d="M20 6 9 17l-5-5" />
-                      </svg>
-                    </span>
-                    Subscribed
-                  </>
-                ) : (
-                  <span className="cd-value muted">Not subscribed</span>
-                )}
-              </div>
-              <div className="cd-pills">
-                <span className="cd-pill">Email campaigns</span>
-                <span className="cd-pill">Transactional emails</span>
-              </div>
-            </div>
-
-            <div className="cd-card">
-              <div className="cd-card-head">
-                <h3>Information</h3>
-                <button
-                  type="button"
-                  className="cd-more"
-                  aria-label="Collapse"
-                  disabled
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="m6 9 6 6 6-6" />
-                  </svg>
-                </button>
-              </div>
-              <div className="cd-field">
-                <div className="cd-label">Lastname</div>
-                <div className="cd-value">{contact.lastName || "—"}</div>
-              </div>
-              <div className="cd-field">
-                <div className="cd-label">Firstname</div>
-                <div className="cd-value">{contact.firstName || "—"}</div>
-              </div>
-              <div className="cd-field">
-                <div className="cd-label">Email</div>
-                <div className="cd-value">{contact.email}</div>
-              </div>
-              <div className="cd-field">
-                <div className="cd-label">Company</div>
-                <div className="cd-value">
-                  {contact.company?.id ? (
-                    <Link
-                      href={portalCompanyRoute(contact.company.id)}
-                      className="contact-history-link"
-                    >
-                      {contact.companyName}
-                    </Link>
-                  ) : (
-                    contact.companyName || "—"
-                  )}
-                </div>
-              </div>
-              {Object.entries(contact.attributes ?? {}).map(([key, value]) => (
-                <div className="cd-field" key={key}>
-                  <div className="cd-label">
-                    {CONTACT_ATTRIBUTE_LABELS[key] ?? key}
-                  </div>
-                  <div className="cd-value">{value || "—"}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="cd-col">
-            <div className="cd-card">
-              <div className="cd-card-head">
-                <h3>Email campaigns</h3>
-              </div>
-              <CampaignStatsBar stats={contact.campaignStats} />
-            </div>
-
-            <div className="cd-card">
-              <div className="cd-card-head">
-                <h3>Recent history</h3>
-                {contact.history.length > 0 ? (
-                  <button
-                    type="button"
-                    className="btn-link-purple"
-                    onClick={() => setTab("history")}
-                  >
-                    View all
-                  </button>
-                ) : null}
-              </div>
-              <ContactHistoryTimeline
-                events={pickRecentHistory(contact.history, 12)}
-                contact={contact}
-              />
-            </div>
-          </div>
-
-          <div className="cd-col right">
-            <div className="cd-card">
-              <div className="cd-card-head">
-                <h3>Companies ({contact.company ? 1 : 0})</h3>
-              </div>
-              {!contact.company ? (
-                <p className="cd-empty">No company associated with this contact.</p>
-              ) : (
-                <ul className="company-detail-contacts">
-                  <li>
-                    <Link
-                      href={portalCompanyRoute(contact.company.id)}
-                      className="company-detail-contact-name contact-history-link"
-                    >
-                      {contact.company.name}
-                    </Link>
-                    <div className="company-detail-contact-email">
-                      {contact.company.contactCount} associated contact
-                      {contact.company.contactCount === 1 ? "" : "s"}
-                    </div>
-                  </li>
-                </ul>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <LeadReportOverview
+        contact={contact}
+        editing={editing}
+        saving={saving}
+        draftProfile={draftProfile}
+        draftCore={draftCore}
+        setDraftCore={setDraftCore}
+        patchProfile={patchProfile}
+        beginEdit={beginEdit}
+        cancelEdit={cancelEdit}
+        saveSection={() => void saveSection()}
+        historyEvents={contact.history}
+        campaignStats={contact.campaignStats}
+      />
     </>
   );
 }

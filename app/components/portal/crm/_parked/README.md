@@ -1,14 +1,20 @@
-# Parked Lead Report contact UI
+# Parked CRM contact UIs
 
-The live contact page uses the previous CRM tabs UI again.
+## Live
 
-Kept for a later cutover (do not delete):
+Contact detail uses the **Lead Report** layout (`../PortalContactDetailPage.tsx` + `../LeadReportOverview.tsx`).
 
-- `PortalContactDetailPage.lead-report.tsx` — slim lead-report contact shell
-- `../LeadReportOverview.tsx` — lead report layout
+## Parked
+
+- `PortalContactDetailPage.tabs.tsx` — previous Overview / History / Lists / Preferences tabs UI
+- `PortalContactDetailPage.lead-report.tsx` — snapshot of the lead-report shell (same as live)
+
+Related (still used by live lead report):
+
+- `../LeadReportOverview.tsx`
 - `../../../../lib/apollo.ts`, `../../../../lib/lead-status.ts`
 - `../../../../api/crm/contacts/[id]/apollo-enrich/`
 - profile fields on contact API / `lib/crm.ts` / `lib/crm-contacts-server.ts`
 - lead-report styles in `app/portal/portal.css` (`.lr-*`)
 
-To wire it back: replace `../PortalContactDetailPage.tsx` with the lead-report version (and keep its import of `LeadReportOverview`).
+To restore tabs UI: copy `PortalContactDetailPage.tabs.tsx` over `../PortalContactDetailPage.tsx`.

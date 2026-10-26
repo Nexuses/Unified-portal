@@ -116,3 +116,29 @@ export function normalizeLeadStatus(status?: string): LeadStatus {
 export function getLeadStatusLabel(status?: string): string {
   return LEAD_STATUS_LABELS[normalizeLeadStatus(status)];
 }
+
+/** Pipeline ring score (0–100) derived from lead stage. */
+export const LEAD_STATUS_SCORE: Record<LeadStatus, number> = {
+  warm: 40,
+  hot: 60,
+  meeting_scheduled: 70,
+  meeting_rescheduled: 65,
+  meeting_done: 100,
+  contact_later: 50,
+  client_manage: 90,
+  client_unavailable: 30,
+  client_rejected: 15,
+  lost: 0,
+};
+
+export function scoreForLeadStatus(status?: string): number {
+  return LEAD_STATUS_SCORE[normalizeLeadStatus(status)];
+}
+
+/** Overall qualification stars (0–5) derived from lead stage. */
+export function starsForLeadStatus(status?: string): number {
+  return Math.max(
+    0,
+    Math.min(5, Math.round(scoreForLeadStatus(status) / 20)),
+  );
+}

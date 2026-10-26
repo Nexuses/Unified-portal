@@ -14,6 +14,7 @@ import {
   Send,
   Smartphone,
   Tablet,
+  UserMinus,
   UserPlus,
 } from "lucide-react";
 import type {
@@ -37,6 +38,7 @@ type TypeFilter = "all" | ActivityFeedType;
 const GROUP_FILTERS: Array<{ id: ActivityFeedGroup; label: string }> = [
   { id: "all", label: "All activity" },
   { id: "engagement", label: "Opens & clicks" },
+  { id: "unsubscribes", label: "Unsubscribes" },
   { id: "campaigns", label: "Campaigns" },
   { id: "lists", label: "Lists" },
   { id: "senders", label: "Senders" },
@@ -71,6 +73,13 @@ function ActivityTypeBadge({ type }: { type: ActivityFeedType }) {
         <span className="af-type-badge af-type-click">
           <MousePointerClick {...props} />
           Clicked
+        </span>
+      );
+    case "campaign_unsubscribed":
+      return (
+        <span className="af-type-badge af-type-unsub">
+          <UserMinus {...props} />
+          Unsubscribed
         </span>
       );
     case "campaign_launched":
@@ -128,7 +137,17 @@ function ActivityTypeBadge({ type }: { type: ActivityFeedType }) {
 }
 
 function ActivityCopy({ item }: { item: ActivityFeedItem }) {
-  if (item.type === "campaign_opened" || item.type === "campaign_clicked") {
+  if (
+    item.type === "campaign_opened" ||
+    item.type === "campaign_clicked" ||
+    item.type === "campaign_unsubscribed"
+  ) {
+    const verb =
+      item.type === "campaign_opened"
+        ? " opened "
+        : item.type === "campaign_clicked"
+          ? " clicked "
+          : " unsubscribed from ";
     return (
       <div className="af-item-copy">
         {item.contactId ? (
@@ -138,9 +157,7 @@ function ActivityCopy({ item }: { item: ActivityFeedItem }) {
         ) : (
           <strong>{item.fullName || item.email}</strong>
         )}
-        <span className="af-muted">
-          {item.type === "campaign_opened" ? " opened " : " clicked "}
-        </span>
+        <span className="af-muted">{verb}</span>
         {item.campaignId ? (
           <Link
             href={portalCampaignRoute(item.campaignId, item.campaignKind)}

@@ -12,6 +12,11 @@ import {
   patchDripCampaign,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
+import {
+  formatEngagementDevice,
+  isEngagementDevice,
+  type EngagementDevice,
+} from "@/lib/engagement-client-meta";
 import { campaignListRoute, portalContactRoute, portalListRoute, publicAnalyticsPath, publicCampaignReportPath } from "@/lib/portal-nav";
 
 type PeopleView = "delivered" | "opens" | "clicks" | "bounces" | "replies" | "unsubscribes" | "audience";
@@ -29,6 +34,8 @@ type SendRecipient = {
   clickedAt?: string;
   clickedUrl?: string;
   clickedLinks?: Array<{ url: string; at?: string; sequenceNumber?: number }>;
+  clickedIp?: string;
+  clickedDevice?: EngagementDevice;
   clickTag?: string;
   botClick?: boolean;
   unsubscribedAt?: string;
@@ -450,20 +457,17 @@ export default function PortalCampaignReport({
   ]);
 
   useEffect(() => {
-    if (campaign.kind !== "oneone") {
-      setUniqueClicks(null);
-      return;
-    }
-
     let cancelled = false;
     async function loadUniqueClicks() {
       try {
         const params = new URLSearchParams({
           filter: "clicks",
-          kind: "oneone",
           unique: "1",
         });
-        if (sequenceScope !== null) {
+        if (campaign.kind === "oneone" || campaign.kind === "drip") {
+          params.set("kind", campaign.kind);
+        }
+        if (campaign.kind === "oneone" && sequenceScope !== null) {
           params.set("sequence", String(sequenceScope));
         }
         if (hideBotClicks) {
@@ -504,6 +508,8 @@ export default function PortalCampaignReport({
         person.email.toLowerCase().includes(query) ||
         person.companyName.toLowerCase().includes(query) ||
         (person.clickedUrl ?? "").toLowerCase().includes(query) ||
+        (person.clickedIp ?? "").toLowerCase().includes(query) ||
+        (person.clickedDevice ?? "").toLowerCase().includes(query) ||
         (person.clickedLinks ?? []).some((link) => link.url.toLowerCase().includes(query)),
     );
   }, [reportPeople, peopleSearch]);
@@ -785,7 +791,6 @@ export default function PortalCampaignReport({
     scopedStats?.delivered ?? campaign.delivered ?? campaign.recipients;
   const statOpens = scopedStats?.opens ?? campaign.opens;
   const clicksFromOpenView =
-    campaign.kind === "oneone" &&
     peopleView === "clicks" &&
     !peopleLoading &&
     peopleSearch.trim() === ""
@@ -793,9 +798,7 @@ export default function PortalCampaignReport({
       : null;
   const statClicks =
     clicksFromOpenView ??
-    (campaign.kind === "oneone" &&
-    uniqueClicks !== null &&
-    uniqueClicks.scope === sequenceScope
+    (uniqueClicks !== null && uniqueClicks.scope === sequenceScope
       ? uniqueClicks.count
       : scopedStats?.clicks ?? campaign.clicks);
   const statBounces = scopedStats?.bounces ?? campaign.bounces ?? 0;
@@ -919,8 +922,8 @@ export default function PortalCampaignReport({
       ? 2
       : peopleView === "clicks"
         ? showClickTagCol
-          ? 3
-          : 2
+          ? 5
+          : 4
         : peopleView
           ? 1
           : 0);
@@ -1209,7 +1212,7 @@ export default function PortalCampaignReport({
               ),
             )}
           </div>
-          {showBotClickUi ? (
+          {showBotClickUi && tab !== "clicks" ? (
             <button
               type="button"
               role="switch"
@@ -1268,7 +1271,7 @@ export default function PortalCampaignReport({
                 ),
               )}
             </div>
-            {showBotClickUi ? (
+            {showBotClickUi && tab !== "clicks" ? (
               <button
                 type="button"
                 role="switch"
@@ -1303,7 +1306,7 @@ export default function PortalCampaignReport({
               ),
             )}
           </div>
-          {showBotClickUi ? (
+          {showBotClickUi && tab !== "clicks" ? (
             <button
               type="button"
               role="switch"
@@ -1491,11 +1494,15 @@ export default function PortalCampaignReport({
                     ? campaign.kind === "oneone"
                       ? sequenceScope === null
                         ? showBotClickUi
-                          ? "Each contact is one row, showing the link they clicked last. Bot clicks are tagged."
+                          ? hideBotClicks
+                            ? "Each contact is one row, showing the link they clicked last. Bot clicks are hidden."
+                            : "Each contact is one row, showing the link they clicked last. Bot clicks are tagged."
                           : "Each contact is one row, showing the link they clicked last."
                         : `Each contact is one row in sequence ${sequenceScope + 1}, showing the link they clicked last.`
                       : showBotClickUi
-                        ? "Each contact is one row, showing the link they clicked last. Bot clicks are tagged."
+                        ? hideBotClicks
+                          ? "Each contact is one row, showing the link they clicked last. Bot clicks are hidden."
+                          : "Each contact is one row, showing the link they clicked last. Bot clicks are tagged."
                         : "Each contact is one row, showing the link they clicked last."
                     : peopleView === "bounces"
                       ? "Addresses that bounced (from delivery failures or bounce emails). Replies are not counted here."
@@ -1569,6 +1576,8 @@ export default function PortalCampaignReport({
                     <>
                       <th>Link clicked</th>
                       <th>Clicked</th>
+                      <th>Device</th>
+                      <th>IP</th>
                       {showClickTagCol ? (
                         <th className="drip-report-tag-col">Tag</th>
                       ) : null}
@@ -1721,6 +1730,26 @@ export default function PortalCampaignReport({
                             {person.clickedAt
                               ? formatCampaignClock(person.clickedAt, timezone)
                               : "—"}
+                          </td>
+                          <td data-label="Device">
+                            {person.clickedDevice &&
+                            isEngagementDevice(person.clickedDevice) &&
+                            person.clickedDevice !== "unknown" ? (
+                              <span
+                                className={`cd-device-chip cd-device-${person.clickedDevice}`}
+                              >
+                                {formatEngagementDevice(person.clickedDevice)}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td data-label="IP">
+                            {person.clickedIp?.trim() ? (
+                              <span className="cd-ip-chip">{person.clickedIp}</span>
+                            ) : (
+                              "—"
+                            )}
                           </td>
                           {showClickTagCol ? (
                             <td className="drip-report-tag-col" data-label="Tag">

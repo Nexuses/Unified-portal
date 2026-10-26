@@ -187,6 +187,7 @@ export async function buildCampaignReportWorkbook({
     "Open Time",
     "Open Device",
     "Click Device",
+    "Click IP",
     "Open Tag",
     "Click Tag",
     "Opens",
@@ -200,7 +201,7 @@ export async function buildCampaignReportWorkbook({
   ];
   for (const section of engageSections) {
     row += 1;
-    paintMergedBanner(main, row, 15, section.title, section.color, 12, 24);
+    paintMergedBanner(main, row, 16, section.title, section.color, 12, 24);
     row += 1;
     paintHeaderRow(main, row, engageHeaders);
     row += 1;
@@ -217,6 +218,7 @@ export async function buildCampaignReportWorkbook({
         person.openTime,
         person.openDevice,
         person.clickDevice,
+        person.clickIp,
         person.openTag,
         // Toggle OFF: bot clickers get "Bot click". Toggle ON: bots excluded, tag is dash.
         person.clickTag,
@@ -227,7 +229,7 @@ export async function buildCampaignReportWorkbook({
       values.forEach((value, col) => {
         paintCell(main, row, col + 1, value, { fill, size: 10 });
       });
-      paintCell(main, row, 15, person.status, {
+      paintCell(main, row, 16, person.status, {
         fill: clicked ? COLORS.clickedBg : COLORS.openedBg,
         fontColor: clicked ? COLORS.clickedInk : COLORS.openedInk,
         bold: true,

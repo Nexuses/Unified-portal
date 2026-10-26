@@ -17,11 +17,33 @@ import type {
   InboxThread,
 } from "@/lib/master-inbox-server";
 import type { InboxSignature } from "@/lib/inbox-signatures-server";
+import {
+  INBOX_REPLY_CLASSIFY_HINT,
+  INBOX_REPLY_CLASS_LABELS,
+  type InboxReplyClass,
+} from "@/lib/inbox-reply-classify";
 import { portalCampaignRoute } from "@/lib/portal-nav";
 import CampaignScheduleDrawer, {
   type CampaignScheduleInput,
 } from "@/app/components/portal/CampaignScheduleDrawer";
 import { useSpeechInput } from "@/lib/use-speech-input";
+
+function ReplyClassChip({
+  replyClass,
+  compact,
+}: {
+  replyClass: InboxReplyClass;
+  compact?: boolean;
+}) {
+  return (
+    <span
+      className={`inbox-chip inbox-chip-reply is-${replyClass}${compact ? " is-compact" : ""}`}
+      title={INBOX_REPLY_CLASSIFY_HINT}
+    >
+      {INBOX_REPLY_CLASS_LABELS[replyClass]}
+    </span>
+  );
+}
 
 const HTML_SIGNATURE_STORAGE_KEY = "portal-inbox-html-signature";
 const AUTO_REFRESH_MS = 10 * 60 * 1000;
@@ -990,6 +1012,7 @@ export default function PortalMasterInboxPage() {
         Showing campaign replies from <strong>{selectedInboxLabel}</strong>
         <span> · Syncs automatically every 10 minutes</span>
       </div>
+      <p className="inbox-classify-hint">{INBOX_REPLY_CLASSIFY_HINT}</p>
 
       <div className="inbox-layout">
         <aside className="inbox-thread-list">
@@ -1020,10 +1043,15 @@ export default function PortalMasterInboxPage() {
                 <div className="inbox-thread-subject">{thread.subject}</div>
                 <div className="inbox-thread-preview">{thread.preview}</div>
                 <div className="inbox-thread-meta">
-                  via {thread.senderEmail}
-                  {thread.unreadCount > 0
-                    ? ` · ${thread.unreadCount} unread`
-                    : ""}
+                  {thread.replyClass ? (
+                    <ReplyClassChip replyClass={thread.replyClass} compact />
+                  ) : null}
+                  <span>
+                    via {thread.senderEmail}
+                    {thread.unreadCount > 0
+                      ? ` · ${thread.unreadCount} unread`
+                      : ""}
+                  </span>
                 </div>
               </button>
             ))
@@ -1044,6 +1072,9 @@ export default function PortalMasterInboxPage() {
                     <span className="inbox-chip">
                       {selected?.fromName || selected?.fromEmail || "Unknown"}
                     </span>
+                    {selected?.replyClass ? (
+                      <ReplyClassChip replyClass={selected.replyClass} />
+                    ) : null}
                     {selected?.campaignType ? (
                       <span
                         className={`inbox-chip inbox-chip-type is-${selected.campaignType}`}
@@ -1091,11 +1122,19 @@ export default function PortalMasterInboxPage() {
                       className={`inbox-message${outbound ? " outbound" : ""}`}
                     >
                       <div className="inbox-message-meta">
-                        <strong>
-                          {outbound
-                            ? "You"
-                            : message.fromName || message.fromEmail}
-                        </strong>
+                        <div className="inbox-message-meta-left">
+                          <strong>
+                            {outbound
+                              ? "You"
+                              : message.fromName || message.fromEmail}
+                          </strong>
+                          {!outbound && message.replyClass ? (
+                            <ReplyClassChip
+                              replyClass={message.replyClass}
+                              compact
+                            />
+                          ) : null}
+                        </div>
                         <span>{formatWhen(message.receivedAt)}</span>
                       </div>
                       {usePlainText ? (

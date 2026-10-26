@@ -6,10 +6,29 @@ import SmtpSenderSelect, { type SmtpSenderOption } from "@/app/components/portal
 import { formatTimezoneLabel, listCampaignTimezones } from "@/lib/campaign-timezones";
 import { patchDripCampaign, SEND_WEEKDAYS, sendWeekdayLabel, type CampaignSequence, type DripCampaign } from "@/lib/drip-campaigns";
 import type { SmtpProviderId } from "@/lib/smtp-senders";
+import { applyContactVariables } from "@/lib/email-variables";
 import { MAX_STEP_GAP_DAYS, cleanReplyTo, type PersonaliseCampaignSnapshot, type PersonaliseSentContact, type PersonaliseSentStep } from "@/lib/personalise-types";
 
 function personName(contact: PersonaliseSentContact) {
   return [contact.firstName, contact.lastName].filter(Boolean).join(" ") || contact.email;
+}
+
+/** Fill {{name}} / {{firstname}} etc. from this contact when the stored pitch still has tags. */
+function filledStep(contact: PersonaliseSentContact, step: PersonaliseSentStep): PersonaliseSentStep {
+  const merge = {
+    firstName: contact.firstName,
+    lastName: contact.lastName,
+    fullName: personName(contact),
+    email: contact.email,
+    companyName: contact.companyName,
+    position: contact.position,
+    personalLinkedIn: contact.personalLinkedIn,
+  };
+  return {
+    ...step,
+    subject: applyContactVariables(step.subject, merge, false),
+    html: applyContactVariables(step.html, merge, true),
+  };
 }
 
 function initials(contact: PersonaliseSentContact) {
@@ -616,7 +635,8 @@ export default function PersonaliseCampaignView({
                     {open ? (
                       <ol className="pz-steps">
                         {steps.map((step, stepIndex) => {
-                          const status = stepStatus(step);
+                          const filled = filledStep(contact, step);
+                          const status = stepStatus(filled);
                           return (
                             <li key={stepIndex} className="pz-step">
                               <span className="pz-step-dot" aria-hidden="true">
@@ -630,11 +650,11 @@ export default function PersonaliseCampaignView({
                                   {stepIndex > 0 ? (
                                     <>
                                       <span className="pz-chip">
-                                        Day {step.day} · {step.day}{" "}
-                                        {step.day === 1 ? "day" : "days"} after email 1
+                                        Day {filled.day} · {filled.day}{" "}
+                                        {filled.day === 1 ? "day" : "days"} after email 1
                                       </span>
                                       <span className="pz-chip pz-chip-soft">
-                                        {step.delayDays} {step.delayDays === 1 ? "day" : "days"} after
+                                        {filled.delayDays} {filled.delayDays === 1 ? "day" : "days"} after
                                         email {stepIndex}
                                       </span>
                                     </>
@@ -646,10 +666,10 @@ export default function PersonaliseCampaignView({
                                   </span>
                                 </div>
                                 <div className="pz-subject">
-                                  {step.subject ? (
+                                  {filled.subject ? (
                                     <>
                                       <span>Subject</span>
-                                      <strong>{step.subject}</strong>
+                                      <strong>{filled.subject}</strong>
                                     </>
                                   ) : (
                                     <span className="pz-thread">Reply in the same thread</span>
@@ -657,7 +677,7 @@ export default function PersonaliseCampaignView({
                                 </div>
                                 <div
                                   className="pz-pitch pz-pitch-html"
-                                  dangerouslySetInnerHTML={{ __html: step.html }}
+                                  dangerouslySetInnerHTML={{ __html: filled.html }}
                                 />
                               </div>
                             </li>

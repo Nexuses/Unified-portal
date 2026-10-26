@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ContactDetail, ContactProfile } from "@/lib/crm";
 import {
@@ -45,12 +45,36 @@ function cloneProfile(profile?: ContactProfile | null): ContactProfile {
   };
 }
 
+function applyContact(
+  data: ContactDetail,
+  setContact: (value: ContactDetail) => void,
+  setDraftProfile: (value: ContactProfile) => void,
+  setDraftCore: (value: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    companyName: string;
+    attributes: Record<string, string>;
+  }) => void,
+) {
+  setContact(data);
+  setDraftProfile(cloneProfile(data.profile));
+  setDraftCore({
+    firstName: data.firstName || "",
+    lastName: data.lastName || "",
+    email: data.email || "",
+    companyName: data.companyName || "",
+    attributes: { ...(data.attributes || {}) },
+  });
+}
+
 export default function PortalContactDetailPage({
   contactId,
   from,
 }: PortalContactDetailPageProps) {
   const router = useRouter();
   const backHref = portalReturnPath(from, PORTAL_ROUTES.contacts);
+  const enrichAttemptedFor = useRef<string | null>(null);
   const [contact, setContact] = useState<ContactDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -70,10 +94,13 @@ export default function PortalContactDetailPage({
   useEffect(() => {
     setEditing(null);
     setNotice("");
+    enrichAttemptedFor.current = null;
   }, [contactId]);
 
   useEffect(() => {
-    async function loadContact() {
+    let cancelled = false;
+
+    async function loadAndEnrich() {
       if (!contactId) {
         setLoading(false);
         return;
@@ -87,27 +114,68 @@ export default function PortalContactDetailPage({
         if (!response.ok) {
           throw new Error(data.error || "Failed to load contact");
         }
-        setContact(data);
-        setDraftProfile(cloneProfile(data.profile));
-        setDraftCore({
-          firstName: data.firstName || "",
-          lastName: data.lastName || "",
-          email: data.email || "",
-          companyName: data.companyName || "",
-          attributes: { ...(data.attributes || {}) },
-        });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load contact");
-      } finally {
+        if (cancelled) {
+          return;
+        }
+        applyContact(data, setContact, setDraftProfile, setDraftCore);
         setLoading(false);
+
+        const alreadyEnriched = Boolean(data.profile?.apollo?.enrichedAt);
+        if (alreadyEnriched || enrichAttemptedFor.current === contactId) {
+          return;
+        }
+        enrichAttemptedFor.current = contactId;
+        setEnriching(true);
+        setNotice("Enriching with Apollo…");
+        try {
+          const enrichResponse = await fetch(
+            `/api/crm/contacts/${contactId}/apollo-enrich`,
+            { method: "POST" },
+          );
+          const enrichData = (await enrichResponse.json()) as ContactDetail & {
+            error?: string;
+          };
+          if (cancelled) {
+            return;
+          }
+          if (enrichResponse.ok) {
+            applyContact(enrichData, setContact, setDraftProfile, setDraftCore);
+            setNotice("Enriched with Apollo");
+            window.setTimeout(() => {
+              if (!cancelled) setNotice("");
+            }, 2400);
+          } else if (enrichResponse.status === 409) {
+            setNotice("");
+          } else {
+            setNotice("");
+            setError(enrichData.error || "Apollo enrich failed");
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setNotice("");
+            setError(
+              err instanceof Error ? err.message : "Apollo enrich failed",
+            );
+          }
+        } finally {
+          if (!cancelled) {
+            setEnriching(false);
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load contact");
+          setLoading(false);
+        }
       }
     }
 
-    void loadContact();
+    void loadAndEnrich();
+    return () => {
+      cancelled = true;
+    };
   }, [contactId]);
 
-  const profile = contact?.profile || emptyProfile();
-  const alreadyEnriched = Boolean(profile.apollo?.enrichedAt);
   const navigation = contact?.navigation;
 
   function beginEdit(section: SectionKey) {
@@ -167,52 +235,13 @@ export default function PortalContactDetailPage({
       if (!response.ok) {
         throw new Error(data.error || "Failed to save");
       }
-      setContact(data);
-      setDraftProfile(cloneProfile(data.profile));
-      setDraftCore({
-        firstName: data.firstName || "",
-        lastName: data.lastName || "",
-        email: data.email || "",
-        companyName: data.companyName || "",
-        attributes: { ...(data.attributes || {}) },
-      });
+      applyContact(data, setContact, setDraftProfile, setDraftCore);
       setEditing(null);
       setNotice("Saved");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function enrichOnce() {
-    if (!contact || alreadyEnriched || enriching) return;
-    setEnriching(true);
-    setError("");
-    setNotice("");
-    try {
-      const response = await fetch(
-        `/api/crm/contacts/${contact.id}/apollo-enrich`,
-        { method: "POST" },
-      );
-      const data = (await response.json()) as ContactDetail & { error?: string };
-      if (!response.ok) {
-        throw new Error(data.error || "Apollo enrich failed");
-      }
-      setContact(data);
-      setDraftProfile(cloneProfile(data.profile));
-      setDraftCore({
-        firstName: data.firstName || "",
-        lastName: data.lastName || "",
-        email: data.email || "",
-        companyName: data.companyName || "",
-        attributes: { ...(data.attributes || {}) },
-      });
-      setNotice("Enriched with Apollo and saved");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Apollo enrich failed");
-    } finally {
-      setEnriching(false);
     }
   }
 
@@ -263,23 +292,11 @@ export default function PortalContactDetailPage({
             <path d="m15 18-6-6 6-6" />
           </svg>
         </button>
-        <button
-          type="button"
-          className="btn-dark"
-          disabled={enriching || alreadyEnriched || Boolean(editing)}
-          title={
-            alreadyEnriched
-              ? "Already enriched once with Apollo"
-              : "Enrich once from Apollo by email"
-          }
-          onClick={() => void enrichOnce()}
-        >
-          {enriching
-            ? "Enriching…"
-            : alreadyEnriched
-              ? "Apollo enriched"
-              : "Enrich with Apollo"}
-        </button>
+        {enriching ? (
+          <span className="lead-enrich-status" role="status">
+            Enriching with Apollo…
+          </span>
+        ) : null}
         <div className="cd-pager">
           <button
             type="button"

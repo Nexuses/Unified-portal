@@ -17,6 +17,7 @@ import {
 export type ActivityFeedType =
   | "campaign_opened"
   | "campaign_clicked"
+  | "campaign_unsubscribed"
   | "campaign_launched"
   | "campaign_scheduled"
   | "campaign_created"
@@ -28,6 +29,7 @@ export type ActivityFeedType =
 export type ActivityFeedGroup =
   | "all"
   | "engagement"
+  | "unsubscribes"
   | "campaigns"
   | "lists"
   | "senders"
@@ -78,6 +80,7 @@ const PLATFORM_CAP = 120;
 
 const GROUP_TYPES: Record<Exclude<ActivityFeedGroup, "all">, ActivityFeedType[]> = {
   engagement: ["campaign_opened", "campaign_clicked"],
+  unsubscribes: ["campaign_unsubscribed"],
   campaigns: ["campaign_created", "campaign_scheduled", "campaign_launched"],
   lists: ["list_created"],
   senders: ["sender_added"],
@@ -166,7 +169,8 @@ async function loadEngagement(
   if (
     wanted &&
     !wanted.has("campaign_opened") &&
-    !wanted.has("campaign_clicked")
+    !wanted.has("campaign_clicked") &&
+    !wanted.has("campaign_unsubscribed")
   ) {
     return [];
   }
@@ -226,8 +230,28 @@ async function loadEngagement(
         .toArray()
     : Promise.resolve([] as CampaignSendDoc[]);
 
-  const [openSends, clickSends] = await Promise.all([openPromise, clickPromise]);
-  const allSends = [...openSends, ...clickSends];
+  const unsubPromise = includesType(wanted, "campaign_unsubscribed")
+    ? sends
+        .find({ projectId, unsubscribedAt: { $exists: true } })
+        .project({
+          email: 1,
+          fullName: 1,
+          companyName: 1,
+          campaignId: 1,
+          blastId: 1,
+          unsubscribedAt: 1,
+        })
+        .sort({ unsubscribedAt: -1 })
+        .limit(ENGAGE_CAP)
+        .toArray()
+    : Promise.resolve([] as CampaignSendDoc[]);
+
+  const [openSends, clickSends, unsubSends] = await Promise.all([
+    openPromise,
+    clickPromise,
+    unsubPromise,
+  ]);
+  const allSends = [...openSends, ...clickSends, ...unsubSends];
   const blastIds = [
     ...new Set(
       allSends
@@ -395,6 +419,30 @@ async function loadEngagement(
         ...(url ? { clickedUrl: url } : {}),
       });
     }
+  }
+
+  for (const send of unsubSends) {
+    const blast = blastMap.get(send.blastId?.toString() || "");
+    const email = String(send.email || "").trim();
+    const campaignName = blast?.name || `Campaign #${send.campaignId}`;
+    const kind = campaignKind(blast?.kind);
+    const at = toIso(send.unsubscribedAt);
+    if (!at) continue;
+    const name = (send.fullName || email).trim();
+    items.push({
+      id: `unsub-${send._id.toString()}-${at}`,
+      type: "campaign_unsubscribed",
+      at,
+      title: "Unsubscribed",
+      description: `${name} unsubscribed from ${campaignName}`,
+      email,
+      fullName: name,
+      companyName: String(send.companyName || "").trim(),
+      campaignId: send.campaignId,
+      campaignName,
+      campaignKind: kind,
+      contactId: contactByEmail.get(email.toLowerCase()),
+    });
   }
 
   return items;

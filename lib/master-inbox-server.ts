@@ -5,6 +5,10 @@ import { simpleParser } from "mailparser";
 import { getDb } from "@/lib/mongodb";
 import type { SenderDoc } from "@/lib/smtp-senders";
 import type { CampaignSendDoc } from "@/lib/campaign-blasts-server";
+import {
+  classifyInboxReply,
+  type InboxReplyClass,
+} from "@/lib/inbox-reply-classify";
 
 export type InboxMessageDoc = {
   _id: ObjectId;
@@ -51,6 +55,8 @@ export type InboxMessage = {
   relatedContactEmail?: string;
   receivedAt: string;
   readAt?: string;
+  /** Suggested review label for inbound replies (not final). */
+  replyClass?: InboxReplyClass;
 };
 
 export type InboxThread = {
@@ -69,6 +75,8 @@ export type InboxThread = {
   relatedContactEmail?: string;
   senderId: string;
   senderEmail: string;
+  /** Suggested review label from the latest inbound reply (not final). */
+  replyClass?: InboxReplyClass;
 };
 
 export type InboxAccount = {
@@ -125,11 +133,20 @@ export function normalizeStoredMessageId(value?: string | null) {
 }
 
 function mapInboxMessage(doc: InboxMessageDoc): InboxMessage {
+  const direction = doc.direction === "outbound" ? "outbound" : "inbound";
+  const replyClass =
+    direction === "inbound"
+      ? classifyInboxReply({
+          subject: doc.subject,
+          textBody: doc.textBody,
+          htmlBody: doc.htmlBody,
+        }) || undefined
+      : undefined;
   return {
     id: doc._id.toString(),
     senderId: doc.senderId.toString(),
     senderEmail: doc.senderEmail,
-    direction: doc.direction === "outbound" ? "outbound" : "inbound",
+    direction,
     fromEmail: doc.fromEmail,
     fromName: doc.fromName,
     toEmail: doc.toEmail,
@@ -142,6 +159,7 @@ function mapInboxMessage(doc: InboxMessageDoc): InboxMessage {
     relatedContactEmail: doc.relatedContactEmail,
     receivedAt: doc.receivedAt.toISOString(),
     readAt: doc.readAt?.toISOString(),
+    ...(replyClass ? { replyClass } : {}),
   };
 }
 
@@ -845,6 +863,13 @@ export async function listProjectInboxThreads(
       message.textBody.replace(/\s+/g, " ").trim().slice(0, 140) ||
       "(no preview)";
     if (!existing) {
+      const replyClass = outbound
+        ? undefined
+        : classifyInboxReply({
+            subject: message.subject,
+            textBody: message.textBody,
+            htmlBody: message.htmlBody,
+          }) || undefined;
       threads.set(message.threadKey, {
         threadKey: message.threadKey,
         subject: message.subject,
@@ -859,6 +884,7 @@ export async function listProjectInboxThreads(
         relatedContactEmail: message.relatedContactEmail || contactEmail,
         senderId: message.senderId.toString(),
         senderEmail: message.senderEmail,
+        ...(replyClass ? { replyClass } : {}),
       });
       continue;
     }
@@ -876,6 +902,16 @@ export async function listProjectInboxThreads(
       if (!existing.relatedContactEmail) {
         existing.relatedContactEmail = contactEmail;
       }
+    }
+    // Newest-first scan: first inbound wins as the suggested review tag
+    if (!outbound && !existing.replyClass) {
+      const replyClass =
+        classifyInboxReply({
+          subject: message.subject,
+          textBody: message.textBody,
+          htmlBody: message.htmlBody,
+        }) || undefined;
+      if (replyClass) existing.replyClass = replyClass;
     }
   }
 

@@ -26,6 +26,8 @@ type ApolloPerson = {
   title?: string;
   headline?: string;
   linkedin_url?: string;
+  /** Public profile photo (often LinkedIn-sourced). */
+  photo_url?: string;
   email?: string;
   city?: string;
   state?: string;
@@ -119,6 +121,7 @@ export function profileFromApolloPerson(
     ...existing,
     title: existing.title || person.title || "",
     linkedinUrl: existing.linkedinUrl || person.linkedin_url || "",
+    photoUrl: existing.photoUrl || person.photo_url || "",
     location: existing.location || location,
     about: existing.about || about,
     source: existing.source || "Apollo",

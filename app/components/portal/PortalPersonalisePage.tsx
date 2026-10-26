@@ -14,7 +14,9 @@ import {
   type PitchInline,
   type PersonaliseContact,
   type PersonalisePlan,
+  type PersonaliseStep,
 } from "@/lib/personalise-types";
+import { applyContactVariables } from "@/lib/email-variables";
 import SmtpSenderSelect from "@/app/components/portal/SmtpSenderSelect";
 import { formatTimezoneLabel, listCampaignTimezones } from "@/lib/campaign-timezones";
 import CampaignScheduleDrawer, {
@@ -42,6 +44,24 @@ type RolloutResult = {
 
 function personName(contact: PersonaliseContact) {
   return [contact.firstName, contact.lastName].filter(Boolean).join(" ");
+}
+
+/** Fill {{name}} / {{firstname}} etc. from this contact for draft preview. */
+function filledStep(contact: PersonaliseContact, step: PersonaliseStep): PersonaliseStep {
+  const merge = {
+    firstName: contact.firstName,
+    lastName: contact.lastName,
+    fullName: personName(contact),
+    email: contact.email,
+    companyName: contact.companyName,
+    position: contact.position,
+    personalLinkedIn: contact.personalLinkedIn,
+  };
+  return {
+    ...step,
+    subject: applyContactVariables(step.subject, merge, false),
+    body: applyContactVariables(step.body, merge, false),
+  };
 }
 
 function SignatureFrame({ html, signOff = "" }: { html: string; signOff?: string }) {
@@ -909,18 +929,21 @@ export default function PortalPersonalisePage({
 
                   {open ? (
                     <ol className="pz-steps">
-                      {contact.steps.map((step, stepIndex) => (
+                      {contact.steps.map((step, stepIndex) => {
+                        const filled = filledStep(contact, step);
+                        return (
                         <li key={`${step.label}-${stepIndex}`} className="pz-step">
                           <span className="pz-step-dot" aria-hidden="true">
                             {stepIndex + 1}
                           </span>
                           <div className="pz-step-card">
                             <div className="pz-step-head">
-                              <strong>{step.label || `Email ${stepIndex + 1}`}</strong>
+                              <strong>{filled.label || `Email ${stepIndex + 1}`}</strong>
                               {stepIndex > 0 ? (
                                 <>
                                   <span className="pz-chip">
-                                    Day {step.day} · {step.day} {step.day === 1 ? "day" : "days"} after email 1
+                                    Day {filled.day} · {filled.day}{" "}
+                                    {filled.day === 1 ? "day" : "days"} after email 1
                                   </span>
                                   <span className="pz-chip pz-chip-soft">
                                     {delays[stepIndex]} {delays[stepIndex] === 1 ? "day" : "days"} after email {stepIndex}
@@ -931,19 +954,20 @@ export default function PortalPersonalisePage({
                               )}
                             </div>
                             <div className="pz-subject">
-                              {step.subject ? (
+                              {filled.subject ? (
                                 <>
                                   <span>Subject</span>
-                                  <strong>{step.subject}</strong>
+                                  <strong>{filled.subject}</strong>
                                 </>
                               ) : (
                                 <span className="pz-thread">Reply in the same thread</span>
                               )}
                             </div>
-                            <PitchPreview body={step.body} signature={activeSignature} />
+                            <PitchPreview body={filled.body} signature={activeSignature} />
                           </div>
                         </li>
-                      ))}
+                        );
+                      })}
                     </ol>
                   ) : null}
                 </section>

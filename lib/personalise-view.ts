@@ -1,6 +1,7 @@
 import { ObjectId } from "mongodb";
 import type { CampaignBlastDoc, CampaignSendDoc } from "@/lib/campaign-blasts-server";
 import type { ContactDoc } from "@/lib/crm";
+import { applyContactVariables } from "@/lib/email-variables";
 import { getDb } from "@/lib/mongodb";
 import type {
   PersonaliseCampaignSnapshot,
@@ -82,16 +83,31 @@ export async function getPersonaliseCampaignSnapshot(
             : undefined,
       };
     });
-    contacts.push({
+    const mergeContact = {
       firstName: first.firstName ?? "",
       lastName: first.lastName ?? "",
+      fullName: first.fullName ?? "",
       email: first.email,
       companyName: first.companyName ?? "",
       position: attributes.position ?? "",
       personalLinkedIn: attributes.personalLinkedIn ?? "",
+    };
+    // Resolve leftover {{firstname}} etc. for older campaigns created before fill-at-rollout.
+    const resolvedSteps = steps.map((step) => ({
+      ...step,
+      subject: applyContactVariables(step.subject, mergeContact, false),
+      html: applyContactVariables(step.html, mergeContact, true),
+    }));
+    contacts.push({
+      firstName: mergeContact.firstName,
+      lastName: mergeContact.lastName,
+      email: first.email,
+      companyName: mergeContact.companyName,
+      position: mergeContact.position,
+      personalLinkedIn: mergeContact.personalLinkedIn,
       repliedAt: rows.find((send) => send.repliedAt)?.repliedAt?.toISOString(),
       unsubscribedAt: rows.find((send) => send.unsubscribedAt)?.unsubscribedAt?.toISOString(),
-      steps,
+      steps: resolvedSteps,
     });
   }
 

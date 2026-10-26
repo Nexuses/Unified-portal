@@ -22,6 +22,7 @@ import {
 } from "@/lib/drip-campaigns";
 import { getDb } from "@/lib/mongodb";
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
+import { applyContactVariables } from "@/lib/email-variables";
 import {
   normalizePersonalisePlan,
   cleanReplyTo,
@@ -322,6 +323,15 @@ export async function rolloutPersonaliseCampaign(input: {
   const sends: CampaignSendDoc[] = ready.flatMap((contact) => {
     const delays = stepDelayDays(contact.steps);
     const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(" ");
+    const mergeContact = {
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      fullName,
+      email: contact.email,
+      companyName: contact.companyName || "Unknown",
+      position: contact.position,
+      personalLinkedIn: contact.personalLinkedIn,
+    };
     return contact.steps.map((step, sequenceIndex) => ({
       _id: new ObjectId(),
       projectId: input.projectId,
@@ -339,8 +349,13 @@ export async function rolloutPersonaliseCampaign(input: {
       sequenceId: sequences[sequenceIndex]?.id,
       sequenceIndex,
       availableAt: sequenceIndex === 0 ? scheduledFor ?? now : LOCKED_SEQUENCE_AT,
-      subjectLine: step.subject,
-      htmlBody: pitchToHtml(step.body, signatureHtml),
+      // Fill {{firstname}} / {{name}} / etc. from this contact's columns (or Name).
+      subjectLine: applyContactVariables(step.subject, mergeContact, false),
+      htmlBody: applyContactVariables(
+        pitchToHtml(step.body, signatureHtml),
+        mergeContact,
+        true,
+      ),
       stepDelayDays: delays[sequenceIndex] ?? 0,
     }));
   });

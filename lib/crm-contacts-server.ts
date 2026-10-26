@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import {
@@ -8,6 +9,7 @@ import {
   buildContactHistory,
   mapContact,
   mapContactProfile,
+  resolveContactPhotoUrl,
   type CompanyDoc,
   type ContactCampaignStats,
   type ContactDetail,
@@ -18,6 +20,7 @@ import {
   type ListDoc,
   type ListMembershipDoc,
 } from "@/lib/crm";
+import { getProjectBranding } from "@/lib/project-branding";
 import type {
   CampaignBlastDoc,
   CampaignSendDoc,
@@ -480,6 +483,147 @@ export async function enrichContactWithApollo(
     return { ok: false, status: 404, error: "Contact not found" };
   }
   return { ok: true, contact };
+}
+
+export async function ensureContactShareToken(
+  projectId: ObjectId,
+  contactId: ObjectId,
+) {
+  const db = await getDb();
+  const existing = await db.collection<ContactDoc>("contacts").findOne({
+    _id: contactId,
+    projectId,
+  });
+  if (!existing) {
+    return null;
+  }
+  if (existing.shareToken) {
+    return existing.shareToken;
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const shareToken = randomBytes(18).toString("base64url");
+    const taken = await db.collection<ContactDoc>("contacts").findOne(
+      { shareToken },
+      { projection: { _id: 1 } },
+    );
+    if (taken) {
+      continue;
+    }
+
+    const result = await db.collection<ContactDoc>("contacts").updateOne(
+      { _id: existing._id, shareToken: { $exists: false } },
+      { $set: { shareToken, updatedAt: new Date() } },
+    );
+    if (result.modifiedCount > 0 || result.matchedCount === 0) {
+      const fresh = await db.collection<ContactDoc>("contacts").findOne({
+        _id: existing._id,
+      });
+      return fresh?.shareToken ?? shareToken;
+    }
+  }
+
+  throw new Error("Could not create a share link");
+}
+
+function toPublicContactDetail(contact: ContactDetail): ContactDetail {
+  const profile = mapContactProfile(contact.profile);
+  // Resolve photo before stripping apollo.raw (public payload omits raw).
+  const photoUrl = resolveContactPhotoUrl(profile);
+  if (photoUrl) {
+    profile.photoUrl = photoUrl;
+  }
+  if (profile.apollo) {
+    profile.apollo = {
+      personId: profile.apollo.personId,
+      enrichedAt: profile.apollo.enrichedAt,
+    };
+  }
+  return {
+    ...contact,
+    profile,
+    navigation: {
+      index: 0,
+      total: 1,
+      prevId: null,
+      nextId: null,
+    },
+  };
+}
+
+export async function getPublicContactByShareToken(shareToken: string): Promise<{
+  contact: ContactDetail;
+  projectId: ObjectId;
+} | null> {
+  const token = shareToken.trim();
+  if (!token) return null;
+
+  const db = await getDb();
+  const doc = await db.collection<ContactDoc>("contacts").findOne({
+    shareToken: token,
+  });
+  if (!doc) return null;
+
+  const branding = await getProjectBranding(doc.projectId);
+  const owner = branding.name || "Report owner";
+  const detail = await getProjectContactDetail(
+    doc.projectId,
+    doc._id,
+    owner,
+  );
+  if (!detail) return null;
+
+  const contact = toPublicContactDetail(detail);
+  // Serve avatar through our proxy so LinkedIn/Apollo CDNs load on public pages.
+  // Bust caches when the contact is updated so portal edits show on the public URL.
+  if (contact.profile?.photoUrl) {
+    const version = encodeURIComponent(contact.updatedAt || String(Date.now()));
+    contact.profile = {
+      ...contact.profile,
+      photoUrl: `/api/public/leads/${encodeURIComponent(token)}/photo?v=${version}`,
+    };
+  }
+
+  return {
+    contact,
+    projectId: doc.projectId,
+  };
+}
+
+export async function getPublicContactPhotoByToken(shareToken: string): Promise<{
+  buffer: ArrayBuffer;
+  contentType: string;
+} | null> {
+  const token = shareToken.trim();
+  if (!token) return null;
+
+  const db = await getDb();
+  const doc = await db.collection<ContactDoc>("contacts").findOne(
+    { shareToken: token },
+    { projection: { profile: 1 } },
+  );
+  if (!doc) return null;
+
+  const photoUrl = resolveContactPhotoUrl(mapContactProfile(doc.profile));
+  if (!photoUrl || !/^https?:\/\//i.test(photoUrl)) return null;
+
+  const response = await fetch(photoUrl, {
+    headers: {
+      Accept: "image/*,*/*;q=0.8",
+      "User-Agent": "NexusesLeadReport/1.0",
+      Referer: "",
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) return null;
+
+  const contentType = response.headers.get("content-type") || "image/jpeg";
+  if (!contentType.startsWith("image/")) return null;
+
+  const buffer = await response.arrayBuffer();
+  if (!buffer.byteLength) return null;
+
+  return { buffer, contentType };
 }
 
 const CONTACT_SORT_FIELDS = ["lastName", "firstName", "email"] as const;

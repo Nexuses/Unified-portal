@@ -233,6 +233,8 @@ export type ContactProfile = {
   title?: string;
   phone?: string;
   linkedinUrl?: string;
+  /** Profile photo URL (typically from Apollo / LinkedIn). */
+  photoUrl?: string;
   location?: string;
   about?: string;
   leadStage?: string;
@@ -301,6 +303,8 @@ export type ContactDoc = {
   companyName: string;
   attributes?: Record<string, string>;
   profile?: ContactProfile;
+  /** Public Lead Report share token (base64url). */
+  shareToken?: string;
   subscribed: boolean;
   blocklisted: boolean;
   createdBy: ObjectId | null;
@@ -310,6 +314,20 @@ export type ContactDoc = {
 
 export function mapContactProfile(profile?: ContactProfile | null): ContactProfile {
   return profile ? { ...profile } : {};
+}
+
+/** Prefer saved photoUrl; fall back to Apollo raw person.photo_url. */
+export function resolveContactPhotoUrl(
+  profile?: ContactProfile | null,
+): string {
+  const direct = String(profile?.photoUrl || "").trim();
+  if (direct) return direct;
+  const rawPerson = profile?.apollo?.raw?.person;
+  if (rawPerson && typeof rawPerson === "object") {
+    const photo = (rawPerson as Record<string, unknown>).photo_url;
+    if (typeof photo === "string" && photo.trim()) return photo.trim();
+  }
+  return "";
 }
 
 export type CompanyDoc = {

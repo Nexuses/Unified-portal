@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { guardApiCredit, noteApiUsage, readTokenUsage } from "@/lib/api-credits-server";
 import { chatWithClaude, claudeConfigured } from "@/lib/claude";
+import { parseCsvRecords, uniquifyCsvHeaders } from "@/lib/csv";
 import { normalizePersonalisePlan, type PersonalisePlan } from "@/lib/personalise-types";
 
 const MAX_FILE_BYTES = 15 * 1024 * 1024;
@@ -34,6 +35,7 @@ Schema:
 
 Rules:
 - Copy every subject and email body exactly. Do not rewrite, summarise, translate, or fix wording.
+- Keep merge tags in subjects/bodies exactly as written ({{firstname}}, {{ first name }}, {{name}}, {{company}}, {{email}}, *|FNAME|*, etc.). Do not replace them with the person's real name — the app fills those from the contact columns later.
 - Keep line breaks in the body. Lines that start with "- " or "1. " are bullet points: keep that marker at the start of the line, one bullet per line.
 - In spreadsheets each row is one line, and a line break inside a cell is written as \\n. Keep every \\n as a line break in the body, including blank lines between paragraphs and each line of the sign-off.
 - One contact per person. Include every email that person has. People can have different numbers of emails.
@@ -42,9 +44,11 @@ Rules:
 - If a follow-up has no day mentioned, use the same day as the email before it.
 - If a follow-up says it stays on the same thread, or has no subject, set subject to an empty string. Otherwise copy its subject as written, including any "Re:".
 - The first email's subject must be the subject written in the file.
+- firstName / lastName: if the file has First name / Firstname / Fname, use that for firstName. If it only has Name / Full name / Contact name, put the first word in firstName and the remaining words in lastName. Never leave firstName empty when a name column exists.
 - email, position, and personalLinkedIn stay empty when the file does not contain them. Never invent an email address or a LinkedIn URL.
 - personalLinkedIn is only a URL. The word LinkedIn with no URL is an empty string.
 - position is the job title when one is written next to the person.
+- companyName comes from Company / Organisation / Organization columns when present.
 - listName comes from the document title, not from a person's name.
 - Do not add people who are not in the file.`;
 
@@ -216,6 +220,209 @@ export async function textFromXlsx(buffer: Buffer) {
   return text;
 }
 
+function compactHeader(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function findColumn(headers: string[], aliases: string[]) {
+  const compact = headers.map(compactHeader);
+  for (const alias of aliases) {
+    const index = compact.indexOf(alias);
+    if (index >= 0) return index;
+  }
+  // Loose match only for longer aliases so "name" never steals "firstname".
+  for (const alias of aliases) {
+    if (alias.length < 5) continue;
+    const index = compact.findIndex(
+      (header) => header.endsWith(alias) || header.includes(alias),
+    );
+    if (index >= 0) return index;
+  }
+  return -1;
+}
+
+async function tableFromUpload(fileName: string, buffer: Buffer): Promise<string[][] | null> {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".xlsx")) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+    const sheet = workbook.worksheets[0];
+    if (!sheet) return null;
+    const rows: string[][] = [];
+    sheet.eachRow({ includeEmpty: false }, (row) => {
+      const cells = (row.values as ExcelJS.CellValue[]).slice(1).map((value) => cellText(value).trim());
+      if (cells.some(Boolean)) rows.push(cells);
+    });
+    return rows.length ? rows : null;
+  }
+  if (lower.endsWith(".csv") || lower.endsWith(".tsv")) {
+    const text = buffer.toString("utf8").replace(/^\uFEFF/, "");
+    if (!text.trim()) return null;
+    const delimiter =
+      lower.endsWith(".tsv") ||
+      (text.split("\n")[0]?.includes("\t") && !text.split("\n")[0]?.includes(","))
+        ? "\t"
+        : ",";
+    const rows = parseCsvRecords(text, delimiter).map((row) =>
+      row.map((cell) => cell.replace(/^\uFEFF/, "").trim()),
+    );
+    return rows.length ? rows : null;
+  }
+  return null;
+}
+
+/**
+ * Vertical cadence sheets (one row per email step) with Email + Message columns.
+ * Parses without the LLM so multiline CSV bodies don't drop contacts.
+ */
+export function tryParsePersonaliseTable(
+  table: string[][],
+  fileName = "",
+): PersonalisePlan | null {
+  if (table.length < 2) return null;
+  const headers = uniquifyCsvHeaders(table[0].map((cell) => String(cell ?? "").trim()));
+  const emailCol = findColumn(headers, ["email", "emailaddress", "mail"]);
+  const messageCol = findColumn(headers, [
+    "message",
+    "body",
+    "emailbody",
+    "pitch",
+    "emailmessage",
+    "content",
+    "copy",
+  ]);
+  if (emailCol < 0 || messageCol < 0) return null;
+
+  const firstCol = findColumn(headers, ["firstname", "first", "fname", "givenname"]);
+  const lastCol = findColumn(headers, ["lastname", "last", "lname", "surname", "familyname"]);
+  const nameCol = findColumn(headers, ["name", "fullname", "contactname", "person"]);
+  const companyCol = findColumn(headers, [
+    "company",
+    "companyname",
+    "organisation",
+    "organization",
+    "org",
+  ]);
+  const positionCol = findColumn(headers, [
+    "position",
+    "title",
+    "jobtitle",
+    "role",
+    "designation",
+  ]);
+  const linkedInCol = findColumn(headers, [
+    "personallinkedin",
+    "linkedin",
+    "linkedinurl",
+    "profile",
+  ]);
+  const subjectCol = findColumn(headers, ["subject", "subjectline", "emailsubject"]);
+  const dayCol = findColumn(headers, ["day", "sendday", "days"]);
+  const stepCol = findColumn(headers, ["step", "steplabel", "emailstep", "sequence"]);
+
+  type BuildContact = {
+    firstName: string;
+    lastName: string;
+    email: string;
+    companyName: string;
+    position: string;
+    personalLinkedIn: string;
+    steps: Array<{ label: string; day: number; subject: string; body: string }>;
+  };
+  const byEmail = new Map<string, BuildContact>();
+  const order: string[] = [];
+
+  for (const raw of table.slice(1)) {
+    const cell = (index: number) =>
+      index >= 0 ? String(raw[index] ?? "").replace(/\r\n/g, "\n").trim() : "";
+    const email = cell(emailCol).toLowerCase();
+    const body = cell(messageCol);
+    if (!email.includes("@") || !body) continue;
+
+    let contact = byEmail.get(email);
+    if (!contact) {
+      let firstName = cell(firstCol);
+      let lastName = cell(lastCol);
+      const fullName = cell(nameCol);
+      if (!firstName && !lastName && fullName) {
+        const parts = fullName.split(/\s+/);
+        firstName = parts[0] || "";
+        lastName = parts.slice(1).join(" ");
+      }
+      contact = {
+        firstName,
+        lastName,
+        email,
+        companyName: cell(companyCol),
+        position: cell(positionCol),
+        personalLinkedIn: cell(linkedInCol),
+        steps: [],
+      };
+      byEmail.set(email, contact);
+      order.push(email);
+    }
+
+    const dayRaw = cell(dayCol);
+    const day = dayRaw && Number.isFinite(Number(dayRaw)) ? Math.max(0, Math.round(Number(dayRaw))) : contact.steps.length === 0 ? 0 : contact.steps[contact.steps.length - 1]?.day ?? 0;
+    const stepLabel = cell(stepCol);
+    contact.steps.push({
+      label:
+        stepLabel ||
+        (contact.steps.length === 0 ? "First email" : `Follow-up ${contact.steps.length}`),
+      day,
+      subject: cell(subjectCol),
+      body,
+    });
+  }
+
+  if (order.length === 0) return null;
+
+  const listName =
+    fileName
+      .replace(/\.[^.]+$/, "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim() || "Personalise campaign";
+
+  return normalizePersonalisePlan(
+    {
+      listName,
+      contacts: order.map((email) => byEmail.get(email)!),
+    },
+    fileName,
+  );
+}
+
+/** Flatten CSV/TSV into one logical row per line for the AI outline path. */
+function flatTextFromCsv(buffer: Buffer, fileName: string) {
+  const lower = fileName.toLowerCase();
+  const text = buffer.toString("utf8").replace(/^\uFEFF/, "");
+  const delimiter =
+    lower.endsWith(".tsv") ||
+    (text.split("\n")[0]?.includes("\t") && !text.split("\n")[0]?.includes(","))
+      ? "\t"
+      : ",";
+  const rows = parseCsvRecords(text, delimiter);
+  if (rows.length === 0) {
+    throw new Error("That file is empty.");
+  }
+  return rows
+    .map((row) =>
+      row
+        .map((cell) =>
+          cell
+            .replace(/\r\n?/g, "\n")
+            .split("\n")
+            .map((line) => line.replace(/\s+/g, " ").trim())
+            .join("\\n")
+            .replace(/^(?:\\n)+|(?:\\n)+$/g, ""),
+        )
+        .join("\t"),
+    )
+    .filter((line) => line.trim())
+    .join("\n");
+}
+
 export async function textFromUpload(fileName: string, buffer: Buffer) {
   if (buffer.byteLength === 0) {
     throw new Error("That file is empty.");
@@ -233,7 +440,14 @@ export async function textFromUpload(fileName: string, buffer: Buffer) {
   if (lower.endsWith(".xls")) {
     throw new Error("Save the spreadsheet as .xlsx or .csv and upload it again.");
   }
-  if (lower.endsWith(".csv") || lower.endsWith(".txt") || lower.endsWith(".tsv")) {
+  if (lower.endsWith(".csv") || lower.endsWith(".tsv")) {
+    const text = flatTextFromCsv(buffer, fileName).trim();
+    if (!text) {
+      throw new Error("That file is empty.");
+    }
+    return text;
+  }
+  if (lower.endsWith(".txt")) {
     const text = buffer.toString("utf8").replace(/^\uFEFF/, "").trim();
     if (!text) {
       throw new Error("That file is empty.");
@@ -773,6 +987,15 @@ export async function extractPersonalisePlan(
   fileName: string,
   buffer: Buffer,
 ): Promise<PersonalisePlan> {
+  // Vertical cadence CSV/XLSX (Email + Message, one row per step): parse directly.
+  const table = await tableFromUpload(fileName, buffer);
+  if (table) {
+    const structured = tryParsePersonaliseTable(table, fileName);
+    if (structured?.contacts.length) {
+      return structured;
+    }
+  }
+
   const text = await textFromUpload(fileName, buffer);
   const sectioned = await readInSections(fileName, text);
   const parsed =

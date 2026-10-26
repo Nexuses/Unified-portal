@@ -85,6 +85,8 @@ function activityBadge(item: ActivityFeedItem) {
       return { label: "Opened", className: "is-open" };
     case "campaign_clicked":
       return { label: "Clicked", className: "is-click" };
+    case "campaign_unsubscribed":
+      return { label: "Unsubscribed", className: "is-unsub" };
     case "campaign_launched":
       return { label: "Rolled out", className: "is-launch" };
     case "campaign_scheduled":

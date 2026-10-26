@@ -30,7 +30,7 @@ import {
   normalizeStoredMessageId,
   refreshSenderRepliesIfStale,
 } from "@/lib/master-inbox-server";
-import { normalizeEmailMergeTags } from "@/lib/email-variables";
+import { applyContactVariables } from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
 import type { EngagementClientMeta } from "@/lib/engagement-client-meta";
 import {
@@ -609,40 +609,6 @@ export async function recordSesBounce(input: {
   }
 
   return { matched: matched.length, updated };
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function applyContactVariables(
-  text: string,
-  contact: {
-    firstName: string;
-    lastName: string;
-    email: string;
-    companyName: string;
-  },
-  forHtml = true,
-) {
-  const values: Record<string, string> = {
-    FIRSTNAME: contact.firstName || "",
-    LASTNAME: contact.lastName || "",
-    EMAIL: contact.email || "",
-    COMPANY: contact.companyName || "",
-  };
-
-  return normalizeEmailMergeTags(text).replace(
-    /\{\{\s*contact\.([A-Za-z]+)\s*\}\}/g,
-    (_, key: string) => {
-      const value = values[key.toUpperCase()] ?? "";
-      return forHtml ? escapeHtml(value) : value;
-    },
-  );
 }
 
 async function resolveTrackingOrigin(projectId: ObjectId, senderId: string) {
@@ -3138,6 +3104,10 @@ export type CampaignSendRecipient = {
   clickedAt?: string;
   clickedUrl?: string;
   clickedLinks?: Array<{ url: string; at?: string; sequenceNumber?: number }>;
+  /** Client IP from the latest counted click (when available). */
+  clickedIp?: string;
+  /** Device class from the latest counted click. */
+  clickedDevice?: "mobile" | "tablet" | "desktop" | "unknown";
   /** e.g. "Bot click" for grace/burst clicks on instant-click projects. */
   clickTag?: string;
   botClick?: boolean;
@@ -3381,11 +3351,49 @@ export async function listCampaignSendRecipients(
           .sort((left, right) => (right.at ?? "").localeCompare(left.at ?? ""));
         const latest = clickedLinks[0];
         const bot = sendIsBotClick(doc);
+        const docEvents =
+          doc.clickEvents && doc.clickEvents.length > 0
+            ? doc.clickEvents
+            : doc.clickedAt
+              ? [
+                  {
+                    url: doc.clickedUrl || "",
+                    at: doc.clickedAt,
+                    ip: doc.clickedIp,
+                    device: doc.clickedDevice,
+                  },
+                ]
+              : [];
+        const metaEvent = [...docEvents]
+          .filter((event) => {
+            if (!isCountableClickEvent(event)) return false;
+            if (hideBotClicks && clickEventIsBot(doc, event)) return false;
+            return Boolean(event.ip || event.device);
+          })
+          .sort((left, right) => {
+            const leftMs =
+              left.at instanceof Date
+                ? left.at.getTime()
+                : new Date(left.at).getTime();
+            const rightMs =
+              right.at instanceof Date
+                ? right.at.getTime()
+                : new Date(right.at).getTime();
+            return rightMs - leftMs;
+          })[0];
+        const clickedIp =
+          (typeof metaEvent?.ip === "string" && metaEvent.ip.trim()) ||
+          doc.clickedIp?.trim() ||
+          "";
+        const clickedDevice =
+          metaEvent?.device || doc.clickedDevice || undefined;
         return mapRecipient(doc, {
           id: doc.email.trim().toLowerCase(),
           clickedAt: latest?.at,
           clickedUrl: latest?.url ?? "",
           clickedLinks,
+          ...(clickedIp ? { clickedIp } : {}),
+          ...(clickedDevice ? { clickedDevice } : {}),
           ...(bot && !hideBotClicks
             ? { botClick: true, clickTag: BOT_CLICK_TAG }
             : {}),
@@ -3458,6 +3466,7 @@ export async function listCampaignSendsForExport(
         },
         clickedAt: 1,
         clickedUrl: 1,
+        clickedIp: 1,
         clickedDevice: 1,
         clickBurstIgnored: 1,
         botClick: 1,
@@ -3469,6 +3478,7 @@ export async function listCampaignSendsForExport(
               url: "$$event.url",
               at: "$$event.at",
               device: "$$event.device",
+              ip: "$$event.ip",
               ignored: "$$event.ignored",
               bot: "$$event.bot",
             },
