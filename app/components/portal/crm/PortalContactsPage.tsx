@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_LIST_ATTRIBUTES,
   type Contact,
   type CrmList,
 } from "@/lib/crm";
+import { portalKanbanRoute } from "@/lib/analytics-kanban";
 import { portalContactRoute } from "@/lib/portal-nav";
 
 const CORE_FIELDS = new Set(["firstName", "lastName", "email", "companyName"]);
@@ -103,6 +105,13 @@ function ContactsPagination({
 }
 
 export default function PortalContactsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const kanbanBoardId = String(searchParams.get("kanban") ?? "").trim();
+  const kanbanStageId = String(searchParams.get("stage") ?? "").trim();
+  const kanbanStageName = String(searchParams.get("stageName") ?? "").trim();
+  const kanbanPickMode = Boolean(kanbanBoardId && kanbanStageId);
+
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [total, setTotal] = useState(0);
   const [lists, setLists] = useState<CrmList[]>([]);
@@ -114,6 +123,7 @@ export default function PortalContactsPage() {
   const [error, setError] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [deleting, setDeleting] = useState(false);
+  const [addingToKanban, setAddingToKanban] = useState(false);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const requestIdRef = useRef(0);
 
@@ -132,7 +142,6 @@ export default function PortalContactsPage() {
 
   useEffect(() => {
     setPage(1);
-    setSelectedIds([]);
   }, [debouncedSearch, searchField]);
 
   async function loadContactsPage(nextPage = page) {
@@ -294,6 +303,37 @@ export default function PortalContactsPage() {
     }
   }
 
+  async function addSelectedToKanbanStage() {
+    if (!kanbanPickMode || selectedIds.length === 0 || addingToKanban) {
+      return;
+    }
+    setAddingToKanban(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/analytics/kanban/${encodeURIComponent(kanbanBoardId)}/leads`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            stageId: kanbanStageId,
+            contactIds: selectedIds,
+          }),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof data.error === "string" ? data.error : "Failed to add leads",
+        );
+      }
+      router.push(portalKanbanRoute(kanbanBoardId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add leads");
+      setAddingToKanban(false);
+    }
+  }
+
   function openCreateModal() {
     setValues(emptyAttributeValues());
     setModalError("");
@@ -367,21 +407,44 @@ export default function PortalContactsPage() {
     }
   }
 
+  const stageLabel =
+    kanbanStageName.trim() ||
+    "this stage";
+
   return (
     <>
       <div className="crm-page-head">
         <div>
-          <h2>Contacts</h2>
+          <h2>{kanbanPickMode ? "Add leads to pipeline" : "Contacts"}</h2>
           <p className="desc">
-            All contacts imported across your lists, combined in one place.
+            {kanbanPickMode
+              ? `Select contacts with the checkboxes, then add them to “${stageLabel}”.`
+              : "All contacts imported across your lists, combined in one place."}
           </p>
         </div>
         <div className="crm-actions">
+          {kanbanPickMode ? (
+            <Link
+              href={portalKanbanRoute(kanbanBoardId)}
+              className="btn-soft"
+            >
+              Back to pipeline
+            </Link>
+          ) : null}
           <button type="button" className="btn-dark" onClick={openCreateModal}>
             Create a contact
           </button>
         </div>
       </div>
+
+      {kanbanPickMode ? (
+        <div className="crm-summary an-kanban-pick-banner">
+          Adding to stage <strong>{stageLabel}</strong>
+          {selectedIds.length > 0
+            ? ` · ${selectedIds.length} selected`
+            : " · select contacts below"}
+        </div>
+      ) : null}
 
       <div className="crm-tabs">
         <button type="button" className="crm-tab active">
@@ -390,7 +453,19 @@ export default function PortalContactsPage() {
       </div>
 
       <div className="drip-toolbar">
-        {selectedIds.length > 0 ? (
+        {kanbanPickMode && selectedIds.length > 0 ? (
+          <button
+            type="button"
+            className="btn-dark"
+            disabled={addingToKanban}
+            onClick={() => void addSelectedToKanbanStage()}
+          >
+            {addingToKanban
+              ? "Adding…"
+              : `Add to ${stageLabel} (${selectedIds.length})`}
+          </button>
+        ) : null}
+        {!kanbanPickMode && selectedIds.length > 0 ? (
           <button
             type="button"
             className="lists-bulk-delete"

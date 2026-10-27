@@ -5,7 +5,11 @@ import {
   getProjectKanbanBoard,
   patchProjectKanbanBoard,
 } from "@/lib/analytics-kanban-server";
-import type { KanbanCampaignRef, KanbanStage } from "@/lib/analytics-kanban";
+import type {
+  KanbanCampaignRef,
+  KanbanManualPerson,
+  KanbanStage,
+} from "@/lib/analytics-kanban";
 import {
   isSessionError,
   requirePortalSession,
@@ -50,6 +54,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       stages?: KanbanStage[];
       placements?: Record<string, string>;
       campaigns?: KanbanCampaignRef[];
+      manualPeople?: KanbanManualPerson[];
     } | null;
     const board = await patchProjectKanbanBoard(
       new ObjectId(session.projectId),
@@ -58,8 +63,12 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
         stages: body?.stages,
         placements: body?.placements,
         campaigns: body?.campaigns,
+        manualPeople: body?.manualPeople,
       },
-      { skipPeople: body?.campaigns === undefined },
+      {
+        skipPeople:
+          body?.campaigns === undefined && body?.manualPeople === undefined,
+      },
     );
     if (!board) {
       return NextResponse.json({ error: "Kanban not found" }, { status: 404 });

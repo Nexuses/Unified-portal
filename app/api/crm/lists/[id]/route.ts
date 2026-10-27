@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import { mapList, type ListDoc } from "@/lib/crm";
-import { deleteLists, importContactsToList } from "@/lib/crm-import";
+import { deleteLists, importContactsToList, renameList } from "@/lib/crm-import";
 import {
   listProjectListContactIds,
   listProjectListContacts,
@@ -174,6 +174,33 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
 
     const body = await request.json().catch(() => ({}));
+    const projectId = new ObjectId(session.projectId);
+    const listId = new ObjectId(id);
+
+    if (body.name !== undefined) {
+      try {
+        const updated = await renameList(
+          projectId,
+          listId,
+          String(body.name ?? ""),
+        );
+        return NextResponse.json({ list: mapList(updated) });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to rename list";
+        const status =
+          message === "List not found"
+            ? 404
+            : message === "List name is required" ||
+                message === "That list name is reserved" ||
+                message === "The Unsubscribe list cannot be renamed" ||
+                message === "A list with that name already exists"
+              ? 400
+              : 500;
+        return NextResponse.json({ error: message }, { status });
+      }
+    }
+
     const removeContactIds = Array.isArray(body.removeContactIds)
       ? body.removeContactIds.map((value: unknown) => String(value))
       : [];
@@ -184,8 +211,6 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       );
     }
 
-    const projectId = new ObjectId(session.projectId);
-    const listId = new ObjectId(id);
     const result = await removeContactsFromList(
       projectId,
       listId,
@@ -193,9 +218,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     );
     return NextResponse.json({ removed: result.removed });
   } catch (error) {
-    console.error("Failed to remove list contacts:", error);
+    console.error("Failed to update list:", error);
     const message =
-      error instanceof Error ? error.message : "Failed to remove contacts";
+      error instanceof Error ? error.message : "Failed to update list";
     return NextResponse.json(
       { error: message },
       { status: message === "List not found" ? 404 : 500 },

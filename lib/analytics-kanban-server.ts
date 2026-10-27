@@ -6,7 +6,7 @@ import {
   isAnalyticsShareExpired,
   resolveAnalyticsShareExpiry,
 } from "@/lib/analytics";
-import type { ContactDoc } from "@/lib/crm";
+import { mapContact, type ContactDoc } from "@/lib/crm";
 import type { CampaignKind } from "@/lib/drip-campaigns";
 import type { CampaignBlastDoc, CampaignSendDoc } from "@/lib/campaign-blasts-server";
 import {
@@ -17,9 +17,11 @@ import {
   companyDomainFromEmail,
   isFreeEmailHost,
   isKanbanStageRule,
+  kanbanPersonFromContact,
   type KanbanBoard,
   type KanbanCampaignRef,
   type KanbanList,
+  type KanbanManualPerson,
   type KanbanPerson,
   type KanbanStage,
 } from "@/lib/analytics-kanban";
@@ -44,9 +46,99 @@ type KanbanDoc = {
   campaigns: KanbanCampaignRef[];
   stages: KanbanStage[];
   placements: Record<string, string>;
+  /** Contacts added manually from CRM (not only campaign sends). */
+  manualPeople?: KanbanManualPerson[];
   createdAt: Date;
   updatedAt: Date;
 };
+
+function normalizeManualPeople(value: unknown): KanbanManualPerson[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const people: KanbanManualPerson[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const row = item as KanbanManualPerson;
+    const email = String(row.email ?? "")
+      .trim()
+      .toLowerCase();
+    if (!email.includes("@") || seen.has(email)) {
+      continue;
+    }
+    seen.add(email);
+    const fullName = String(row.fullName ?? "").trim() || email;
+    const companyName = String(row.companyName ?? "").trim();
+    const contactId = String(row.contactId ?? "").trim();
+    const companyDomain =
+      String(row.companyDomain ?? "").trim() ||
+      companyDomainFromEmail(email) ||
+      undefined;
+    people.push({
+      email,
+      fullName,
+      companyName,
+      ...(contactId ? { contactId } : {}),
+      ...(companyDomain
+        ? {
+            companyDomain,
+            companyLogoUrl:
+              String(row.companyLogoUrl ?? "").trim() ||
+              companyBrandLogoUrl(companyDomain),
+          }
+        : {}),
+    });
+  }
+  return people;
+}
+
+function manualToPerson(manual: KanbanManualPerson): KanbanPerson {
+  return {
+    id: `manual:${manual.email}`,
+    email: manual.email,
+    fullName: manual.fullName,
+    companyName: manual.companyName,
+    contactId: manual.contactId,
+    companyDomain: manual.companyDomain,
+    companyLogoUrl: manual.companyLogoUrl,
+    delivered: false,
+    opened: false,
+    clicked: false,
+    replied: false,
+    campaigns: [],
+  };
+}
+
+/** Campaign people win engagement fields; manual-only contacts are appended. */
+function mergeBoardPeople(
+  campaignPeople: KanbanPerson[],
+  manualPeople: KanbanManualPerson[],
+): KanbanPerson[] {
+  const byEmail = new Map<string, KanbanPerson>();
+  for (const person of campaignPeople) {
+    byEmail.set(person.email.trim().toLowerCase(), person);
+  }
+  for (const manual of manualPeople) {
+    const email = manual.email.trim().toLowerCase();
+    const existing = byEmail.get(email);
+    if (!existing) {
+      byEmail.set(email, manualToPerson(manual));
+      continue;
+    }
+    byEmail.set(email, {
+      ...existing,
+      contactId: existing.contactId || manual.contactId,
+      fullName: existing.fullName?.trim() || manual.fullName,
+      companyName: existing.companyName?.trim() || manual.companyName,
+      companyDomain: existing.companyDomain || manual.companyDomain,
+      companyLogoUrl: existing.companyLogoUrl || manual.companyLogoUrl,
+    });
+  }
+  return [...byEmail.values()];
+}
 
 function kindFilter(kind: CampaignKind) {
   return kind === "oneone"
@@ -644,11 +736,16 @@ export async function createProjectKanbanBoard(
     updatedAt: now,
   };
   await db.collection<KanbanDoc>("analytics_kanban").insertOne(doc);
-  const people = await loadPeopleCached(projectId, campaigns);
+  const manualPeople = normalizeManualPeople(doc.manualPeople);
+  const people = mergeBoardPeople(
+    await loadPeopleCached(projectId, campaigns),
+    manualPeople,
+  );
   return {
     ...mapList(doc),
     stages: doc.stages,
     placements: {},
+    manualPeople,
     people,
   };
 }
@@ -670,14 +767,16 @@ export async function getProjectKanbanBoard(
     return null;
   }
   const campaigns = doc.campaigns || [];
-  const people = options?.freshPeople
+  const manualPeople = normalizeManualPeople(doc.manualPeople);
+  const campaignPeople = options?.freshPeople
     ? await rebuildPeople(projectId, campaigns, peopleCacheKey(projectId, campaigns))
     : await loadPeopleCached(projectId, campaigns);
   return {
     ...mapList(doc),
     stages: normalizeStages(doc.stages),
     placements: normalizePlacements(doc.placements),
-    people,
+    manualPeople,
+    people: mergeBoardPeople(campaignPeople, manualPeople),
   };
 }
 
@@ -688,6 +787,7 @@ export async function patchProjectKanbanBoard(
     stages?: KanbanStage[];
     placements?: Record<string, string>;
     campaigns?: KanbanCampaignRef[];
+    manualPeople?: KanbanManualPerson[];
   },
   options?: { skipPeople?: boolean },
 ): Promise<KanbanBoard | null> {
@@ -717,6 +817,10 @@ export async function patchProjectKanbanBoard(
   if (campaigns.length === 0) {
     throw new Error("Select at least one campaign");
   }
+  const manualPeople =
+    patch.manualPeople !== undefined
+      ? normalizeManualPeople(patch.manualPeople)
+      : normalizeManualPeople(current.manualPeople);
   const validIds = new Set(stages.map((stage) => stage.id));
   const cleaned: Record<string, string> = {};
   for (const [email, stageId] of Object.entries(placements)) {
@@ -732,21 +836,30 @@ export async function patchProjectKanbanBoard(
         stages,
         placements: cleaned,
         campaigns,
+        manualPeople,
         updatedAt: new Date(),
       },
     },
   );
-  const people = options?.skipPeople ? [] : await loadPeopleCached(projectId, campaigns);
+  const loadPeople = !options?.skipPeople || patch.manualPeople !== undefined;
+  const campaignPeople = loadPeople
+    ? await loadPeopleCached(projectId, campaigns)
+    : [];
+  const people = loadPeople
+    ? mergeBoardPeople(campaignPeople, manualPeople)
+    : [];
   return {
     ...mapList({
       ...current,
       campaigns,
       stages,
       placements: cleaned,
+      manualPeople,
       updatedAt: new Date(),
     }),
     stages,
     placements: cleaned,
+    manualPeople,
     people,
   };
 }
@@ -860,4 +973,87 @@ export async function deleteProjectKanbanBoard(
     projectId,
   });
   return result.deletedCount > 0;
+}
+
+/** Add CRM contacts onto a stage (manual leads + placement). */
+export async function addContactsToKanbanStage(
+  projectId: ObjectId,
+  boardId: string,
+  stageId: string,
+  contactIds: string[],
+): Promise<KanbanBoard | null> {
+  if (!ObjectId.isValid(boardId)) {
+    return null;
+  }
+  const stage = String(stageId ?? "").trim();
+  const ids = [
+    ...new Set(
+      contactIds
+        .map((id) => String(id ?? "").trim())
+        .filter((id) => ObjectId.isValid(id)),
+    ),
+  ].slice(0, 500);
+  if (!stage || ids.length === 0) {
+    throw new Error("Select a stage and at least one contact");
+  }
+
+  const db = await getDb();
+  const current = await db.collection<KanbanDoc>("analytics_kanban").findOne({
+    _id: new ObjectId(boardId),
+    projectId,
+  });
+  if (!current?.name) {
+    return null;
+  }
+  const stages = normalizeStages(current.stages);
+  if (!stages.some((item) => item.id === stage)) {
+    throw new Error("That stage is not on this board");
+  }
+
+  const docs = await db
+    .collection<ContactDoc>("contacts")
+    .find({
+      projectId,
+      _id: { $in: ids.map((id) => new ObjectId(id)) },
+    })
+    .toArray();
+  if (docs.length === 0) {
+    throw new Error("No matching contacts found");
+  }
+
+  const placements = normalizePlacements(current.placements);
+  const manualByEmail = new Map(
+    normalizeManualPeople(current.manualPeople).map((person) => [
+      person.email,
+      person,
+    ]),
+  );
+
+  for (const doc of docs) {
+    const contact = mapContact(doc);
+    const person = kanbanPersonFromContact(contact);
+    const email = person.email;
+    if (!email.includes("@")) {
+      continue;
+    }
+    placements[email] = stage;
+    manualByEmail.set(email, {
+      email,
+      fullName: person.fullName,
+      companyName: person.companyName,
+      contactId: person.contactId,
+      companyDomain: person.companyDomain,
+      companyLogoUrl: person.companyLogoUrl,
+    });
+  }
+
+  return patchProjectKanbanBoard(
+    projectId,
+    boardId,
+    {
+      stages,
+      placements,
+      manualPeople: [...manualByEmail.values()],
+    },
+  );
 }

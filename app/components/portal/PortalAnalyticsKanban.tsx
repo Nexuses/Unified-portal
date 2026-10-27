@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   autoStageId,
@@ -9,12 +10,13 @@ import {
   DEFAULT_STAGE_COLOR,
   fetchKanbanBoard,
   KANBAN_DOT_COLORS,
-  KANBAN_STAGE_RULES,
   patchKanbanBoard,
+  portalContactsKanbanPickRoute,
   portalKanbanRoute,
   stageIdForPerson,
   type KanbanBoard,
   type KanbanCampaignRef,
+  type KanbanManualPerson,
   type KanbanPerson,
   type KanbanStage,
 } from "@/lib/analytics-kanban";
@@ -45,10 +47,6 @@ function stageLabel(name: string) {
     return name;
   }
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-}
-
-function stageRuleLabel(rule: NonNullable<KanbanStage["rule"]>) {
-  return KANBAN_STAGE_RULES.find((item) => item.value === rule)?.label ?? rule;
 }
 
 function stageDotColor(stage: KanbanStage) {
@@ -168,6 +166,7 @@ export default function PortalAnalyticsKanban({
   const [visibleByStage, setVisibleByStage] = useState<Record<string, number>>({});
   const [editingStageId, setEditingStageId] = useState("");
   const [editingStageName, setEditingStageName] = useState("");
+  const router = useRouter();
   const boardRef = useRef<HTMLDivElement | null>(null);
   const editStageInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -441,7 +440,11 @@ export default function PortalAnalyticsKanban({
     return () => scroller.removeEventListener("wheel", onWheel);
   }, [board]);
 
-  async function persist(next: Pick<KanbanBoard, "stages" | "placements">) {
+  async function persist(
+    next: Pick<KanbanBoard, "stages" | "placements"> & {
+      manualPeople?: KanbanManualPerson[];
+    },
+  ) {
     if (!board) {
       return;
     }
@@ -466,7 +469,14 @@ export default function PortalAnalyticsKanban({
         return;
       }
       const saved = await patchKanbanBoard(board.id, next);
-      setBoard((current) => ({ ...saved, people: current?.people ?? saved.people }));
+      setBoard((current) => ({
+        ...saved,
+        people:
+          saved.people.length > 0
+            ? saved.people
+            : (current?.people ?? saved.people),
+        manualPeople: saved.manualPeople ?? current?.manualPeople ?? [],
+      }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
     } finally {
@@ -931,12 +941,26 @@ export default function PortalAnalyticsKanban({
                   ) : (
                     <h3>{stageLabel(stage.name)}</h3>
                   )}
-                  {stage.rule && !stage.system ? (
-                    <span className="an-kanban-rule">{stageRuleLabel(stage.rule)}</span>
-                  ) : null}
                   <em>{people.length}</em>
                   {readOnly ? null : (
                     <span className="an-kanban-head-actions">
+                      <button
+                        type="button"
+                        className="an-kanban-add-lead-btn"
+                        onClick={() =>
+                          router.push(
+                            portalContactsKanbanPickRoute(
+                              board.id,
+                              stage.id,
+                              stage.name,
+                            ),
+                          )
+                        }
+                        aria-label={`Add lead to ${stage.name}`}
+                        title="Add lead from contacts"
+                      >
+                        +
+                      </button>
                       <button
                         type="button"
                         className="an-kanban-rename-btn"

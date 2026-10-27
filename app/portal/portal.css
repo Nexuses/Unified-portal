@@ -6834,9 +6834,6 @@ select.filter{
   display:inline-flex;align-items:center;justify-content:center;
 }
 .an-kanban-rename-btn:hover{color:#111827;background:#eceef0;}
-.an-kanban-rule{
-  font-size:11px;font-weight:600;color:#6b7280;background:#f3f4f6;border-radius:999px;padding:2px 8px;
-}
 .an-kanban-step{
   display:inline-block;font-size:12px;font-weight:600;color:var(--purple);margin-bottom:4px;
 }
@@ -6874,6 +6871,14 @@ select.filter{
 .an-kanban-head-actions{
   margin-left:auto;display:flex;align-items:center;gap:6px;color:#c8c8c8;
 }
+.an-kanban-add-lead-btn{
+  border:none;background:transparent;color:#c4c8cd;cursor:pointer;
+  width:24px;height:24px;border-radius:6px;padding:0;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:18px;font-weight:600;line-height:1;
+}
+.an-kanban-add-lead-btn:hover{color:#111827;background:#eceef0;}
+.an-kanban-pick-banner{margin-bottom:14px;}
 .an-kanban-grip-btn{
   border:none;background:transparent;padding:4px 2px;cursor:grab;line-height:0;
 }

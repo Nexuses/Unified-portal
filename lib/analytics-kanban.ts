@@ -131,9 +131,21 @@ export type KanbanList = {
   updatedAt: string;
 };
 
+/** Contact added to the board by hand (not only via linked campaigns). */
+export type KanbanManualPerson = {
+  email: string;
+  fullName: string;
+  companyName: string;
+  contactId?: string;
+  companyDomain?: string;
+  companyLogoUrl?: string;
+};
+
 export type KanbanBoard = KanbanList & {
   stages: KanbanStage[];
   placements: Record<string, string>;
+  /** Leads added manually from CRM contacts. */
+  manualPeople: KanbanManualPerson[];
   people: KanbanPerson[];
 };
 
@@ -207,6 +219,23 @@ export function portalKanbanRoute(id: string) {
   return `/portal/analytics/kanban/${encodeURIComponent(id)}`;
 }
 
+/** Contacts page in “pick for kanban stage” mode. */
+export function portalContactsKanbanPickRoute(
+  boardId: string,
+  stageId: string,
+  stageName?: string,
+) {
+  const params = new URLSearchParams({
+    kanban: boardId,
+    stage: stageId,
+  });
+  const name = String(stageName ?? "").trim();
+  if (name) {
+    params.set("stageName", name);
+  }
+  return `/portal/crm/contacts?${params.toString()}`;
+}
+
 export async function fetchKanbanLists(): Promise<KanbanList[]> {
   const response = await fetch("/api/analytics/kanban", { cache: "no-store" });
   const data = await response.json().catch(() => null);
@@ -257,6 +286,7 @@ export async function patchKanbanBoard(
     stages?: KanbanStage[];
     placements?: Record<string, string>;
     campaigns?: KanbanCampaignRef[];
+    manualPeople?: KanbanManualPerson[];
   },
 ): Promise<KanbanBoard> {
   const response = await fetch(`/api/analytics/kanban/${encodeURIComponent(id)}`, {
@@ -271,6 +301,42 @@ export async function patchKanbanBoard(
     );
   }
   return data as KanbanBoard;
+}
+
+/** Build a board card from a CRM contact (no campaign engagement yet). */
+export function kanbanPersonFromContact(contact: {
+  id: string;
+  email: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  companyName?: string;
+}): KanbanPerson {
+  const email = contact.email.trim().toLowerCase();
+  const fullName =
+    String(contact.fullName ?? "").trim() ||
+    [contact.firstName, contact.lastName].filter(Boolean).join(" ").trim() ||
+    email;
+  const companyName = String(contact.companyName ?? "").trim();
+  const companyDomain = companyDomainFromEmail(email);
+  return {
+    id: `manual:${email}`,
+    email,
+    fullName,
+    companyName,
+    contactId: contact.id,
+    ...(companyDomain
+      ? {
+          companyDomain,
+          companyLogoUrl: companyBrandLogoUrl(companyDomain),
+        }
+      : {}),
+    delivered: false,
+    opened: false,
+    clicked: false,
+    replied: false,
+    campaigns: [],
+  };
 }
 
 export async function chatKanbanBoard(

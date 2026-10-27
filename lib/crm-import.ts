@@ -59,6 +59,53 @@ export async function createList(
   return { ...doc, _id: result.insertedId };
 }
 
+export async function renameList(
+  projectId: ObjectId,
+  listId: ObjectId,
+  name: string,
+) {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error("List name is required");
+  }
+  if (trimmed.toLowerCase() === "unsubscribe") {
+    throw new Error("That list name is reserved");
+  }
+
+  const db = await getDb();
+  const existing = await db.collection<ListDoc>("lists").findOne({
+    _id: listId,
+    projectId,
+  });
+  if (!existing) {
+    throw new Error("List not found");
+  }
+  if (existing.name === "Unsubscribe") {
+    throw new Error("The Unsubscribe list cannot be renamed");
+  }
+
+  const duplicate = await db.collection<ListDoc>("lists").findOne({
+    projectId,
+    _id: { $ne: listId },
+    name: trimmed,
+  });
+  if (duplicate) {
+    throw new Error("A list with that name already exists");
+  }
+
+  const now = new Date();
+  await db.collection<ListDoc>("lists").updateOne(
+    { _id: listId, projectId },
+    { $set: { name: trimmed, updatedAt: now } },
+  );
+
+  return {
+    ...existing,
+    name: trimmed,
+    updatedAt: now,
+  };
+}
+
 function chunkArray<T>(items: T[], size: number) {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) {

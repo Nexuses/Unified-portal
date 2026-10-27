@@ -7,6 +7,15 @@ import { PORTAL_ROUTES, portalListRoute } from "@/lib/portal-nav";
 
 const LISTS_PAGE_SIZE = 15;
 
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
 function TrashIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -90,10 +99,17 @@ export default function PortalListsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const [deletePrompt, setDeletePrompt] = useState<{
     ids: string[];
     label: string;
   } | null>(null);
+  const [renamePrompt, setRenamePrompt] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   async function loadLists() {
@@ -145,6 +161,17 @@ export default function PortalListsPage() {
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [openMenuId]);
+
+  useEffect(() => {
+    if (!renamePrompt) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [renamePrompt]);
 
   const filteredLists = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -213,6 +240,62 @@ export default function PortalListsPage() {
     }
     setOpenMenuId(null);
     setDeletePrompt({ ids, label });
+  }
+
+  function askRenameList(list: CrmList) {
+    setOpenMenuId(null);
+    setError("");
+    setRenamePrompt({ id: list.id, name: list.name });
+    setRenameValue(list.name);
+  }
+
+  async function confirmRenameList() {
+    if (!renamePrompt || renaming) {
+      return;
+    }
+    const nextName = renameValue.trim();
+    if (!nextName) {
+      setError("List name is required");
+      return;
+    }
+    if (nextName === renamePrompt.name) {
+      setRenamePrompt(null);
+      return;
+    }
+
+    setRenaming(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/crm/lists/${encodeURIComponent(renamePrompt.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: nextName }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to rename list");
+      }
+      const updated = data.list as CrmList | undefined;
+      setLists((current) =>
+        current.map((list) =>
+          list.id === renamePrompt.id
+            ? {
+                ...list,
+                name: updated?.name ?? nextName,
+              }
+            : list,
+        ),
+      );
+      setSuccess(`List renamed to "${updated?.name ?? nextName}".`);
+      setRenamePrompt(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to rename list");
+    } finally {
+      setRenaming(false);
+    }
   }
 
   async function confirmDeleteLists(deleteContacts: boolean) {
@@ -414,7 +497,7 @@ export default function PortalListsPage() {
                         className={`kebab${openMenuId === list.id ? " active" : ""}`}
                         aria-label={`Actions for ${list.name}`}
                         aria-expanded={openMenuId === list.id}
-                        disabled={deleting}
+                        disabled={deleting || renaming}
                         onClick={() =>
                           setOpenMenuId((current) =>
                             current === list.id ? null : list.id,
@@ -432,8 +515,17 @@ export default function PortalListsPage() {
                           <button
                             type="button"
                             role="menuitem"
+                            disabled={deleting || renaming}
+                            onClick={() => askRenameList(list)}
+                          >
+                            <EditIcon />
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
                             className="danger"
-                            disabled={deleting}
+                            disabled={deleting || renaming}
                             onClick={() => askDeleteLists([list.id], list.name)}
                           >
                             <TrashIcon />
@@ -458,6 +550,79 @@ export default function PortalListsPage() {
             pageSize={LISTS_PAGE_SIZE}
             onPage={setPage}
           />
+        </div>
+      ) : null}
+
+      {renamePrompt ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => {
+            if (!renaming) {
+              setRenamePrompt(null);
+            }
+          }}
+        >
+          <div
+            className="crm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="lists-rename-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="lists-rename-title">Edit list name</h3>
+                <p>Update the name for this list.</p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                disabled={renaming}
+                onClick={() => setRenamePrompt(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-body">
+              <div className="crm-field">
+                <label htmlFor="lists-rename-input">List name</label>
+                <input
+                  ref={renameInputRef}
+                  id="lists-rename-input"
+                  type="text"
+                  value={renameValue}
+                  maxLength={120}
+                  disabled={renaming}
+                  onChange={(event) => setRenameValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void confirmRenameList();
+                    }
+                  }}
+                />
+              </div>
+            </div>
+            <div className="crm-modal-foot" style={{ justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={renaming}
+                onClick={() => setRenamePrompt(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                disabled={renaming || !renameValue.trim()}
+                onClick={() => void confirmRenameList()}
+              >
+                {renaming ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
 
