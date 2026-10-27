@@ -1,4 +1,5 @@
 import {
+  kanbanPeopleForBotFilter,
   stageIdForPerson,
   type KanbanBoard,
   type KanbanPerson,
@@ -84,8 +85,15 @@ const COLUMNS = [
   "CRM contact ID",
 ] as const;
 
-export function buildKanbanBoardCsv(board: KanbanBoard): string {
-  const rows = [...board.people]
+export function buildKanbanBoardCsv(
+  board: KanbanBoard,
+  options?: { hideBotClicks?: boolean },
+): string {
+  const people = kanbanPeopleForBotFilter(
+    board.people,
+    Boolean(options?.hideBotClicks),
+  );
+  const rows = [...people]
     .map((person) => {
       const stageId = stageIdForPerson(person, board.placements, board.stages);
       const stage = board.stages.find((item) => item.id === stageId);

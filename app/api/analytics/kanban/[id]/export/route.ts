@@ -14,7 +14,7 @@ type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) {
@@ -31,7 +31,9 @@ export async function GET(_request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Board not found" }, { status: 404 });
     }
 
-    const csv = buildKanbanBoardCsv(board);
+    const hideBotClicks =
+      new URL(request.url).searchParams.get("hideBotClicks") === "1";
+    const csv = buildKanbanBoardCsv(board, { hideBotClicks });
     const filename = kanbanCsvFilename(board.name);
 
     return new NextResponse(csv, {

@@ -31,6 +31,8 @@ import {
   preferEarlierDevice,
 } from "@/lib/engagement-client-meta";
 import { sendCountsAsOpen, sendOpenPixelBlocked } from "@/lib/open-pixel";
+import { sendIsBotOnlyOpen } from "@/lib/bot-open";
+import { sendHasHumanClick } from "@/lib/bot-click";
 
 const DOT_COLOR_SET = new Set<string>(KANBAN_DOT_COLORS);
 
@@ -326,7 +328,8 @@ function peopleCacheKey(projectId: ObjectId, campaigns: KanbanCampaignRef[]) {
   const ids = campaigns
     .map((campaign) => `${campaign.kind}:${campaign.campaignId}:${campaign.name}`)
     .sort();
-  return `${projectId.toString()}|${ids.join(",")}`;
+  // v2: people include botOpen / botClick for the pipeline bot toggle.
+  return `${projectId.toString()}|v2|${ids.join(",")}`;
 }
 
 function rebuildPeople(
@@ -415,6 +418,8 @@ async function loadPeople(
       companyName: string;
       opened: boolean;
       clicked: boolean;
+      humanOpen: boolean;
+      humanClick: boolean;
       replied: boolean;
       campaigns: string[];
       sentAt?: string;
@@ -499,11 +504,14 @@ async function loadPeople(
           openedDevice: 1,
           openEvents: 1,
           openPixelBlocked: 1,
+          botOpen: 1,
           clickCount: 1,
           clickedAt: 1,
+          clickedUrl: 1,
           clickedDevice: 1,
           clickEvents: 1,
           clickBurstIgnored: 1,
+          botClick: 1,
           sentAt: 1,
           repliedAt: 1,
         })
@@ -536,6 +544,8 @@ async function loadPeople(
         !doc.clickBurstIgnored &&
         ((doc.clickCount ?? 0) > 0 || Boolean(doc.clickedAt));
       const opened = sendCountsAsOpen(doc);
+      const humanClick = sendHasHumanClick(doc);
+      const humanOpen = opened && !sendIsBotOnlyOpen(doc);
       const pixelBlocked = sendOpenPixelBlocked(doc);
       const current = merged.get(email);
       const replied = Boolean(doc.repliedAt);
@@ -558,6 +568,8 @@ async function loadPeople(
           companyName: doc.companyName || "",
           opened,
           clicked,
+          humanOpen,
+          humanClick,
           replied,
           campaigns: [campaign.name],
           sentAt,
@@ -573,6 +585,8 @@ async function loadPeople(
       }
       current.opened = current.opened || opened;
       current.clicked = current.clicked || clicked;
+      current.humanOpen = current.humanOpen || humanOpen;
+      current.humanClick = current.humanClick || humanClick;
       current.replied = current.replied || replied;
       current.openPixelBlocked = Boolean(current.openPixelBlocked || pixelBlocked);
       current.sentAt = earlierIso(current.sentAt, sentAt);
@@ -685,8 +699,13 @@ async function loadPeople(
       const companyDomain =
         companyDomainFromEmail(emailKey) ||
         (contact?.companyId ? companyDomainById.get(contact.companyId) : undefined);
+      const {
+        humanOpen,
+        humanClick,
+        ...rest
+      } = person;
       return {
-        ...person,
+        ...rest,
         companyName,
         companyDomain,
         companyLogoUrl: companyDomain
@@ -694,6 +713,8 @@ async function loadPeople(
           : undefined,
         delivered: true,
         contactId: contact?.id,
+        botOpen: Boolean(person.opened && !humanOpen),
+        botClick: Boolean(person.clicked && !humanClick),
       };
     });
 }

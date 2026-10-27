@@ -11,7 +11,14 @@ import {
   type AnalyticsDailyPoint,
   type AnalyticsKindStats,
 } from "@/lib/analytics";
-import type { CampaignBlastDoc, CampaignSendDoc } from "@/lib/campaign-blasts-server";
+import {
+  sendHasCountableClick,
+  type CampaignBlastDoc,
+  type CampaignSendDoc,
+} from "@/lib/campaign-blasts-server";
+import { sendCountsAsOpen } from "@/lib/open-pixel";
+import { sendIsBotOnlyOpen } from "@/lib/bot-open";
+import { sendHasHumanClick } from "@/lib/bot-click";
 import type { ContactDoc } from "@/lib/crm";
 import type { AutomationDoc } from "@/lib/automations-server";
 import { ensureCampaignShareTokens } from "@/lib/drip-campaigns-server";
@@ -62,7 +69,42 @@ function dashboardCacheKey(
   toInput: string,
   withShareTokens: boolean,
 ) {
-  return `${projectId.toString()}|${fromInput}|${toInput}|${withShareTokens ? "1" : "0"}`;
+  // v2: unique-contact counts aligned with campaign report (bots hidden).
+  return `${projectId.toString()}|v2|${fromInput}|${toInput}|${withShareTokens ? "1" : "0"}`;
+}
+
+/** Match portal campaign report default (Show bot opens/clicks off). */
+function sendCountsAsReportOpen(send: CampaignSendDoc) {
+  return sendCountsAsOpen(send) && !sendIsBotOnlyOpen(send);
+}
+
+function sendCountsAsReportClick(send: CampaignSendDoc) {
+  if (!sendHasCountableClick(send)) {
+    return false;
+  }
+  return sendHasHumanClick(send);
+}
+
+function utcDayKey(value: Date) {
+  return value.toISOString().slice(0, 10);
+}
+
+type UniqueBucket = {
+  delivered: Set<string>;
+  opens: Set<string>;
+  clicks: Set<string>;
+  unsubscribed: Set<string>;
+  sentAt?: Date;
+  campaignId?: string;
+};
+
+function emptyUniqueBucket(): UniqueBucket {
+  return {
+    delivered: new Set(),
+    opens: new Set(),
+    clicks: new Set(),
+    unsubscribed: new Set(),
+  };
 }
 
 function readDashboardCache(key: string) {
@@ -122,30 +164,6 @@ async function ensureAnalyticsIndexes() {
   await analyticsIndexesPromise;
 }
 
-type SendAggFacet = {
-  totals: Array<{
-    delivered: number;
-    opens: number;
-    clicks: number;
-    unsubscribed: number;
-  }>;
-  daily: Array<{
-    _id: string;
-    delivered: number;
-    opens: number;
-    clicks: number;
-  }>;
-  byBlast: Array<{
-    _id: ObjectId;
-    campaignId: string;
-    delivered: number;
-    opens: number;
-    clicks: number;
-    unsubscribed: number;
-    sentAt?: Date;
-  }>;
-};
-
 export async function getAnalyticsDashboard(
   projectId: ObjectId,
   fromInput: string,
@@ -167,98 +185,34 @@ export async function getAnalyticsDashboard(
   const db = await getDb();
   void ensureAnalyticsIndexes();
 
-  const sendMatch = {
-    projectId,
-    status: "sent" as const,
-    sentAt: { $gte: from, $lte: to },
-  };
-
-  const openedExpr = {
-    $or: [
-      { $ne: [{ $ifNull: ["$openedAt", null] }, null] },
-      { $gt: [{ $ifNull: ["$openCount", 0] }, 0] },
-    ],
-  };
-  const clickedExpr = {
-    $and: [
-      { $ne: [{ $ifNull: ["$clickBurstIgnored", false] }, true] },
-      {
-        $or: [
-          { $ne: [{ $ifNull: ["$clickedAt", null] }, null] },
-          { $gt: [{ $ifNull: ["$clickCount", 0] }, 0] },
-        ],
-      },
-    ],
-  };
-  const unsubscribedExpr = {
-    $ne: [{ $ifNull: ["$unsubscribedAt", null] }, null],
-  };
-
-  const [sendFacet, failed, contactsAdded, automationsCreated] = await Promise.all([
+  const [sendDocs, failed, contactsAdded, automationsCreated] = await Promise.all([
     db
       .collection<CampaignSendDoc>("campaign_sends")
-      .aggregate<SendAggFacet>(
-        [
-          { $match: sendMatch },
-          {
-            $project: {
-              blastId: 1,
-              campaignId: 1,
-              sentAt: 1,
-              opened: openedExpr,
-              clicked: clickedExpr,
-              unsubscribed: unsubscribedExpr,
-              day: {
-                $dateToString: {
-                  format: "%Y-%m-%d",
-                  date: "$sentAt",
-                  timezone: "UTC",
-                },
-              },
-            },
-          },
-          {
-            $facet: {
-              totals: [
-                {
-                  $group: {
-                    _id: null,
-                    delivered: { $sum: 1 },
-                    opens: { $sum: { $cond: ["$opened", 1, 0] } },
-                    clicks: { $sum: { $cond: ["$clicked", 1, 0] } },
-                    unsubscribed: { $sum: { $cond: ["$unsubscribed", 1, 0] } },
-                  },
-                },
-              ],
-              daily: [
-                {
-                  $group: {
-                    _id: "$day",
-                    delivered: { $sum: 1 },
-                    opens: { $sum: { $cond: ["$opened", 1, 0] } },
-                    clicks: { $sum: { $cond: ["$clicked", 1, 0] } },
-                  },
-                },
-              ],
-              byBlast: [
-                {
-                  $group: {
-                    _id: "$blastId",
-                    campaignId: { $first: "$campaignId" },
-                    delivered: { $sum: 1 },
-                    opens: { $sum: { $cond: ["$opened", 1, 0] } },
-                    clicks: { $sum: { $cond: ["$clicked", 1, 0] } },
-                    unsubscribed: { $sum: { $cond: ["$unsubscribed", 1, 0] } },
-                    sentAt: { $max: "$sentAt" },
-                  },
-                },
-              ],
-            },
-          },
-        ],
-        { allowDiskUse: true },
-      )
-      .next(),
+      .find({
+        projectId,
+        status: "sent",
+        sentAt: { $gte: from, $lte: to },
+      })
+      .project({
+        blastId: 1,
+        campaignId: 1,
+        email: 1,
+        sentAt: 1,
+        bouncedAt: 1,
+        openCount: 1,
+        openedAt: 1,
+        openEvents: 1,
+        openPixelBlocked: 1,
+        botOpen: 1,
+        clickCount: 1,
+        clickedAt: 1,
+        clickedUrl: 1,
+        clickEvents: 1,
+        clickBurstIgnored: 1,
+        botClick: 1,
+        unsubscribedAt: 1,
+      })
+      .toArray() as Promise<CampaignSendDoc[]>,
     db.collection<CampaignSendDoc>("campaign_sends").countDocuments({
       projectId,
       status: "failed",
@@ -274,9 +228,85 @@ export async function getAnalyticsDashboard(
     }),
   ]);
 
-  const facet = sendFacet ?? { totals: [], daily: [], byBlast: [] };
-  const totalRow = facet.totals[0];
-  const byBlast = facet.byBlast;
+  const totalsBucket = emptyUniqueBucket();
+  const dailyBuckets = new Map<string, UniqueBucket>();
+  const blastBuckets = new Map<string, UniqueBucket & { blastId: ObjectId }>();
+
+  for (const doc of sendDocs) {
+    const email = String(doc.email ?? "")
+      .trim()
+      .toLowerCase();
+    if (!email || !doc.sentAt) {
+      continue;
+    }
+    const sentAt = doc.sentAt instanceof Date ? doc.sentAt : new Date(doc.sentAt);
+    if (Number.isNaN(sentAt.getTime())) {
+      continue;
+    }
+    const delivered = !doc.bouncedAt;
+    const opened = sendCountsAsReportOpen(doc);
+    const clicked = sendCountsAsReportClick(doc);
+    const unsubscribed = Boolean(doc.unsubscribedAt);
+    const day = utcDayKey(sentAt);
+    const blastKey = doc.blastId.toString();
+
+    let blast = blastBuckets.get(blastKey);
+    if (!blast) {
+      blast = { ...emptyUniqueBucket(), blastId: doc.blastId, campaignId: doc.campaignId };
+      blastBuckets.set(blastKey, blast);
+    }
+    let daily = dailyBuckets.get(day);
+    if (!daily) {
+      daily = emptyUniqueBucket();
+      dailyBuckets.set(day, daily);
+    }
+
+    if (delivered) {
+      totalsBucket.delivered.add(email);
+      blast.delivered.add(email);
+      daily.delivered.add(email);
+    }
+    if (opened) {
+      totalsBucket.opens.add(email);
+      blast.opens.add(email);
+      daily.opens.add(email);
+    }
+    if (clicked) {
+      totalsBucket.clicks.add(email);
+      blast.clicks.add(email);
+      daily.clicks.add(email);
+    }
+    if (unsubscribed) {
+      totalsBucket.unsubscribed.add(email);
+      blast.unsubscribed.add(email);
+      daily.unsubscribed.add(email);
+    }
+    if (!blast.sentAt || sentAt > blast.sentAt) {
+      blast.sentAt = sentAt;
+    }
+  }
+
+  const byBlast = [...blastBuckets.values()].map((row) => ({
+    _id: row.blastId,
+    campaignId: row.campaignId || "",
+    delivered: row.delivered.size,
+    opens: row.opens.size,
+    clicks: row.clicks.size,
+    unsubscribed: row.unsubscribed.size,
+    sentAt: row.sentAt,
+  }));
+  const totalRow = {
+    delivered: totalsBucket.delivered.size,
+    opens: totalsBucket.opens.size,
+    clicks: totalsBucket.clicks.size,
+    unsubscribed: totalsBucket.unsubscribed.size,
+  };
+  const facetDaily = [...dailyBuckets.entries()].map(([day, row]) => ({
+    _id: day,
+    delivered: row.delivered.size,
+    opens: row.opens.size,
+    clicks: row.clicks.size,
+  }));
 
   const blastIds = byBlast.map((row) => row._id);
   const blasts = blastIds.length
@@ -334,7 +364,7 @@ export async function getAnalyticsDashboard(
   for (const day of eachDay(from, to)) {
     dailyMap.set(day, { date: day, delivered: 0, opens: 0, clicks: 0 });
   }
-  for (const point of facet.daily) {
+  for (const point of facetDaily) {
     if (!point._id) {
       continue;
     }

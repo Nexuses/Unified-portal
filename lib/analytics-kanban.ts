@@ -61,6 +61,15 @@ export type KanbanPerson = {
   delivered: boolean;
   opened: boolean;
   clicked: boolean;
+  /**
+   * Open is only bot-like (grace) with no human click — excluded when
+   * Show bot opens/clicks is off.
+   */
+  botOpen?: boolean;
+  /**
+   * Click is only bot/scanner-like — excluded when Show bot opens/clicks is off.
+   */
+  botClick?: boolean;
   replied?: boolean;
   campaigns: string[];
   /** Earliest send time across linked campaigns. */
@@ -184,6 +193,35 @@ function personRank(person: KanbanPerson) {
     return RULE_RANK.opened;
   }
   return RULE_RANK.delivered;
+}
+
+/**
+ * True when the person has reached this engagement level or further.
+ * Funnel Open includes clickers (opened OR clicked), unlike exclusive board columns.
+ */
+export function personReachesStageRule(person: KanbanPerson, rule: KanbanStageRule) {
+  return personRank(person) >= RULE_RANK[rule];
+}
+
+/** Apply Show bot opens/clicks off — drop bot-only open/click flags. */
+export function kanbanPersonWithoutBots(person: KanbanPerson): KanbanPerson {
+  return {
+    ...person,
+    opened: Boolean(person.opened && !person.botOpen),
+    clicked: Boolean(person.clicked && !person.botClick),
+    botOpen: false,
+    botClick: false,
+  };
+}
+
+export function kanbanPeopleForBotFilter(
+  people: KanbanPerson[],
+  hideBotClicks: boolean,
+) {
+  if (!hideBotClicks) {
+    return people;
+  }
+  return people.map(kanbanPersonWithoutBots);
 }
 
 /** Furthest stage the person has reached; null when the board has no stage for their level. */

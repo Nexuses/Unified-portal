@@ -6,7 +6,7 @@ import { findKanbanShareByToken, getSharedKanbanBoard } from "@/lib/analytics-ka
 
 type PageProps = {
   params: Promise<{ token: string }>;
-  searchParams: Promise<{ view?: string }>;
+  searchParams: Promise<{ view?: string; hideBotClicks?: string }>;
 };
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
@@ -20,7 +20,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function PublicKanbanPage({ params, searchParams }: PageProps) {
   const { token } = await params;
-  const { view } = await searchParams;
+  const { view, hideBotClicks: hideBotParam } = await searchParams;
   const share = await findKanbanShareByToken(token);
   if (!share) {
     notFound();
@@ -49,6 +49,7 @@ export default async function PublicKanbanPage({ params, searchParams }: PagePro
         sharedBoard={board}
         shareToken={token}
         initialView={view === "funnel" ? "funnel" : "board"}
+        initialHideBotClicks={hideBotParam === "1"}
       />
     </div>
   );

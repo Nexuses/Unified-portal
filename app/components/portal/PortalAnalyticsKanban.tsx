@@ -11,6 +11,8 @@ import {
   fetchKanbanBoard,
   KANBAN_DOT_COLORS,
   patchKanbanBoard,
+  kanbanPeopleForBotFilter,
+  personReachesStageRule,
   portalContactsKanbanPickRoute,
   portalKanbanRoute,
   stageIdForPerson,
@@ -131,6 +133,7 @@ export default function PortalAnalyticsKanban({
   sharedBoard,
   shareToken,
   initialView = "board",
+  initialHideBotClicks = false,
 }: {
   boardId: string;
   /** Public view: cards can move between stages; no stage edits, chat or portal links. */
@@ -138,6 +141,8 @@ export default function PortalAnalyticsKanban({
   shareToken?: string;
   /** Board | Funnel — used by public links (`?view=funnel`). */
   initialView?: "board" | "funnel";
+  /** Public links can start with bots hidden (`?hideBotClicks=1`). */
+  initialHideBotClicks?: boolean;
 }) {
   const readOnly = Boolean(sharedBoard);
   const [board, setBoard] = useState<KanbanBoard | null>(sharedBoard ?? null);
@@ -173,23 +178,42 @@ export default function PortalAnalyticsKanban({
   const [viewMode, setViewMode] = useState<"board" | "funnel">(
     initialView === "funnel" ? "funnel" : "board",
   );
+  const [hideBotClicks, setHideBotClicks] = useState(Boolean(initialHideBotClicks));
+  const showBotEngagement = !hideBotClicks;
   const router = useRouter();
+
+  function patchPublicQuery(mutate: (url: URL) => void) {
+    if (!shareToken || typeof window === "undefined") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    mutate(url);
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }
 
   function setPipelineView(next: "board" | "funnel") {
     setViewMode(next);
     if (next === "funnel") {
       setEditingCampaigns(false);
     }
-    if (!shareToken || typeof window === "undefined") {
-      return;
-    }
-    const url = new URL(window.location.href);
-    if (next === "funnel") {
-      url.searchParams.set("view", "funnel");
-    } else {
-      url.searchParams.delete("view");
-    }
-    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    patchPublicQuery((url) => {
+      if (next === "funnel") {
+        url.searchParams.set("view", "funnel");
+      } else {
+        url.searchParams.delete("view");
+      }
+    });
+  }
+
+  function setBotFilter(hideBots: boolean) {
+    setHideBotClicks(hideBots);
+    patchPublicQuery((url) => {
+      if (hideBots) {
+        url.searchParams.set("hideBotClicks", "1");
+      } else {
+        url.searchParams.delete("hideBotClicks");
+      }
+    });
   }
   const boardRef = useRef<HTMLDivElement | null>(null);
   const editStageInputRef = useRef<HTMLInputElement | null>(null);
@@ -335,10 +359,17 @@ export default function PortalAnalyticsKanban({
     setExportingCsv(true);
     setError("");
     try {
-      const response = await fetch(
-        `/api/analytics/kanban/${encodeURIComponent(board.id)}/export`,
-        { cache: "no-store" },
-      );
+      const params = new URLSearchParams();
+      if (hideBotClicks) {
+        params.set("hideBotClicks", "1");
+      }
+      const query = params.toString();
+      const path = shareToken
+        ? `/api/public/kanban/${encodeURIComponent(shareToken)}/export`
+        : `/api/analytics/kanban/${encodeURIComponent(board.id)}/export`;
+      const response = await fetch(`${path}${query ? `?${query}` : ""}`, {
+        cache: "no-store",
+      });
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as {
           error?: string;
@@ -366,6 +397,14 @@ export default function PortalAnalyticsKanban({
     }
   }
 
+  const visiblePeople = useMemo(
+    () =>
+      board
+        ? kanbanPeopleForBotFilter(board.people, hideBotClicks)
+        : [],
+    [board, hideBotClicks],
+  );
+
   const columns = useMemo(() => {
     if (!board) {
       return [];
@@ -373,7 +412,7 @@ export default function PortalAnalyticsKanban({
     const byStage = new Map<string, KanbanPerson[]>(
       board.stages.map((stage) => [stage.id, []]),
     );
-    for (const person of board.people) {
+    for (const person of visiblePeople) {
       const stageId = stageIdForPerson(person, board.placements, board.stages);
       if (stageId) {
         byStage.get(stageId)?.push(person);
@@ -383,18 +422,29 @@ export default function PortalAnalyticsKanban({
       stage,
       people: byStage.get(stage.id) ?? [],
     }));
-  }, [board]);
+  }, [board, visiblePeople]);
 
-  const funnelStages = useMemo(
-    () =>
-      columns.map(({ stage, people }) => ({
+  const funnelStages = useMemo(() => {
+    if (!board) {
+      return [];
+    }
+    return board.stages.map((stage) => {
+      // Rule stages use cumulative reach (Open = opened OR clicked).
+      // Custom stages stay as exclusive board-column counts.
+      const people = stage.rule
+        ? visiblePeople.filter((person) =>
+            personReachesStageRule(person, stage.rule!),
+          )
+        : (columns.find((column) => column.stage.id === stage.id)?.people ??
+          []);
+      return {
         key: stage.id,
         label: stageLabel(stage.name),
         hint: `${people.length} lead${people.length === 1 ? "" : "s"}`,
         value: people.length,
-      })),
-    [columns],
-  );
+      };
+    });
+  }, [board, columns, visiblePeople]);
 
   function visibleLimit(stageId: string, people: KanbanPerson[]) {
     const base = visibleByStage[stageId] ?? CARD_BATCH;
@@ -795,6 +845,41 @@ export default function PortalAnalyticsKanban({
                 Funnel
               </button>
             </div>
+            <div
+              className="an-kanban-view-toggle"
+              role="group"
+              aria-label="Bot opens and clicks"
+              title={
+                showBotEngagement
+                  ? "Bot opens/clicks included in board and funnel"
+                  : "Bot opens/clicks hidden from board and funnel"
+              }
+            >
+              <button
+                type="button"
+                className={showBotEngagement ? "is-active" : ""}
+                aria-pressed={showBotEngagement}
+                onClick={() => setBotFilter(false)}
+              >
+                Bots on
+              </button>
+              <button
+                type="button"
+                className={!showBotEngagement ? "is-active" : ""}
+                aria-pressed={!showBotEngagement}
+                onClick={() => setBotFilter(true)}
+              >
+                Bots off
+              </button>
+            </div>
+            <button
+              type="button"
+              className="btn-soft"
+              onClick={() => void exportCsv()}
+              disabled={exportingCsv}
+            >
+              {exportingCsv ? "Exporting…" : "Export CSV"}
+            </button>
             {!readOnly ? (
               <>
                 <button
@@ -808,14 +893,6 @@ export default function PortalAnalyticsKanban({
                     : sharing
                       ? "Creating…"
                       : "Create public URL"}
-                </button>
-                <button
-                  type="button"
-                  className="btn-soft"
-                  onClick={() => void exportCsv()}
-                  disabled={exportingCsv}
-                >
-                  {exportingCsv ? "Exporting…" : "Export CSV"}
                 </button>
                 <button
                   type="button"

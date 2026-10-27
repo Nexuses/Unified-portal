@@ -918,7 +918,7 @@ function isCountableClickEvent(event: {
   return !isNonNavigationalTrackedUrl(event.url ?? "");
 }
 
-function sendHasCountableClick(
+export function sendHasCountableClick(
   send: Pick<CampaignSendDoc, "clickEvents" | "clickedAt" | "clickedUrl" | "clickBurstIgnored">,
 ) {
   if (send.clickBurstIgnored) {
