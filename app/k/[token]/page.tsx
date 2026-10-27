@@ -6,6 +6,7 @@ import { findKanbanShareByToken, getSharedKanbanBoard } from "@/lib/analytics-ka
 
 type PageProps = {
   params: Promise<{ token: string }>;
+  searchParams: Promise<{ view?: string }>;
 };
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
@@ -17,8 +18,9 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   return { title: `${share.projectName} lead pipeline` };
 }
 
-export default async function PublicKanbanPage({ params }: PageProps) {
+export default async function PublicKanbanPage({ params, searchParams }: PageProps) {
   const { token } = await params;
+  const { view } = await searchParams;
   const share = await findKanbanShareByToken(token);
   if (!share) {
     notFound();
@@ -42,7 +44,12 @@ export default async function PublicKanbanPage({ params }: PageProps) {
   }
   return (
     <div className="an-public">
-      <PortalAnalyticsKanban boardId={board.id} sharedBoard={board} shareToken={token} />
+      <PortalAnalyticsKanban
+        boardId={board.id}
+        sharedBoard={board}
+        shareToken={token}
+        initialView={view === "funnel" ? "funnel" : "board"}
+      />
     </div>
   );
 }

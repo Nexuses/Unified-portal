@@ -1057,3 +1057,77 @@ export async function addContactsToKanbanStage(
     },
   );
 }
+
+/** Drop CRM-deleted contacts from kanban placements, manuals, and people cache. */
+export async function purgeKanbanContactsForEmails(
+  projectId: ObjectId,
+  emails: string[],
+) {
+  const normalized = new Set(
+    emails
+      .map((email) => email.trim().toLowerCase())
+      .filter((email) => email.includes("@")),
+  );
+  if (normalized.size === 0) {
+    return { boardsUpdated: 0 };
+  }
+
+  const db = await getDb();
+  const boards = await db
+    .collection<KanbanDoc>("analytics_kanban")
+    .find({ projectId })
+    .toArray();
+
+  let boardsUpdated = 0;
+  const now = new Date();
+  for (const board of boards) {
+    const placements = normalizePlacements(board.placements);
+    const nextPlacements: Record<string, string> = {};
+    let placementsChanged = false;
+    for (const [email, stageId] of Object.entries(placements)) {
+      if (normalized.has(email)) {
+        placementsChanged = true;
+        continue;
+      }
+      nextPlacements[email] = stageId;
+    }
+
+    const manualPeople = normalizeManualPeople(board.manualPeople);
+    const nextManual = manualPeople.filter(
+      (person) => !normalized.has(person.email.trim().toLowerCase()),
+    );
+    const manualChanged = nextManual.length !== manualPeople.length;
+
+    if (!placementsChanged && !manualChanged) {
+      continue;
+    }
+
+    await db.collection<KanbanDoc>("analytics_kanban").updateOne(
+      { _id: board._id, projectId },
+      {
+        $set: {
+          placements: nextPlacements,
+          manualPeople: nextManual,
+          updatedAt: now,
+        },
+      },
+    );
+    boardsUpdated += 1;
+  }
+
+  const prefix = `${projectId.toString()}|`;
+  for (const key of [...peopleCache.memory.keys()]) {
+    if (key.startsWith(prefix)) {
+      peopleCache.memory.delete(key);
+    }
+  }
+  await db
+    .collection<{ _id: string }>("analytics_kanban_people_cache")
+    .deleteMany({
+      _id: {
+        $regex: `^${projectId.toString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\|`,
+      },
+    });
+
+  return { boardsUpdated };
+}

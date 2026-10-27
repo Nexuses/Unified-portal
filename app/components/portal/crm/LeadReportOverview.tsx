@@ -57,6 +57,7 @@ function applyLeadStage(
     },
   };
 }
+import EngagementFunnelChart from "@/app/components/portal/EngagementFunnelChart";
 import {
   portalCampaignRoute,
   portalCompanyRoute,
@@ -1959,12 +1960,18 @@ export default function LeadReportOverview({
                         </ReadMoreText>
                       ) : null}
                       {entry.event?.openTag ||
+                      entry.event?.clickTag ||
                       entry.event?.device ||
                       entry.event?.ip ? (
                         <div className="lr-tl-extra">
                           {entry.event.openTag ? (
                             <span className="lr-tl-chip">
                               {entry.event.openTag}
+                            </span>
+                          ) : null}
+                          {entry.event.clickTag ? (
+                            <span className="lr-tl-chip">
+                              {entry.event.clickTag}
                             </span>
                           ) : null}
                           {entry.event.device &&
@@ -2206,6 +2213,9 @@ export default function LeadReportOverview({
                   ["Delivered", campaignStats.delivered],
                   ["Opens", campaignStats.opens],
                   ["Clicks", campaignStats.clicks],
+                  ...(campaignStats.replies > 0
+                    ? [["Replies", campaignStats.replies] as const]
+                    : []),
                 ].map(([label, value]) => (
                   <div className="cd-stat" key={String(label)}>
                     <div className="k">{label}</div>
@@ -2213,6 +2223,62 @@ export default function LeadReportOverview({
                   </div>
                 ))}
               </div>
+              {campaignStats.sent > 0 || campaignStats.delivered > 0 ? (
+                <EngagementFunnelChart
+                  className="engagement-funnel engagement-funnel--compact"
+                  height={320}
+                  stages={[
+                    {
+                      key: "delivered",
+                      label: "Delivered",
+                      hint: "Emails delivered",
+                      value:
+                        campaignStats.delivered || campaignStats.sent,
+                    },
+                    {
+                      key: "open",
+                      label: "Opens",
+                      hint: "Unique opens",
+                      value: campaignStats.opens,
+                    },
+                    {
+                      key: "clicks",
+                      label: "Clicks",
+                      hint: "Unique clicks",
+                      value: campaignStats.clicks,
+                    },
+                    ...(campaignStats.replies > 0
+                      ? [
+                          {
+                            key: "reply",
+                            label: "Replies",
+                            hint: "Replies received",
+                            value: campaignStats.replies,
+                          },
+                        ]
+                      : []),
+                  ]}
+                  conversionLabel={(stage) => {
+                    const base =
+                      campaignStats.sent ||
+                      campaignStats.delivered ||
+                      stage.value ||
+                      1;
+                    const value =
+                      stage.key === "delivered"
+                        ? campaignStats.delivered || campaignStats.sent
+                        : stage.key === "open"
+                          ? campaignStats.opens
+                          : stage.key === "clicks"
+                            ? campaignStats.clicks
+                            : stage.key === "reply"
+                              ? campaignStats.replies
+                              : stage.value;
+                    if (base <= 0) return "0%";
+                    return `${Math.round((value / base) * 100)}%`;
+                  }}
+                />
+              ) : null}
             </div>
           </div>
 

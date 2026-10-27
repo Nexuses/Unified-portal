@@ -38,18 +38,35 @@ export async function GET(request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Invalid sequence" }, { status: 400 });
     }
 
+    const countOnly = request.nextUrl.searchParams.get("count") === "1";
+    const sharedOptions = {
+      sequenceIndex,
+      uniqueContacts: request.nextUrl.searchParams.get("unique") === "1",
+      hideBotClicks:
+        session.instantClick &&
+        request.nextUrl.searchParams.get("hideBotClicks") === "1",
+    };
+
+    if (countOnly) {
+      const count = await listCampaignSendRecipients(
+        new ObjectId(session.projectId),
+        id,
+        filter,
+        kind,
+        { ...sharedOptions, countOnly: true },
+      );
+      return NextResponse.json(
+        { count },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+
     const recipients = await listCampaignSendRecipients(
       new ObjectId(session.projectId),
       id,
       filter,
       kind,
-      {
-        sequenceIndex,
-        uniqueContacts: request.nextUrl.searchParams.get("unique") === "1",
-        hideBotClicks:
-          session.instantClick &&
-          request.nextUrl.searchParams.get("hideBotClicks") === "1",
-      },
+      sharedOptions,
     );
 
     return NextResponse.json(recipients, {

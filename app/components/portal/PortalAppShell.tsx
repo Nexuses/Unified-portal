@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   getHighlightPageFromPathname,
   getOpenGroupsFromPathname,
@@ -28,6 +28,7 @@ type PortalAppShellProps = {
 export default function PortalAppShell({ user, children }: PortalAppShellProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -43,6 +44,9 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
     [pathname],
   );
   const pageTitle = useMemo(() => getPageTitleFromPathname(pathname), [pathname]);
+  const isLeadReportView =
+    /^\/portal\/crm\/contacts\/[^/]+$/.test(pathname) &&
+    searchParams.get("view") === "lead-report";
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -55,6 +59,10 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
 
   if (pathname.startsWith("/portal/marketing/edm")) {
     return <div className="edm-shell">{children}</div>;
+  }
+
+  if (isLeadReportView) {
+    return <div className="lead-report-shell">{children}</div>;
   }
 
   return (

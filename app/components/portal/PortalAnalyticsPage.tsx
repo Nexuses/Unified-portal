@@ -549,8 +549,8 @@ export function PortalAnalyticsPage() {
               <div>
                 <h3 id="an-share-bot-title">Create public URL</h3>
                 <p>
-                  Hide bot clicks in linked campaign reports? Viewers will not see the
-                  Bot click tag when hidden.
+                  Include bot opens/clicks in linked campaign reports? Viewers will
+                  not see Bot open / Bot click tags when hidden.
                 </p>
               </div>
               <button
@@ -570,7 +570,7 @@ export function PortalAnalyticsPage() {
                 disabled={sharing}
                 onClick={() => void createPublicUrl(false)}
               >
-                Keep bot clicks
+                Show bot opens/clicks
               </button>
               <button
                 type="button"
@@ -578,7 +578,7 @@ export function PortalAnalyticsPage() {
                 disabled={sharing}
                 onClick={() => void createPublicUrl(true)}
               >
-                Hide bot clicks
+                Hide bot opens/clicks
               </button>
             </div>
           </div>

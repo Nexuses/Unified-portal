@@ -2,12 +2,12 @@
 
 ## Live
 
-Contact detail uses the **Lead Report** layout (`../PortalContactDetailPage.tsx` + `../LeadReportOverview.tsx`).
+Contact detail uses the **tabs** UI (`../PortalContactDetailPage.tsx`) with a **Lead Report** button that opens `../PortalContactLeadReportView.tsx` (`?view=lead-report`).
 
-## Parked
+## Parked snapshots
 
-- `PortalContactDetailPage.tabs.tsx` — previous Overview / History / Lists / Preferences tabs UI
-- `PortalContactDetailPage.lead-report.tsx` — snapshot of the lead-report shell (same as live)
+- `PortalContactDetailPage.tabs.tsx` — snapshot of the tabs UI
+- `PortalContactDetailPage.lead-report.tsx` — snapshot of the lead-report shell
 
 Related (still used by live lead report):
 
@@ -16,5 +16,3 @@ Related (still used by live lead report):
 - `../../../../api/crm/contacts/[id]/apollo-enrich/`
 - profile fields on contact API / `lib/crm.ts` / `lib/crm-contacts-server.ts`
 - lead-report styles in `app/portal/portal.css` (`.lr-*`)
-
-To restore tabs UI: copy `PortalContactDetailPage.tabs.tsx` over `../PortalContactDetailPage.tsx`.

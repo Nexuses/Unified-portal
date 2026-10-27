@@ -26,6 +26,7 @@ import {
 } from "@/lib/drip-campaigns";
 import { PORTAL_ROUTES, portalContactRoute } from "@/lib/portal-nav";
 import { formatAnalyticsExpiry } from "@/lib/analytics";
+import PipelineFunnelChart from "@/app/components/portal/PipelineFunnelChart";
 
 const CARD_BATCH = 30;
 
@@ -129,11 +130,14 @@ export default function PortalAnalyticsKanban({
   boardId,
   sharedBoard,
   shareToken,
+  initialView = "board",
 }: {
   boardId: string;
   /** Public view: cards can move between stages; no stage edits, chat or portal links. */
   sharedBoard?: KanbanBoard;
   shareToken?: string;
+  /** Board | Funnel — used by public links (`?view=funnel`). */
+  initialView?: "board" | "funnel";
 }) {
   const readOnly = Boolean(sharedBoard);
   const [board, setBoard] = useState<KanbanBoard | null>(sharedBoard ?? null);
@@ -166,7 +170,27 @@ export default function PortalAnalyticsKanban({
   const [visibleByStage, setVisibleByStage] = useState<Record<string, number>>({});
   const [editingStageId, setEditingStageId] = useState("");
   const [editingStageName, setEditingStageName] = useState("");
+  const [viewMode, setViewMode] = useState<"board" | "funnel">(
+    initialView === "funnel" ? "funnel" : "board",
+  );
   const router = useRouter();
+
+  function setPipelineView(next: "board" | "funnel") {
+    setViewMode(next);
+    if (next === "funnel") {
+      setEditingCampaigns(false);
+    }
+    if (!shareToken || typeof window === "undefined") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    if (next === "funnel") {
+      url.searchParams.set("view", "funnel");
+    } else {
+      url.searchParams.delete("view");
+    }
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }
   const boardRef = useRef<HTMLDivElement | null>(null);
   const editStageInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -360,6 +384,17 @@ export default function PortalAnalyticsKanban({
       people: byStage.get(stage.id) ?? [],
     }));
   }, [board]);
+
+  const funnelStages = useMemo(
+    () =>
+      columns.map(({ stage, people }) => ({
+        key: stage.id,
+        label: stageLabel(stage.name),
+        hint: `${people.length} lead${people.length === 1 ? "" : "s"}`,
+        value: people.length,
+      })),
+    [columns],
+  );
 
   function visibleLimit(stageId: string, people: KanbanPerson[]) {
     const base = visibleByStage[stageId] ?? CARD_BATCH;
@@ -740,46 +775,72 @@ export default function PortalAnalyticsKanban({
           )}
           <h2>{board?.name || "Pipeline"}</h2>
         </div>
-        {board && !readOnly ? (
+        {board ? (
           <div className="an-kanban-head-actions-top">
-            <button
-              type="button"
-              className="btn-soft"
-              onClick={() => void createPublicUrl()}
-              disabled={sharing}
-            >
-              {shareCopied ? "Public URL copied" : sharing ? "Creating…" : "Create public URL"}
-            </button>
-            <button
-              type="button"
-              className="btn-soft"
-              onClick={() => void exportCsv()}
-              disabled={exportingCsv}
-            >
-              {exportingCsv ? "Exporting…" : "Export CSV"}
-            </button>
-            <button
-              type="button"
-              className="btn-dark"
-              onClick={() => {
-                setChatOpen(true);
-                setEditingCampaigns(false);
-              }}
-            >
-              Chat
-            </button>
-            <button
-              type="button"
-              className="btn-soft"
-              onClick={() => void openCampaignEditor()}
-            >
-              Campaigns
-            </button>
+            <div className="an-kanban-view-toggle" role="group" aria-label="Board or funnel view">
+              <button
+                type="button"
+                className={viewMode === "board" ? "is-active" : ""}
+                aria-pressed={viewMode === "board"}
+                onClick={() => setPipelineView("board")}
+              >
+                Board
+              </button>
+              <button
+                type="button"
+                className={viewMode === "funnel" ? "is-active" : ""}
+                aria-pressed={viewMode === "funnel"}
+                onClick={() => setPipelineView("funnel")}
+              >
+                Funnel
+              </button>
+            </div>
+            {!readOnly ? (
+              <>
+                <button
+                  type="button"
+                  className="btn-soft"
+                  onClick={() => void createPublicUrl()}
+                  disabled={sharing}
+                >
+                  {shareCopied
+                    ? "Public URL copied"
+                    : sharing
+                      ? "Creating…"
+                      : "Create public URL"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-soft"
+                  onClick={() => void exportCsv()}
+                  disabled={exportingCsv}
+                >
+                  {exportingCsv ? "Exporting…" : "Export CSV"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-dark"
+                  onClick={() => {
+                    setChatOpen(true);
+                    setEditingCampaigns(false);
+                  }}
+                >
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  className="btn-soft"
+                  onClick={() => void openCampaignEditor()}
+                >
+                  Campaigns
+                </button>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
 
-      {board ? (
+      {board && viewMode === "board" ? (
         <div className="drip-toolbar an-kanban-toolbar-search">
           <label className="drip-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -874,7 +935,25 @@ export default function PortalAnalyticsKanban({
         </div>
       ) : null}
 
-      {board ? (
+      {board && viewMode === "funnel" ? (
+        <div className="an-kanban-funnel-wrap">
+          <div className="drip-report-section-head">
+            <h3>Pipeline funnel</h3>
+            <span>
+              {board.people.length.toLocaleString()} lead
+              {board.people.length === 1 ? "" : "s"} across{" "}
+              {columns.length} stage{columns.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          {columns.length === 0 ? (
+            <p className="an-empty">No stages on this board yet.</p>
+          ) : (
+            <PipelineFunnelChart stages={funnelStages} />
+          )}
+        </div>
+      ) : null}
+
+      {board && viewMode === "board" ? (
         <div className="an-kanban">
           <div
             ref={boardRef}

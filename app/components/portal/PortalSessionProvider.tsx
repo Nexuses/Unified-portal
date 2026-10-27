@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import PortalAppShell, { type PortalUser } from "./PortalAppShell";
 
@@ -43,5 +43,13 @@ export default function PortalSessionProvider({
     return null;
   }
 
-  return <PortalAppShell user={user}>{children}</PortalAppShell>;
+  return (
+    <Suspense
+      fallback={
+        <div className="portal-loading-screen">Loading your workspace...</div>
+      }
+    >
+      <PortalAppShell user={user}>{children}</PortalAppShell>
+    </Suspense>
+  );
 }

@@ -17,7 +17,6 @@ export default function AdminProjectsPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [togglingId, setTogglingId] = useState<string | null>(null);
   const [savingLimitId, setSavingLimitId] = useState<string | null>(null);
   const [limitDrafts, setLimitDrafts] = useState<Record<string, string>>({});
   const [savingCreditsId, setSavingCreditsId] = useState<string | null>(null);
@@ -126,47 +125,6 @@ export default function AdminProjectsPanel() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete project");
-    }
-  }
-
-  async function toggleEngagementFlag(
-    project: Project,
-    field: "instantOpen" | "instantClick",
-  ) {
-    const next = !project[field];
-    setTogglingId(`${project.id}:${field}`);
-    setError("");
-    setProjects((current) =>
-      current.map((item) =>
-        item.id === project.id ? { ...item, [field]: next } : item,
-      ),
-    );
-    try {
-      const response = await fetch(`/api/projects/${project.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [field]: next }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to update tracking setting");
-      }
-      setProjects((current) =>
-        current.map((item) =>
-          item.id === project.id ? { ...item, ...data } : item,
-        ),
-      );
-    } catch (err) {
-      setProjects((current) =>
-        current.map((item) =>
-          item.id === project.id ? { ...item, [field]: project[field] } : item,
-        ),
-      );
-      setError(
-        err instanceof Error ? err.message : "Failed to update tracking setting",
-      );
-    } finally {
-      setTogglingId(null);
     }
   }
 
@@ -406,20 +364,19 @@ export default function AdminProjectsPanel() {
                   <th>Sending limit</th>
                   <th>Data credits / month</th>
                   <th>API credit ($)</th>
-                  <th>Action</th>
                   <th aria-label="Manage" />
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="admin-empty">
+                    <td colSpan={8} className="admin-empty">
                       Loading projects...
                     </td>
                   </tr>
                 ) : projects.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="admin-empty">
+                    <td colSpan={8} className="admin-empty">
                       No projects yet. Create one on the left.
                     </td>
                   </tr>
@@ -545,62 +502,6 @@ export default function AdminProjectsPanel() {
                         <span className="admin-credits-used">
                           {formatApiCreditUsd(project.apiCreditUsedUsd ?? 0)} used
                         </span>
-                      </td>
-                      <td>
-                        <div className="admin-open-click-action">
-                          <div className="admin-toggle-row">
-                            <button
-                              type="button"
-                              className={`admin-toggle${project.instantOpen ? " on" : ""}`}
-                              role="switch"
-                              aria-checked={project.instantOpen}
-                              aria-label={`Open tracking for ${project.name}`}
-                              title={
-                                project.instantOpen
-                                  ? "ON: opens counted immediately (no delay)"
-                                  : "OFF: normal open bot-grace delay applies"
-                              }
-                              disabled={togglingId === `${project.id}:instantOpen`}
-                              onClick={() =>
-                                void toggleEngagementFlag(project, "instantOpen")
-                              }
-                            >
-                              <span className="admin-toggle-knob" />
-                            </button>
-                            <span className="admin-open-click-label">
-                              Open
-                              <span className="admin-open-click-state">
-                                {project.instantOpen ? "On" : "Off"}
-                              </span>
-                            </span>
-                          </div>
-                          <div className="admin-toggle-row">
-                            <button
-                              type="button"
-                              className={`admin-toggle${project.instantClick ? " on" : ""}`}
-                              role="switch"
-                              aria-checked={project.instantClick}
-                              aria-label={`Click tracking for ${project.name}`}
-                              title={
-                                project.instantClick
-                                  ? "ON: clicks counted immediately (no delay)"
-                                  : "OFF: normal click bot-grace delay applies"
-                              }
-                              disabled={togglingId === `${project.id}:instantClick`}
-                              onClick={() =>
-                                void toggleEngagementFlag(project, "instantClick")
-                              }
-                            >
-                              <span className="admin-toggle-knob" />
-                            </button>
-                            <span className="admin-open-click-label">
-                              Click
-                              <span className="admin-open-click-state">
-                                {project.instantClick ? "On" : "Off"}
-                              </span>
-                            </span>
-                          </div>
-                        </div>
                       </td>
                       <td className="admin-actions">
                         <div className="admin-action-group">

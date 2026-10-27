@@ -1,5 +1,5 @@
-/** Matches campaign click bot-grace (first 45s after send). */
-export const BOT_CLICK_GRACE_MS = 45_000;
+/** Matches campaign click bot-grace (first 25s after send). */
+export const BOT_CLICK_GRACE_MS = 25_000;
 /** Matches campaign burst window for multi-link scanners. */
 const BOT_CLICK_BURST_WINDOW_MS = 5_000;
 const BOT_CLICK_BURST_DISTINCT_URLS = 2;
@@ -7,14 +7,14 @@ const BOT_CLICK_BURST_DISTINCT_URLS = 2;
 /** Shown in campaign report Clicks view when a click is bot/scanner-like. */
 export const BOT_CLICK_TAG = "Bot click";
 
-type ClickHint = {
+export type ClickHint = {
   url?: string;
   at?: Date | string;
   bot?: boolean;
   ignored?: boolean;
 };
 
-type SendClickHints = {
+export type SendClickHints = {
   sentAt?: Date | string | null;
   clickedAt?: Date | string | null;
   clickedUrl?: string | null;
@@ -115,4 +115,27 @@ export function sendIsBotClick(send: SendClickHints) {
 
 export function botClickLabel(send: SendClickHints) {
   return sendIsBotClick(send) ? BOT_CLICK_TAG : "";
+}
+
+/**
+ * True when this send has at least one non-bot click event (or a legacy
+ * clickedAt outside the grace window). Used so a human click keeps the
+ * contact in Opens when bot opens/clicks are hidden.
+ */
+export function sendHasHumanClick(send: SendClickHints) {
+  const events =
+    send.clickEvents && send.clickEvents.length > 0
+      ? send.clickEvents
+      : send.clickedAt
+        ? [{ url: send.clickedUrl || "", at: send.clickedAt }]
+        : [];
+  return events.some((event) => {
+    if (event.ignored) {
+      return false;
+    }
+    if (clickEventIsBot(send, event)) {
+      return false;
+    }
+    return Boolean((event.url || send.clickedUrl || "").trim() || event.at);
+  });
 }

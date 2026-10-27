@@ -82,6 +82,9 @@ export default function PortalContactDetailPage({
   const [editing, setEditing] = useState<SectionKey | null>(null);
   const [saving, setSaving] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
   const [draftProfile, setDraftProfile] = useState<ContactProfile>(emptyProfile());
   const [draftCore, setDraftCore] = useState({
     firstName: "",
@@ -94,8 +97,42 @@ export default function PortalContactDetailPage({
   useEffect(() => {
     setEditing(null);
     setNotice("");
+    setShareCopied(false);
+    setShareUrl("");
     enrichAttemptedFor.current = null;
   }, [contactId]);
+
+  async function createPublicUrl() {
+    if (!contactId || shareBusy) return;
+    setShareBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/crm/contacts/${contactId}/share`, {
+        method: "POST",
+      });
+      const data = (await response.json()) as {
+        url?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.url) {
+        throw new Error(data.error || "Failed to create public URL");
+      }
+      setShareUrl(data.url);
+      try {
+        await navigator.clipboard.writeText(data.url);
+        setShareCopied(true);
+        window.setTimeout(() => setShareCopied(false), 2400);
+      } catch {
+        /* banner still shows the URL for manual copy */
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to create public URL",
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -332,10 +369,32 @@ export default function PortalContactDetailPage({
             </svg>
           </button>
         </div>
+        <button
+          type="button"
+          className="btn-soft lead-share-btn"
+          disabled={shareBusy}
+          onClick={() => void createPublicUrl()}
+        >
+          {shareCopied
+            ? "Public URL copied"
+            : shareBusy
+              ? "Creating…"
+              : "Create public URL"}
+        </button>
       </div>
 
       {error ? <p className="crm-error">{error}</p> : null}
       {notice ? <p className="fm-notice">{notice}</p> : null}
+      {shareUrl ? (
+        <div className="an-share-banner">
+          <span>Share this lead report with a client:</span>
+          <input
+            readOnly
+            value={shareUrl}
+            onFocus={(event) => event.currentTarget.select()}
+          />
+        </div>
+      ) : null}
 
       <LeadReportOverview
         contact={contact}

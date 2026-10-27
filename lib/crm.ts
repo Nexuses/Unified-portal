@@ -166,6 +166,7 @@ export type ContactCampaignStats = {
   delivered: number;
   opens: number;
   clicks: number;
+  replies: number;
 };
 
 export type ContactHistoryEvent = {
@@ -197,8 +198,10 @@ export type ContactHistoryEvent = {
   ip?: string;
   device?: "mobile" | "tablet" | "desktop" | "unknown";
   userAgent?: string;
-  /** e.g. "Image pixel blocked" when open was inferred from a click. */
+  /** e.g. "Bot open" / "Open not tracked" when open was inferred from a click. */
   openTag?: string;
+  /** e.g. "Bot click" for scanner/bot-like clicks. */
+  clickTag?: string;
 };
 
 export const CONTACT_PIPELINE_STAGES = [

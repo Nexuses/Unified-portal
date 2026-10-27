@@ -1,5 +1,5 @@
 /** Shown when open is inferred from a click (tracking pixel never loaded). */
-export const OPEN_PIXEL_BLOCKED_TAG = "Image pixel blocked";
+export const OPEN_PIXEL_BLOCKED_TAG = "Open not tracked";
 
 type OpenClickHints = {
   openedAt?: Date | string | null;

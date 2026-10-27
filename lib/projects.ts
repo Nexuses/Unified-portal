@@ -4,9 +4,9 @@ export type Project = {
   slug: string;
   logoUrl: string;
   users: number;
-  /** When true, open bot-grace delay is skipped for this project. */
+  /** Always true — Action Open is on for every project. */
   instantOpen: boolean;
-  /** When true, click bot-grace delay is skipped for this project. */
+  /** Always true — Action Click is on for every project. */
   instantClick: boolean;
   /** Max emails this project can send (maps to home sending usage). */
   sendingLimit: number;

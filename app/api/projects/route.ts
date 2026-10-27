@@ -31,17 +31,14 @@ type ProjectDoc = {
 };
 
 function mapProject(doc: ProjectDoc, dataCreditsUsed = 0, apiCreditUsedUsd = 0) {
-  const legacyBoth = Boolean(doc.instantOpenClick);
   return {
     id: doc._id.toString(),
     name: doc.name,
     slug: doc.slug,
     logoUrl: doc.logoUrl,
     users: doc.users ?? 0,
-    instantOpen:
-      typeof doc.instantOpen === "boolean" ? doc.instantOpen : legacyBoth,
-    instantClick:
-      typeof doc.instantClick === "boolean" ? doc.instantClick : legacyBoth,
+    instantOpen: true,
+    instantClick: true,
     sendingLimit: normalizeSendingLimit(
       doc.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
     ),
@@ -88,8 +85,6 @@ export async function POST(request: NextRequest) {
     const name = String(body.name ?? "").trim();
     const logoUrl = String(body.logoUrl ?? "").trim();
     const slugInput = String(body.slug ?? "").trim();
-    const instantOpen = Boolean(body.instantOpen);
-    const instantClick = Boolean(body.instantClick);
     const sendingLimit = normalizeSendingLimit(
       body.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
     );
@@ -129,8 +124,8 @@ export async function POST(request: NextRequest) {
       slug,
       logoUrl,
       users: 0,
-      instantOpen,
-      instantClick,
+      instantOpen: true,
+      instantClick: true,
       sendingLimit,
       dataCredits,
       apiCreditLimitUsd,
@@ -147,8 +142,8 @@ export async function POST(request: NextRequest) {
         slug: doc.slug,
         logoUrl: doc.logoUrl,
         users: doc.users,
-        instantOpen: doc.instantOpen,
-        instantClick: doc.instantClick,
+        instantOpen: true,
+        instantClick: true,
         sendingLimit: doc.sendingLimit,
         dataCredits: doc.dataCredits,
         dataCreditsUsed: 0,

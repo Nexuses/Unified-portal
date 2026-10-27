@@ -21,15 +21,19 @@ import {
   type ListMembershipDoc,
 } from "@/lib/crm";
 import { getProjectBranding } from "@/lib/project-branding";
-import type {
-  CampaignBlastDoc,
-  CampaignSendDoc,
+import {
+  purgeCampaignEngagementForEmails,
+  type CampaignBlastDoc,
+  type CampaignSendDoc,
 } from "@/lib/campaign-blasts-server";
+import { purgeKanbanContactsForEmails } from "@/lib/analytics-kanban-server";
 import {
   OPEN_PIXEL_BLOCKED_TAG,
   sendCountsAsOpen,
   sendOpenPixelBlocked,
 } from "@/lib/open-pixel";
+import { BOT_OPEN_TAG, sendIsBotOpen } from "@/lib/bot-open";
+import { BOT_CLICK_TAG, clickEventIsBot } from "@/lib/bot-click";
 
 export async function getProjectContacts(projectId: ObjectId) {
   const db = await getDb();
@@ -701,6 +705,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
     delivered: 0,
     opens: 0,
     clicks: 0,
+    replies: 0,
   };
 
   if (!normalized) {
@@ -766,27 +771,38 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
       stats.opens += 1;
       const firstOpenEvent = send.openEvents?.[0];
       const pixelBlocked = sendOpenPixelBlocked(send);
+      const botOpen = sendIsBotOpen(send);
+      const openTags = [
+        ...(botOpen ? [BOT_OPEN_TAG] : []),
+        ...(pixelBlocked ? [OPEN_PIXEL_BLOCKED_TAG] : []),
+      ];
       const openIp =
         firstOpenEvent?.ip || send.openedIp || send.clickedIp;
       const openDevice =
         firstOpenEvent?.device || send.openedDevice || send.clickedDevice;
       const openUa =
         firstOpenEvent?.userAgent || send.openedUserAgent || send.clickedUserAgent;
+      const openTitle = botOpen
+        ? pixelBlocked
+          ? "Email campaign opened (bot · not tracked)"
+          : "Email campaign opened (bot)"
+        : pixelBlocked
+          ? "Email campaign opened (not tracked)"
+          : "Email campaign opened";
       events.push({
         id: `campaign-opened-${send._id.toString()}`,
         type: "campaign_opened",
-        title: pixelBlocked
-          ? "Email campaign opened (pixel blocked)"
-          : "Email campaign opened",
-        description: pixelBlocked
-          ? `Opened campaign ${label} (${OPEN_PIXEL_BLOCKED_TAG}).`
-          : `Opened campaign ${label}.`,
+        title: openTitle,
+        description:
+          openTags.length > 0
+            ? `Opened campaign ${label} (${openTags.join(" · ")}).`
+            : `Opened campaign ${label}.`,
         at: toIso(send.openedAt || firstOpenEvent?.at || send.clickedAt),
         actor,
         campaignId: send.campaignId,
         campaignKind,
         campaignName,
-        ...(pixelBlocked ? { openTag: OPEN_PIXEL_BLOCKED_TAG } : {}),
+        ...(openTags.length > 0 ? { openTag: openTags.join(" · ") } : {}),
         ...(openIp ? { ip: openIp } : {}),
         ...(openDevice ? { device: openDevice } : {}),
         ...(openUa ? { userAgent: openUa } : {}),
@@ -814,23 +830,35 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
 
     for (const [index, click] of clickEvents.entries()) {
       const url = click.url?.trim();
+      const botClick = clickEventIsBot(send, click);
       events.push({
         id: `campaign-clicked-${send._id.toString()}-${index}`,
         type: "campaign_clicked",
-        title: "Email campaign link clicked",
+        title: botClick
+          ? "Email campaign link clicked (bot)"
+          : "Email campaign link clicked",
         description: url
-          ? `Clicked ${url} in campaign ${label}.`
-          : `Clicked a link in campaign ${label}.`,
+          ? botClick
+            ? `Clicked ${url} in campaign ${label} (${BOT_CLICK_TAG}).`
+            : `Clicked ${url} in campaign ${label}.`
+          : botClick
+            ? `Clicked a link in campaign ${label} (${BOT_CLICK_TAG}).`
+            : `Clicked a link in campaign ${label}.`,
         at: toIso(click.at),
         actor,
         campaignId: send.campaignId,
         campaignKind,
         campaignName,
         clickedUrl: url,
+        ...(botClick ? { clickTag: BOT_CLICK_TAG } : {}),
         ...(click.ip ? { ip: click.ip } : {}),
         ...(click.device ? { device: click.device } : {}),
         ...(click.userAgent ? { userAgent: click.userAgent } : {}),
       });
+    }
+
+    if (send.repliedAt) {
+      stats.replies += 1;
     }
 
     if (send.unsubscribedAt) {
@@ -903,18 +931,21 @@ export async function deleteContacts(projectId: ObjectId, ids: string[]) {
   const contacts = await db
     .collection<ContactDoc>("contacts")
     .find({ projectId, _id: { $in: contactIds } })
-    .project({ _id: 1, companyId: 1 })
+    .project({ _id: 1, companyId: 1, email: 1 })
     .toArray();
   if (contacts.length === 0) {
     return { deleted: 0 };
   }
 
   const allowedIds = contacts.map((contact) => contact._id);
+  const emails = contacts
+    .map((contact) => contact.email.trim().toLowerCase())
+    .filter((email) => email.includes("@"));
   const companyIds = [
     ...new Map(
       contacts
         .filter((contact) => contact.companyId)
-        .map((contact) => [contact.companyId.toString(), contact.companyId]),
+        .map((contact) => [contact.companyId!.toString(), contact.companyId!]),
     ).values(),
   ];
 
@@ -936,6 +967,10 @@ export async function deleteContacts(projectId: ObjectId, ids: string[]) {
     projectId,
     contactId: { $in: allowedIds },
   });
+
+  // Drop engagement rows so campaign reports / activity no longer list them.
+  await purgeCampaignEngagementForEmails(projectId, emails);
+  await purgeKanbanContactsForEmails(projectId, emails);
 
   const result = await db.collection<ContactDoc>("contacts").deleteMany({
     projectId,

@@ -197,7 +197,7 @@ export async function buildCampaignReportWorkbook({
   ];
   const engageSections = [
     { title: "CLICKERS — Opened & Clicked a Link", color: COLORS.clickersGreen, rows: clickers },
-    { title: "OPENS — All Opens (incl. Image pixel blocked)", color: COLORS.opensBlue, rows: opensOnly },
+    { title: "OPENS — All Opens (incl. Open not tracked)", color: COLORS.opensBlue, rows: opensOnly },
   ];
   for (const section of engageSections) {
     row += 1;

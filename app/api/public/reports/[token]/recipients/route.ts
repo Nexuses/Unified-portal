@@ -32,16 +32,33 @@ export async function GET(request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Invalid sequence" }, { status: 400 });
     }
 
+    const countOnly = request.nextUrl.searchParams.get("count") === "1";
+    const sharedOptions = {
+      sequenceIndex,
+      uniqueContacts: request.nextUrl.searchParams.get("unique") === "1",
+      hideBotClicks: request.nextUrl.searchParams.get("hideBotClicks") === "1",
+    };
+
+    if (countOnly) {
+      const count = await listCampaignSendRecipients(
+        found.projectId,
+        found.campaign.id,
+        filter,
+        found.campaign.kind,
+        { ...sharedOptions, countOnly: true },
+      );
+      return NextResponse.json(
+        { count },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+
     const recipients = await listCampaignSendRecipients(
       found.projectId,
       found.campaign.id,
       filter,
       found.campaign.kind,
-      {
-        sequenceIndex,
-        uniqueContacts: request.nextUrl.searchParams.get("unique") === "1",
-        hideBotClicks: request.nextUrl.searchParams.get("hideBotClicks") === "1",
-      },
+      sharedOptions,
     );
 
     return NextResponse.json(

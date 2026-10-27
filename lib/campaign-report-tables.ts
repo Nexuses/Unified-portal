@@ -9,6 +9,7 @@ import {
   sendOpenPixelBlocked,
 } from "@/lib/open-pixel";
 import { BOT_CLICK_TAG, sendIsBotClick } from "@/lib/bot-click";
+import { BOT_OPEN_TAG, sendIsBotOnlyOpen, sendIsBotOpen } from "@/lib/bot-open";
 
 export const REPORT_DASH = "—";
 
@@ -37,11 +38,11 @@ export type ReportEngageRow = {
   clicks: number;
   cta: string;
   status: "Clicked" | "Opened";
-  /** e.g. "Image pixel blocked" when open was inferred from a click. */
+  /** e.g. "Bot open" / "Open not tracked". */
   openTag: string;
   /**
-   * e.g. "Bot click" when toggle is off and this clicker is bot/scanner.
-   * Empty dash when Hide bot clicks is on (bots excluded) or not a bot.
+   * e.g. "Bot click" when Show bot opens/clicks is on and this clicker is bot/scanner.
+   * Empty dash when bots are hidden or not a bot.
    */
   clickTag: string;
 };
@@ -263,7 +264,7 @@ export function buildCampaignReportTables({
   timezone: string;
   sentAt?: string | Date;
   sends: CampaignSendDoc[];
-  /** When true, exclude bot/scanner clicks from the Clickers section (and export). */
+  /** When true, exclude bot opens/clicks from Opens / Clickers (and export). */
   hideBotClicks?: boolean;
 }): CampaignReportTables {
   const timeZone = timezone || "Asia/Kolkata";
@@ -318,6 +319,15 @@ export function buildCampaignReportTables({
       group.find((item) => sendCountsAsOpen(item)) ??
       group[0];
     const pixelBlocked = group.some((item) => sendOpenPixelBlocked(item));
+    const botOpen = group.some((item) => sendCountsAsOpen(item) && sendIsBotOpen(item));
+    const countsAsHumanOpen = group.some(
+      (item) =>
+        sendCountsAsOpen(item) && !(hideBotClicks && sendIsBotOnlyOpen(item)),
+    );
+    if (hideBotClicks && !countsAsHumanOpen && clicks <= 0) {
+      // Pure bot opens (no human click) omitted when Show bot opens/clicks is off.
+      continue;
+    }
     const botClick =
       !hideBotClicks &&
       clicks > 0 &&
@@ -328,11 +338,21 @@ export function buildCampaignReportTables({
           sendIsBotClick(item),
       );
     const openCountSum = group.reduce((sum, item) => {
+      if (hideBotClicks && sendIsBotOnlyOpen(item)) {
+        return sum;
+      }
       if (sendCountsAsOpen(item)) {
         return sum + Math.max(item.openCount || 0, 1);
       }
       return sum;
     }, 0);
+    const openTags: string[] = [];
+    if (!hideBotClicks && botOpen) {
+      openTags.push(BOT_OPEN_TAG);
+    }
+    if (pixelBlocked) {
+      openTags.push(OPEN_PIXEL_BLOCKED_TAG);
+    }
     engaged.push({
       name: personName(primary),
       email: primary.email,
@@ -343,11 +363,11 @@ export function buildCampaignReportTables({
       openDevice: openDeviceFromGroup(group),
       clickDevice: clicks > 0 ? clickDeviceFromGroup(group) : REPORT_DASH,
       clickIp: clicks > 0 ? clickIpFromGroup(group) : REPORT_DASH,
-      opens: openCountSum || (countsAsOpen ? 1 : 0),
+      opens: openCountSum || (countsAsHumanOpen ? 1 : 0),
       clicks,
       cta: clicks ? ctaLabel(primary) : REPORT_DASH,
       status: clicks ? "Clicked" : "Opened",
-      openTag: pixelBlocked ? OPEN_PIXEL_BLOCKED_TAG : REPORT_DASH,
+      openTag: openTags.length > 0 ? openTags.join(" · ") : REPORT_DASH,
       clickTag: botClick ? BOT_CLICK_TAG : REPORT_DASH,
       openedAtMs: opened?.getTime() ?? 0,
     });

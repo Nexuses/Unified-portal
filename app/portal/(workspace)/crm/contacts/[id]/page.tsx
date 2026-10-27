@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import PortalContactDetailPage from "@/app/components/portal/crm/PortalContactDetailPage";
 
 export default async function ContactDetailPage({
@@ -7,5 +8,9 @@ export default async function ContactDetailPage({
   const { id } = await params;
   const query = await searchParams;
   const from = typeof query.from === "string" ? query.from : undefined;
-  return <PortalContactDetailPage contactId={id} from={from} />;
+  return (
+    <Suspense fallback={<div className="crm-empty">Loading contact...</div>}>
+      <PortalContactDetailPage contactId={id} from={from} />
+    </Suspense>
+  );
 }

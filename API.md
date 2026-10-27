@@ -570,13 +570,13 @@ Same filters as portal recipients; `contactId` omitted.
 Excel (`.xlsx`) — same workbook as portal export.
 
 ### GET `/api/campaigns/track/open/{token}`
-Returns a 1×1 GIF. Increments open (ignored if token starts with `test-`, or if the email was sent less than **25 seconds** ago — bot filter).
+Returns a 1×1 GIF. Increments open (ignored if token starts with `test-`). Opens are counted immediately for every project; early opens may still be treated as bot-like within **25 seconds** of send where applicable.
 
 ### GET `/api/campaigns/track/click/{token}?u=https://example.com`
-302 redirect to `u` (http/https only). Records click with bot filters (redirect still happens):
-- same **45s** post-send grace
-- clicks closer than **2s** are ignored
-- **2+ different URLs within 5s** (or 3+ clicks in 5s) = burst scan → click stats cleared for that recipient
+302 redirect to `u` (http/https only). Records click for every project (Action Click always on). Bot tagging / filters (redirect still happens):
+- clicks within **25s** of send are counted but tagged as bot
+- clicks closer than **2s** may be ignored outside instant mode
+- **2+ different URLs within 5s** (or 3+ clicks in 5s) = burst scan → tagged as bot (still counted)
 
 If the campaign has **UTM tracking** on, `u` already includes `utm_source` / `utm_medium` / `utm_campaign` (destination is still wrapped as `/t/c/{token}?u=…`). `[CAMPAIGN_NAME]` is replaced with the campaign name.
 

@@ -39,6 +39,7 @@ import {
   sendOpenPixelBlocked,
 } from "@/lib/open-pixel";
 import { BOT_CLICK_TAG, clickEventIsBot, sendIsBotClick } from "@/lib/bot-click";
+import { BOT_OPEN_TAG, sendIsBotOnlyOpen, sendIsBotOpen } from "@/lib/bot-open";
 import {
   GMAIL_DAILY_LIMIT_DEFAULT,
   isGmailOrOutlookProvider,
@@ -142,12 +143,19 @@ export type CampaignSendDoc = {
     device?: "mobile" | "tablet" | "desktop" | "unknown";
     /** Open was inferred from a click (tracking pixel never loaded). */
     inferredFromClick?: boolean;
+    /** Counted but tagged as bot (within post-send grace). */
+    bot?: boolean;
   }>;
   /**
    * True when the open was counted because the contact clicked a link
    * but the open tracking pixel never fired (images blocked).
    */
   openPixelBlocked?: boolean;
+  /**
+   * Instant-open projects: first counted open was within bot grace
+   * and should show the Bot open tag.
+   */
+  botOpen?: boolean;
   clickedAt?: Date;
   clickedUrl?: string;
   /** First counted click client hints. */
@@ -926,7 +934,7 @@ function sendHasCountableClick(
   return !isNonNavigationalTrackedUrl(send.clickedUrl ?? "");
 }
 
-async function refreshBlastCounts(blastId: ObjectId) {
+export async function refreshBlastCounts(blastId: ObjectId) {
   const db = await getDb();
   const sends = db.collection<CampaignSendDoc>("campaign_sends");
   const [deliveredEmails, openEmails, clickDocs, bounceEmails, replyEmails, unsubEmails] =
@@ -1039,6 +1047,61 @@ async function refreshBlastCounts(blastId: ObjectId) {
   );
 
   return db.collection<CampaignBlastDoc>("campaign_blasts").findOne({ _id: blastId });
+}
+
+/**
+ * Remove campaign send rows for these emails (project-scoped) and recount
+ * affected blasts so CRM-deleted contacts disappear from reports.
+ */
+export async function purgeCampaignEngagementForEmails(
+  projectId: ObjectId,
+  emails: string[],
+) {
+  const normalized = [
+    ...new Set(
+      emails
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => email.includes("@")),
+    ),
+  ];
+  if (normalized.length === 0) {
+    return { deletedSends: 0, blastsRefreshed: 0 };
+  }
+
+  const db = await getDb();
+  const sends = db.collection<CampaignSendDoc>("campaign_sends");
+  const matching = await sends
+    .find(
+      {
+        projectId,
+        $expr: { $in: [{ $toLower: "$email" }, normalized] },
+      },
+      { projection: { blastId: 1 } },
+    )
+    .toArray();
+  if (matching.length === 0) {
+    return { deletedSends: 0, blastsRefreshed: 0 };
+  }
+
+  const blastIds = [
+    ...new Map(
+      matching.map((send) => [send.blastId.toString(), send.blastId]),
+    ).values(),
+  ];
+
+  const result = await sends.deleteMany({
+    projectId,
+    $expr: { $in: [{ $toLower: "$email" }, normalized] },
+  });
+
+  for (const blastId of blastIds) {
+    await refreshBlastCounts(blastId);
+  }
+
+  return {
+    deletedSends: result.deletedCount ?? 0,
+    blastsRefreshed: blastIds.length,
+  };
 }
 
 function utcDayBounds(now = new Date()) {
@@ -2494,10 +2557,10 @@ function availableAtForNewStep(
   return new Date(previousSent.sentAt.getTime() + delayDays * LIVE_EDIT_DAY_MS);
 }
 
-/** Ignore open beacons in the first 25s after send (filters most bots). */
+/** Bot-tag / filter window for opens (always-on Action Open for every project). */
 export const OPEN_BOT_GRACE_MS = 25_000;
-/** Ignore click beacons in the first 45s after send (filters most bots). */
-export const CLICK_BOT_GRACE_MS = 45_000;
+/** Bot-tag window for clicks (always-on Action Click for every project). */
+export const CLICK_BOT_GRACE_MS = 25_000;
 /** Ignore counted clicks closer together than this (link scanners). */
 export const CLICK_MIN_GAP_MS = 2_000;
 /** Window used to detect multi-link burst scanning. */
@@ -2527,22 +2590,11 @@ function isWithinBotGracePeriod(
   return Date.now() - sentAt < graceMs;
 }
 
-async function getProjectEngagementFlags(projectId: ObjectId) {
-  const db = await getDb();
-  const project = await db.collection("projects").findOne(
-    { _id: projectId },
-    { projection: { instantOpen: 1, instantClick: 1, instantOpenClick: 1 } },
-  );
-  const legacyBoth = Boolean(project?.instantOpenClick);
+async function getProjectEngagementFlags(_projectId: ObjectId) {
+  // Action Open + Click are always on for every project (25s bot-tag window).
   return {
-    skipOpenGrace:
-      typeof project?.instantOpen === "boolean"
-        ? Boolean(project.instantOpen)
-        : legacyBoth,
-    skipClickGrace:
-      typeof project?.instantClick === "boolean"
-        ? Boolean(project.instantClick)
-        : legacyBoth,
+    skipOpenGrace: true,
+    skipClickGrace: true,
   };
 }
 
@@ -2616,12 +2668,7 @@ async function instantClickProjectIds() {
   const db = await getDb();
   const projects = await db
     .collection("projects")
-    .find({
-      $or: [
-        { instantClick: true },
-        { instantClick: { $exists: false }, instantOpenClick: true },
-      ],
-    })
+    .find({})
     .project<{ _id: ObjectId }>({ _id: 1 })
     .toArray();
   return projects.map((project) => project._id);
@@ -2776,6 +2823,7 @@ export async function recordCampaignOpen(
   const now = new Date();
   const firstOpen = !send.openedAt;
   const client = engagementMetaFields(meta);
+  const withinGrace = isWithinBotGracePeriod(send, OPEN_BOT_GRACE_MS);
   await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
     { _id: send._id },
     {
@@ -2785,10 +2833,17 @@ export async function recordCampaignOpen(
         ...(firstOpen && client.ip ? { openedIp: client.ip } : {}),
         ...(firstOpen && client.device ? { openedDevice: client.device } : {}),
         ...(firstOpen && client.userAgent ? { openedUserAgent: client.userAgent } : {}),
+        ...(firstOpen && withinGrace ? { botOpen: true } : {}),
       },
       $push: {
         openEvents: {
-          $each: [{ at: now, ...client }],
+          $each: [
+            {
+              at: now,
+              ...client,
+              ...(withinGrace ? { bot: true as const } : {}),
+            },
+          ],
           $slice: -25,
         },
       },
@@ -3002,6 +3057,7 @@ async function countClick(input: {
     const missingOpen = !send.openedAt && (send.openCount ?? 0) <= 0;
     if (missingOpen) {
       const openClient = client ?? {};
+      const openWithinGrace = isWithinBotGracePeriod(send, OPEN_BOT_GRACE_MS);
       const inferred = await sends.updateOne(
         {
           _id: send._id,
@@ -3013,6 +3069,7 @@ async function countClick(input: {
           $set: {
             openedAt: now,
             openPixelBlocked: true,
+            ...(openWithinGrace ? { botOpen: true } : {}),
             ...(openClient.ip ? { openedIp: openClient.ip } : {}),
             ...(openClient.device ? { openedDevice: openClient.device } : {}),
             ...(openClient.userAgent ? { openedUserAgent: openClient.userAgent } : {}),
@@ -3023,6 +3080,7 @@ async function countClick(input: {
                 {
                   at: now,
                   inferredFromClick: true as const,
+                  ...(openWithinGrace ? { bot: true as const } : {}),
                   ...openClient,
                 },
               ],
@@ -3098,9 +3156,10 @@ export type CampaignSendRecipient = {
   error?: string;
   sentAt?: string;
   openedAt?: string;
-  /** e.g. "Image pixel blocked" when open was inferred from a click. */
+  /** e.g. "Bot open" / "Open not tracked". */
   openTag?: string;
   openPixelBlocked?: boolean;
+  botOpen?: boolean;
   clickedAt?: string;
   clickedUrl?: string;
   clickedLinks?: Array<{ url: string; at?: string; sequenceNumber?: number }>;
@@ -3133,18 +3192,40 @@ export function isCampaignRecipientFilter(
   return RECIPIENT_FILTERS.includes(value as CampaignRecipientFilter);
 }
 
+type ListCampaignSendRecipientsOptions = {
+  sequenceIndex?: number;
+  uniqueContacts?: boolean;
+  /** When true, omit bot opens/clicks from opens and clicks lists. */
+  hideBotClicks?: boolean;
+  /** Return only the recipient count (skips contact lookup + row mapping). */
+  countOnly?: boolean;
+};
+
 export async function listCampaignSendRecipients(
   projectId: ObjectId,
   campaignId: string,
   filter: CampaignRecipientFilter,
   kind?: "drip" | "oneone",
-  options?: {
-    sequenceIndex?: number;
-    uniqueContacts?: boolean;
-    /** When true, omit bot/scanner clicks from the clicks list. */
-    hideBotClicks?: boolean;
+  options?: Omit<ListCampaignSendRecipientsOptions, "countOnly"> & {
+    countOnly?: false;
   },
-) {
+): Promise<CampaignSendRecipient[]>;
+export async function listCampaignSendRecipients(
+  projectId: ObjectId,
+  campaignId: string,
+  filter: CampaignRecipientFilter,
+  kind: "drip" | "oneone" | undefined,
+  options: Omit<ListCampaignSendRecipientsOptions, "countOnly"> & {
+    countOnly: true;
+  },
+): Promise<number>;
+export async function listCampaignSendRecipients(
+  projectId: ObjectId,
+  campaignId: string,
+  filter: CampaignRecipientFilter,
+  kind?: "drip" | "oneone",
+  options?: ListCampaignSendRecipientsOptions,
+): Promise<CampaignSendRecipient[] | number> {
   const db = await getDb();
   const blast = await db.collection<CampaignBlastDoc>("campaign_blasts").findOne({
     projectId,
@@ -3204,11 +3285,91 @@ export async function listCampaignSendRecipients(
         }
       : query;
 
-  const docs = await db
-    .collection<CampaignSendDoc>("campaign_sends")
-    .find(scopedQuery)
-    .sort({ sequenceIndex: 1, fullName: 1, email: 1 })
-    .toArray();
+  const sends = db.collection<CampaignSendDoc>("campaign_sends").find(scopedQuery);
+  if (options?.countOnly) {
+    sends.project({
+      email: 1,
+      sentAt: 1,
+      openedAt: 1,
+      openCount: 1,
+      openPixelBlocked: 1,
+      botOpen: 1,
+      openEvents: 1,
+      clickedAt: 1,
+      clickedUrl: 1,
+      clickCount: 1,
+      clickBurstIgnored: 1,
+      botClick: 1,
+      clickEvents: 1,
+      sequenceIndex: 1,
+    });
+  } else {
+    sends.sort({ sequenceIndex: 1, fullName: 1, email: 1 });
+  }
+  const docs = await sends.toArray();
+
+  if (options?.countOnly) {
+    if (filter === "clicks") {
+      const hideBotClicks = Boolean(options?.hideBotClicks);
+      const emails = new Set<string>();
+      for (const doc of docs) {
+        const key = doc.email.trim().toLowerCase();
+        if (!key) continue;
+        const events =
+          doc.clickEvents && doc.clickEvents.length > 0
+            ? doc.clickEvents
+            : doc.clickedAt
+              ? [{ url: doc.clickedUrl || "", at: doc.clickedAt }]
+              : [];
+        const countable = events.filter((event) => {
+          if (!isCountableClickEvent(event)) return false;
+          if (hideBotClicks && clickEventIsBot(doc, event)) return false;
+          return true;
+        });
+        if (countable.length === 0) continue;
+        if (
+          hideBotClicks &&
+          sendIsBotClick(doc) &&
+          countable.every((event) => clickEventIsBot(doc, event))
+        ) {
+          continue;
+        }
+        if (countable.some((event) => (event.url || doc.clickedUrl || "").trim())) {
+          emails.add(key);
+        }
+      }
+      return emails.size;
+    }
+
+    if (filter === "opens") {
+      const hideBotOpens = Boolean(options?.hideBotClicks);
+      const emails = new Set<string>();
+      for (const doc of docs) {
+        // Human click upgrades a grace/bot open to a counted human open.
+        if (hideBotOpens && sendIsBotOnlyOpen(doc)) continue;
+        const key = doc.email.trim().toLowerCase();
+        if (!key) continue;
+        if (options?.uniqueContacts) {
+          emails.add(key);
+        } else {
+          emails.add(`${key}:${doc._id.toString()}`);
+        }
+      }
+      return emails.size;
+    }
+
+    const emails = new Set<string>();
+    for (const doc of docs) {
+      const key = doc.email.trim().toLowerCase();
+      if (!key) continue;
+      if (options?.uniqueContacts || filter === "bounces") {
+        emails.add(key);
+      } else {
+        emails.add(`${key}:${doc._id.toString()}`);
+      }
+    }
+    return emails.size;
+  }
 
   const emails = [...new Set(docs.map((doc) => doc.email.trim().toLowerCase()).filter(Boolean))];
   const contacts =
@@ -3230,14 +3391,24 @@ export async function listCampaignSendRecipients(
   function mapRecipient(
     doc: CampaignSendDoc,
     extra?: Partial<CampaignSendRecipient>,
+    options?: { hideBotOpens?: boolean },
   ): CampaignSendRecipient {
     const email = doc.email.trim().toLowerCase();
     const sequenceIndex =
       typeof doc.sequenceIndex === "number" ? doc.sequenceIndex : undefined;
     const pixelBlocked = sendOpenPixelBlocked(doc);
+    const botOpen = sendIsBotOpen(doc);
+    const hideBotOpens = Boolean(options?.hideBotOpens);
     const openedAt =
       doc.openedAt?.toISOString() ||
       (pixelBlocked ? doc.clickedAt?.toISOString() : undefined);
+    const openTags: string[] = [];
+    if (botOpen && !hideBotOpens) {
+      openTags.push(BOT_OPEN_TAG);
+    }
+    if (pixelBlocked) {
+      openTags.push(OPEN_PIXEL_BLOCKED_TAG);
+    }
     return {
       id: extra?.id ?? doc._id.toString(),
       email: doc.email,
@@ -3248,9 +3419,9 @@ export async function listCampaignSendRecipients(
       error: doc.error || "",
       sentAt: doc.sentAt?.toISOString(),
       openedAt,
-      ...(pixelBlocked
-        ? { openPixelBlocked: true, openTag: OPEN_PIXEL_BLOCKED_TAG }
-        : {}),
+      ...(pixelBlocked ? { openPixelBlocked: true } : {}),
+      ...(botOpen && !hideBotOpens ? { botOpen: true } : {}),
+      ...(openTags.length > 0 ? { openTag: openTags.join(" · ") } : {}),
       clickedAt: doc.clickedAt?.toISOString(),
       clickedUrl: doc.clickedUrl || "",
       unsubscribedAt: doc.unsubscribedAt?.toISOString(),
@@ -3408,6 +3579,19 @@ export async function listCampaignSendRecipients(
       .sort((left, right) => (right.clickedAt ?? "").localeCompare(left.clickedAt ?? ""));
   }
 
+  if (filter === "opens") {
+    const hideBotOpens = Boolean(options?.hideBotClicks);
+    const rows = docs
+      .filter((doc) => {
+        if (hideBotOpens && sendIsBotOnlyOpen(doc)) {
+          return false;
+        }
+        return true;
+      })
+      .map((doc) => mapRecipient(doc, undefined, { hideBotOpens }));
+    return dedupeByEmail(rows);
+  }
+
   // One row per email for bounces (1-1 can create multiple failed sequence rows)
   if (filter === "bounces") {
     const seen = new Set<string>();
@@ -3452,6 +3636,7 @@ export async function listCampaignSendsForExport(
         openedAt: 1,
         openCount: 1,
         openPixelBlocked: 1,
+        botOpen: 1,
         openedDevice: 1,
         openEvents: {
           $map: {
@@ -3461,6 +3646,7 @@ export async function listCampaignSendsForExport(
               at: "$$event.at",
               device: "$$event.device",
               inferredFromClick: "$$event.inferredFromClick",
+              bot: "$$event.bot",
             },
           },
         },

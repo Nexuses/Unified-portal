@@ -126,12 +126,21 @@ export function portalCompanyRoute(id: string) {
   return `/portal/crm/companies/${id}`;
 }
 
-export function portalContactRoute(id: string, from?: string) {
+export function portalContactRoute(
+  id: string,
+  from?: string,
+  options?: { view?: "lead-report" },
+) {
   const path = `/portal/crm/contacts/${id}`;
-  if (!from || !from.startsWith("/portal/") || from.startsWith("//")) {
-    return path;
+  const params = new URLSearchParams();
+  if (from && from.startsWith("/portal/") && !from.startsWith("//")) {
+    params.set("from", from);
   }
-  return `${path}?from=${encodeURIComponent(from)}`;
+  if (options?.view) {
+    params.set("view", options.view);
+  }
+  const query = params.toString();
+  return query ? `${path}?${query}` : path;
 }
 
 export function portalReturnPath(from: string | undefined, fallback: string) {
