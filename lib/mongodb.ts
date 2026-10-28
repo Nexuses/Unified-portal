@@ -54,14 +54,31 @@ async function resetClient() {
 function isStaleTopologyError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error ?? "");
   const name = error instanceof Error ? error.name : "";
+  const cause =
+    error && typeof error === "object" && "cause" in error
+      ? (error as { cause?: unknown }).cause
+      : undefined;
+  const causeMessage =
+    cause instanceof Error ? cause.message : cause ? String(cause) : "";
+  const causeName = cause instanceof Error ? cause.name : "";
   return (
     name.includes("ServerSelection") ||
     name.includes("MongoStalePrimary") ||
+    name.includes("MongoNetwork") ||
+    name.includes("PoolCleared") ||
+    causeName.includes("MongoNetwork") ||
+    causeName.includes("PoolCleared") ||
     message.includes("stale") ||
     message.includes("ReplicaSetNoPrimary") ||
     message.includes("ServerSelection") ||
     message.includes("electionId") ||
-    message.includes("setVersion")
+    message.includes("setVersion") ||
+    message.includes("PoolClearedOnNetworkError") ||
+    message.includes("interrupted due to server monitor timeout") ||
+    message.includes("connection <monitor>") ||
+    message.includes("timed out") ||
+    causeMessage.includes("timed out") ||
+    causeMessage.includes("PoolCleared")
   );
 }
 
@@ -80,4 +97,9 @@ export async function getDb(): Promise<Db> {
     await reconnected.db("admin").command({ ping: 1 });
     return reconnected.db("unified_portal");
   }
+}
+
+/** Reset the shared Mongo client after a mid-query pool/network failure. */
+export async function resetMongoClient() {
+  return resetClient();
 }

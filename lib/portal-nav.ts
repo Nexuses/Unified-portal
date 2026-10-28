@@ -99,8 +99,8 @@ export function publicCampaignReportPath(
   if (options?.analyticsToken) {
     params.set("a", options.analyticsToken);
   }
-  if (options?.hideBotClicks) {
-    params.set("hideBotClicks", "1");
+  if (typeof options?.hideBotClicks === "boolean") {
+    params.set("hideBotClicks", options.hideBotClicks ? "1" : "0");
   }
   const query = params.toString();
   return query ? `${path}?${query}` : path;

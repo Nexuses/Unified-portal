@@ -1,7 +1,12 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { PublicAnalyticsReport } from "@/app/components/portal/PortalAnalyticsPage";
-import { formatAnalyticsRange, isAnalyticsShareExpired } from "@/lib/analytics";
+import {
+  filterAnalyticsDashboardByKinds,
+  formatAnalyticsRange,
+  isAnalyticsShareExpired,
+  type AnalyticsDashboard,
+} from "@/lib/analytics";
 import {
   findAnalyticsShareByToken,
   getAnalyticsDashboard,
@@ -38,19 +43,49 @@ export default async function PublicAnalyticsPage({ params }: PageProps) {
     );
   }
 
-  const dashboard = await getAnalyticsDashboard(
-    share.projectId,
-    share.from,
-    share.to,
-    share.projectName,
-    { withShareTokens: true },
-  );
+  const hideBotClicks = Boolean(share.hideBotClicks);
+  const botToggle = Boolean(share.botToggle);
+  const kinds = share.includeKinds;
+
+  function applyKinds(dashboard: AnalyticsDashboard) {
+    return filterAnalyticsDashboardByKinds(dashboard, kinds);
+  }
+
+  let dashboard: AnalyticsDashboard;
+  let dashboardWithBots: AnalyticsDashboard | undefined;
+
+  if (botToggle) {
+    const [hidden, shown] = await Promise.all([
+      getAnalyticsDashboard(share.projectId, share.from, share.to, share.projectName, {
+        withShareTokens: true,
+        hideBotClicks: true,
+      }),
+      getAnalyticsDashboard(share.projectId, share.from, share.to, share.projectName, {
+        withShareTokens: true,
+        hideBotClicks: false,
+      }),
+    ]);
+    dashboard = applyKinds(hidden);
+    dashboardWithBots = applyKinds(shown);
+  } else {
+    dashboard = applyKinds(
+      await getAnalyticsDashboard(
+        share.projectId,
+        share.from,
+        share.to,
+        share.projectName,
+        { withShareTokens: true, hideBotClicks },
+      ),
+    );
+  }
 
   return (
     <PublicAnalyticsReport
       dashboard={dashboard}
+      dashboardWithBots={dashboardWithBots}
       analyticsToken={token}
-      hideBotClicks={Boolean(share.hideBotClicks)}
+      hideBotClicks={hideBotClicks}
+      botToggle={botToggle}
     />
   );
 }

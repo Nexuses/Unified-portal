@@ -5,10 +5,12 @@ import {
   analyticsRangeIso,
   analyticsShareExpiresAt,
   isAnalyticsShareExpired,
+  normalizeAnalyticsIncludeKinds,
   resolveAnalyticsShareExpiry,
   type AnalyticsCampaignRow,
   type AnalyticsDashboard,
   type AnalyticsDailyPoint,
+  type AnalyticsIncludeKinds,
   type AnalyticsKindStats,
 } from "@/lib/analytics";
 import {
@@ -35,6 +37,10 @@ export type AnalyticsShareDoc = {
   expiresAt?: Date;
   /** When true, linked public campaign reports hide bot clicks / tags. */
   hideBotClicks?: boolean;
+  /** When true, public viewers can toggle Show bot opens/clicks. */
+  botToggle?: boolean;
+  /** Campaign kinds included in this public report (default: all). */
+  includeKinds?: AnalyticsIncludeKinds;
 };
 
 const DASHBOARD_CACHE_TTL_MS = 45_000;
@@ -68,19 +74,29 @@ function dashboardCacheKey(
   fromInput: string,
   toInput: string,
   withShareTokens: boolean,
+  hideBotClicks: boolean,
 ) {
-  // v2: unique-contact counts aligned with campaign report (bots hidden).
-  return `${projectId.toString()}|v2|${fromInput}|${toInput}|${withShareTokens ? "1" : "0"}`;
+  // v3: unique-contact counts; hideBot=1 matches campaign report default.
+  return `${projectId.toString()}|v3|${fromInput}|${toInput}|${withShareTokens ? "1" : "0"}|hideBot=${hideBotClicks ? "1" : "0"}`;
 }
 
 /** Match portal campaign report default (Show bot opens/clicks off). */
-function sendCountsAsReportOpen(send: CampaignSendDoc) {
-  return sendCountsAsOpen(send) && !sendIsBotOnlyOpen(send);
+function sendCountsAsReportOpen(send: CampaignSendDoc, hideBotClicks: boolean) {
+  if (!sendCountsAsOpen(send)) {
+    return false;
+  }
+  if (!hideBotClicks) {
+    return true;
+  }
+  return !sendIsBotOnlyOpen(send);
 }
 
-function sendCountsAsReportClick(send: CampaignSendDoc) {
+function sendCountsAsReportClick(send: CampaignSendDoc, hideBotClicks: boolean) {
   if (!sendHasCountableClick(send)) {
     return false;
+  }
+  if (!hideBotClicks) {
+    return true;
   }
   return sendHasHumanClick(send);
 }
@@ -169,10 +185,18 @@ export async function getAnalyticsDashboard(
   fromInput: string,
   toInput: string,
   projectName = "",
-  options?: { withShareTokens?: boolean },
+  options?: { withShareTokens?: boolean; hideBotClicks?: boolean },
 ): Promise<AnalyticsDashboard> {
   const withShareTokens = Boolean(options?.withShareTokens);
-  const cacheKey = dashboardCacheKey(projectId, fromInput, toInput, withShareTokens);
+  /** Default true — match portal report (Show bot opens/clicks off). */
+  const hideBotClicks = options?.hideBotClicks !== false;
+  const cacheKey = dashboardCacheKey(
+    projectId,
+    fromInput,
+    toInput,
+    withShareTokens,
+    hideBotClicks,
+  );
   const cached = readDashboardCache(cacheKey);
   if (cached) {
     return {
@@ -244,8 +268,8 @@ export async function getAnalyticsDashboard(
       continue;
     }
     const delivered = !doc.bouncedAt;
-    const opened = sendCountsAsReportOpen(doc);
-    const clicked = sendCountsAsReportClick(doc);
+    const opened = sendCountsAsReportOpen(doc, hideBotClicks);
+    const clicked = sendCountsAsReportClick(doc, hideBotClicks);
     const unsubscribed = Boolean(doc.unsubscribedAt);
     const day = utcDayKey(sentAt);
     const blastKey = doc.blastId.toString();
@@ -457,10 +481,16 @@ export async function createAnalyticsShare(
   userId: ObjectId | null,
   from: string,
   to: string,
-  options?: { hideBotClicks?: boolean },
+  options?: {
+    hideBotClicks?: boolean;
+    botToggle?: boolean;
+    includeKinds?: Partial<AnalyticsIncludeKinds> | null;
+  },
 ) {
   analyticsRangeIso(from, to);
   const hideBotClicks = Boolean(options?.hideBotClicks);
+  const botToggle = Boolean(options?.botToggle);
+  const includeKinds = normalizeAnalyticsIncludeKinds(options?.includeKinds);
   const db = await getDb();
   void ensureAnalyticsIndexes();
   const shares = db.collection<AnalyticsShareDoc>("analytics_shares");
@@ -471,8 +501,18 @@ export async function createAnalyticsShare(
   const existing = candidates.find((item) => !isAnalyticsShareExpired(item));
   if (existing && !isAnalyticsShareExpired(existing)) {
     const expiresAt = resolveAnalyticsShareExpiry(existing);
-    const next: AnalyticsShareDoc = { ...existing, expiresAt, hideBotClicks };
-    const patch: Partial<AnalyticsShareDoc> = { hideBotClicks };
+    const next: AnalyticsShareDoc = {
+      ...existing,
+      expiresAt,
+      hideBotClicks,
+      botToggle,
+      includeKinds,
+    };
+    const patch: Partial<AnalyticsShareDoc> = {
+      hideBotClicks,
+      botToggle,
+      includeKinds,
+    };
     if (existing.projectName !== projectName) {
       patch.projectName = projectName;
       next.projectName = projectName;
@@ -497,6 +537,8 @@ export async function createAnalyticsShare(
     createdAt,
     expiresAt: analyticsShareExpiresAt(createdAt),
     hideBotClicks,
+    botToggle,
+    includeKinds,
   };
   await shares.insertOne(doc);
   return doc;

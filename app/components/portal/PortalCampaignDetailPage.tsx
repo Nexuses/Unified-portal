@@ -49,6 +49,7 @@ import {
 } from "@/lib/automations";
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
 import CampaignScheduleDrawer from "@/app/components/portal/CampaignScheduleDrawer";
+import ComposeFormatToolbar from "@/app/components/portal/ComposeFormatToolbar";
 import PersonaliseCampaignView from "@/app/components/portal/PersonaliseCampaignView";
 import PortalPersonalisePage from "@/app/components/portal/PortalPersonalisePage";
 import {
@@ -3021,7 +3022,7 @@ function plainTextToBodyHtml(text: string) {
 }
 
 const RICH_OR_LAYOUT_SELECTOR =
-  "table, img, style, link, center, section, header, footer, a, strong, em, b, i, u, ul, ol, li, h1, h2, h3, h4, h5, h6, hr, blockquote, pre, code";
+  "table, img, style, link, center, section, header, footer, a, strong, em, b, i, u, ul, ol, li, h1, h2, h3, h4, h5, h6, hr, blockquote, pre, code, font, span[style]";
 
 /**
  * Normalize contentEditable / pasted markup into clean Roboto email HTML.
@@ -3437,19 +3438,35 @@ function CustomHtmlEditor({
               </div>
             </div>
             {editorMode === "compose" ? (
-              <div
-                ref={composeRef}
-                className="drip-html-editor-compose"
-                contentEditable={!saving}
-                suppressContentEditableWarning
-                role="textbox"
-                aria-multiline="true"
-                aria-label="Email body"
-                data-placeholder="Type or paste your email text here — it converts to HTML automatically."
-                onInput={handleComposeInput}
-                onPaste={handleComposePaste}
-                onBlur={handleComposeInput}
-              />
+              <div className="drip-html-editor-compose-wrap">
+                <div
+                  ref={composeRef}
+                  className="drip-html-editor-compose"
+                  contentEditable={!saving}
+                  suppressContentEditableWarning
+                  role="textbox"
+                  aria-multiline="true"
+                  aria-label="Email body"
+                  data-placeholder="Type or paste your email text here — it converts to HTML automatically."
+                  onInput={handleComposeInput}
+                  onPaste={handleComposePaste}
+                  onBlur={handleComposeInput}
+                />
+                <ComposeFormatToolbar
+                  disabled={saving}
+                  editorRef={composeRef}
+                  campaignName={campaign.name}
+                  onChange={handleComposeInput}
+                  onApplyAiText={(text) => {
+                    const body = plainTextToBodyHtml(text);
+                    const el = composeRef.current;
+                    if (el) {
+                      el.innerHTML = body;
+                    }
+                    setHtmlDraft(wrapAsFormattedEmail(body) || "");
+                  }}
+                />
+              </div>
             ) : (
               <textarea
                 ref={htmlInputRef}

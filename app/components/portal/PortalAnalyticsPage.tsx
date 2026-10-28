@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   ANALYTICS_SHARE_TTL_DAYS,
+  DEFAULT_ANALYTICS_INCLUDE_KINDS,
   defaultAnalyticsRange,
   formatAnalyticsExpiry,
   formatAnalyticsRange,
@@ -11,11 +12,14 @@ import {
   formatPercent,
   presetAnalyticsRange,
   type AnalyticsDashboard,
+  type AnalyticsIncludeKinds,
   type AnalyticsKindStats,
   type AnalyticsPreset,
 } from "@/lib/analytics";
 import { formatMetric } from "@/lib/drip-campaigns";
 import { portalCampaignRoute, publicCampaignReportPath } from "@/lib/portal-nav";
+
+type ShareBotMode = "show" | "hide" | "toggle";
 
 const PRESETS: Array<{ id: AnalyticsPreset; label: string }> = [
   { id: "7d", label: "Last 7 days" },
@@ -183,14 +187,34 @@ export function AnalyticsDashboardView({
   variant,
   analyticsToken,
   hideBotClicks = false,
+  botToggle = false,
 }: {
   dashboard: AnalyticsDashboard;
   variant: "portal" | "public";
   analyticsToken?: string;
   hideBotClicks?: boolean;
+  botToggle?: boolean;
 }) {
   const totals = dashboard.totals;
-  const showPersonalise = (totals.personaliseCampaigns ?? 0) > 0;
+  /** Public share filters omit unselected kinds from byKind; portal keeps all three. */
+  const kindsFiltered =
+    dashboard.byKind.drip == null ||
+    dashboard.byKind.oneone == null ||
+    dashboard.byKind.personalise == null;
+  const showDrip = dashboard.byKind.drip != null;
+  const showOneOne = dashboard.byKind.oneone != null;
+  const showPersonalise =
+    dashboard.byKind.personalise != null &&
+    (kindsFiltered || (totals.personaliseCampaigns ?? 0) > 0);
+  const kindCardCount =
+    Number(showDrip) + Number(showOneOne) + Number(showPersonalise);
+  const campaignKindParts = [
+    showDrip ? `${formatInt(totals.dripCampaigns)} drip` : null,
+    showOneOne ? `${formatInt(totals.oneOneCampaigns)} 1-1` : null,
+    showPersonalise
+      ? `${formatInt(totals.personaliseCampaigns ?? 0)} personalise`
+      : null,
+  ].filter(Boolean);
   const attempted = totals.delivered + totals.failed;
   const metrics = [
     {
@@ -246,12 +270,7 @@ export function AnalyticsDashboardView({
         <div className="an-stat-card">
           <span>Campaigns sent</span>
           <strong>{formatInt(totals.campaigns)}</strong>
-          <em>
-            {formatInt(totals.dripCampaigns)} drip · {formatInt(totals.oneOneCampaigns)} 1-1
-            {totals.personaliseCampaigns
-              ? ` · ${formatInt(totals.personaliseCampaigns)} personalise`
-              : ""}
-          </em>
+          <em>{campaignKindParts.join(" · ") || "No campaign types selected"}</em>
         </div>
         <div className="an-stat-card">
           <span>Contacts added</span>
@@ -265,13 +284,24 @@ export function AnalyticsDashboardView({
         </div>
       </div>
 
-      <div className={`an-kind-row${showPersonalise ? " has-three" : ""}`}>
-        <KindStats title="Drip campaigns" stats={dashboard.byKind.drip} />
-        <KindStats title="1-1 campaigns" stats={dashboard.byKind.oneone} />
-        {showPersonalise && dashboard.byKind.personalise ? (
-          <KindStats title="Personalise campaigns" stats={dashboard.byKind.personalise} />
-        ) : null}
-      </div>
+      {kindCardCount > 0 ? (
+        <div
+          className={`an-kind-row${kindCardCount >= 3 ? " has-three" : kindCardCount === 1 ? " has-one" : ""}`}
+        >
+          {showDrip && dashboard.byKind.drip ? (
+            <KindStats title="Drip campaigns" stats={dashboard.byKind.drip} />
+          ) : null}
+          {showOneOne && dashboard.byKind.oneone ? (
+            <KindStats title="1-1 campaigns" stats={dashboard.byKind.oneone} />
+          ) : null}
+          {showPersonalise && dashboard.byKind.personalise ? (
+            <KindStats
+              title="Personalise campaigns"
+              stats={dashboard.byKind.personalise}
+            />
+          ) : null}
+        </div>
+      ) : null}
 
       <section className="an-section">
         <div className="an-section-head">
@@ -318,6 +348,9 @@ export function AnalyticsDashboardView({
                     variant === "public" && campaign.shareToken
                       ? publicCampaignReportPath(campaign.shareToken, {
                           analyticsToken,
+                          ...(botToggle || hideBotClicks
+                            ? { hideBotClicks }
+                            : {}),
                         })
                       : "";
                   const name =
@@ -401,6 +434,12 @@ export function PortalAnalyticsPage() {
 
   const [sharePromptOpen, setSharePromptOpen] = useState(false);
   const [instantClickEnabled, setInstantClickEnabled] = useState(false);
+  const [shareIncludeKinds, setShareIncludeKinds] =
+    useState<AnalyticsIncludeKinds>(() => ({
+      ...DEFAULT_ANALYTICS_INCLUDE_KINDS,
+    }));
+  const [sharePromptError, setSharePromptError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -422,14 +461,20 @@ export function PortalAnalyticsPage() {
 
   useEffect(() => {
     const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort("timeout");
+    }, 60_000);
 
     async function run() {
+      setLoading(true);
       try {
         const response = await fetch(
           `/api/analytics?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
           { cache: "no-store", signal: controller.signal },
         );
-        const data = (await response.json()) as AnalyticsDashboard & { error?: string };
+        const data = (await response.json()) as AnalyticsDashboard & {
+          error?: string;
+        };
         if (controller.signal.aborted) {
           return;
         }
@@ -442,24 +487,39 @@ export function PortalAnalyticsPage() {
         setShareCopied(false);
         setError("");
       } catch (err) {
+        if (controller.signal.reason === "timeout") {
+          setError(
+            "Analytics is taking too long. Check your connection and retry.",
+          );
+          setLoading(false);
+          return;
+        }
         if (
           controller.signal.aborted ||
           (err instanceof DOMException && err.name === "AbortError")
         ) {
           return;
         }
-        setError(err instanceof Error ? err.message : "Failed to load analytics");
-        setDashboard((current) => current);
+        setError(
+          err instanceof Error ? err.message : "Failed to load analytics",
+        );
       } finally {
-        if (!controller.signal.aborted) {
+        window.clearTimeout(timeoutId);
+        if (
+          !controller.signal.aborted ||
+          controller.signal.reason === "timeout"
+        ) {
           setLoading(false);
         }
       }
     }
 
     void run();
-    return () => controller.abort();
-  }, [from, to]);
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [from, to, reloadToken]);
 
   function applyRange(nextFrom: string, nextTo: string, nextPreset: AnalyticsPreset | "custom") {
     setPreset(nextPreset);
@@ -473,15 +533,38 @@ export function PortalAnalyticsPage() {
     applyRange(range.from, range.to, next);
   }
 
-  async function createPublicUrl(hideBotClicks: boolean) {
+  function openSharePrompt() {
+    setShareIncludeKinds({ ...DEFAULT_ANALYTICS_INCLUDE_KINDS });
+    setSharePromptError("");
+    setSharePromptOpen(true);
+  }
+
+  async function createPublicUrl(mode: ShareBotMode | "plain") {
+    if (
+      !shareIncludeKinds.drip &&
+      !shareIncludeKinds.oneone &&
+      !shareIncludeKinds.personalise
+    ) {
+      setSharePromptError(
+        "Select at least one campaign type (Drip, 1-1, or Personalise).",
+      );
+      return;
+    }
     setSharePromptOpen(false);
+    setSharePromptError("");
     setSharing(true);
     setError("");
     try {
       const response = await fetch("/api/analytics/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ from, to, hideBotClicks }),
+        body: JSON.stringify({
+          from,
+          to,
+          hideBotClicks: mode === "hide" || mode === "toggle",
+          botToggle: mode === "toggle",
+          includeKinds: shareIncludeKinds,
+        }),
       });
       const data = (await response.json()) as {
         url?: string;
@@ -518,13 +601,7 @@ export function PortalAnalyticsPage() {
           <button
             type="button"
             className="btn-dark"
-            onClick={() => {
-              if (instantClickEnabled) {
-                setSharePromptOpen(true);
-              } else {
-                void createPublicUrl(false);
-              }
-            }}
+            onClick={openSharePrompt}
             disabled={sharing || loading}
           >
             {shareCopied ? "Public URL copied" : sharing ? "Creating…" : "Create public URL"}
@@ -549,8 +626,10 @@ export function PortalAnalyticsPage() {
               <div>
                 <h3 id="an-share-bot-title">Create public URL</h3>
                 <p>
-                  Include bot opens/clicks in linked campaign reports? Viewers will
-                  not see Bot open / Bot click tags when hidden.
+                  Pick campaign types to include
+                  {instantClickEnabled
+                    ? ", then choose how bot opens/clicks appear."
+                    : "."}
                 </p>
               </div>
               <button
@@ -563,23 +642,94 @@ export function PortalAnalyticsPage() {
                 ×
               </button>
             </div>
-            <div className="crm-modal-actions an-share-bot-actions">
-              <button
-                type="button"
-                className="btn-soft"
-                disabled={sharing}
-                onClick={() => void createPublicUrl(false)}
-              >
-                Show bot opens/clicks
-              </button>
-              <button
-                type="button"
-                className="btn-dark"
-                disabled={sharing}
-                onClick={() => void createPublicUrl(true)}
-              >
-                Hide bot opens/clicks
-              </button>
+            <div className="an-share-modal-body">
+              <div className="an-share-section-label">Campaign types</div>
+              <div className="an-share-kind-checks" role="group" aria-label="Campaign types">
+                {(
+                  [
+                    { key: "drip", label: "Drip" },
+                    { key: "oneone", label: "1-1" },
+                    { key: "personalise", label: "Personalise" },
+                  ] as const
+                ).map((item) => {
+                  const checked = shareIncludeKinds[item.key];
+                  return (
+                    <label
+                      key={item.key}
+                      className={`an-share-kind-check${checked ? " is-checked" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={sharing}
+                        onChange={(event) => {
+                          setSharePromptError("");
+                          setShareIncludeKinds((current) => ({
+                            ...current,
+                            [item.key]: event.target.checked,
+                          }));
+                        }}
+                      />
+                      <span className="an-share-kind-box" aria-hidden="true">
+                        {checked ? (
+                          <svg viewBox="0 0 16 16" width="12" height="12" fill="none">
+                            <path
+                              d="M3.5 8.2 6.4 11l6.1-6.5"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        ) : null}
+                      </span>
+                      <span>{item.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              {sharePromptError ? (
+                <div className="an-share-prompt-error">{sharePromptError}</div>
+              ) : null}
+            </div>
+            <div className="an-share-bot-actions">
+              {instantClickEnabled ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn-soft an-share-action-btn"
+                    disabled={sharing}
+                    onClick={() => void createPublicUrl("show")}
+                  >
+                    Show bots
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-soft an-share-action-btn"
+                    disabled={sharing}
+                    onClick={() => void createPublicUrl("hide")}
+                  >
+                    Hide bots
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-dark an-share-action-btn"
+                    disabled={sharing}
+                    onClick={() => void createPublicUrl("toggle")}
+                  >
+                    Export with toggle
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-dark an-share-action-btn"
+                  disabled={sharing}
+                  onClick={() => void createPublicUrl("plain")}
+                >
+                  Create public URL
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -635,7 +785,22 @@ export function PortalAnalyticsPage() {
         </div>
       ) : null}
 
-      {error ? <div className="an-error">{error}</div> : null}
+      {error ? (
+        <div className="an-error">
+          {error}{" "}
+          <button
+            type="button"
+            className="an-retry-btn"
+            disabled={loading}
+            onClick={() => {
+              setError("");
+              setReloadToken((value) => value + 1);
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
       {loading && !dashboard ? <div className="an-empty">Loading analytics…</div> : null}
       {dashboard ? (
         <div className={loading ? "an-loading" : undefined}>
@@ -648,20 +813,50 @@ export function PortalAnalyticsPage() {
 
 export function PublicAnalyticsReport({
   dashboard,
+  dashboardWithBots,
   analyticsToken,
   hideBotClicks = false,
+  botToggle = false,
 }: {
   dashboard: AnalyticsDashboard;
+  /** When Export with toggle: metrics including bot opens/clicks. */
+  dashboardWithBots?: AnalyticsDashboard;
   analyticsToken: string;
   hideBotClicks?: boolean;
+  botToggle?: boolean;
 }) {
+  const [hideBots, setHideBots] = useState(Boolean(hideBotClicks));
+  const showBotEngagement = !hideBots;
+  const activeDashboard =
+    botToggle && dashboardWithBots && !hideBots ? dashboardWithBots : dashboard;
+
   return (
     <div className="an-page an-public">
+      {botToggle ? (
+        <div className="an-public-bot-bar">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={showBotEngagement}
+            className={`drip-report-table-toggle drip-report-bot-nav-toggle${showBotEngagement ? " is-on" : ""}`}
+            onClick={() => setHideBots((value) => !value)}
+            title={
+              showBotEngagement
+                ? "Bot opens/clicks included in opens, clicks, and linked reports"
+                : "Bot opens/clicks hidden from opens, clicks, and linked reports"
+            }
+          >
+            <span className="drip-report-table-switch" aria-hidden="true" />
+            Show bot opens/clicks
+          </button>
+        </div>
+      ) : null}
       <AnalyticsDashboardView
-        dashboard={dashboard}
+        dashboard={activeDashboard}
         variant="public"
         analyticsToken={analyticsToken}
-        hideBotClicks={hideBotClicks}
+        hideBotClicks={hideBots}
+        botToggle={botToggle}
       />
     </div>
   );

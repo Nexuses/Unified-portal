@@ -211,6 +211,7 @@ export default function PortalCampaignReport({
   publicToken,
   analyticsToken,
   initialHideBotClicks = false,
+  allowPublicBotToggle = false,
 }: {
   campaign: DripCampaign;
   onCampaignChange?: (campaign: DripCampaign) => void;
@@ -218,8 +219,10 @@ export default function PortalCampaignReport({
   onViewSetup?: () => void;
   publicToken?: string;
   analyticsToken?: string;
-  /** Locked preference for public links (no toggle on public reports). */
+  /** Preference for public links; locked unless allowPublicBotToggle. */
   initialHideBotClicks?: boolean;
+  /** When true (analytics “Export with toggle”), public viewers can flip bots on/off. */
+  allowPublicBotToggle?: boolean;
 }) {
   const [tab, setTab] = useState("overview");
   const [sequenceScope, setSequenceScope] = useState<number | null>(null);
@@ -262,7 +265,9 @@ export default function PortalCampaignReport({
   } | null>(null);
   const [engagementLoading, setEngagementLoading] = useState(false);
   const isPublic = Boolean(publicToken);
-  const showBotClickUi = !isPublic && instantClickEnabled;
+  const showBotClickUi =
+    (!isPublic && instantClickEnabled) ||
+    (isPublic && allowPublicBotToggle);
   const [tableView, setTableView] = useState(false);
 
   useEffect(() => {
@@ -2107,11 +2112,13 @@ export function SharedCampaignReport({
   publicToken,
   analyticsToken,
   hideBotClicks = false,
+  allowBotToggle = false,
 }: {
   campaign: DripCampaign;
   publicToken: string;
   analyticsToken?: string;
   hideBotClicks?: boolean;
+  allowBotToggle?: boolean;
 }) {
   const [current, setCurrent] = useState(campaign);
   return (
@@ -2120,6 +2127,7 @@ export function SharedCampaignReport({
       publicToken={publicToken}
       analyticsToken={analyticsToken}
       initialHideBotClicks={hideBotClicks}
+      allowPublicBotToggle={allowBotToggle}
       onCampaignChange={setCurrent}
     />
   );

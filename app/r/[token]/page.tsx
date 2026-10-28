@@ -9,6 +9,16 @@ type PageProps = {
   searchParams: Promise<{ a?: string; hideBotClicks?: string }>;
 };
 
+function parseHideBotParam(value: string | undefined) {
+  if (value === "1") {
+    return true;
+  }
+  if (value === "0") {
+    return false;
+  }
+  return null;
+}
+
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { token } = await params;
   const found = await getDripCampaignByShareToken(token);
@@ -26,13 +36,19 @@ export default async function PublicCampaignReportPage({ params, searchParams }:
   }
 
   let analyticsToken: string | undefined;
-  let hideBotClicks = hideBotParam === "1";
+  const hideBotFromQuery = parseHideBotParam(hideBotParam);
+  let hideBotClicks = hideBotFromQuery === true;
+  let allowBotToggle = false;
   const requested = a?.trim();
   if (requested) {
     const share = await getAnalyticsShareByToken(requested);
     if (share && share.projectId.toString() === found.projectId.toString()) {
       analyticsToken = requested;
-      if (share.hideBotClicks) {
+      allowBotToggle = Boolean(share.botToggle);
+      if (allowBotToggle) {
+        hideBotClicks =
+          hideBotFromQuery ?? Boolean(share.hideBotClicks);
+      } else if (share.hideBotClicks) {
         hideBotClicks = true;
       }
     }
@@ -44,6 +60,7 @@ export default async function PublicCampaignReportPage({ params, searchParams }:
       publicToken={token}
       analyticsToken={analyticsToken}
       hideBotClicks={hideBotClicks}
+      allowBotToggle={allowBotToggle}
     />
   );
 }

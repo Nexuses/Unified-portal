@@ -17,10 +17,26 @@ export async function POST(request: NextRequest) {
     }
 
     const body = (await request.json().catch(() => null)) as
-      | { from?: string; to?: string; hideBotClicks?: boolean }
+      | {
+          from?: string;
+          to?: string;
+          hideBotClicks?: boolean;
+          botToggle?: boolean;
+          includeKinds?: {
+            drip?: boolean;
+            oneone?: boolean;
+            personalise?: boolean;
+          };
+        }
       | null;
     const from = String(body?.from ?? "").trim();
     const to = String(body?.to ?? "").trim();
+    const botToggle = session.instantClick && Boolean(body?.botToggle);
+    const hideBotClicks = session.instantClick
+      ? botToggle
+        ? Boolean(body?.hideBotClicks ?? true)
+        : Boolean(body?.hideBotClicks)
+      : false;
     const share = await createAnalyticsShare(
       new ObjectId(session.projectId),
       session.projectName,
@@ -28,8 +44,9 @@ export async function POST(request: NextRequest) {
       from,
       to,
       {
-        hideBotClicks:
-          session.instantClick && Boolean(body?.hideBotClicks),
+        hideBotClicks,
+        botToggle,
+        includeKinds: body?.includeKinds,
       },
     );
     const url = `${requestOrigin(request.url, request.headers)}${publicAnalyticsPath(share.token)}`;

@@ -45,8 +45,9 @@ export type AnalyticsDashboard = {
     unsubscribeRate: number;
   };
   byKind: {
-    drip: AnalyticsKindStats;
-    oneone: AnalyticsKindStats;
+    /** Omitted on public shares when that campaign type was not selected. */
+    drip?: AnalyticsKindStats;
+    oneone?: AnalyticsKindStats;
     personalise?: AnalyticsKindStats;
   };
   daily: AnalyticsDailyPoint[];
@@ -60,6 +61,105 @@ export type AnalyticsShareResult = {
   to: string;
   expiresAt: string;
 };
+
+/** Campaign kinds included in a public analytics share. */
+export type AnalyticsIncludeKinds = {
+  drip: boolean;
+  oneone: boolean;
+  personalise: boolean;
+};
+
+export const DEFAULT_ANALYTICS_INCLUDE_KINDS: AnalyticsIncludeKinds = {
+  drip: true,
+  oneone: true,
+  personalise: true,
+};
+
+export function normalizeAnalyticsIncludeKinds(
+  input?: Partial<AnalyticsIncludeKinds> | null,
+): AnalyticsIncludeKinds {
+  return {
+    drip: input?.drip !== false,
+    oneone: input?.oneone !== false,
+    personalise: input?.personalise !== false,
+  };
+}
+
+export function campaignMatchesIncludeKinds(
+  campaign: Pick<AnalyticsCampaignRow, "kind" | "personalise">,
+  kinds: AnalyticsIncludeKinds,
+) {
+  if (campaign.personalise) {
+    return kinds.personalise;
+  }
+  if (campaign.kind === "oneone") {
+    return kinds.oneone;
+  }
+  return kinds.drip;
+}
+
+function emptyKindStats(): AnalyticsKindStats {
+  return { delivered: 0, opens: 0, clicks: 0, unsubscribed: 0 };
+}
+
+/** Filter a dashboard to the campaign kinds selected for a public share. */
+export function filterAnalyticsDashboardByKinds(
+  dashboard: AnalyticsDashboard,
+  kindsInput?: Partial<AnalyticsIncludeKinds> | null,
+): AnalyticsDashboard {
+  const kinds = normalizeAnalyticsIncludeKinds(kindsInput);
+  if (kinds.drip && kinds.oneone && kinds.personalise) {
+    return dashboard;
+  }
+
+  const campaigns = dashboard.campaigns.filter((campaign) =>
+    campaignMatchesIncludeKinds(campaign, kinds),
+  );
+  const byKind: AnalyticsDashboard["byKind"] = {};
+  if (kinds.drip) {
+    byKind.drip = dashboard.byKind.drip ?? emptyKindStats();
+  }
+  if (kinds.oneone) {
+    byKind.oneone = dashboard.byKind.oneone ?? emptyKindStats();
+  }
+  if (kinds.personalise) {
+    byKind.personalise = dashboard.byKind.personalise ?? emptyKindStats();
+  }
+  const drip = byKind.drip ?? emptyKindStats();
+  const oneone = byKind.oneone ?? emptyKindStats();
+  const personalise = byKind.personalise ?? emptyKindStats();
+  const delivered = drip.delivered + oneone.delivered + personalise.delivered;
+  const opens = drip.opens + oneone.opens + personalise.opens;
+  const clicks = drip.clicks + oneone.clicks + personalise.clicks;
+  const unsubscribed =
+    drip.unsubscribed + oneone.unsubscribed + personalise.unsubscribed;
+  const dripCampaigns = campaigns.filter((item) => item.kind === "drip").length;
+  const personaliseCampaigns = campaigns.filter((item) => item.personalise).length;
+  const oneOneCampaigns =
+    campaigns.filter((item) => item.kind === "oneone").length - personaliseCampaigns;
+
+  return {
+    ...dashboard,
+    totals: {
+      ...dashboard.totals,
+      delivered,
+      opens,
+      clicks,
+      unsubscribed,
+      campaigns: campaigns.length,
+      dripCampaigns,
+      oneOneCampaigns,
+      personaliseCampaigns,
+    },
+    rates: {
+      openRate: delivered ? opens / delivered : 0,
+      clickRate: delivered ? clicks / delivered : 0,
+      unsubscribeRate: delivered ? unsubscribed / delivered : 0,
+    },
+    byKind,
+    campaigns,
+  };
+}
 
 export const ANALYTICS_SHARE_TTL_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;

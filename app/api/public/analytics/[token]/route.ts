@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { AnalyticsRangeError, isAnalyticsShareExpired } from "@/lib/analytics";
+import {
+  AnalyticsRangeError,
+  filterAnalyticsDashboardByKinds,
+  isAnalyticsShareExpired,
+} from "@/lib/analytics";
 import {
   findAnalyticsShareByToken,
   getAnalyticsDashboard,
@@ -9,7 +13,7 @@ type RouteContext = {
   params: Promise<{ token: string }>;
 };
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
   try {
     const { token } = await context.params;
     const share = await findAnalyticsShareByToken(token);
@@ -23,12 +27,26 @@ export async function GET(_request: Request, context: RouteContext) {
       );
     }
 
-    const dashboard = await getAnalyticsDashboard(
-      share.projectId,
-      share.from,
-      share.to,
-      share.projectName,
-      { withShareTokens: true },
+    const url = new URL(request.url);
+    const hideParam = url.searchParams.get("hideBotClicks");
+    const hideBotClicks =
+      hideParam === "0" || hideParam === "false"
+        ? false
+        : hideParam === "1" || hideParam === "true"
+          ? true
+          : share.botToggle
+            ? true
+            : Boolean(share.hideBotClicks);
+
+    const dashboard = filterAnalyticsDashboardByKinds(
+      await getAnalyticsDashboard(
+        share.projectId,
+        share.from,
+        share.to,
+        share.projectName,
+        { withShareTokens: true, hideBotClicks },
+      ),
+      share.includeKinds,
     );
     return NextResponse.json(dashboard, {
       headers: { "Cache-Control": "no-store" },
