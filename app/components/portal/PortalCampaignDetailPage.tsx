@@ -3408,28 +3408,33 @@ function CustomHtmlEditor({
         <div className="drip-html-editor-panes">
           <div className="drip-html-editor-pane drip-html-editor-code">
             <div className="drip-html-editor-pane-head">
-              <div className="drip-html-editor-pane-label">
-                {editorMode === "compose" ? "Write" : "HTML"}
-              </div>
-              {editorMode === "compose" ? (
+              <div className="drip-html-editor-pane-label">Editor</div>
+              <div
+                className="drip-html-editor-mode-toggle"
+                role="tablist"
+                aria-label="Editor mode"
+              >
                 <button
                   type="button"
-                  className="drip-html-editor-mode-btn"
-                  disabled={saving}
-                  onClick={switchToCode}
-                >
-                  View HTML code
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="drip-html-editor-mode-btn"
-                  disabled={saving}
+                  role="tab"
+                  aria-selected={editorMode === "compose"}
+                  className={editorMode === "compose" ? "is-active" : ""}
+                  disabled={saving || editorMode === "compose"}
                   onClick={switchToCompose}
                 >
-                  Edit as text
+                  Text
                 </button>
-              )}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={editorMode === "code"}
+                  className={editorMode === "code" ? "is-active" : ""}
+                  disabled={saving || editorMode === "code"}
+                  onClick={switchToCode}
+                >
+                  HTML
+                </button>
+              </div>
             </div>
             {editorMode === "compose" ? (
               <div

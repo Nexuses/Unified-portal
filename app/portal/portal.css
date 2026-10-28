@@ -4524,13 +4524,25 @@ select.filter{
   font-size:13px;font-weight:600;color:#6b7280;letter-spacing:.02em;text-transform:uppercase;
   flex-shrink:0;line-height:1;min-height:16px;
 }
-.drip-html-editor-mode-btn{
-  border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:999px;
-  padding:5px 12px;font-size:12px;font-weight:600;font-family:inherit;cursor:pointer;
-  white-space:nowrap;line-height:1.2;
+.drip-html-editor-mode-toggle{
+  display:inline-flex;align-items:center;gap:2px;padding:3px;border-radius:999px;
+  background:#f3f4f6;flex-shrink:0;
 }
-.drip-html-editor-mode-btn:hover{background:#f9fafb;border-color:#9ca3af;color:#111827;}
-.drip-html-editor-mode-btn:disabled{opacity:.6;cursor:not-allowed;}
+.drip-html-editor-mode-toggle button{
+  border:none;background:transparent;color:#6b7280;border-radius:999px;
+  padding:5px 12px;font-size:12px;font-weight:600;font-family:inherit;cursor:pointer;
+  line-height:1.2;min-width:52px;
+}
+.drip-html-editor-mode-toggle button:hover:not(:disabled):not(.is-active){
+  color:#111827;
+}
+.drip-html-editor-mode-toggle button.is-active{
+  background:#fff;color:#111827;box-shadow:0 1px 2px rgba(15,23,42,.1);
+  cursor:default;
+}
+.drip-html-editor-mode-toggle button:disabled:not(.is-active){
+  opacity:.55;cursor:not-allowed;
+}
 .drip-html-editor-compose{
   width:100%;flex:1;min-height:0;border:1px solid #d1d5db;border-radius:8px;background:#fff;
   padding:18px 20px;font-size:14px;line-height:1.55;color:#111827;outline:none;overflow:auto;
