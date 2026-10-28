@@ -138,7 +138,7 @@ export async function noteApiUsage(input: {
   const scope = creditStorage().getStore();
   const projectId = input.projectId || scope?.projectId;
   const feature = input.feature || scope?.feature;
-  // Only Assistant chat and EDM generation may deduct API credit. Every
+  // Only Assistant, EDM, and CRM list-clean may deduct API credit. Every
   // other caller (email sends, lookup, Personalise, post, pitch, Enrich,
   // Automation, Kanban, ...) is ignored here so it can never be billed
   // by accident, even if a stray noteApiUsage call is added elsewhere.

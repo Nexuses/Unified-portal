@@ -2,10 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { formatListDate, type CrmList } from "@/lib/crm";
+import {
+  defaultSplitListNames,
+  formatListDate,
+  planListSplitCounts,
+  type CrmList,
+} from "@/lib/crm";
 import { PORTAL_ROUTES, portalListRoute } from "@/lib/portal-nav";
 
 const LISTS_PAGE_SIZE = 15;
+const MIN_SPLIT_PARTS = 2;
+const MAX_SPLIT_PARTS = 50;
 
 function EditIcon() {
   return (
@@ -23,6 +30,22 @@ function TrashIcon() {
       <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
       <path d="M6.5 7 7.4 19a2 2 0 0 0 2 1.8h5.2a2 2 0 0 0 2-1.8L17.5 7" />
       <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
+function SplitIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M12 3v18" />
+      <path d="M5 8h5" />
+      <path d="M14 8h5" />
+      <path d="M5 16h5" />
+      <path d="M14 16h5" />
+      <circle cx="4" cy="8" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="20" cy="8" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="4" cy="16" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="20" cy="16" r="1.4" fill="currentColor" stroke="none" />
     </svg>
   );
 }
@@ -100,6 +123,7 @@ export default function PortalListsPage() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [splitting, setSplitting] = useState(false);
   const [deletePrompt, setDeletePrompt] = useState<{
     ids: string[];
     label: string;
@@ -109,7 +133,15 @@ export default function PortalListsPage() {
     name: string;
   } | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [splitPrompt, setSplitPrompt] = useState<{
+    id: string;
+    name: string;
+    contactCount: number;
+  } | null>(null);
+  const [splitParts, setSplitParts] = useState(MIN_SPLIT_PARTS);
+  const [splitNames, setSplitNames] = useState<string[]>([]);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const splitPartsInputRef = useRef<HTMLInputElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   async function loadLists() {
@@ -172,6 +204,24 @@ export default function PortalListsPage() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [renamePrompt]);
+
+  useEffect(() => {
+    if (!splitPrompt) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      splitPartsInputRef.current?.focus();
+      splitPartsInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [splitPrompt]);
+
+  const splitCounts = useMemo(() => {
+    if (!splitPrompt) {
+      return [];
+    }
+    return planListSplitCounts(splitPrompt.contactCount, splitParts);
+  }, [splitPrompt, splitParts]);
 
   const filteredLists = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -249,6 +299,47 @@ export default function PortalListsPage() {
     setRenameValue(list.name);
   }
 
+  function askSplitList(list: CrmList) {
+    setOpenMenuId(null);
+    setError("");
+    if (list.contactCount < MIN_SPLIT_PARTS) {
+      setError("A list needs at least 2 contacts to split.");
+      return;
+    }
+    const maxParts = Math.min(MAX_SPLIT_PARTS, list.contactCount);
+    const parts = Math.min(MIN_SPLIT_PARTS, maxParts);
+    setSplitPrompt({
+      id: list.id,
+      name: list.name,
+      contactCount: list.contactCount,
+    });
+    setSplitParts(parts);
+    setSplitNames(defaultSplitListNames(list.name, parts));
+  }
+
+  function updateSplitParts(raw: number) {
+    if (!splitPrompt) {
+      return;
+    }
+    const maxParts = Math.min(MAX_SPLIT_PARTS, splitPrompt.contactCount);
+    const next = Math.min(
+      maxParts,
+      Math.max(MIN_SPLIT_PARTS, Math.floor(raw) || MIN_SPLIT_PARTS),
+    );
+    setSplitParts(next);
+    setSplitNames((current) => {
+      const defaults = defaultSplitListNames(splitPrompt.name, next);
+      return defaults.map((fallback, index) => {
+        const existing = current[index]?.trim();
+        // Keep edits for parts that still exist; fill new slots with defaults.
+        if (index < current.length && existing) {
+          return current[index];
+        }
+        return fallback;
+      });
+    });
+  }
+
   async function confirmRenameList() {
     if (!renamePrompt || renaming) {
       return;
@@ -295,6 +386,59 @@ export default function PortalListsPage() {
       setError(err instanceof Error ? err.message : "Failed to rename list");
     } finally {
       setRenaming(false);
+    }
+  }
+
+  async function confirmSplitList() {
+    if (!splitPrompt || splitting) {
+      return;
+    }
+    const names = splitNames.map((name) => name.trim());
+    if (names.some((name) => !name)) {
+      setError("Each part needs a list name.");
+      return;
+    }
+    if (new Set(names.map((name) => name.toLowerCase())).size !== names.length) {
+      setError("Each part needs a unique list name.");
+      return;
+    }
+
+    setSplitting(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/crm/lists/${encodeURIComponent(splitPrompt.id)}/split`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ partNames: names }),
+        },
+      );
+      const data = (await response.json()) as {
+        lists?: CrmList[];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to split list");
+      }
+      const created = data.lists ?? [];
+      setLists((current) => [
+        ...created,
+        ...current.filter((list) => list.id !== splitPrompt.id),
+      ]);
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        next.delete(splitPrompt.id);
+        return next;
+      });
+      setSuccess(
+        `Split "${splitPrompt.name}" into ${created.length} list${created.length === 1 ? "" : "s"}.`,
+      );
+      setSplitPrompt(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to split list");
+    } finally {
+      setSplitting(false);
     }
   }
 
@@ -429,6 +573,7 @@ export default function PortalListsPage() {
               <th className="lists-name-cell">Lists</th>
               <th className="lists-id-cell">ID</th>
               <th className="lists-count-cell">Contacts</th>
+              <th className="lists-accounts-cell">Account</th>
               <th className="lists-date-cell">
                 <span className="th-sort">
                   Creation date{" "}
@@ -448,13 +593,13 @@ export default function PortalListsPage() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6} className="crm-empty">
+                <td colSpan={7} className="crm-empty">
                   Loading lists...
                 </td>
               </tr>
             ) : filteredLists.length === 0 ? (
               <tr>
-                <td colSpan={6} className="crm-empty">
+                <td colSpan={7} className="crm-empty">
                   {search.trim()
                     ? "No lists match that search."
                     : "No lists yet. Create a list and upload a CSV to get started."}
@@ -486,7 +631,12 @@ export default function PortalListsPage() {
                   </td>
                   <td className="lists-id-cell id-cell">#{list.displayId}</td>
                   <td className="lists-count-cell">{list.contactCount}</td>
-                  <td className="lists-date-cell">{formatListDate(list.createdAt)}</td>
+                  <td className="lists-accounts-cell">
+                    {list.companyCount ?? 0}
+                  </td>
+                  <td className="lists-date-cell">
+                    {formatListDate(list.createdAt)}
+                  </td>
                   <td className="lists-actions lists-actions-cell">
                     <div
                       className="drip-more-wrap"
@@ -497,7 +647,7 @@ export default function PortalListsPage() {
                         className={`kebab${openMenuId === list.id ? " active" : ""}`}
                         aria-label={`Actions for ${list.name}`}
                         aria-expanded={openMenuId === list.id}
-                        disabled={deleting || renaming}
+                        disabled={deleting || renaming || splitting}
                         onClick={() =>
                           setOpenMenuId((current) =>
                             current === list.id ? null : list.id,
@@ -515,7 +665,7 @@ export default function PortalListsPage() {
                           <button
                             type="button"
                             role="menuitem"
-                            disabled={deleting || renaming}
+                            disabled={deleting || renaming || splitting}
                             onClick={() => askRenameList(list)}
                           >
                             <EditIcon />
@@ -524,8 +674,22 @@ export default function PortalListsPage() {
                           <button
                             type="button"
                             role="menuitem"
+                            disabled={
+                              deleting ||
+                              renaming ||
+                              splitting ||
+                              list.contactCount < MIN_SPLIT_PARTS
+                            }
+                            onClick={() => askSplitList(list)}
+                          >
+                            <SplitIcon />
+                            Split
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
                             className="danger"
-                            disabled={deleting || renaming}
+                            disabled={deleting || renaming || splitting}
                             onClick={() => askDeleteLists([list.id], list.name)}
                           >
                             <TrashIcon />
@@ -620,6 +784,125 @@ export default function PortalListsPage() {
                 onClick={() => void confirmRenameList()}
               >
                 {renaming ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {splitPrompt ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => {
+            if (!splitting) {
+              setSplitPrompt(null);
+            }
+          }}
+        >
+          <div
+            className="crm-modal lists-split-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="lists-split-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="lists-split-title">Split list</h3>
+                <p>
+                  Divide &quot;{splitPrompt.name}&quot; (
+                  {splitPrompt.contactCount.toLocaleString()} contacts) into
+                  new lists. Contacts move into the new lists; the original
+                  list is removed.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                disabled={splitting}
+                onClick={() => setSplitPrompt(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-body">
+              <div className="crm-field lists-split-parts-field">
+                <label htmlFor="lists-split-parts">Number of parts</label>
+                <input
+                  ref={splitPartsInputRef}
+                  id="lists-split-parts"
+                  type="number"
+                  min={MIN_SPLIT_PARTS}
+                  max={Math.min(MAX_SPLIT_PARTS, splitPrompt.contactCount)}
+                  step={1}
+                  value={splitParts}
+                  disabled={splitting}
+                  onChange={(event) =>
+                    updateSplitParts(Number(event.target.value))
+                  }
+                />
+              </div>
+              <div className="lists-split-parts" role="list">
+                {splitNames.map((name, index) => (
+                  <div
+                    key={`split-part-${index}`}
+                    className="lists-split-part"
+                    role="listitem"
+                  >
+                    <div className="lists-split-part-index" aria-hidden>
+                      {index + 1}
+                    </div>
+                    <div className="crm-field lists-split-part-name">
+                      <label htmlFor={`lists-split-name-${index}`}>
+                        List name
+                      </label>
+                      <input
+                        id={`lists-split-name-${index}`}
+                        type="text"
+                        value={name}
+                        maxLength={120}
+                        disabled={splitting}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setSplitNames((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index ? value : item,
+                            ),
+                          );
+                        }}
+                      />
+                    </div>
+                    <div className="lists-split-part-count">
+                      <span>Contacts</span>
+                      <strong>
+                        {(splitCounts[index] ?? 0).toLocaleString()}
+                      </strong>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="crm-modal-foot" style={{ justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={splitting}
+                onClick={() => setSplitPrompt(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                disabled={
+                  splitting ||
+                  splitNames.length < MIN_SPLIT_PARTS ||
+                  splitNames.some((name) => !name.trim())
+                }
+                onClick={() => void confirmSplitList()}
+              >
+                {splitting ? "Splitting…" : `Split into ${splitParts}`}
               </button>
             </div>
           </div>

@@ -91,6 +91,8 @@ export type DripCampaign = {
   hasDesign?: boolean;
   designHtml?: string;
   designSourceCampaignId?: string;
+  /** 1-1: signature HTML appended to every sequence step design. */
+  signatureHtml?: string;
   replyToEnabled?: boolean;
   replyToEmail?: string;
   /** When true, every campaign email is CC'd to `ccEmails`. */

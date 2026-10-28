@@ -14,6 +14,7 @@ export type PortalPageId =
   | "analytics"
   | "analytics-kanban"
   | "smtp"
+  | "smtp-health"
   | "branding"
   | "knowledge"
   | "inbox"
@@ -22,7 +23,7 @@ export type PortalPageId =
   | "unsub"
   | "integrations";
 
-export type PortalNavGroupId = "crm" | "marketing";
+export type PortalNavGroupId = "crm" | "marketing" | "smtp";
 
 export type PortalSubNavItem = {
   id: PortalPageId;
@@ -61,6 +62,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   analytics: "/portal/analytics",
   "analytics-kanban": "/portal/analytics/kanban",
   smtp: "/portal/smtp",
+  "smtp-health": "/portal/smtp/health",
   branding: "/portal/branding",
   knowledge: "/portal/knowledge-base",
   inbox: "/portal/inbox",
@@ -215,7 +217,20 @@ export const PORTAL_NAV: PortalNavItem[] = [
     label: "Activity Feed",
     href: PORTAL_ROUTES.activity,
   },
-  { type: "item", id: "smtp", label: "SMTP & Senders", href: PORTAL_ROUTES.smtp },
+  {
+    type: "group",
+    id: "smtp",
+    label: "SMTP & Senders",
+    href: PORTAL_ROUTES.smtp,
+    children: [
+      { id: "smtp", label: "Senders", href: PORTAL_ROUTES.smtp },
+      {
+        id: "smtp-health",
+        label: "Sender health",
+        href: PORTAL_ROUTES["smtp-health"],
+      },
+    ],
+  },
   { type: "item", id: "unsub", label: "Suppression List", href: PORTAL_ROUTES.unsub },
   {
     type: "item",
@@ -240,7 +255,8 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   edm: "EDM generation",
   analytics: "Analytics",
   "analytics-kanban": "Pipeline",
-  smtp: "SMTP & Senders",
+  smtp: "Senders",
+  "smtp-health": "Sender health",
   branding: "Branding",
   knowledge: "Knowledge Base",
   inbox: "Master Inbox",
@@ -253,6 +269,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
 export const PORTAL_GROUP_DEFAULTS: Record<PortalNavGroupId, string> = {
   crm: PORTAL_ROUTES.contacts,
   marketing: PORTAL_ROUTES.drip,
+  smtp: PORTAL_ROUTES.smtp,
 };
 
 const DETAIL_TITLES: Record<string, string> = {
@@ -279,6 +296,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/marketing/campaigns/")) return "drip";
   if (pathname.startsWith("/portal/analytics/kanban")) return "analytics-kanban";
   if (pathname.startsWith("/portal/analytics")) return "analytics";
+  if (pathname.startsWith("/portal/smtp/health")) return "smtp-health";
   if (pathname.startsWith("/portal/smtp")) return "smtp";
   if (pathname.startsWith("/portal/branding")) return "branding";
   if (pathname.startsWith("/portal/knowledge-base")) return "knowledge";
@@ -296,6 +314,7 @@ export function getOpenGroupsFromPathname(
   return {
     crm: pathname.startsWith("/portal/crm"),
     marketing: pathname.startsWith("/portal/marketing"),
+    smtp: pathname.startsWith("/portal/smtp"),
   };
 }
 
@@ -315,7 +334,11 @@ export function getPageTitleFromPathname(pathname: string): string {
 }
 
 export function isNavItemActive(href: string, pathname: string) {
-  if (href === "/portal" || href === "/portal/analytics") {
+  if (
+    href === "/portal" ||
+    href === "/portal/analytics" ||
+    href === "/portal/smtp"
+  ) {
     return pathname === href;
   }
 

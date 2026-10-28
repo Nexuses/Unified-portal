@@ -342,6 +342,10 @@ export async function rolloutPersonaliseCampaign(input: {
       firstName: contact.firstName,
       lastName: contact.lastName,
       companyName: contact.companyName || "Unknown",
+      ...(contact.position ? { position: contact.position } : {}),
+      ...(contact.personalLinkedIn
+        ? { personalLinkedIn: contact.personalLinkedIn }
+        : {}),
       token: randomBytes(18).toString("hex"),
       status: "pending" as const,
       openCount: 0,

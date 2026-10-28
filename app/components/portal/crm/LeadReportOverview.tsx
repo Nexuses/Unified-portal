@@ -10,6 +10,7 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   CONTACT_ATTRIBUTE_LABELS,
   formatCompanyDate,
@@ -783,6 +784,18 @@ export default function LeadReportOverview({
   );
   const photoUrl = resolveContactPhotoUrl(viewProfile);
   const [timelineExpanded, setTimelineExpanded] = useState(false);
+  const [emailPreview, setEmailPreview] = useState<{
+    sendId: string;
+    subject: string;
+    previewText: string;
+    html: string;
+    campaignName: string;
+    fromName: string;
+    fromEmail: string;
+    sentAt: string;
+  } | null>(null);
+  const [emailLoadingId, setEmailLoadingId] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState("");
   const visibleEngagement = timelineExpanded
     ? engagementEntries
     : engagementEntries.slice(0, TIMELINE_PREVIEW_COUNT);
@@ -790,6 +803,53 @@ export default function LeadReportOverview({
     0,
     engagementEntries.length - TIMELINE_PREVIEW_COUNT,
   );
+
+  function resolveSendId(event: ContactHistoryEvent | null | undefined) {
+    if (!event) {
+      return "";
+    }
+    if (event.sendId && /^[a-f0-9]{24}$/i.test(event.sendId)) {
+      return event.sendId;
+    }
+    const match = event.id.match(
+      /^campaign-(?:opened|sent|unsubscribed|clicked)-([a-f0-9]{24})/i,
+    );
+    return match?.[1] ?? "";
+  }
+
+  async function openEmailPreview(sendId: string) {
+    if (!sendId) {
+      return;
+    }
+    setEmailError("");
+    setEmailLoadingId(sendId);
+    try {
+      const response = await fetch(
+        `/api/crm/contacts/${encodeURIComponent(contact.id)}/sends/${encodeURIComponent(sendId)}/email`,
+      );
+      const data = (await response.json()) as {
+        sendId: string;
+        subject: string;
+        previewText: string;
+        html: string;
+        campaignName: string;
+        fromName: string;
+        fromEmail: string;
+        sentAt: string;
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to load email");
+      }
+      setEmailPreview(data);
+    } catch (err) {
+      setEmailError(
+        err instanceof Error ? err.message : "Failed to load email",
+      );
+    } finally {
+      setEmailLoadingId(null);
+    }
+  }
 
   return (
     <div className="lr-shell">
@@ -1988,24 +2048,46 @@ export default function LeadReportOverview({
                           ) : null}
                         </div>
                       ) : null}
-                      {entry.event?.campaignId ? (
-                        <p className="lr-tl-link">
-                          <Link
-                            href={portalCampaignRoute(
-                              entry.event.campaignId,
-                              entry.event.campaignKind,
-                            )}
-                          >
-                            View campaign
-                            {entry.event.campaignName
-                              ? ` · ${entry.event.campaignName}`
-                              : ""}
-                          </Link>
-                        </p>
-                      ) : null}
+                      {(() => {
+                        const sendId = resolveSendId(entry.event);
+                        const showEmail = Boolean(sendId);
+                        if (!showEmail && !entry.event?.campaignId) {
+                          return null;
+                        }
+                        return (
+                          <div className="lr-tl-actions">
+                            {showEmail ? (
+                              <button
+                                type="button"
+                                className="lr-tl-email-btn"
+                                disabled={emailLoadingId === sendId}
+                                onClick={() => void openEmailPreview(sendId)}
+                              >
+                                {emailLoadingId === sendId
+                                  ? "Loading email…"
+                                  : "Email preview"}
+                              </button>
+                            ) : null}
+                            {entry.event?.campaignId ? (
+                              <Link
+                                className="lr-tl-email-btn lr-tl-campaign-link"
+                                href={portalCampaignRoute(
+                                  entry.event.campaignId,
+                                  entry.event.campaignKind,
+                                )}
+                              >
+                                View campaign
+                              </Link>
+                            ) : null}
+                          </div>
+                        );
+                      })()}
                     </div>
                   ))}
                 </div>
+                {emailError ? (
+                  <p className="lr-tl-email-error">{emailError}</p>
+                ) : null}
                 {hiddenEngagementCount > 0 ? (
                   <button
                     type="button"
@@ -2017,6 +2099,96 @@ export default function LeadReportOverview({
                       : `Read more (${hiddenEngagementCount} more)`}
                   </button>
                 ) : null}
+                {emailPreview && typeof document !== "undefined"
+                  ? createPortal(
+                      <div
+                        className="crm-modal-backdrop lr-email-preview-backdrop"
+                        onClick={() => setEmailPreview(null)}
+                        role="presentation"
+                      >
+                        <div
+                          className="crm-modal lr-email-preview-modal"
+                          role="dialog"
+                          aria-modal="true"
+                          aria-labelledby="lr-lead-email-preview-title"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <div className="crm-modal-head">
+                            <div>
+                              <h3 id="lr-lead-email-preview-title">
+                                Email preview
+                              </h3>
+                              <p>
+                                {emailPreview.campaignName}
+                                {emailPreview.sentAt
+                                  ? ` · sent ${formatListDate(emailPreview.sentAt)}`
+                                  : ""}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              className="crm-modal-close"
+                              aria-label="Close"
+                              onClick={() => setEmailPreview(null)}
+                            >
+                              ×
+                            </button>
+                          </div>
+                          <div className="lr-email-preview-meta">
+                            <div>
+                              <span>Subject</span>
+                              <strong>
+                                {emailPreview.subject || "(no subject)"}
+                              </strong>
+                            </div>
+                            {emailPreview.fromName || emailPreview.fromEmail ? (
+                              <div>
+                                <span>From</span>
+                                <strong>
+                                  {emailPreview.fromName ||
+                                    emailPreview.fromEmail}
+                                  {emailPreview.fromName &&
+                                  emailPreview.fromEmail
+                                    ? ` <${emailPreview.fromEmail}>`
+                                    : ""}
+                                </strong>
+                              </div>
+                            ) : null}
+                            {emailPreview.previewText ? (
+                              <div>
+                                <span>Preview</span>
+                                <strong>{emailPreview.previewText}</strong>
+                              </div>
+                            ) : null}
+                          </div>
+                          <div className="lr-email-preview-frame-wrap">
+                            {emailPreview.html.trim() ? (
+                              <iframe
+                                title="Sent email"
+                                className="lr-email-preview-frame"
+                                sandbox=""
+                                srcDoc={emailPreview.html}
+                              />
+                            ) : (
+                              <p className="lr-email-preview-empty">
+                                No email HTML was stored for this send.
+                              </p>
+                            )}
+                          </div>
+                          <div className="crm-modal-foot">
+                            <button
+                              type="button"
+                              className="btn-dark"
+                              onClick={() => setEmailPreview(null)}
+                            >
+                              Close
+                            </button>
+                          </div>
+                        </div>
+                      </div>,
+                      document.body,
+                    )
+                  : null}
               </>
             )}
           </Card>

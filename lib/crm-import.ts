@@ -8,7 +8,12 @@ import type {
   ListDoc,
   ListMembershipDoc,
 } from "@/lib/crm";
-import { normalizeCompanyKey } from "@/lib/crm";
+import {
+  defaultSplitListNames,
+  normalizeCompanyKey,
+  planListSplitCounts,
+} from "@/lib/crm";
+import { countDistinctCompaniesForList } from "@/lib/crm-list-stats";
 
 type ImportContext = {
   projectId: ObjectId;
@@ -49,6 +54,7 @@ export async function createList(
     name: name.trim(),
     displayId,
     contactCount: 0,
+    companyCount: 0,
     ...(trimmedFileName ? { importFileName: trimmedFileName } : {}),
     createdBy: userId,
     createdAt: now,
@@ -463,18 +469,20 @@ export async function importContactsToList(
     }
   }
 
-  const membershipCount = await db
-    .collection("list_memberships")
-    .countDocuments({
+  const [membershipCount, companyCount] = await Promise.all([
+    db.collection("list_memberships").countDocuments({
       projectId: context.projectId,
       listId: context.listId,
-    });
+    }),
+    countDistinctCompaniesForList(context.projectId, context.listId),
+  ]);
 
   await db.collection("lists").updateOne(
     { _id: context.listId },
     {
       $set: {
         contactCount: membershipCount,
+        companyCount,
         updatedAt: new Date(),
       },
     },
@@ -491,6 +499,126 @@ export async function importContactsToList(
     companiesCreated,
     contactsCreated,
     contactsUpdated,
+  };
+}
+
+export { planListSplitCounts, defaultSplitListNames };
+
+/**
+ * Partition a list's contacts into N new lists (move memberships), then delete the source list.
+ */
+export async function splitList(
+  projectId: ObjectId,
+  listId: ObjectId,
+  partNames: string[],
+  userId: ObjectId | null,
+) {
+  const names = partNames.map((name) => name.trim()).filter(Boolean);
+  if (names.length < 2) {
+    throw new Error("Split into at least 2 parts");
+  }
+  if (names.length > 50) {
+    throw new Error("Split into at most 50 parts");
+  }
+  const lowered = names.map((name) => name.toLowerCase());
+  if (new Set(lowered).size !== lowered.length) {
+    throw new Error("Each part needs a unique list name");
+  }
+  if (lowered.some((name) => name === "unsubscribe")) {
+    throw new Error("That list name is reserved");
+  }
+
+  const db = await getDb();
+  const source = await db.collection<ListDoc>("lists").findOne({
+    _id: listId,
+    projectId,
+  });
+  if (!source) {
+    throw new Error("List not found");
+  }
+  if (source.name === "Unsubscribe") {
+    throw new Error("The Unsubscribe list cannot be split");
+  }
+
+  const memberships = await db
+    .collection<ListMembershipDoc>("list_memberships")
+    .find({ projectId, listId })
+    .sort({ addedAt: 1, _id: 1 })
+    .project({ _id: 1 })
+    .toArray();
+
+  if (memberships.length === 0) {
+    throw new Error("This list has no contacts to split");
+  }
+  if (names.length > memberships.length) {
+    throw new Error(
+      `Cannot split ${memberships.length} contact${memberships.length === 1 ? "" : "s"} into ${names.length} parts`,
+    );
+  }
+
+  const existingNames = await db
+    .collection<ListDoc>("lists")
+    .find({
+      projectId,
+      _id: { $ne: listId },
+      name: { $in: names },
+    })
+    .project({ name: 1 })
+    .toArray();
+  if (existingNames.length > 0) {
+    throw new Error(
+      `A list named "${existingNames[0].name}" already exists`,
+    );
+  }
+
+  const counts = planListSplitCounts(memberships.length, names.length);
+  let nextDisplayId = await getNextListDisplayId(projectId);
+  const now = new Date();
+  const created: ListDoc[] = [];
+  let offset = 0;
+
+  for (let index = 0; index < names.length; index += 1) {
+    const count = counts[index] ?? 0;
+    const chunk = memberships.slice(offset, offset + count);
+    offset += count;
+
+    const doc: Omit<ListDoc, "_id"> = {
+      projectId,
+      name: names[index],
+      displayId: nextDisplayId,
+      contactCount: chunk.length,
+      companyCount: 0,
+      createdBy: userId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    nextDisplayId += 1;
+    const insert = await db.collection("lists").insertOne(doc);
+    const listDoc: ListDoc = { ...doc, _id: insert.insertedId };
+    created.push(listDoc);
+
+    if (chunk.length === 0) {
+      continue;
+    }
+    const membershipIds = chunk.map((row) => row._id);
+    for (const idChunk of chunkArray(membershipIds, WRITE_CHUNK)) {
+      await db.collection<ListMembershipDoc>("list_memberships").updateMany(
+        { _id: { $in: idChunk }, projectId, listId },
+        { $set: { listId: listDoc._id } },
+      );
+    }
+  }
+
+  await db.collection<ListMembershipDoc>("list_memberships").deleteMany({
+    projectId,
+    listId,
+  });
+  await db.collection<ListDoc>("lists").deleteOne({ _id: listId, projectId });
+
+  return {
+    sourceListId: listId.toString(),
+    lists: created,
+    counts,
   };
 }
 

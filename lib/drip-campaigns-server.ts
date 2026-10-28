@@ -58,6 +58,7 @@ export type DripCampaignDoc = {
   hasDesign?: boolean;
   designHtml?: string;
   designSourceCampaignId?: string;
+  signatureHtml?: string;
   replyToEnabled?: boolean;
   replyToEmail?: string;
   ccEnabled?: boolean;
@@ -121,6 +122,7 @@ function mapCampaign(doc: DripCampaignDoc): DripCampaign {
     hasDesign: doc.hasDesign,
     designHtml: doc.designHtml,
     designSourceCampaignId: doc.designSourceCampaignId,
+    signatureHtml: doc.signatureHtml,
     replyToEnabled: doc.replyToEnabled,
     replyToEmail: doc.replyToEmail,
     ccEnabled: doc.ccEnabled,
@@ -777,6 +779,7 @@ const PATCHABLE_KEYS: Array<keyof DripCampaign> = [
   "hasDesign",
   "designHtml",
   "designSourceCampaignId",
+  "signatureHtml",
   "replyToEnabled",
   "replyToEmail",
   "ccEnabled",

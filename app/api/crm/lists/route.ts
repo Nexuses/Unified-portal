@@ -3,6 +3,7 @@ import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import { mapList, type ListDoc } from "@/lib/crm";
 import { createList, deleteLists, importContactsToList } from "@/lib/crm-import";
+import { getDistinctCompanyCountsByList } from "@/lib/crm-list-stats";
 import {
   isSessionError,
   requirePortalSession,
@@ -19,13 +20,24 @@ export async function GET() {
     }
 
     const db = await getDb();
-    const lists = await db
-      .collection<ListDoc>("lists")
-      .find({ projectId: new ObjectId(session.projectId) })
-      .sort({ createdAt: -1 })
-      .toArray();
+    const projectId = new ObjectId(session.projectId);
+    const [lists, companyCounts] = await Promise.all([
+      db
+        .collection<ListDoc>("lists")
+        .find({ projectId })
+        .sort({ createdAt: -1 })
+        .toArray(),
+      getDistinctCompanyCountsByList(projectId),
+    ]);
 
-    return NextResponse.json(lists.map(mapList));
+    return NextResponse.json(
+      lists.map((list) =>
+        mapList({
+          ...list,
+          companyCount: companyCounts.get(list._id.toString()) ?? 0,
+        }),
+      ),
+    );
   } catch (error) {
     console.error("Failed to fetch lists:", error);
     return NextResponse.json(

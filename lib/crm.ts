@@ -141,6 +141,8 @@ export type CrmList = {
   name: string;
   displayId: number;
   contactCount: number;
+  /** Distinct CRM companies (accounts) among list members. */
+  companyCount: number;
   createdAt: string;
   importFileName?: string;
 };
@@ -193,6 +195,12 @@ export type ContactHistoryEvent = {
   campaignId?: string;
   campaignKind?: "drip" | "oneone";
   campaignName?: string;
+  /** campaign_sends._id — used to open the sent email preview modal. */
+  sendId?: string;
+  /** Email subject for this send (personalised line or blast subject). */
+  emailSubject?: string;
+  /** Optional preview / preheader text from the blast. */
+  emailPreview?: string;
   clickedUrl?: string;
   /** Absolute sent/opened/clicked time already on `at`; extras for engagement. */
   ip?: string;
@@ -229,6 +237,7 @@ export type ContactProfileTimelineItem = {
   id: string;
   at: string;
   body: string;
+  /** Manual activity channel: call | whatsapp | message | note */
   kind?: string;
 };
 
@@ -349,6 +358,8 @@ export type ListDoc = {
   name: string;
   displayId: number;
   contactCount: number;
+  /** Distinct CRM companies (accounts) among list members. */
+  companyCount?: number;
   importFileName?: string;
   createdBy: ObjectId | null;
   createdAt: Date;
@@ -406,6 +417,7 @@ export function mapList(doc: ListDoc): CrmList {
     name: doc.name,
     displayId: doc.displayId,
     contactCount: doc.contactCount,
+    companyCount: doc.companyCount ?? 0,
     createdAt: doc.createdAt.toISOString(),
     importFileName: doc.importFileName,
   };
@@ -413,6 +425,25 @@ export function mapList(doc: ListDoc): CrmList {
 
 export function normalizeCompanyKey(name: string) {
   return name.trim().toLowerCase();
+}
+
+/** Evenly distribute `total` items across `parts` (earlier parts get the remainder). */
+export function planListSplitCounts(total: number, parts: number): number[] {
+  const safeParts = Math.max(1, Math.floor(parts));
+  const safeTotal = Math.max(0, Math.floor(total));
+  const base = Math.floor(safeTotal / safeParts);
+  const rem = safeTotal % safeParts;
+  return Array.from(
+    { length: safeParts },
+    (_, index) => base + (index < rem ? 1 : 0),
+  );
+}
+
+export function defaultSplitListNames(sourceName: string, parts: number): string[] {
+  const base = sourceName.trim() || "List";
+  return Array.from({ length: Math.max(1, Math.floor(parts)) }, (_, index) =>
+    `${base} (${index + 1})`,
+  );
 }
 
 export function formatListDate(value: string | Date) {
@@ -591,7 +622,8 @@ export function buildContactHistory({
       type: "company_associated",
       title: "Company associated",
       description: `This contact has been associated to the company: ${company.name}`,
-      at: contact.updatedAt,
+      // Use createdAt — updatedAt moves this to the top on every profile edit.
+      at: contact.createdAt,
       actor: owner,
       companyId: company.id,
       companyName: company.name,
@@ -602,7 +634,7 @@ export function buildContactHistory({
       type: "company_associated",
       title: "Company associated",
       description: `This contact has been associated to the company: ${contact.companyName}`,
-      at: contact.updatedAt,
+      at: contact.createdAt,
       actor: owner,
       companyName: contact.companyName,
     });
@@ -657,7 +689,33 @@ export function buildContactHistory({
     });
   }
 
-  return events.sort(
-    (left, right) => new Date(right.at).getTime() - new Date(left.at).getTime(),
-  );
+  return events.sort((left, right) => {
+    const timeDiff =
+      new Date(right.at).getTime() - new Date(left.at).getTime();
+    if (timeDiff !== 0) {
+      return timeDiff;
+    }
+    // Same timestamp: keep import/list above company association.
+    return historySortRank(right.type) - historySortRank(left.type);
+  });
+}
+
+/** Higher rank appears first when event times are equal (newest-first feed). */
+function historySortRank(type: ContactHistoryEvent["type"]) {
+  switch (type) {
+    case "campaign_clicked":
+    case "campaign_opened":
+    case "campaign_sent":
+    case "campaign_delivered":
+    case "campaign_unsubscribed":
+      return 50;
+    case "list_added":
+      return 40;
+    case "import":
+      return 30;
+    case "company_associated":
+      return 10;
+    default:
+      return 20;
+  }
 }

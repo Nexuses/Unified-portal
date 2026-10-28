@@ -2,6 +2,7 @@
 export type ApiFeature =
   | "assistant"
   | "edm"
+  | "crm"
   | "personalise"
   | "post"
   | "pitch"
@@ -14,6 +15,7 @@ export type ApiFeature =
 export const API_FEATURE_LABELS: Record<ApiFeature, string> = {
   assistant: "Assistant",
   edm: "EDM generator",
+  crm: "CRM list clean",
   personalise: "Personalise",
   post: "Social post",
   pitch: "Pitch research",
@@ -30,12 +32,14 @@ export const API_FEATURE_LABELS: Record<ApiFeature, string> = {
  * social-post, pitch, Enrich, Automation and Kanban calls must never
  * deduct from this credit.
  */
-export const BILLABLE_API_FEATURES = ["assistant", "edm"] as const;
+export const BILLABLE_API_FEATURES = ["assistant", "edm", "crm"] as const;
 
 export function isBillableApiFeature(
   feature: string | undefined | null,
 ): feature is (typeof BILLABLE_API_FEATURES)[number] {
-  return feature === "assistant" || feature === "edm";
+  return (
+    feature === "assistant" || feature === "edm" || feature === "crm"
+  );
 }
 
 /** Starting dollar cap for a project until an admin changes it. */

@@ -30,7 +30,11 @@ import {
   normalizeStoredMessageId,
   refreshSenderRepliesIfStale,
 } from "@/lib/master-inbox-server";
-import { applyContactVariables } from "@/lib/email-variables";
+import {
+  applyContactVariables,
+  contactMergeFieldsFromContact,
+  type ContactMergeFields,
+} from "@/lib/email-variables";
 import { emitWebhookEventBackground } from "@/lib/webhooks-server";
 import type { EngagementClientMeta } from "@/lib/engagement-client-meta";
 import {
@@ -115,6 +119,16 @@ export type CampaignBlastDoc = {
   scheduleByOpenTime?: boolean;
 };
 
+type BlastRecipient = {
+  email: string;
+  fullName: string;
+  firstName: string;
+  lastName: string;
+  companyName: string;
+  position?: string;
+  personalLinkedIn?: string;
+};
+
 export type CampaignSendDoc = {
   _id: ObjectId;
   projectId: ObjectId;
@@ -125,6 +139,10 @@ export type CampaignSendDoc = {
   firstName: string;
   lastName: string;
   companyName: string;
+  /** Job title for {{ contact.POSITION }} (from attributes.position / profile.title). */
+  position?: string;
+  /** For {{ contact.LINKEDIN }}. */
+  personalLinkedIn?: string;
   token: string;
   status: "pending" | "sending" | "sent" | "failed";
   error?: string;
@@ -742,17 +760,56 @@ async function reportsFromBlasts(docs: CampaignBlastDoc[]) {
   return docs.map((doc) => mapReport(doc, progress.get(doc._id.toString())));
 }
 
+function recipientFromContactDoc(contact: ContactDoc): BlastRecipient {
+  const merge = contactMergeFieldsFromContact(contact);
+  return {
+    email: contact.email.trim().toLowerCase(),
+    fullName:
+      `${contact.firstName} ${contact.lastName}`.trim() || contact.email,
+    firstName: contact.firstName,
+    lastName: contact.lastName,
+    companyName: contact.companyName || "",
+    ...(merge.position ? { position: merge.position } : {}),
+    ...(merge.personalLinkedIn
+      ? { personalLinkedIn: merge.personalLinkedIn }
+      : {}),
+  };
+}
+
 async function resolveRecipients(
   projectId: ObjectId,
   campaign: DripCampaign,
-) {
+): Promise<BlastRecipient[]> {
   const db = await getDb();
 
   if (campaign.recipientMode === "individual" && campaign.individualContacts?.length) {
+    const emails = campaign.individualContacts
+      .map((contact) => contact.email.trim().toLowerCase())
+      .filter((email) => email.includes("@"));
+    const docs =
+      emails.length > 0
+        ? await db
+            .collection<ContactDoc>("contacts")
+            .find({
+              projectId,
+              email: { $in: emails },
+              subscribed: { $ne: false },
+              blocklisted: { $ne: true },
+            })
+            .toArray()
+        : [];
+    const byEmail = new Map(
+      docs.map((doc) => [doc.email.trim().toLowerCase(), doc]),
+    );
     return campaign.individualContacts.map((contact) => {
+      const email = contact.email.trim().toLowerCase();
+      const doc = byEmail.get(email);
+      if (doc) {
+        return recipientFromContactDoc(doc);
+      }
       const [firstName, ...rest] = contact.fullName.trim().split(" ");
       return {
-        email: contact.email.trim().toLowerCase(),
+        email,
         fullName: contact.fullName,
         firstName: firstName || "",
         lastName: rest.join(" "),
@@ -786,36 +843,13 @@ async function resolveRecipients(
     .toArray();
 
   return contacts
-    .map((contact) => ({
-      email: contact.email.trim().toLowerCase(),
-      fullName: `${contact.firstName} ${contact.lastName}`.trim(),
-      firstName: contact.firstName,
-      lastName: contact.lastName,
-      companyName: contact.companyName || "",
-    }))
+    .map((contact) => recipientFromContactDoc(contact))
     .filter((contact) => contact.email);
 }
 
 async function recipientsToEnroll(projectId: ObjectId, campaign: DripCampaign) {
-  const merged = new Map<
-    string,
-    {
-      email: string;
-      fullName: string;
-      firstName: string;
-      lastName: string;
-      companyName: string;
-    }
-  >();
-  const add = (
-    people: Array<{
-      email: string;
-      fullName: string;
-      firstName: string;
-      lastName: string;
-      companyName: string;
-    }>,
-  ) => {
+  const merged = new Map<string, BlastRecipient>();
+  const add = (people: BlastRecipient[]) => {
     for (const person of people) {
       if (person.email && !merged.has(person.email)) {
         merged.set(person.email, person);
@@ -1374,6 +1408,54 @@ async function sendPendingBatch(
         )
       : new Map<string, number>();
 
+  const mergeEnrichByEmail = new Map<string, ContactMergeFields>();
+  const emailsNeedingMerge = [
+    ...new Set(
+      pending
+        .filter((send) => !send.position?.trim() || !send.personalLinkedIn?.trim())
+        .map((send) => send.email.trim().toLowerCase())
+        .filter((email) => email.includes("@")),
+    ),
+  ];
+  if (emailsNeedingMerge.length > 0) {
+    const docs = await db
+      .collection<ContactDoc>("contacts")
+      .find({
+        projectId: blast.projectId,
+        email: { $in: emailsNeedingMerge },
+      })
+      .project({
+        email: 1,
+        firstName: 1,
+        lastName: 1,
+        companyName: 1,
+        attributes: 1,
+        profile: 1,
+      })
+      .toArray();
+    for (const doc of docs) {
+      mergeEnrichByEmail.set(
+        doc.email.trim().toLowerCase(),
+        contactMergeFieldsFromContact(doc),
+      );
+    }
+  }
+
+  function mergeFieldsForSend(send: CampaignSendDoc): ContactMergeFields {
+    const email = send.email.trim().toLowerCase();
+    const enrich = mergeEnrichByEmail.get(email);
+    return {
+      firstName: send.firstName,
+      lastName: send.lastName,
+      fullName: send.fullName,
+      email: send.email,
+      companyName: send.companyName,
+      position: send.position?.trim() || enrich?.position || "",
+      personalLinkedIn:
+        send.personalLinkedIn?.trim() || enrich?.personalLinkedIn || "",
+    };
+  }
+
   for (const send of pending) {
     if (isSuppressedAddress(send.email, suppressed)) {
       await db.collection<CampaignSendDoc>("campaign_sends").updateOne(
@@ -1411,7 +1493,8 @@ async function sendPendingBatch(
       const outbound = oneOne
         ? await resolveOneOneOutbound(blast, send)
         : { subject: content.subject, inReplyTo: undefined, references: undefined };
-      const personalized = applyContactVariables(content.html, send, true);
+      const mergeContact = mergeFieldsForSend(send);
+      const personalized = applyContactVariables(content.html, mergeContact, true);
       const html = injectCampaignTracking(personalized, trackingBase, send.token, {
         utm: resolveUtmConfig(blast),
         campaignName: blast.name,
@@ -1421,7 +1504,7 @@ async function sendPendingBatch(
       });
       const mailResult = await sendProjectMail(blast.projectId, blast.senderId, {
         to: send.email,
-        subject: applyContactVariables(outbound.subject, send, false),
+        subject: applyContactVariables(outbound.subject, mergeContact, false),
         html,
         fromName: readableSenderName(blast.senderName),
         replyTo: blast.replyTo,
@@ -1829,6 +1912,10 @@ export async function launchCampaignBlast(input: {
               firstName: contact.firstName,
               lastName: contact.lastName,
               companyName: contact.companyName,
+              ...(contact.position ? { position: contact.position } : {}),
+              ...(contact.personalLinkedIn
+                ? { personalLinkedIn: contact.personalLinkedIn }
+                : {}),
               token: randomBytes(18).toString("hex"),
               status: "pending" as const,
               openCount: 0,
@@ -1851,6 +1938,10 @@ export async function launchCampaignBlast(input: {
             firstName: contact.firstName,
             lastName: contact.lastName,
             companyName: contact.companyName,
+            ...(contact.position ? { position: contact.position } : {}),
+            ...(contact.personalLinkedIn
+              ? { personalLinkedIn: contact.personalLinkedIn }
+              : {}),
             token: randomBytes(18).toString("hex"),
             status: "pending" as const,
             openCount: 0,
@@ -2316,6 +2407,10 @@ export async function syncPausedOneOneBlast(
             firstName: contact.firstName,
             lastName: contact.lastName,
             companyName: contact.companyName,
+            ...(contact.position ? { position: contact.position } : {}),
+            ...(contact.personalLinkedIn
+              ? { personalLinkedIn: contact.personalLinkedIn }
+              : {}),
           },
           sequenceId: sequence.id,
           sequenceIndex: index,
@@ -2488,13 +2583,7 @@ function pendingSendRow(input: {
   projectId: ObjectId;
   blast: CampaignBlastDoc;
   campaignId: string;
-  contact: {
-    email: string;
-    fullName: string;
-    firstName: string;
-    lastName: string;
-    companyName: string;
-  };
+  contact: BlastRecipient;
   sequenceId: string;
   sequenceIndex: number;
   availableAt: Date;
@@ -2509,6 +2598,10 @@ function pendingSendRow(input: {
     firstName: input.contact.firstName,
     lastName: input.contact.lastName,
     companyName: input.contact.companyName,
+    ...(input.contact.position ? { position: input.contact.position } : {}),
+    ...(input.contact.personalLinkedIn
+      ? { personalLinkedIn: input.contact.personalLinkedIn }
+      : {}),
     token: randomBytes(18).toString("hex"),
     status: "pending",
     openCount: 0,

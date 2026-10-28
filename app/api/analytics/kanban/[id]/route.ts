@@ -51,23 +51,29 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
     const { id } = await context.params;
     const body = (await request.json().catch(() => null)) as {
+      name?: string;
       stages?: KanbanStage[];
       placements?: Record<string, string>;
       campaigns?: KanbanCampaignRef[];
       manualPeople?: KanbanManualPerson[];
+      excludedEmails?: string[];
     } | null;
     const board = await patchProjectKanbanBoard(
       new ObjectId(session.projectId),
       id,
       {
+        name: body?.name,
         stages: body?.stages,
         placements: body?.placements,
         campaigns: body?.campaigns,
         manualPeople: body?.manualPeople,
+        excludedEmails: body?.excludedEmails,
       },
       {
         skipPeople:
-          body?.campaigns === undefined && body?.manualPeople === undefined,
+          body?.campaigns === undefined &&
+          body?.manualPeople === undefined &&
+          body?.excludedEmails === undefined,
       },
     );
     if (!board) {
@@ -77,7 +83,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   } catch (error) {
     console.error("Failed to save kanban board:", error);
     return NextResponse.json(
-      { error: "Failed to save kanban" },
+      {
+        error:
+          error instanceof Error ? error.message : "Failed to save kanban",
+      },
       { status: 500 },
     );
   }

@@ -18,8 +18,11 @@ import {
   portalContactRoute,
 } from "@/lib/portal-nav";
 import type { ActivityFeedItem } from "@/lib/activity-feed-server";
+import EmailHealthPanel from "@/app/components/portal/EmailHealthPanel";
 
 const SENDER_SOFT_LIMIT = 10;
+const CONTACT_PERIOD_OPTIONS = [7, 15, 30] as const;
+type ContactPeriodDays = (typeof CONTACT_PERIOD_OPTIONS)[number];
 
 type PortalDashboardProps = {
   firstName: string;
@@ -258,9 +261,9 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
     () => new Date(today.getFullYear(), today.getMonth(), 1),
   );
   const [contactTotal, setContactTotal] = useState<number | null>(null);
-  const [contactsLast30Days, setContactsLast30Days] = useState<number | null>(
-    null,
-  );
+  const [contactsInPeriod, setContactsInPeriod] = useState<number | null>(null);
+  const [contactPeriodDays, setContactPeriodDays] =
+    useState<ContactPeriodDays>(30);
   const [emailsSent, setEmailsSent] = useState<number | null>(null);
   const [sendingLimit, setSendingLimit] = useState(DEFAULT_PROJECT_SENDING_LIMIT);
   const [dripEmailsSent, setDripEmailsSent] = useState<number | null>(null);
@@ -274,38 +277,74 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadContacts() {
+    async function loadContactTotal() {
       try {
-        const cutoff = new Date(Date.now() - 30 * DAY_MS).toISOString();
-        const [totalResponse, recentResponse] = await Promise.all([
-          fetch("/api/crm/contacts?page=1&pageSize=1"),
-          fetch(
-            `/api/crm/contacts?page=1&pageSize=1&createdAfter=${encodeURIComponent(cutoff)}`,
-          ),
-        ]);
+        const totalResponse = await fetch("/api/crm/contacts?page=1&pageSize=1");
         const totalData = (await totalResponse.json()) as
           | { total?: number; error?: string }
           | Contact[];
-        const recentData = (await recentResponse.json()) as
-          | { total?: number; error?: string }
-          | Contact[];
-        if (!totalResponse.ok || Array.isArray(totalData) || typeof totalData.total !== "number") {
+        if (
+          !totalResponse.ok ||
+          Array.isArray(totalData) ||
+          typeof totalData.total !== "number"
+        ) {
           return;
         }
         if (cancelled) {
           return;
         }
-
         setContactTotal(totalData.total);
-        setContactsLast30Days(
-          recentResponse.ok && !Array.isArray(recentData) && typeof recentData.total === "number"
+      } catch {
+        // Keep placeholder if the request fails.
+      }
+    }
+
+    void loadContactTotal();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadContactsInPeriod() {
+      setContactsInPeriod(null);
+      try {
+        const cutoff = new Date(
+          Date.now() - contactPeriodDays * DAY_MS,
+        ).toISOString();
+        const recentResponse = await fetch(
+          `/api/crm/contacts?page=1&pageSize=1&createdAfter=${encodeURIComponent(cutoff)}`,
+        );
+        const recentData = (await recentResponse.json()) as
+          | { total?: number; error?: string }
+          | Contact[];
+        if (cancelled) {
+          return;
+        }
+        setContactsInPeriod(
+          recentResponse.ok &&
+            !Array.isArray(recentData) &&
+            typeof recentData.total === "number"
             ? recentData.total
             : 0,
         );
       } catch {
-        // Keep placeholder zeros if the request fails.
+        if (!cancelled) {
+          setContactsInPeriod(0);
+        }
       }
     }
+
+    void loadContactsInPeriod();
+    return () => {
+      cancelled = true;
+    };
+  }, [contactPeriodDays]);
+
+  useEffect(() => {
+    let cancelled = false;
 
     async function loadUsage() {
       try {
@@ -379,7 +418,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
         const latest = data
           .filter((campaign) => campaign.status === "sent")
           .sort((a, b) => campaignTimestamp(b) - campaignTimestamp(a))
-          .slice(0, 3);
+          .slice(0, 4);
         setLastCampaigns(latest);
       } catch {
         // Keep the empty state if campaigns fail to load.
@@ -405,7 +444,6 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
       }
     }
 
-    void loadContacts();
     void loadUsage();
     void loadLastCampaigns();
     void loadRecentActivity();
@@ -466,7 +504,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
   const totalLabel =
     contactTotal === null ? "…" : formatCount(contactTotal);
   const recentLabel =
-    contactsLast30Days === null ? "…" : formatCount(contactsLast30Days);
+    contactsInPeriod === null ? "…" : formatCount(contactsInPeriod);
   const emailsSentValue = emailsSent ?? 0;
   const senderCountValue = senderCount ?? 0;
   const emailsMeta =
@@ -573,14 +611,36 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
         <div className="home-card">
           <div className="home-card-head">
             <h3>Your contacts</h3>
-            <Link href={PORTAL_ROUTES.contacts} className="link-blue">
-              Add contact
-            </Link>
+            <div className="home-card-head-right">
+              <div
+                className="contact-period-filters"
+                role="group"
+                aria-label="New contacts period"
+              >
+                {CONTACT_PERIOD_OPTIONS.map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    className={`contact-period-chip${
+                      contactPeriodDays === days ? " is-active" : ""
+                    }`}
+                    onClick={() => setContactPeriodDays(days)}
+                  >
+                    {days}d
+                  </button>
+                ))}
+              </div>
+              <Link href={PORTAL_ROUTES.contacts} className="link-blue">
+                Add contact
+              </Link>
+            </div>
           </div>
           <div className="contact-stat">
             <div>
-              <div className="num">{totalLabel}</div>
-              <div className="lbl">Total contacts</div>
+              <div className="num">{recentLabel}</div>
+              <div className="lbl">
+                New contacts · last {contactPeriodDays} days
+              </div>
             </div>
             <div className="contact-stat-icon">
               <svg
@@ -597,8 +657,8 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
           </div>
           <div className="contact-stat">
             <div>
-              <div className="num">{recentLabel}</div>
-              <div className="lbl">New contacts over the last 30 days</div>
+              <div className="num">{totalLabel}</div>
+              <div className="lbl">Total contacts</div>
             </div>
             <div className="contact-stat-icon">
               <svg
@@ -713,21 +773,7 @@ export default function PortalDashboard({ firstName }: PortalDashboardProps) {
           </div>
         </div>
 
-        <div className="auto-card">
-          <div>
-            <div className="auto-illu">
-              <div className="env" />
-            </div>
-            <h3>Deliver the right message at the right time</h3>
-            <p>
-              Strengthen your connection with contacts by sending automated
-              personalized messages.
-            </p>
-          </div>
-          <Link href={PORTAL_ROUTES.automation} className="btn">
-            Create automation
-          </Link>
-        </div>
+        <EmailHealthPanel compact />
       </div>
     </>
   );

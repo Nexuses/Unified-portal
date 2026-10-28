@@ -47,6 +47,11 @@ import {
   AUTOMATION_FOLLOW_UP_TAG,
   ensureAutomationCampaignTags,
 } from "@/lib/automations";
+import {
+  applyCampaignSignature,
+  cleanSignatureHtml,
+  MAX_SIGNATURE_HTML,
+} from "@/lib/personalise-types";
 import PortalCampaignReport from "@/app/components/portal/PortalCampaignReport";
 import CampaignScheduleDrawer from "@/app/components/portal/CampaignScheduleDrawer";
 import ComposeFormatToolbar from "@/app/components/portal/ComposeFormatToolbar";
@@ -391,12 +396,23 @@ const SUBJECT_EMOJIS = [
 const CONTACT_VARIABLES = [
   { label: "FIRSTNAME", tag: "{{ contact.FIRSTNAME }}" },
   { label: "LASTNAME", tag: "{{ contact.LASTNAME }}" },
+  { label: "FULLNAME", tag: "{{ contact.FULLNAME }}" },
   { label: "EMAIL", tag: "{{ contact.EMAIL }}" },
   { label: "COMPANY", tag: "{{ contact.COMPANY }}" },
+  { label: "POSITION", tag: "{{ contact.POSITION }}" },
+  { label: "LINKEDIN", tag: "{{ contact.LINKEDIN }}" },
   { label: "UNSUBSCRIBE", tag: "{{ unsubscribe }}" },
 ];
 
-const CONTACT_VARIABLE_ORDER = ["FIRSTNAME", "LASTNAME", "EMAIL", "COMPANY"] as const;
+const CONTACT_VARIABLE_ORDER = [
+  "FIRSTNAME",
+  "LASTNAME",
+  "FULLNAME",
+  "EMAIL",
+  "COMPANY",
+  "POSITION",
+  "LINKEDIN",
+] as const;
 
 function escapeHtml(value: string) {
   return value
@@ -410,11 +426,21 @@ function contactVariableValues(contact: Contact | null): Record<string, string> 
   if (!contact) {
     return {};
   }
+  const position = String(contact.attributes?.position ?? "").trim();
+  const personalLinkedIn = String(
+    contact.attributes?.personalLinkedIn ?? "",
+  ).trim();
+  const fullName =
+    contact.fullName?.trim() ||
+    [contact.firstName, contact.lastName].filter(Boolean).join(" ");
   return {
     FIRSTNAME: contact.firstName || "",
     LASTNAME: contact.lastName || "",
+    FULLNAME: fullName,
     EMAIL: contact.email || "",
     COMPANY: contact.companyName || "",
+    POSITION: position,
+    LINKEDIN: personalLinkedIn,
   };
 }
 
@@ -3145,6 +3171,7 @@ function CustomHtmlEditor({
   const htmlInputRef = useRef<HTMLTextAreaElement>(null);
   const composeRef = useRef<HTMLDivElement>(null);
   const composeSeededRef = useRef(false);
+  const codeStartPlacedRef = useRef(false);
   const savingLockRef = useRef(false);
 
   useEffect(() => {
@@ -3159,6 +3186,12 @@ function CustomHtmlEditor({
     document.head.appendChild(link);
   }, []);
 
+  useEffect(() => {
+    setHtmlDraft(initialHtml);
+    composeSeededRef.current = false;
+    codeStartPlacedRef.current = false;
+  }, [initialHtml]);
+
   useLayoutEffect(() => {
     if (editorMode !== "compose" || !composeRef.current) {
       return;
@@ -3167,10 +3200,30 @@ function CustomHtmlEditor({
       return;
     }
     // Visual editor edits body content only (full document is built on code/save).
-    composeRef.current.innerHTML = htmlDraft.trim()
-      ? extractEmailBody(htmlDraft)
-      : "";
+    const el = composeRef.current;
+    el.innerHTML = htmlDraft.trim() ? extractEmailBody(htmlDraft) : "";
     composeSeededRef.current = true;
+    // Open from the top of the email so the body (and signature below) reads naturally.
+    el.scrollTop = 0;
+    const range = document.createRange();
+    const selection = window.getSelection();
+    range.selectNodeContents(el);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, [editorMode, htmlDraft]);
+
+  useLayoutEffect(() => {
+    if (editorMode !== "code" || !htmlInputRef.current) {
+      return;
+    }
+    if (codeStartPlacedRef.current) {
+      return;
+    }
+    const input = htmlInputRef.current;
+    input.scrollTop = 0;
+    input.setSelectionRange(0, 0);
+    codeStartPlacedRef.current = true;
   }, [editorMode, htmlDraft]);
 
   useEffect(() => {
@@ -3208,6 +3261,7 @@ function CustomHtmlEditor({
     );
     setHtmlDraft(formatted);
     composeSeededRef.current = false;
+    codeStartPlacedRef.current = false;
     setEditorMode("code");
   }
 
@@ -3218,6 +3272,7 @@ function CustomHtmlEditor({
       : plainTextToEmailHtml(live);
     setHtmlDraft(next);
     composeSeededRef.current = false;
+    codeStartPlacedRef.current = false;
     setEditorMode("compose");
   }
 
@@ -3286,16 +3341,21 @@ function CustomHtmlEditor({
     try {
       let patch: Partial<DripCampaign>;
       if (resolvedSequenceId) {
-        const sequences = campaignSequences(campaign).map((sequence) =>
-          sequence.id === resolvedSequenceId
-            ? {
-                ...sequence,
-                hasDesign: Boolean(htmlToSave.trim()),
-                designHtml: htmlToSave,
-                designSourceCampaignId: "",
-              }
-            : sequence,
-        );
+        const signature = cleanSignatureHtml(campaign.signatureHtml || "");
+        const sequences = campaignSequences(campaign).map((sequence) => {
+          if (sequence.id !== resolvedSequenceId) {
+            return sequence;
+          }
+          const designHtml = signature
+            ? applyCampaignSignature(htmlToSave, signature)
+            : htmlToSave;
+          return {
+            ...sequence,
+            hasDesign: Boolean(designHtml.trim()),
+            designHtml,
+            designSourceCampaignId: "",
+          };
+        });
         patch = sequenceCampaignPatch(
           sequences,
           campaign.windowStart || "09:00",
@@ -3400,8 +3460,9 @@ function CustomHtmlEditor({
           and you must add your own. Other
           merge tags become <code>{"{{ contact.FIRSTNAME }}"}</code>,{" "}
           <code>{"{{ contact.LASTNAME }}"}</code>,{" "}
-          <code>{"{{ contact.EMAIL }}"}</code>, and{" "}
-          <code>{"{{ contact.COMPANY }}"}</code>.
+          <code>{"{{ contact.EMAIL }}"}</code>,{" "}
+          <code>{"{{ contact.COMPANY }}"}</code>, and{" "}
+          <code>{"{{ contact.POSITION }}"}</code>.
         </div>
         {saveError ? (
           <div className="drip-html-editor-error">{saveError}</div>
@@ -4570,16 +4631,38 @@ function formatDelayDaysLabel(delayDays: number) {
   return `${days} day${days === 1 ? "" : "s"} after the previous email`;
 }
 
+function applySignatureToSequences(
+  sequences: CampaignSequence[],
+  signatureHtml: string,
+) {
+  return sequences.map((sequence) => {
+    if (!sequence.designHtml?.trim()) {
+      return sequence;
+    }
+    const designHtml = applyCampaignSignature(
+      sequence.designHtml,
+      signatureHtml,
+    );
+    return {
+      ...sequence,
+      designHtml,
+      hasDesign: Boolean(designHtml.trim()),
+    };
+  });
+}
+
 function SequencesPanel({
   campaign,
   sequences,
   windowStart,
   windowEnd,
   emailGapMinutes,
+  signatureHtml,
   senderProviderId,
   onClose,
   onSave,
   onChange,
+  onSignatureChange,
   onDesign,
   onPreview,
   onResetDesign,
@@ -4589,6 +4672,7 @@ function SequencesPanel({
   windowStart: string;
   windowEnd: string;
   emailGapMinutes: number;
+  signatureHtml: string;
   senderProviderId?: SmtpSender["provider"] | null;
   onClose: () => void;
   onSave: () => void;
@@ -4598,6 +4682,7 @@ function SequencesPanel({
     windowEnd: string;
     emailGapMinutes: number;
   }) => void;
+  onSignatureChange: (signatureHtml: string) => void;
   onDesign: (sequenceId: string) => void;
   onPreview: (sequenceId: string) => void;
   onResetDesign: (sequenceId: string) => void;
@@ -4620,6 +4705,64 @@ function SequencesPanel({
   const [reorderOpen, setReorderOpen] = useState(false);
   const [reorderDraft, setReorderDraft] = useState<CampaignSequence[]>([]);
   const [reorderLabels, setReorderLabels] = useState<Record<string, number>>({});
+  const [signatureOpen, setSignatureOpen] = useState(false);
+  const [signatureDraft, setSignatureDraft] = useState("");
+  const [signatureTab, setSignatureTab] = useState<"code" | "preview">("code");
+  const [savedSignatures, setSavedSignatures] = useState<Record<string, string>>(
+    {},
+  );
+  const oneOne = isOneOneCampaign(campaign);
+  const activeSignature = cleanSignatureHtml(signatureHtml);
+  const savedForSender = campaign.senderId
+    ? savedSignatures[campaign.senderId] ?? ""
+    : "";
+
+  useEffect(() => {
+    if (!oneOne) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/inbox/signatures");
+        const data = (await response.json()) as {
+          signatures?: { senderId: string; html: string }[];
+        };
+        if (cancelled || !response.ok) {
+          return;
+        }
+        setSavedSignatures(
+          Object.fromEntries(
+            (data.signatures ?? []).map((item) => [item.senderId, item.html]),
+          ),
+        );
+      } catch {
+        // Signatures are optional.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [oneOne]);
+
+  function openSignatureEditor() {
+    const current = activeSignature || cleanSignatureHtml(savedForSender);
+    setSignatureDraft(current);
+    setSignatureTab(current ? "preview" : "code");
+    setSignatureOpen(true);
+  }
+
+  function saveSignature(value: string) {
+    const next = cleanSignatureHtml(value);
+    onSignatureChange(next);
+    onChange({
+      sequences: applySignatureToSequences(sequences, next),
+      windowStart,
+      windowEnd,
+      emailGapMinutes,
+    });
+    setSignatureOpen(false);
+  }
 
   function updateSequence(id: string, patch: Partial<CampaignSequence>) {
     onChange({
@@ -4683,9 +4826,25 @@ function SequencesPanel({
             </p>
           </div>
         </div>
-        <button type="button" className="crm-modal-close" onClick={onClose} aria-label="Close">
-          ×
-        </button>
+        <div className="drip-sequences-head-actions">
+          {oneOne ? (
+            <button
+              type="button"
+              className="btn-soft"
+              onClick={openSignatureEditor}
+            >
+              {activeSignature ? "Edit signature" : "Insert signature"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="crm-modal-close"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
       </div>
 
       <div className="drip-sequences-timing">
@@ -4995,6 +5154,125 @@ function SequencesPanel({
             document.body,
           )
         : null}
+
+      {signatureOpen ? (
+        <div
+          className="crm-modal-backdrop"
+          role="presentation"
+          onClick={() => setSignatureOpen(false)}
+        >
+          <div
+            className="crm-modal pz-signature-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="drip-signature-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="drip-signature-title">Email signature</h3>
+                <p>
+                  Paste your signature HTML. It is added to the bottom of every
+                  sequence email.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                onClick={() => setSignatureOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-body pz-signature-modal-body">
+              <div className="pz-signature-tabs" role="tablist">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={signatureTab === "code"}
+                  className={signatureTab === "code" ? "active" : ""}
+                  onClick={() => setSignatureTab("code")}
+                >
+                  Code
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={signatureTab === "preview"}
+                  className={signatureTab === "preview" ? "active" : ""}
+                  onClick={() => setSignatureTab("preview")}
+                >
+                  Preview
+                </button>
+              </div>
+              {signatureTab === "code" ? (
+                <textarea
+                  className="pz-signature-input"
+                  value={signatureDraft}
+                  onChange={(event) =>
+                    setSignatureDraft(
+                      event.target.value.slice(0, MAX_SIGNATURE_HTML),
+                    )
+                  }
+                  placeholder={
+                    '<table><tr><td><strong>Your Name</strong><br>Title, Company<br><a href="https://example.com">example.com</a></td></tr></table>'
+                  }
+                  spellCheck={false}
+                  rows={14}
+                  aria-label="Signature HTML"
+                  autoFocus
+                />
+              ) : cleanSignatureHtml(signatureDraft) ? (
+                <div className="pz-signature-preview">
+                  <div
+                    className="pz-signature-scroll"
+                    dangerouslySetInnerHTML={{
+                      __html: cleanSignatureHtml(signatureDraft),
+                    }}
+                  />
+                </div>
+              ) : (
+                <p className="pz-signature-empty">
+                  Paste the signature HTML in Code first.
+                </p>
+              )}
+            </div>
+            <div className="crm-modal-foot pz-signature-modal-foot">
+              {signatureDraft.trim() || activeSignature ? (
+                <button
+                  type="button"
+                  className="btn-link-purple"
+                  onClick={() => saveSignature("")}
+                >
+                  Remove signature
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="pz-signature-modal-actions">
+                <button
+                  type="button"
+                  className="btn-soft"
+                  onClick={() => setSignatureOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-dark"
+                  disabled={
+                    !cleanSignatureHtml(signatureDraft) && !activeSignature
+                  }
+                  onClick={() => saveSignature(signatureDraft)}
+                >
+                  Save signature
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -5243,6 +5521,7 @@ export default function PortalCampaignDetailPage({
   const [draftUtmMedium, setDraftUtmMedium] = useState(DEFAULT_UTM_MEDIUM);
   const [draftUtmCampaign, setDraftUtmCampaign] = useState(DEFAULT_UTM_CAMPAIGN);
   const [draftSequences, setDraftSequences] = useState<CampaignSequence[]>([]);
+  const [draftSignatureHtml, setDraftSignatureHtml] = useState("");
   const [draftWindowStart, setDraftWindowStart] = useState("09:00");
   const [draftWindowEnd, setDraftWindowEnd] = useState("18:00");
   const [draftEmailGapMinutes, setDraftEmailGapMinutes] = useState(5);
@@ -5792,6 +6071,7 @@ export default function PortalCampaignDetailPage({
     setDraftWindowStart(source.windowStart || "09:00");
     setDraftWindowEnd(source.windowEnd || "18:00");
     setDraftEmailGapMinutes(Math.max(0, Number(source.emailGapMinutes) || 0));
+    setDraftSignatureHtml(cleanSignatureHtml(source.signatureHtml || ""));
   }
 
   function openSequencesPanel() {
@@ -5820,14 +6100,24 @@ export default function PortalCampaignDetailPage({
   }
 
   async function persistSequences(options?: { closePanel?: boolean }) {
-    await persistCampaign(
-      sequenceCampaignPatch(
-        draftSequences,
+    if (!campaign) {
+      return;
+    }
+    const signature = cleanSignatureHtml(draftSignatureHtml);
+    const oneOne = isOneOneCampaign(campaign);
+    const sequences = oneOne
+      ? applySignatureToSequences(draftSequences, signature)
+      : draftSequences;
+    await persistCampaign({
+      ...sequenceCampaignPatch(
+        sequences,
         draftWindowStart,
         draftWindowEnd,
         draftEmailGapMinutes,
       ),
-    );
+      ...(oneOne ? { signatureHtml: signature } : {}),
+    });
+    setDraftSequences(sequences);
     if (options?.closePanel) {
       setSequencesPanelOpen(false);
     }
@@ -5976,14 +6266,29 @@ export default function PortalCampaignDetailPage({
   ) {
     try {
       if (designSequenceId) {
+        const signature = cleanSignatureHtml(
+          draftSignatureHtml || campaign?.signatureHtml || "",
+        );
         const sequences = (draftSequences.length > 0
           ? draftSequences
           : campaign
             ? campaignSequences(campaign)
             : []
-        ).map((sequence) =>
-          sequence.id === designSequenceId ? { ...sequence, ...patch } : sequence,
-        );
+        ).map((sequence) => {
+          if (sequence.id !== designSequenceId) {
+            return sequence;
+          }
+          const designHtml =
+            signature && patch.designHtml
+              ? applyCampaignSignature(patch.designHtml, signature)
+              : patch.designHtml;
+          return {
+            ...sequence,
+            ...patch,
+            designHtml,
+            hasDesign: Boolean(designHtml?.trim()),
+          };
+        });
         await persistCampaign(
           sequenceCampaignPatch(
             sequences,
@@ -6263,13 +6568,28 @@ export default function PortalCampaignDetailPage({
   const previewCampaign = isOneOneCampaign(campaign)
     ? overlaySequenceOnCampaign(campaign, previewSequence)
     : campaign;
+  const designSequence = designSequenceId
+    ? (draftSequences.length > 0
+        ? draftSequences
+        : campaignSequences(campaign)
+      ).find((sequence) => sequence.id === designSequenceId)
+    : undefined;
+  const designSignature = cleanSignatureHtml(
+    draftSignatureHtml || campaign.signatureHtml || "",
+  );
+  const designSequenceWithSignature =
+    designSequence && designSignature && designSequence.designHtml?.trim()
+      ? {
+          ...designSequence,
+          designHtml: applyCampaignSignature(
+            designSequence.designHtml,
+            designSignature,
+          ),
+          hasDesign: true,
+        }
+      : designSequence;
   const designCampaign = designSequenceId
-    ? overlaySequenceOnCampaign(
-        campaign,
-        (draftSequences.length > 0 ? draftSequences : campaignSequences(campaign)).find(
-          (sequence) => sequence.id === designSequenceId,
-        ),
-      )
+    ? overlaySequenceOnCampaign(campaign, designSequenceWithSignature)
     : campaign;
 
   const showReport =
@@ -6688,10 +7008,12 @@ export default function PortalCampaignDetailPage({
                   windowStart={draftWindowStart}
                   windowEnd={draftWindowEnd}
                   emailGapMinutes={draftEmailGapMinutes}
+                  signatureHtml={draftSignatureHtml}
                   senderProviderId={selectedSenderProviderId}
                   onClose={closeSequencesPanel}
                   onSave={() => void handleSaveSequences()}
                   onChange={handleSequencesDraftChange}
+                  onSignatureChange={setDraftSignatureHtml}
                   onDesign={(sequenceId) => void openSequenceDesign(sequenceId)}
                   onPreview={handlePreviewSequence}
                   onResetDesign={(sequenceId) => void handleResetSequenceDesign(sequenceId)}

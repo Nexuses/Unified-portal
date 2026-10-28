@@ -34,6 +34,7 @@ import {
 } from "@/lib/open-pixel";
 import { BOT_OPEN_TAG, sendIsBotOpen } from "@/lib/bot-open";
 import { BOT_CLICK_TAG, clickEventIsBot } from "@/lib/bot-click";
+import { countDistinctCompaniesForList } from "@/lib/crm-list-stats";
 
 export async function getProjectContacts(projectId: ObjectId) {
   const db = await getDb();
@@ -744,11 +745,20 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
     const actor = blast?.senderName || blast?.senderEmail || "Email campaign";
     const label = `[${send.campaignId}] ${campaignName}`;
     const campaignKind = blast?.kind === "oneone" ? "oneone" : "drip";
+    const emailSubject =
+      send.subjectLine?.trim() || blast?.subject?.trim() || "";
+    const emailPreview = blast?.previewText?.trim() || "";
+    const sendId = send._id.toString();
+    const emailMeta = {
+      sendId,
+      ...(emailSubject ? { emailSubject } : {}),
+      ...(emailPreview ? { emailPreview } : {}),
+    };
 
     if (send.status === "sent" || send.status === "failed") {
       stats.sent += 1;
       events.push({
-        id: `campaign-sent-${send._id.toString()}`,
+        id: `campaign-sent-${sendId}`,
         type: "campaign_sent",
         title: "Email campaign sent",
         description: `Campaign ${label} was sent to this contact.`,
@@ -757,6 +767,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         campaignId: send.campaignId,
         campaignKind,
         campaignName,
+        ...emailMeta,
       });
     }
 
@@ -790,7 +801,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
           ? "Email campaign opened (not tracked)"
           : "Email campaign opened";
       events.push({
-        id: `campaign-opened-${send._id.toString()}`,
+        id: `campaign-opened-${sendId}`,
         type: "campaign_opened",
         title: openTitle,
         description:
@@ -802,6 +813,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         campaignId: send.campaignId,
         campaignKind,
         campaignName,
+        ...emailMeta,
         ...(openTags.length > 0 ? { openTag: openTags.join(" · ") } : {}),
         ...(openIp ? { ip: openIp } : {}),
         ...(openDevice ? { device: openDevice } : {}),
@@ -832,7 +844,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
       const url = click.url?.trim();
       const botClick = clickEventIsBot(send, click);
       events.push({
-        id: `campaign-clicked-${send._id.toString()}-${index}`,
+        id: `campaign-clicked-${sendId}-${index}`,
         type: "campaign_clicked",
         title: botClick
           ? "Email campaign link clicked (bot)"
@@ -849,6 +861,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         campaignId: send.campaignId,
         campaignKind,
         campaignName,
+        ...emailMeta,
         clickedUrl: url,
         ...(botClick ? { clickTag: BOT_CLICK_TAG } : {}),
         ...(click.ip ? { ip: click.ip } : {}),
@@ -863,7 +876,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
 
     if (send.unsubscribedAt) {
       events.push({
-        id: `campaign-unsubscribed-${send._id.toString()}`,
+        id: `campaign-unsubscribed-${sendId}`,
         type: "campaign_unsubscribed",
         title: "Unsubscribed from email campaigns",
         description: `Unsubscribed from campaign ${label}.`,
@@ -872,6 +885,7 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
         campaignId: send.campaignId,
         campaignKind,
         campaignName,
+        ...emailMeta,
       });
     }
   }
@@ -907,13 +921,22 @@ export async function removeContactsFromList(
     contactId: { $in: contactIds },
   });
 
-  const remaining = await db.collection<ListMembershipDoc>("list_memberships").countDocuments({
-    projectId,
-    listId,
-  });
+  const [remaining, companyCount] = await Promise.all([
+    db.collection<ListMembershipDoc>("list_memberships").countDocuments({
+      projectId,
+      listId,
+    }),
+    countDistinctCompaniesForList(projectId, listId),
+  ]);
   await db.collection<ListDoc>("lists").updateOne(
     { _id: listId, projectId },
-    { $set: { contactCount: remaining, updatedAt: new Date() } },
+    {
+      $set: {
+        contactCount: remaining,
+        companyCount,
+        updatedAt: new Date(),
+      },
+    },
   );
 
   return { removed: result.deletedCount ?? 0 };
@@ -989,17 +1012,22 @@ export async function deleteContacts(projectId: ObjectId, ids: string[]) {
       listCounts.map((entry) => [entry._id.toString(), entry.count]),
     );
     await Promise.all(
-      listIds.map((listId) =>
-        db.collection<ListDoc>("lists").updateOne(
+      listIds.map(async (listId) => {
+        const companyCount = await countDistinctCompaniesForList(
+          projectId,
+          listId,
+        );
+        return db.collection<ListDoc>("lists").updateOne(
           { _id: listId, projectId },
           {
             $set: {
               contactCount: countMap.get(listId.toString()) ?? 0,
+              companyCount,
               updatedAt: new Date(),
             },
           },
-        ),
-      ),
+        );
+      }),
     );
   }
 

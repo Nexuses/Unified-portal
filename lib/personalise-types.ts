@@ -306,6 +306,41 @@ export function cleanSignatureHtml(html: string) {
     .trim();
 }
 
+const CAMPAIGN_SIGNATURE_START = "<!--nexuses-signature-start-->";
+const CAMPAIGN_SIGNATURE_END = "<!--nexuses-signature-end-->";
+
+/** Removes a previously baked campaign signature block from design HTML. */
+export function stripCampaignSignature(html: string) {
+  return html
+    .replace(
+      /<!--nexuses-signature-start-->[\s\S]*?<!--nexuses-signature-end-->/gi,
+      "",
+    )
+    .replace(
+      /<div\s+[^>]*data-nexuses-signature=["']1["'][^>]*>[\s\S]*?<\/div>/gi,
+      "",
+    )
+    .trim();
+}
+
+/**
+ * Appends signature HTML to a sequence design body. Replaces any previous
+ * baked signature so saving again does not stack duplicates.
+ * Full email documents get the block inserted before `</body>` so it renders.
+ */
+export function applyCampaignSignature(html: string, signatureHtml: string) {
+  const base = stripCampaignSignature(html || "");
+  const signature = cleanSignatureHtml(signatureHtml);
+  if (!base || !signature) {
+    return base;
+  }
+  const block = `${CAMPAIGN_SIGNATURE_START}<div data-nexuses-signature="1" style="margin:18px 0 0">${signature}</div>${CAMPAIGN_SIGNATURE_END}`;
+  if (/<\/body\s*>/i.test(base)) {
+    return base.replace(/<\/body\s*>/i, `\n${block}\n</body>`);
+  }
+  return `${base}\n${block}`;
+}
+
 export function pitchToHtml(body: string, signatureHtml = "") {
   const signature = cleanSignatureHtml(signatureHtml);
   const signatureBlock = signature ? `<div style="margin:8px 0 0">${signature}</div>` : "";

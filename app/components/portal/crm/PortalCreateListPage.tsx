@@ -11,6 +11,7 @@ import {
   type ListAttributeDef,
 } from "@/lib/crm";
 import { createListWithChunkedImport } from "@/lib/crm-client-import";
+import { cleanContactFields } from "@/lib/crm-contact-clean";
 import {
   downloadCsv,
   guessHeaderMapping,
@@ -18,6 +19,8 @@ import {
   parseCsv,
 } from "@/lib/csv";
 import { PORTAL_ROUTES, portalListRoute } from "@/lib/portal-nav";
+
+const CLEAN_AI_BATCH = 80;
 
 type WizardStep = "name" | "upload" | "mapping" | "confirm";
 
@@ -131,6 +134,25 @@ function CheckIcon() {
   );
 }
 
+function CleanAiIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden>
+      <path
+        d="M12 3l1.7 4.4L18 9.1l-4.3 1.7L12 15.2l-1.7-4.4L6 9.1l4.3-1.7Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M18.5 14.5l.85 2.15L21.5 17.5l-2.15.85L18.5 20.5l-.85-2.15L15.5 17.5l2.15-.85Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function buildAutoColumnMapping(
   headers: string[],
   attributes: ListAttributeDef[],
@@ -187,6 +209,8 @@ export default function PortalCreateListPage() {
     ids: string[];
     reason: "duplicates" | "other-lists" | "unsubscribed";
   } | null>(null);
+  const [cleaningAi, setCleaningAi] = useState(false);
+  const [cleanNote, setCleanNote] = useState("");
 
   function attributeLabel(key: string) {
     return (
@@ -580,6 +604,158 @@ export default function PortalCreateListPage() {
     setLookupLoading(true);
     setLookupProgress({ processed: 0, total: 0 });
     setStep("confirm");
+  }
+
+  function applyCleanedFields(
+    rows: ImportRow[],
+    cleanedById: Map<
+      string,
+      {
+        firstName: string;
+        lastName: string;
+        companyName: string;
+        position: string;
+      }
+    >,
+  ) {
+    return rows.map((row) => {
+      const cleaned = cleanedById.get(row.id);
+      if (!cleaned) {
+        return row;
+      }
+      const nextAttributes = { ...row.attributes };
+      if (cleaned.position) {
+        nextAttributes.position = cleaned.position;
+      } else if ("position" in nextAttributes) {
+        nextAttributes.position = cleaned.position;
+      }
+      return {
+        ...row,
+        firstName: cleaned.firstName,
+        lastName: cleaned.lastName,
+        companyName: cleaned.companyName,
+        attributes: nextAttributes,
+      };
+    });
+  }
+
+  async function cleanWithAi() {
+    if (cleaningAi || lookupLoading || confirmRows.length === 0) {
+      return;
+    }
+    const targets = confirmRows.filter((row) => !row.inFileDuplicate);
+    if (targets.length === 0) {
+      setError("No contacts left to clean.");
+      return;
+    }
+
+    setCleaningAi(true);
+    setError("");
+    setCleanNote("");
+    try {
+      // Instant free rule tidy so the table updates even if AI is slow/fails.
+      const ruledById = new Map(
+        targets.map((row) => {
+          const cleaned = cleanContactFields({
+            firstName: row.firstName,
+            lastName: row.lastName,
+            companyName: row.companyName,
+            position: row.attributes.position ?? "",
+          });
+          return [row.id, cleaned] as const;
+        }),
+      );
+      setConfirmRows((current) => applyCleanedFields(current, ruledById));
+
+      const payload = targets.map((row) => {
+        const ruled = ruledById.get(row.id)!;
+        return {
+          id: row.id,
+          firstName: ruled.firstName,
+          lastName: ruled.lastName,
+          companyName: ruled.companyName,
+          position: ruled.position,
+        };
+      });
+
+      const merged = new Map<
+        string,
+        {
+          firstName: string;
+          lastName: string;
+          companyName: string;
+          position: string;
+        }
+      >();
+      let usedAi = false;
+      let fallbackRules = false;
+
+      for (let offset = 0; offset < payload.length; offset += CLEAN_AI_BATCH) {
+        const chunk = payload.slice(offset, offset + CLEAN_AI_BATCH);
+        setCleanNote(
+          `Cleaning with AI… ${Math.min(offset + chunk.length, payload.length).toLocaleString()} / ${payload.length.toLocaleString()}`,
+        );
+        const response = await fetch("/api/crm/lists/clean-ai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contacts: chunk }),
+        });
+        const data = (await response.json()) as {
+          contacts?: Array<{
+            id: string;
+            firstName: string;
+            lastName: string;
+            companyName: string;
+            position?: string;
+          }>;
+          fallback?: string;
+          error?: string;
+          code?: string;
+        };
+        if (!response.ok) {
+          throw new Error(
+            data.error ||
+              (data.code === "api_credit_limit"
+                ? "API credit limit reached"
+                : "Failed to clean contacts"),
+          );
+        }
+        if (data.fallback === "rules") {
+          fallbackRules = true;
+        } else {
+          usedAi = true;
+        }
+        for (const contact of data.contacts ?? []) {
+          merged.set(contact.id, {
+            firstName: contact.firstName,
+            lastName: contact.lastName,
+            companyName: contact.companyName,
+            position: contact.position ?? "",
+          });
+        }
+      }
+
+      setConfirmRows((current) => applyCleanedFields(current, merged));
+      window.dispatchEvent(new Event("nexuses-api-credit"));
+      if (usedAi && !fallbackRules) {
+        setCleanNote(
+          `Cleaned ${payload.length.toLocaleString()} contact${payload.length === 1 ? "" : "s"} with AI (uses API credit).`,
+        );
+      } else if (fallbackRules && usedAi) {
+        setCleanNote(
+          `Cleaned contacts with AI where possible; some batches used rule-based tidy only.`,
+        );
+      } else {
+        setCleanNote(
+          `Applied rule-based tidy to ${payload.length.toLocaleString()} contact${payload.length === 1 ? "" : "s"}.`,
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to clean contacts");
+      setCleanNote("");
+    } finally {
+      setCleaningAi(false);
+    }
   }
 
   async function handleCreate() {
@@ -983,6 +1159,64 @@ export default function PortalCreateListPage() {
             </div>
           </div>
 
+          {!lookupLoading ? (
+            <div
+              className={`list-clean-card${cleaningAi ? " is-busy" : ""}${cleanNote && !cleaningAi ? " is-done" : ""}`}
+            >
+              <div className="list-clean-card-main">
+                <div className="list-clean-card-icon" aria-hidden>
+                  <CleanAiIcon />
+                </div>
+                <div className="list-clean-card-copy">
+                  <div className="list-clean-card-title-row">
+                    <h4>Clean with AI</h4>
+                    <span className="list-clean-credit-pill">Uses API credit</span>
+                  </div>
+                  <p>
+                    Optional tidy before import so greetings and company fields
+                    look right in campaigns.
+                  </p>
+                  <ul className="list-clean-points">
+                    <li>
+                      <strong>Names</strong>
+                      <span>Drop titles like CA · avoid &quot;Hi N&quot;</span>
+                    </li>
+                    <li>
+                      <strong>Company</strong>
+                      <span>Keep English only when mixed scripts</span>
+                    </li>
+                    <li>
+                      <strong>Position</strong>
+                      <span>Primary title only (e.g. CFO)</span>
+                    </li>
+                  </ul>
+                </div>
+                <button
+                  type="button"
+                  className="btn-dark list-clean-ai-btn"
+                  disabled={
+                    cleaningAi ||
+                    saving ||
+                    confirmRows.filter((row) => !row.inFileDuplicate).length ===
+                      0
+                  }
+                  onClick={() => void cleanWithAi()}
+                >
+                  {cleaningAi ? "Cleaning…" : "Clean with AI"}
+                </button>
+              </div>
+              {cleanNote || cleaningAi ? (
+                <div
+                  className={`list-clean-card-status${cleaningAi ? " is-busy" : " is-done"}`}
+                  role="status"
+                >
+                  <span className="list-clean-card-status-dot" aria-hidden />
+                  {cleaningAi && !cleanNote ? "Cleaning contacts…" : cleanNote}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           {lookupLoading ? (
             <div
               className="list-confirm-checking"
@@ -1036,6 +1270,7 @@ export default function PortalCreateListPage() {
                     <button
                       type="button"
                       className="btn-soft"
+                      disabled={cleaningAi || saving}
                       onClick={requestRemoveOnOtherLists}
                     >
                       Remove on other list contact (
@@ -1046,6 +1281,7 @@ export default function PortalCreateListPage() {
                     <button
                       type="button"
                       className="btn-soft"
+                      disabled={cleaningAi || saving}
                       onClick={requestRemoveUnsubscribed}
                     >
                       Remove contacts which are on unsubscribe (
@@ -1056,6 +1292,7 @@ export default function PortalCreateListPage() {
                     <button
                       type="button"
                       className="btn-soft"
+                      disabled={cleaningAi || saving}
                       onClick={requestRemoveDuplicates}
                     >
                       Remove duplicate contact (
@@ -1176,7 +1413,7 @@ export default function PortalCreateListPage() {
               type="button"
               className="btn-soft"
               onClick={() => setStep("mapping")}
-              disabled={saving || lookupLoading}
+              disabled={saving || lookupLoading || cleaningAi}
             >
               Back
             </button>
@@ -1185,7 +1422,10 @@ export default function PortalCreateListPage() {
               className="btn-dark"
               onClick={() => void handleCreate()}
               disabled={
-                saving || lookupLoading || importableRows.length === 0
+                saving ||
+                lookupLoading ||
+                cleaningAi ||
+                importableRows.length === 0
               }
             >
               {saving

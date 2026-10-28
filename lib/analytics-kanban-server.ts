@@ -50,9 +50,43 @@ type KanbanDoc = {
   placements: Record<string, string>;
   /** Contacts added manually from CRM (not only campaign sends). */
   manualPeople?: KanbanManualPerson[];
+  /** Emails the user removed from this board. */
+  excludedEmails?: string[];
   createdAt: Date;
   updatedAt: Date;
 };
+
+function normalizeExcludedEmails(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const emails: string[] = [];
+  for (const item of value) {
+    const email = String(item ?? "")
+      .trim()
+      .toLowerCase();
+    if (!email.includes("@") || seen.has(email)) {
+      continue;
+    }
+    seen.add(email);
+    emails.push(email);
+  }
+  return emails;
+}
+
+function withoutExcludedPeople(
+  people: KanbanPerson[],
+  excludedEmails: string[],
+): KanbanPerson[] {
+  if (excludedEmails.length === 0) {
+    return people;
+  }
+  const excluded = new Set(excludedEmails);
+  return people.filter(
+    (person) => !excluded.has(person.email.trim().toLowerCase()),
+  );
+}
 
 function normalizeManualPeople(value: unknown): KanbanManualPerson[] {
   if (!Array.isArray(value)) {
@@ -767,6 +801,7 @@ export async function createProjectKanbanBoard(
     stages: doc.stages,
     placements: {},
     manualPeople,
+    excludedEmails: [],
     people,
   };
 }
@@ -789,6 +824,7 @@ export async function getProjectKanbanBoard(
   }
   const campaigns = doc.campaigns || [];
   const manualPeople = normalizeManualPeople(doc.manualPeople);
+  const excludedEmails = normalizeExcludedEmails(doc.excludedEmails);
   const campaignPeople = options?.freshPeople
     ? await rebuildPeople(projectId, campaigns, peopleCacheKey(projectId, campaigns))
     : await loadPeopleCached(projectId, campaigns);
@@ -797,7 +833,11 @@ export async function getProjectKanbanBoard(
     stages: normalizeStages(doc.stages),
     placements: normalizePlacements(doc.placements),
     manualPeople,
-    people: mergeBoardPeople(campaignPeople, manualPeople),
+    excludedEmails,
+    people: withoutExcludedPeople(
+      mergeBoardPeople(campaignPeople, manualPeople),
+      excludedEmails,
+    ),
   };
 }
 
@@ -805,10 +845,12 @@ export async function patchProjectKanbanBoard(
   projectId: ObjectId,
   id: string,
   patch: {
+    name?: string;
     stages?: KanbanStage[];
     placements?: Record<string, string>;
     campaigns?: KanbanCampaignRef[];
     manualPeople?: KanbanManualPerson[];
+    excludedEmails?: string[];
   },
   options?: { skipPeople?: boolean },
 ): Promise<KanbanBoard | null> {
@@ -822,6 +864,13 @@ export async function patchProjectKanbanBoard(
   });
   if (!current?.name) {
     return null;
+  }
+  const name =
+    patch.name !== undefined
+      ? String(patch.name).trim().slice(0, 80)
+      : current.name;
+  if (!name) {
+    throw new Error("List name is required");
   }
   const stages =
     patch.stages !== undefined
@@ -842,10 +891,14 @@ export async function patchProjectKanbanBoard(
     patch.manualPeople !== undefined
       ? normalizeManualPeople(patch.manualPeople)
       : normalizeManualPeople(current.manualPeople);
+  const excludedEmails =
+    patch.excludedEmails !== undefined
+      ? normalizeExcludedEmails(patch.excludedEmails)
+      : normalizeExcludedEmails(current.excludedEmails);
   const validIds = new Set(stages.map((stage) => stage.id));
   const cleaned: Record<string, string> = {};
   for (const [email, stageId] of Object.entries(placements)) {
-    if (validIds.has(stageId)) {
+    if (validIds.has(stageId) && !excludedEmails.includes(email)) {
       cleaned[email] = stageId;
     }
   }
@@ -854,33 +907,44 @@ export async function patchProjectKanbanBoard(
     { _id: current._id, projectId },
     {
       $set: {
+        name,
         stages,
         placements: cleaned,
         campaigns,
         manualPeople,
+        excludedEmails,
         updatedAt: new Date(),
       },
     },
   );
-  const loadPeople = !options?.skipPeople || patch.manualPeople !== undefined;
+  const loadPeople =
+    !options?.skipPeople ||
+    patch.manualPeople !== undefined ||
+    patch.excludedEmails !== undefined;
   const campaignPeople = loadPeople
     ? await loadPeopleCached(projectId, campaigns)
     : [];
   const people = loadPeople
-    ? mergeBoardPeople(campaignPeople, manualPeople)
+    ? withoutExcludedPeople(
+        mergeBoardPeople(campaignPeople, manualPeople),
+        excludedEmails,
+      )
     : [];
   return {
     ...mapList({
       ...current,
+      name,
       campaigns,
       stages,
       placements: cleaned,
       manualPeople,
+      excludedEmails,
       updatedAt: new Date(),
     }),
     stages,
     placements: cleaned,
     manualPeople,
+    excludedEmails,
     people,
   };
 }
@@ -1068,6 +1132,11 @@ export async function addContactsToKanbanStage(
     });
   }
 
+  const readded = new Set(manualByEmail.keys());
+  const excludedEmails = normalizeExcludedEmails(current.excludedEmails).filter(
+    (email) => !readded.has(email),
+  );
+
   return patchProjectKanbanBoard(
     projectId,
     boardId,
@@ -1075,6 +1144,7 @@ export async function addContactsToKanbanStage(
       stages,
       placements,
       manualPeople: [...manualByEmail.values()],
+      excludedEmails,
     },
   );
 }

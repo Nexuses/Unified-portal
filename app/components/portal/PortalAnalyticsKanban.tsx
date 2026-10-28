@@ -175,6 +175,18 @@ export default function PortalAnalyticsKanban({
   const [visibleByStage, setVisibleByStage] = useState<Record<string, number>>({});
   const [editingStageId, setEditingStageId] = useState("");
   const [editingStageName, setEditingStageName] = useState("");
+  const [editingBoardName, setEditingBoardName] = useState(false);
+  const [boardNameDraft, setBoardNameDraft] = useState("");
+  const [removeLeadPrompt, setRemoveLeadPrompt] = useState<{
+    email: string;
+    name: string;
+  } | null>(null);
+  const [removingLead, setRemovingLead] = useState(false);
+  const [removeStagePrompt, setRemoveStagePrompt] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [headMenuOpen, setHeadMenuOpen] = useState(false);
   const [viewMode, setViewMode] = useState<"board" | "funnel">(
     initialView === "funnel" ? "funnel" : "board",
   );
@@ -217,6 +229,31 @@ export default function PortalAnalyticsKanban({
   }
   const boardRef = useRef<HTMLDivElement | null>(null);
   const editStageInputRef = useRef<HTMLInputElement | null>(null);
+  const editBoardNameInputRef = useRef<HTMLInputElement | null>(null);
+  const headMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!headMenuOpen) {
+      return;
+    }
+    function onPointerDown(event: MouseEvent) {
+      if (!headMenuRef.current?.contains(event.target as Node)) {
+        setHeadMenuOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setHeadMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [headMenuOpen]);
+
 
   function scrollElementIntoView(
     container: HTMLElement,
@@ -527,7 +564,9 @@ export default function PortalAnalyticsKanban({
 
   async function persist(
     next: Pick<KanbanBoard, "stages" | "placements"> & {
+      name?: string;
       manualPeople?: KanbanManualPerson[];
+      excludedEmails?: string[];
     },
   ) {
     if (!board) {
@@ -561,11 +600,87 @@ export default function PortalAnalyticsKanban({
             ? saved.people
             : (current?.people ?? saved.people),
         manualPeople: saved.manualPeople ?? current?.manualPeople ?? [],
+        excludedEmails:
+          saved.excludedEmails ?? current?.excludedEmails ?? [],
       }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function startRenameBoard() {
+    if (!board || readOnly) {
+      return;
+    }
+    setEditingBoardName(true);
+    setBoardNameDraft(board.name);
+    setError("");
+  }
+
+  function cancelRenameBoard() {
+    setEditingBoardName(false);
+    setBoardNameDraft("");
+  }
+
+  function commitRenameBoard() {
+    if (!board || !editingBoardName) {
+      return;
+    }
+    const name = boardNameDraft.trim().slice(0, 80);
+    if (!name) {
+      setError("Kanban name is required");
+      return;
+    }
+    if (name === board.name) {
+      cancelRenameBoard();
+      return;
+    }
+    setBoard({ ...board, name });
+    cancelRenameBoard();
+    void persist({
+      name,
+      stages: board.stages,
+      placements: board.placements,
+    });
+  }
+
+  async function confirmRemoveLead() {
+    if (!board || !removeLeadPrompt || readOnly) {
+      return;
+    }
+    const email = removeLeadPrompt.email.trim().toLowerCase();
+    const excludedEmails = [
+      ...new Set([...(board.excludedEmails ?? []), email]),
+    ];
+    const manualPeople = (board.manualPeople ?? []).filter(
+      (person) => person.email.trim().toLowerCase() !== email,
+    );
+    const placements = { ...board.placements };
+    delete placements[email];
+    const people = board.people.filter(
+      (person) => person.email.trim().toLowerCase() !== email,
+    );
+    setRemovingLead(true);
+    setError("");
+    setBoard({
+      ...board,
+      people,
+      placements,
+      manualPeople,
+      excludedEmails,
+    });
+    setRemoveLeadPrompt(null);
+    try {
+      await persist({
+        stages: board.stages,
+        placements,
+        manualPeople,
+        excludedEmails,
+      });
+    } finally {
+      setRemovingLead(false);
     }
   }
 
@@ -622,10 +737,11 @@ export default function PortalAnalyticsKanban({
     void persist({ stages, placements: board.placements });
   }
 
-  function removeStage(stageId: string) {
-    if (!board) {
+  function confirmRemoveStage() {
+    if (!board || !removeStagePrompt) {
       return;
     }
+    const stageId = removeStagePrompt.id;
     const stages = board.stages.filter((stage) => stage.id !== stageId);
     const placements = { ...board.placements };
     for (const [email, id] of Object.entries(placements)) {
@@ -633,6 +749,7 @@ export default function PortalAnalyticsKanban({
         delete placements[email];
       }
     }
+    setRemoveStagePrompt(null);
     setBoard({ ...board, stages, placements });
     void persist({ stages, placements });
   }
@@ -695,6 +812,18 @@ export default function PortalAnalyticsKanban({
     input.focus();
     input.select();
   }, [editingStageId]);
+
+  useEffect(() => {
+    if (!editingBoardName) {
+      return;
+    }
+    const input = editBoardNameInputRef.current;
+    if (!input) {
+      return;
+    }
+    input.focus();
+    input.select();
+  }, [editingBoardName]);
 
   const pickableCampaigns = useMemo(
     () =>
@@ -823,7 +952,54 @@ export default function PortalAnalyticsKanban({
               </svg>
             </Link>
           )}
-          <h2>{board?.name || "Pipeline"}</h2>
+          {editingBoardName ? (
+            <input
+              ref={editBoardNameInputRef}
+              className="an-kanban-board-name-input"
+              value={boardNameDraft}
+              maxLength={80}
+              onChange={(event) => setBoardNameDraft(event.target.value)}
+              onBlur={() => commitRenameBoard()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitRenameBoard();
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelRenameBoard();
+                }
+              }}
+              aria-label="Kanban name"
+            />
+          ) : (
+            <>
+              <h2>{board?.name || "Pipeline"}</h2>
+              {readOnly || !board ? null : (
+                <button
+                  type="button"
+                  className="an-kanban-rename-btn"
+                  onClick={startRenameBoard}
+                  aria-label="Rename kanban"
+                  title="Rename"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                  </svg>
+                </button>
+              )}
+            </>
+          )}
         </div>
         {board ? (
           <div className="an-kanban-head-actions-top">
@@ -872,47 +1048,78 @@ export default function PortalAnalyticsKanban({
                 Bots off
               </button>
             </div>
-            <button
-              type="button"
-              className="btn-soft"
-              onClick={() => void exportCsv()}
-              disabled={exportingCsv}
-            >
-              {exportingCsv ? "Exporting…" : "Export CSV"}
-            </button>
-            {!readOnly ? (
-              <>
-                <button
-                  type="button"
-                  className="btn-soft"
-                  onClick={() => void createPublicUrl()}
-                  disabled={sharing}
-                >
-                  {shareCopied
-                    ? "Public URL copied"
-                    : sharing
-                      ? "Creating…"
-                      : "Create public URL"}
-                </button>
-                <button
-                  type="button"
-                  className="btn-dark"
-                  onClick={() => {
-                    setChatOpen(true);
-                    setEditingCampaigns(false);
-                  }}
-                >
-                  Chat
-                </button>
-                <button
-                  type="button"
-                  className="btn-soft"
-                  onClick={() => void openCampaignEditor()}
-                >
-                  Campaigns
-                </button>
-              </>
-            ) : null}
+            <div className="drip-more-wrap an-kanban-head-more" ref={headMenuRef}>
+              <button
+                type="button"
+                className={`kebab${headMenuOpen ? " active" : ""}`}
+                aria-label="Board actions"
+                aria-expanded={headMenuOpen}
+                onClick={() => setHeadMenuOpen((open) => !open)}
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="5" r="1.6" />
+                  <circle cx="12" cy="12" r="1.6" />
+                  <circle cx="12" cy="19" r="1.6" />
+                </svg>
+              </button>
+              {headMenuOpen ? (
+                <div className="drip-more-menu" role="menu">
+                  {!readOnly ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setHeadMenuOpen(false);
+                        void openCampaignEditor();
+                      }}
+                    >
+                      Campaigns
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={exportingCsv}
+                    onClick={() => {
+                      setHeadMenuOpen(false);
+                      void exportCsv();
+                    }}
+                  >
+                    {exportingCsv ? "Exporting…" : "Export CSV"}
+                  </button>
+                  {!readOnly ? (
+                    <>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={sharing}
+                        onClick={() => {
+                          setHeadMenuOpen(false);
+                          void createPublicUrl();
+                        }}
+                      >
+                        {shareCopied
+                          ? "Public URL copied"
+                          : sharing
+                            ? "Creating…"
+                            : "Create public URL"}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setHeadMenuOpen(false);
+                          setChatOpen(true);
+                          setEditingCampaigns(false);
+                        }}
+                      >
+                        Chat
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>
@@ -1155,7 +1362,12 @@ export default function PortalAnalyticsKanban({
                         <button
                           type="button"
                           className="an-kanban-remove"
-                          onClick={() => removeStage(stage.id)}
+                          onClick={() =>
+                            setRemoveStagePrompt({
+                              id: stage.id,
+                              name: stage.name,
+                            })
+                          }
                           aria-label={`Remove ${stage.name}`}
                         >
                           ×
@@ -1193,6 +1405,23 @@ export default function PortalAnalyticsKanban({
                         }}
                         onDragEnd={() => setDraggingPerson("")}
                       >
+                        {readOnly ? null : (
+                          <button
+                            type="button"
+                            className="an-kanban-card-remove"
+                            aria-label={`Remove ${name} from kanban`}
+                            title="Remove"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setRemoveLeadPrompt({ email, name });
+                            }}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onDragStart={(event) => event.preventDefault()}
+                          >
+                            ×
+                          </button>
+                        )}
                         <span className="an-kanban-card-copy">
                           <span className="an-kanban-card-row">
                             <span className="an-kanban-row-ico" aria-hidden>
@@ -1426,6 +1655,112 @@ export default function PortalAnalyticsKanban({
                   Send
                 </button>
               </form>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {removeLeadPrompt ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => {
+            if (!removingLead) {
+              setRemoveLeadPrompt(null);
+            }
+          }}
+        >
+          <div
+            className="crm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="kanban-remove-lead-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="crm-modal-head">
+              <h3 id="kanban-remove-lead-title">Remove from kanban?</h3>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                disabled={removingLead}
+                onClick={() => setRemoveLeadPrompt(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-body">
+              <p>
+                Remove <strong>{removeLeadPrompt.name}</strong> (
+                {removeLeadPrompt.email}) from this kanban? They will no longer
+                appear on the board.
+              </p>
+            </div>
+            <div className="crm-modal-foot">
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={removingLead}
+                onClick={() => setRemoveLeadPrompt(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                disabled={removingLead}
+                onClick={() => void confirmRemoveLead()}
+              >
+                {removingLead ? "Removing…" : "Remove"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {removeStagePrompt ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => setRemoveStagePrompt(null)}
+        >
+          <div
+            className="crm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="kanban-remove-stage-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="crm-modal-head">
+              <h3 id="kanban-remove-stage-title">Delete stage?</h3>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                onClick={() => setRemoveStagePrompt(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-body">
+              <p>
+                Delete the <strong>{removeStagePrompt.name}</strong> stage?
+                Contacts in this stage will move back to their automatic stage.
+              </p>
+            </div>
+            <div className="crm-modal-foot">
+              <button
+                type="button"
+                className="btn-soft"
+                onClick={() => setRemoveStagePrompt(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                onClick={() => confirmRemoveStage()}
+              >
+                Delete stage
+              </button>
             </div>
           </div>
         </div>

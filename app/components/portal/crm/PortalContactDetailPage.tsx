@@ -1,31 +1,24 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   CONTACT_ATTRIBUTE_LABELS,
-  formatCompanyDate,
   formatListDate,
-  formatRelativeTime,
+  resolveContactPhotoUrl,
   type ContactCampaignStats,
   type ContactDetail,
-  type ContactHistoryEvent,
   type ContactListMembership,
 } from "@/lib/crm";
-import {
-  formatEngagementDevice,
-  isEngagementDevice,
-  type EngagementDevice,
-} from "@/lib/engagement-client-meta";
 import {
   portalCompanyRoute,
   portalContactRoute,
   portalListRoute,
   portalReturnPath,
   PORTAL_ROUTES,
-  portalCampaignRoute,
 } from "@/lib/portal-nav";
+import ContactActivityPanel from "@/app/components/portal/crm/ContactActivityPanel";
 import PortalContactLeadReportView from "@/app/components/portal/crm/PortalContactLeadReportView";
 
 type PortalContactDetailPageProps = {
@@ -33,7 +26,7 @@ type PortalContactDetailPageProps = {
   from?: string;
 };
 
-type DetailTab = "overview" | "history" | "lists" | "preferences";
+type DetailTab = "overview" | "activity" | "lists" | "preferences";
 
 function pct(part: number, total: number) {
   if (total <= 0) {
@@ -42,314 +35,135 @@ function pct(part: number, total: number) {
   return `${Math.round((part / total) * 100)}%`;
 }
 
-const HISTORY_PREVIEW_COUNT = 4;
-
-function historyKindLabel(type: ContactHistoryEvent["type"]) {
-  switch (type) {
-    case "campaign_sent":
-      return "Sent";
-    case "campaign_delivered":
-      return "Delivered";
-    case "campaign_opened":
-      return "Opened";
-    case "campaign_clicked":
-      return "Clicked";
-    case "campaign_unsubscribed":
-      return "Unsubscribed";
-    case "company_associated":
-      return "Company";
-    case "list_added":
-      return "List";
-    case "import":
-      return "Import";
-    default:
-      return "Activity";
-  }
+function ensureHttp(url?: string) {
+  const value = (url || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  return `https://${value}`;
 }
 
-function historyKindClass(type: ContactHistoryEvent["type"]) {
-  switch (type) {
-    case "campaign_sent":
-    case "campaign_delivered":
-      return "is-sent";
-    case "campaign_opened":
-      return "is-opened";
-    case "campaign_clicked":
-      return "is-clicked";
-    case "campaign_unsubscribed":
-      return "is-unsubscribed";
-    case "company_associated":
-      return "is-company";
-    case "list_added":
-      return "is-list";
-    case "import":
-      return "is-import";
-    default:
-      return "";
-  }
+function contactInitials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
 }
 
-function historyTitle(event: ContactHistoryEvent) {
-  if (event.title?.trim()) {
-    return event.title.trim();
-  }
-  switch (event.type) {
-    case "campaign_sent":
-      return event.campaignName
-        ? `Email sent · ${event.campaignName}`
-        : "Email sent";
-    case "campaign_delivered":
-      return event.campaignName
-        ? `Email delivered · ${event.campaignName}`
-        : "Email delivered";
-    case "campaign_opened":
-      return event.campaignName
-        ? `Opened email · ${event.campaignName}`
-        : "Opened email";
-    case "campaign_clicked":
-      return event.campaignName
-        ? `Clicked link · ${event.campaignName}`
-        : "Clicked link";
-    case "campaign_unsubscribed":
-      return event.campaignName
-        ? `Unsubscribed · ${event.campaignName}`
-        : "Unsubscribed";
-    case "company_associated":
-      return event.companyName
-        ? `Associated with ${event.companyName}`
-        : "Company associated";
-    case "list_added":
-      return event.listName ? `Added to ${event.listName}` : "Added to list";
-    case "import":
-      return event.importFileName
-        ? `Imported via ${event.importFileName}`
-        : "Contact imported";
-    default:
-      return "Activity";
-  }
-}
-
-function ContactHistoryBody({ event }: { event: ContactHistoryEvent }) {
-  if (event.type === "company_associated" && event.companyId) {
-    return (
-      <>
-        This contact has been associated to the company:{" "}
-        <Link
-          href={portalCompanyRoute(event.companyId)}
-          className="af-campaign-link"
-        >
-          {event.companyName || "Company"}
-        </Link>
-      </>
-    );
-  }
-
-  if (event.type === "list_added" && event.listId) {
-    return (
-      <>
-        Added to list{" "}
-        <Link href={portalListRoute(event.listId)} className="af-campaign-link">
-          {event.listDisplayId ? `(#${event.listDisplayId}) ` : ""}
-          {event.listName}
-        </Link>
-        {event.actor ? ` by ${event.actor}` : ""}.
-      </>
-    );
-  }
-
-  if (event.type === "import") {
-    return (
-      <>
-        Added via a contacts import
-        {event.actor ? ` by ${event.actor}` : ""}
-        {event.importFileName ? (
-          <>
-            {" "}
-            via the file <strong>{event.importFileName}</strong>
-          </>
-        ) : null}
-        .
-      </>
-    );
-  }
-
-  if (event.type === "campaign_sent" || event.type === "campaign_delivered") {
-    return (
-      <>
-        {event.type === "campaign_sent" ? "Sent" : "Delivered"} on{" "}
-        <strong>{formatListDate(event.at)}</strong>
-        {event.campaignName ? <> in campaign {event.campaignName}</> : null}.
-      </>
-    );
-  }
-
-  if (event.type === "campaign_opened") {
-    return (
-      <>
-        Opened on <strong>{formatListDate(event.at)}</strong>
-        {event.campaignName ? <> — {event.campaignName}</> : null}.
-      </>
-    );
-  }
-
-  if (event.type === "campaign_clicked") {
-    return (
-      <>
-        Clicked on <strong>{formatListDate(event.at)}</strong>
-        {": "}
-        {event.clickedUrl ? (
-          <a
-            href={event.clickedUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="af-campaign-link"
-          >
-            {event.clickedUrl}
-          </a>
-        ) : (
-          "a link"
-        )}
-        {event.campaignName ? <> in {event.campaignName}</> : null}.
-      </>
-    );
-  }
-
-  if (event.type === "campaign_unsubscribed") {
-    return (
-      <>
-        Unsubscribed from campaign
-        {event.campaignName ? ` ${event.campaignName}` : ""}.
-      </>
-    );
-  }
-
-  return <>{event.description || "Activity recorded for this contact."}</>;
-}
-
-/** Overview card: newest activity, skip noisy delivered duplicates. */
-function pickRecentHistory(events: ContactHistoryEvent[]) {
-  return events.filter((event) => event.type !== "campaign_delivered");
-}
-
-function ContactHistoryTimeline({
-  events,
-  contact,
-  preview = false,
-  onViewAll,
-}: {
-  events: ContactHistoryEvent[];
-  contact: ContactDetail;
-  preview?: boolean;
-  onViewAll?: () => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const importEvent = events.find(
-    (event) => event.type === "import" && event.importFileName,
-  );
-  const visibleEvents =
-    preview && !expanded ? events.slice(0, HISTORY_PREVIEW_COUNT) : events;
-  const hiddenCount = preview
-    ? Math.max(0, events.length - HISTORY_PREVIEW_COUNT)
-    : 0;
-
-  if (events.length === 0) {
-    return <p className="cd-empty">No engagement activity yet.</p>;
-  }
-
+function IconMail() {
   return (
-    <div className="cd-history-animate cd-lead-history">
-      <div className="lr-timeline-rail">
-        {visibleEvents.map((event, index) => (
-          <div className="lr-tl-item" key={event.id}>
-            <span
-              className={`lr-tl-dot${index === 0 ? " is-first" : ""}`}
-              aria-hidden="true"
-            />
-            <div className="lr-tl-meta">
-              <span className={`lr-tl-type ${historyKindClass(event.type)}`}>
-                {historyKindLabel(event.type)}
-              </span>
-              <span className="lr-tl-date">
-                {event.at ? formatListDate(event.at) : formatCompanyDate(event.at)}
-                {event.at ? (
-                  <span className="cd-event-time-rel">
-                    {" "}
-                    · {formatRelativeTime(event.at)}
-                  </span>
-                ) : null}
-              </span>
-            </div>
-            <p className="lr-tl-title">{historyTitle(event)}</p>
-            <p className="lr-tl-body">
-              <ContactHistoryBody event={event} />
-            </p>
-            {event.openTag ||
-            event.clickTag ||
-            event.device ||
-            event.ip ||
-            event.actor ? (
-              <div className="lr-tl-extra">
-                {event.openTag ? (
-                  <span className="lr-tl-chip">{event.openTag}</span>
-                ) : null}
-                {event.clickTag ? (
-                  <span className="lr-tl-chip">{event.clickTag}</span>
-                ) : null}
-                {event.device &&
-                isEngagementDevice(event.device) &&
-                event.device !== "unknown" ? (
-                  <span className="lr-tl-chip">
-                    {formatEngagementDevice(event.device)}
-                  </span>
-                ) : null}
-                {event.ip ? (
-                  <span className="lr-tl-chip">IP {event.ip}</span>
-                ) : null}
-                {event.actor ? (
-                  <span className="lr-tl-chip">By {event.actor}</span>
-                ) : null}
-              </div>
-            ) : null}
-            {event.campaignId ? (
-              <p className="lr-tl-link">
-                <Link
-                  href={portalCampaignRoute(
-                    event.campaignId,
-                    event.campaignKind,
-                  )}
-                >
-                  View campaign
-                  {event.campaignName ? ` · ${event.campaignName}` : ""}
-                </Link>
-              </p>
-            ) : null}
-          </div>
-        ))}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+    </svg>
+  );
+}
+function IconPhone() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+    </svg>
+  );
+}
+function IconLinkedIn() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+    </svg>
+  );
+}
+function IconBuilding() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
+      <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
+      <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2" />
+      <path d="M10 6h4M10 10h4M10 14h4M10 18h4" />
+    </svg>
+  );
+}
+function IconUser() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+function IconBriefcase() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <rect width="20" height="14" x="2" y="7" rx="2" />
+      <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
+      <path d="M12 12v.01" />
+    </svg>
+  );
+}
+function IconMapPin() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  );
+}
+function IconGlobe() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M2 12h20" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
+  );
+}
+function IconTag() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z" />
+      <path d="M7 7h.01" />
+    </svg>
+  );
+}
+
+function InfoRow({
+  icon,
+  label,
+  children,
+}: {
+  icon: ReactNode;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="cd-info-row">
+      <span className="cd-info-icon" aria-hidden>
+        {icon}
+      </span>
+      <div className="cd-info-copy">
+        <div className="cd-info-label">{label}</div>
+        <div className="cd-info-value">{children}</div>
       </div>
-      {hiddenCount > 0 ? (
-        <button
-          type="button"
-          className="lr-readmore-btn lr-timeline-more"
-          onClick={() => {
-            if (onViewAll) {
-              onViewAll();
-              return;
-            }
-            setExpanded((value) => !value);
-          }}
-        >
-          {expanded
-            ? "Show less"
-            : onViewAll
-              ? `View all (${events.length})`
-              : `Read more (${hiddenCount} more)`}
-        </button>
-      ) : null}
-      <div className="cd-foot-note">
-        {importEvent
-          ? `Added via a contacts import on ${formatCompanyDate(contact.createdAt)}`
-          : `Added on ${formatCompanyDate(contact.createdAt)}`}
-      </div>
+    </div>
+  );
+}
+
+function ContactAvatar({
+  name,
+  photoUrl,
+  size = "md",
+}: {
+  name: string;
+  photoUrl?: string;
+  size?: "md" | "lg";
+}) {
+  const [failed, setFailed] = useState(false);
+  const showPhoto = Boolean(photoUrl && !failed);
+  return (
+    <div className={`cd-avatar-pro is-${size}${showPhoto ? " has-photo" : ""}`}>
+      {showPhoto ? (
+        <img src={photoUrl} alt="" onError={() => setFailed(true)} />
+      ) : (
+        <span>{contactInitials(name)}</span>
+      )}
     </div>
   );
 }
@@ -430,7 +244,9 @@ function ContactListsPanel({
           </div>
 
           <span className="contact-lists-range">
-            {total === 0 ? "0-0 of 0" : `${startIndex + 1}-${endIndex} of ${total}`}
+            {total === 0
+              ? "0-0 of 0"
+              : `${startIndex + 1}-${endIndex} of ${total}`}
           </span>
 
           <div className="contact-lists-footer-group">
@@ -532,11 +348,9 @@ function ContactTabsDetail({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<DetailTab>("overview");
-  const [historyFilter, setHistoryFilter] = useState<"all" | "campaigns">("all");
 
   useEffect(() => {
     setTab("overview");
-    setHistoryFilter("all");
   }, [contactId]);
 
   useEffect(() => {
@@ -574,19 +388,6 @@ function ContactTabsDetail({
     return `${navigation.index + 1} of ${navigation.total}`;
   }, [navigation]);
 
-  const campaignHistory = useMemo(
-    () => (contact?.history ?? []).filter((event) => event.type.startsWith("campaign_")),
-    [contact?.history],
-  );
-
-  const visibleHistory = useMemo(
-    () =>
-      historyFilter === "campaigns"
-        ? campaignHistory
-        : (contact?.history ?? []),
-    [campaignHistory, contact?.history, historyFilter],
-  );
-
   if (loading) {
     return <div className="crm-empty">Loading contact...</div>;
   }
@@ -618,9 +419,34 @@ function ContactTabsDetail({
     );
   }
 
+  const profile = contact.profile;
+  const photoUrl = resolveContactPhotoUrl(profile);
+  const linkedinUrl = ensureHttp(
+    profile.linkedinUrl || contact.attributes?.personalLinkedIn,
+  );
+  const phone =
+    profile.phone?.trim() || contact.attributes?.phoneNumber?.trim() || "";
+  const position =
+    profile.title?.trim() || contact.attributes?.position?.trim() || "";
+  const location =
+    profile.location?.trim() ||
+    contact.attributes?.personLocation?.trim() ||
+    "";
+  const website = ensureHttp(contact.attributes?.website);
+  const knownAttrKeys = new Set([
+    "position",
+    "phoneNumber",
+    "personalLinkedIn",
+    "personLocation",
+    "website",
+  ]);
+  const extraAttributes = Object.entries(contact.attributes ?? {}).filter(
+    ([key, value]) => !knownAttrKeys.has(key) && String(value ?? "").trim(),
+  );
+
   return (
     <>
-      <div className="cd-top">
+      <div className="cd-top cd-top-pro">
         <div className="cd-identity">
           <button
             type="button"
@@ -637,48 +463,71 @@ function ContactTabsDetail({
               <path d="m15 18-6-6 6-6" />
             </svg>
           </button>
-          <div className="cd-avatar">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-            >
-              <circle cx="12" cy="8" r="4" />
-              <path d="M4 20c0-4 4-6 8-6s8 2 8 6" />
-            </svg>
-          </div>
-          <div>
+          <ContactAvatar name={contact.fullName} photoUrl={photoUrl} size="lg" />
+          <div className="cd-identity-copy">
             <div className="cd-name-row">
               <h2 className="cd-name">{contact.fullName}</h2>
+              {contact.subscribed ? (
+                <span className="cd-status-pill is-subscribed">Subscribed</span>
+              ) : (
+                <span className="cd-status-pill">Unsubscribed</span>
+              )}
+            </div>
+            <p className="cd-subtitle">
+              {position ? <span>{position}</span> : null}
+              {position && contact.companyName ? (
+                <span className="cd-subtitle-dot" aria-hidden>
+                  ·
+                </span>
+              ) : null}
               {contact.companyName ? (
                 contact.company?.id ? (
                   <Link
                     href={portalCompanyRoute(contact.company.id)}
-                    className="cd-role"
+                    className="cd-subtitle-link"
                   >
                     {contact.companyName}
                   </Link>
                 ) : (
-                  <span className="cd-role">{contact.companyName}</span>
+                  <span>{contact.companyName}</span>
                 )
               ) : null}
+              {!position && !contact.companyName ? (
+                <span className="muted">{contact.email}</span>
+              ) : null}
+            </p>
+            <div className="cd-quick-actions">
+              <a className="cd-quick-btn" href={`mailto:${contact.email}`}>
+                <IconMail />
+                Email
+              </a>
+              {phone ? (
+                <a className="cd-quick-btn" href={`tel:${phone.replace(/\s+/g, "")}`}>
+                  <IconPhone />
+                  Call
+                </a>
+              ) : null}
+              {linkedinUrl ? (
+                <a
+                  className="cd-quick-btn is-linkedin"
+                  href={linkedinUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <IconLinkedIn />
+                  LinkedIn
+                </a>
+              ) : (
+                <span className="cd-quick-btn is-linkedin is-disabled">
+                  <IconLinkedIn />
+                  LinkedIn
+                </span>
+              )}
             </div>
           </div>
         </div>
 
         <div className="cd-actions-bar">
-          <button
-            type="button"
-            className="btn-dark"
-            onClick={() =>
-              router.push(
-                portalContactRoute(contactId, from, { view: "lead-report" }),
-              )
-            }
-          >
-            Lead Report
-          </button>
           <div className="cd-pager">
             <button
               type="button"
@@ -720,6 +569,17 @@ function ContactTabsDetail({
               </svg>
             </button>
           </div>
+          <button
+            type="button"
+            className="btn-dark"
+            onClick={() =>
+              router.push(
+                portalContactRoute(contactId, from, { view: "lead-report" }),
+              )
+            }
+          >
+            Lead Report
+          </button>
         </div>
       </div>
 
@@ -733,10 +593,10 @@ function ContactTabsDetail({
         </button>
         <button
           type="button"
-          className={`cd-tab ${tab === "history" ? "active" : ""}`}
-          onClick={() => setTab("history")}
+          className={`cd-tab ${tab === "activity" ? "active" : ""}`}
+          onClick={() => setTab("activity")}
         >
-          History
+          Activity
         </button>
         <button
           type="button"
@@ -757,34 +617,12 @@ function ContactTabsDetail({
         </button>
       </div>
 
-      {tab === "history" ? (
-        <div className="company-history-panel">
-          <div className="company-history-filters">
-            <button
-              type="button"
-              className={`company-filter-pill${historyFilter === "all" ? " active" : ""}`}
-              onClick={() => setHistoryFilter("all")}
-            >
-              All activities
-            </button>
-            <button
-              type="button"
-              className={`company-filter-pill${historyFilter === "campaigns" ? " active" : ""}`}
-              onClick={() => setHistoryFilter("campaigns")}
-            >
-              Email campaigns
-            </button>
-            <button type="button" className="company-filter-pill" disabled>
-              Notes
-            </button>
-            <button type="button" className="company-filter-pill" disabled>
-              Conversations
-            </button>
-          </div>
-
-          <div className="cd-card">
-            <ContactHistoryTimeline events={visibleHistory} contact={contact} />
-          </div>
+      {tab === "activity" ? (
+        <div className="cd-card cd-activity-card">
+          <ContactActivityPanel
+            contact={contact}
+            onContactChange={setContact}
+          />
         </div>
       ) : null}
 
@@ -793,182 +631,174 @@ function ContactTabsDetail({
       ) : null}
 
       {tab === "preferences" ? (
-        <div className="cd-grid">
-          <div className="cd-col">
-            <div className="cd-card">
-              <div className="cd-card-head">
-                <h3>Preferences</h3>
-              </div>
-              <div className="cd-sub-row">
-                {contact.subscribed ? (
-                  <>
-                    <span className="cd-check">
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.2"
-                      >
-                        <path d="M20 6 9 17l-5-5" />
-                      </svg>
-                    </span>
-                    Subscribed
-                  </>
-                ) : (
-                  <span className="cd-value muted">Not subscribed</span>
-                )}
-              </div>
-              <div className="cd-pills">
-                <span className="cd-pill">Email campaigns</span>
-                <span className="cd-pill">Transactional emails</span>
-              </div>
-              {contact.blocklisted ? (
-                <p className="cd-empty">This contact is blocklisted.</p>
-              ) : null}
+        <div className="cd-grid-simple">
+          <div className="cd-card">
+            <div className="cd-card-head">
+              <h3>Preferences</h3>
             </div>
+            <div className="cd-sub-row">
+              {contact.subscribed ? (
+                <>
+                  <span className="cd-check">
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.2"
+                    >
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  </span>
+                  Subscribed
+                </>
+              ) : (
+                <span className="cd-value muted">Not subscribed</span>
+              )}
+            </div>
+            <div className="cd-pills">
+              <span className="cd-pill">Email campaigns</span>
+              <span className="cd-pill">Transactional emails</span>
+            </div>
+            {contact.blocklisted ? (
+              <p className="cd-empty">This contact is blocklisted.</p>
+            ) : null}
           </div>
         </div>
       ) : null}
 
       {tab === "overview" ? (
-        <div className="cd-grid">
-          <div className="cd-col">
-            <div className="cd-card">
-              <div className="cd-card-head">
-                <h3>Preferences</h3>
-              </div>
-              <div className="cd-sub-row">
-                {contact.subscribed ? (
-                  <>
-                    <span className="cd-check">
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.2"
-                      >
-                        <path d="M20 6 9 17l-5-5" />
-                      </svg>
-                    </span>
-                    Subscribed
-                  </>
-                ) : (
-                  <span className="cd-value muted">Not subscribed</span>
-                )}
-              </div>
-              <div className="cd-pills">
-                <span className="cd-pill">Email campaigns</span>
-                <span className="cd-pill">Transactional emails</span>
-              </div>
-            </div>
-
-            <div className="cd-card">
+        <div className="cd-layout">
+          <aside className="cd-layout-side">
+            <div className="cd-card cd-info-card">
               <div className="cd-card-head">
                 <h3>Information</h3>
-                <button
-                  type="button"
-                  className="cd-more"
-                  aria-label="Collapse"
-                  disabled
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="m6 9 6 6 6-6" />
-                  </svg>
-                </button>
               </div>
-              <div className="cd-field">
-                <div className="cd-label">Lastname</div>
-                <div className="cd-value">{contact.lastName || "—"}</div>
-              </div>
-              <div className="cd-field">
-                <div className="cd-label">Firstname</div>
-                <div className="cd-value">{contact.firstName || "—"}</div>
-              </div>
-              <div className="cd-field">
-                <div className="cd-label">Email</div>
-                <div className="cd-value">{contact.email}</div>
-              </div>
-              <div className="cd-field">
-                <div className="cd-label">Company</div>
-                <div className="cd-value">
+
+              <div className="cd-info-stack">
+                <InfoRow icon={<IconUser />} label="Name">
+                  {[contact.firstName, contact.lastName]
+                    .filter(Boolean)
+                    .join(" ") || "—"}
+                </InfoRow>
+                <InfoRow icon={<IconMail />} label="Email">
+                  <a className="cd-info-link" href={`mailto:${contact.email}`}>
+                    {contact.email}
+                  </a>
+                </InfoRow>
+                <InfoRow icon={<IconPhone />} label="Phone">
+                  {phone ? (
+                    <a
+                      className="cd-info-link"
+                      href={`tel:${phone.replace(/\s+/g, "")}`}
+                    >
+                      {phone}
+                    </a>
+                  ) : (
+                    <span className="cd-info-muted">Not set</span>
+                  )}
+                </InfoRow>
+                <InfoRow icon={<IconBriefcase />} label="Position">
+                  {position || <span className="cd-info-muted">Not set</span>}
+                </InfoRow>
+                <InfoRow icon={<IconBuilding />} label="Company">
                   {contact.company?.id ? (
                     <Link
                       href={portalCompanyRoute(contact.company.id)}
-                      className="contact-history-link"
+                      className="cd-info-link"
                     >
                       {contact.companyName}
                     </Link>
                   ) : (
-                    contact.companyName || "—"
+                    contact.companyName || (
+                      <span className="cd-info-muted">Not set</span>
+                    )
                   )}
-                </div>
+                </InfoRow>
+                <InfoRow icon={<IconMapPin />} label="Location">
+                  {location || <span className="cd-info-muted">Not set</span>}
+                </InfoRow>
+                {website ? (
+                  <InfoRow icon={<IconGlobe />} label="Website">
+                    <a
+                      className="cd-info-link"
+                      href={website}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {contact.attributes?.website}
+                    </a>
+                  </InfoRow>
+                ) : null}
+                {extraAttributes.map(([key, value]) => (
+                  <InfoRow key={key} icon={<IconTag />} label={CONTACT_ATTRIBUTE_LABELS[key] ?? key}>
+                    {value}
+                  </InfoRow>
+                ))}
               </div>
-              {Object.entries(contact.attributes ?? {}).map(([key, value]) => (
-                <div className="cd-field" key={key}>
-                  <div className="cd-label">
-                    {CONTACT_ATTRIBUTE_LABELS[key] ?? key}
-                  </div>
-                  <div className="cd-value">{value || "—"}</div>
-                </div>
-              ))}
-            </div>
-          </div>
 
-          <div className="cd-col">
-            <div className="cd-card">
+              <div className="cd-info-actions">
+                {linkedinUrl ? (
+                  <a
+                    className="cd-linkedin-btn"
+                    href={linkedinUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <IconLinkedIn />
+                    View LinkedIn profile
+                  </a>
+                ) : (
+                  <span className="cd-linkedin-btn is-disabled">
+                    <IconLinkedIn />
+                    LinkedIn not added
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="cd-card cd-stats-card">
               <div className="cd-card-head">
                 <h3>Email campaigns</h3>
               </div>
               <CampaignStatsBar stats={contact.campaignStats} />
             </div>
 
-            <div className="cd-card">
+            <div className="cd-card cd-company-card">
               <div className="cd-card-head">
-                <h3>Recent history</h3>
-                {contact.history.length > 0 ? (
-                  <button
-                    type="button"
-                    className="btn-link-purple"
-                    onClick={() => setTab("history")}
-                  >
-                    View all
-                  </button>
-                ) : null}
-              </div>
-              <ContactHistoryTimeline
-                events={pickRecentHistory(contact.history)}
-                contact={contact}
-                preview
-                onViewAll={() => setTab("history")}
-              />
-            </div>
-          </div>
-
-          <div className="cd-col right">
-            <div className="cd-card">
-              <div className="cd-card-head">
-                <h3>Companies ({contact.company ? 1 : 0})</h3>
+                <h3>Company</h3>
               </div>
               {!contact.company ? (
-                <p className="cd-empty">No company associated with this contact.</p>
+                <p className="cd-empty">No company associated yet.</p>
               ) : (
-                <ul className="company-detail-contacts">
-                  <li>
+                <div className="cd-company-row">
+                  <span className="cd-company-icon" aria-hidden>
+                    <IconBuilding />
+                  </span>
+                  <div>
                     <Link
                       href={portalCompanyRoute(contact.company.id)}
-                      className="company-detail-contact-name contact-history-link"
+                      className="cd-company-name"
                     >
                       {contact.company.name}
                     </Link>
-                    <div className="company-detail-contact-email">
+                    <p className="cd-company-meta">
                       {contact.company.contactCount} associated contact
                       {contact.company.contactCount === 1 ? "" : "s"}
-                    </div>
-                  </li>
-                </ul>
+                    </p>
+                  </div>
+                </div>
               )}
             </div>
-          </div>
+          </aside>
+
+          <section className="cd-layout-main">
+            <div className="cd-card cd-activity-card">
+              <ContactActivityPanel
+                contact={contact}
+                onContactChange={setContact}
+              />
+            </div>
+          </section>
         </div>
       ) : null}
     </>

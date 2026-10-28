@@ -253,6 +253,7 @@ export function getNavIcon(pageId: string) {
     case "analytics-kanban":
       return IconAnalytics;
     case "smtp":
+    case "smtp-health":
       return IconSmtp;
     case "branding":
       return IconBrand;

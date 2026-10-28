@@ -21,6 +21,33 @@ export type ContactMergeFields = {
   personalLinkedIn?: string;
 };
 
+/** Flatten CRM contact attrs/profile into merge fields (POSITION, LINKEDIN, …). */
+export function contactMergeFieldsFromContact(contact: {
+  firstName?: string;
+  lastName?: string;
+  fullName?: string;
+  email?: string;
+  companyName?: string;
+  attributes?: Record<string, string | undefined> | null;
+  profile?: { title?: string } | null;
+}): ContactMergeFields {
+  const position =
+    String(contact.attributes?.position ?? "").trim() ||
+    String(contact.profile?.title ?? "").trim();
+  const personalLinkedIn = String(
+    contact.attributes?.personalLinkedIn ?? "",
+  ).trim();
+  return {
+    firstName: contact.firstName ?? "",
+    lastName: contact.lastName ?? "",
+    fullName: contact.fullName,
+    email: contact.email ?? "",
+    companyName: contact.companyName ?? "",
+    ...(position ? { position } : {}),
+    ...(personalLinkedIn ? { personalLinkedIn } : {}),
+  };
+}
+
 function compactToken(value: string) {
   return value
     .split("|")[0]

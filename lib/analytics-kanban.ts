@@ -155,6 +155,8 @@ export type KanbanBoard = KanbanList & {
   placements: Record<string, string>;
   /** Leads added manually from CRM contacts. */
   manualPeople: KanbanManualPerson[];
+  /** Emails removed from this board (hidden even if still in campaigns). */
+  excludedEmails: string[];
   people: KanbanPerson[];
 };
 
@@ -321,10 +323,12 @@ export async function fetchKanbanBoard(id: string): Promise<KanbanBoard> {
 export async function patchKanbanBoard(
   id: string,
   patch: {
+    name?: string;
     stages?: KanbanStage[];
     placements?: Record<string, string>;
     campaigns?: KanbanCampaignRef[];
     manualPeople?: KanbanManualPerson[];
+    excludedEmails?: string[];
   },
 ): Promise<KanbanBoard> {
   const response = await fetch(`/api/analytics/kanban/${encodeURIComponent(id)}`, {

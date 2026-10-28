@@ -56,6 +56,16 @@ function truncateLabel(label: string, maxChars: number) {
   return `${trimmed.slice(0, Math.max(1, maxChars - 1))}…`;
 }
 
+/** Locale-stable so SSR and the browser match (avoids hydration mismatches). */
+function formatCount(value: number) {
+  return Math.round(Number(value) || 0).toLocaleString("en-US");
+}
+
+function stageTitle(stage: PipelineFunnelStage) {
+  const base = `${stage.label}: ${formatCount(stage.value)}`;
+  return stage.hint ? `${base} — ${stage.hint}` : base;
+}
+
 export default function PipelineFunnelChart({
   stages,
   className,
@@ -143,10 +153,7 @@ export default function PipelineFunnelChart({
               }
               style={{ "--pipeline-delay": `${index * STAGGER_MS}ms` } as CSSProperties}
             >
-              <title>
-                {stage.label}: {stage.value.toLocaleString()}
-                {stage.hint ? ` — ${stage.hint}` : ""}
-              </title>
+              <title>{stageTitle(stage)}</title>
             </polygon>
           );
         })}
@@ -174,7 +181,7 @@ export default function PipelineFunnelChart({
           return (
             <g key={`meta-${stage.key}`} className="pipeline-funnel-meta" style={delay}>
               <text className="pipeline-funnel-value" x={midX} y={labelY} textAnchor="middle">
-                {stage.value.toLocaleString()}
+                {formatCount(stage.value)}
               </text>
               <text
                 className="pipeline-funnel-label"
