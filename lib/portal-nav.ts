@@ -94,7 +94,11 @@ export function campaignListRoute(kind?: string, tags?: string[]) {
 
 export function publicCampaignReportPath(
   token: string,
-  options?: { analyticsToken?: string; hideBotClicks?: boolean },
+  options?: {
+    analyticsToken?: string;
+    hideBotClicks?: boolean;
+    botToggle?: boolean;
+  },
 ) {
   const path = `/r/${encodeURIComponent(token)}`;
   const params = new URLSearchParams();
@@ -103,6 +107,9 @@ export function publicCampaignReportPath(
   }
   if (typeof options?.hideBotClicks === "boolean") {
     params.set("hideBotClicks", options.hideBotClicks ? "1" : "0");
+  }
+  if (options?.botToggle) {
+    params.set("botToggle", "1");
   }
   const query = params.toString();
   return query ? `${path}?${query}` : path;

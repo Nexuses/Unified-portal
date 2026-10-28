@@ -157,9 +157,21 @@ function isEmptyReplyHtml(html: string) {
 const BORDER_STYLE_RE =
   /(?:^|;)\s*(?:border(?:-(?:top|right|bottom|left))?(?:-width|-style|-color)?|outline(?:-width|-style|-color)?)\s*:[^;]*/gi;
 
+/** Absolute/float email markup overlaps the reply body in the compose preview. */
+const LAYOUT_BREAK_STYLE_RE =
+  /(?:^|;)\s*(?:position|top|right|bottom|left|float|z-index|transform|clip|clip-path|inset)\s*:[^;]*/gi;
+
 function stripBorderStyles(style: string) {
   return style
     .replace(BORDER_STYLE_RE, "")
+    .replace(/;;+/g, ";")
+    .replace(/^;|;$/g, "")
+    .trim();
+}
+
+function stripLayoutBreakStyles(style: string) {
+  return style
+    .replace(LAYOUT_BREAK_STYLE_RE, "")
     .replace(/;;+/g, ";")
     .replace(/^;|;$/g, "")
     .trim();
@@ -177,7 +189,7 @@ function applyCleanedStyle(el: HTMLElement, style: string | null) {
     el.removeAttribute("style");
     return;
   }
-  const cleaned = stripBorderStyles(style);
+  const cleaned = stripLayoutBreakStyles(stripBorderStyles(style));
   if (cleaned) {
     el.setAttribute("style", cleaned);
   } else {
@@ -363,7 +375,9 @@ function sanitizePastedHtml(html: string) {
       return;
     }
     const style = table.getAttribute("style");
-    const cleaned = style ? stripBorderStyles(style) : "";
+    const cleaned = style
+      ? stripLayoutBreakStyles(stripBorderStyles(style))
+      : "";
     table.setAttribute(
       "style",
       cleaned
@@ -372,12 +386,14 @@ function sanitizePastedHtml(html: string) {
     );
   });
 
-  doc.querySelectorAll("td,th,p,div,span,li,tr,font").forEach((el) => {
-    if (!(el instanceof HTMLElement)) {
-      return;
-    }
-    applyCleanedStyle(el, el.getAttribute("style"));
-  });
+  doc.querySelectorAll("td,th,p,div,span,li,tr,font,a,img,section,article").forEach(
+    (el) => {
+      if (!(el instanceof HTMLElement)) {
+        return;
+      }
+      applyCleanedStyle(el, el.getAttribute("style"));
+    },
+  );
 
   // Do not delete images here — embedClipboardImages handles src fixing.
   doc.querySelectorAll("img").forEach((img) => {
@@ -386,6 +402,9 @@ function sanitizePastedHtml(html: string) {
     }
     img.style.maxWidth = "100%";
     img.style.height = "auto";
+    img.style.display = "inline-block";
+    img.style.float = "none";
+    img.style.position = "static";
     if (!img.getAttribute("alt")) {
       img.setAttribute("alt", "");
     }
@@ -1264,50 +1283,61 @@ export default function PortalMasterInboxPage() {
                     {suggesting ? "Writing…" : "Suggest reply"}
                   </button>
                 </div>
-                {aiSpeech.error ? (
-                  <div className="inbox-ai-error">{aiSpeech.error}</div>
-                ) : null}
-                {suggestError ? <div className="inbox-ai-error">{suggestError}</div> : null}
-                <InboxReplyEditor
-                  key={`${selectedKey}-${replyEditorKey}`}
-                  ref={replyEditorRef}
-                  threadKey={selectedKey}
-                  disabled={sendingReply}
-                  onHtmlChange={handleReplyHtmlChange}
-                  onSubmitShortcut={() => {
-                    void sendReply().catch(() => undefined);
-                  }}
-                />
-                {currentSignature ? (
-                  <div className={`inbox-sig-attached${includeSignature ? "" : " is-off"}`}>
-                    <label className="inbox-sig-toggle">
-                      <input
-                        type="checkbox"
-                        checked={includeSignature}
-                        disabled={sendingReply}
-                        onChange={(event) => setSignatureChoice(event.target.checked)}
-                      />
-                      Include signature
-                    </label>
-                    {includeSignature ? (
+                <div className="inbox-reply-body">
+                  {aiSpeech.error ? (
+                    <div className="inbox-ai-error">{aiSpeech.error}</div>
+                  ) : null}
+                  {suggestError ? <div className="inbox-ai-error">{suggestError}</div> : null}
+                  <div
+                    className={`inbox-reply-compose${
+                      includeSignature ? " has-signature" : ""
+                    }`}
+                  >
+                    <InboxReplyEditor
+                      key={`${selectedKey}-${replyEditorKey}`}
+                      ref={replyEditorRef}
+                      threadKey={selectedKey}
+                      disabled={sendingReply}
+                      onHtmlChange={handleReplyHtmlChange}
+                      onSubmitShortcut={() => {
+                        void sendReply().catch(() => undefined);
+                      }}
+                    />
+                    {includeSignature && currentSignature ? (
                       <div
-                        className="inbox-sig-attached-preview"
+                        className="inbox-reply-signature"
+                        aria-label="Email signature"
                         dangerouslySetInnerHTML={{
                           __html: sanitizePastedHtml(currentSignature.html),
                         }}
                       />
                     ) : null}
                   </div>
-                ) : null}
+                </div>
                 <div className="inbox-reply-actions">
-                  <button
-                    type="button"
-                    className="inbox-sig-btn"
-                    onClick={openSignatureModal}
-                    disabled={sendingReply || !selected?.senderId}
-                  >
-                    {currentSignature ? "Edit signature" : "Add signature"}
-                  </button>
+                  <div className="inbox-reply-actions-left">
+                    {currentSignature ? (
+                      <label className="inbox-sig-toggle">
+                        <input
+                          type="checkbox"
+                          checked={includeSignature}
+                          disabled={sendingReply}
+                          onChange={(event) =>
+                            setSignatureChoice(event.target.checked)
+                          }
+                        />
+                        Include signature
+                      </label>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="inbox-sig-btn"
+                      onClick={openSignatureModal}
+                      disabled={sendingReply || !selected?.senderId}
+                    >
+                      {currentSignature ? "Edit signature" : "Add signature"}
+                    </button>
+                  </div>
                   <div className="inbox-reply-send-group">
                     <button
                       type="button"

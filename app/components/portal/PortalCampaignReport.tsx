@@ -766,11 +766,18 @@ export default function PortalCampaignReport({
     }
   }
 
-  async function shareReport(hideBots: boolean) {
+  async function shareReport(mode: "show" | "hide" | "toggle") {
     setSharePromptOpen(false);
+    // All three share modes include botToggle so the public report shows the switch.
+    // Show/Hide set the initial state; Export with toggle starts hidden (like analytics).
+    const hideBots = mode === "hide" || mode === "toggle";
+    const botToggle = true;
     try {
       let path = publicToken
-        ? publicCampaignReportPath(publicToken, { hideBotClicks: hideBots })
+        ? publicCampaignReportPath(publicToken, {
+            hideBotClicks: hideBots,
+            botToggle,
+          })
         : "";
       if (!publicToken) {
         const response = await fetch(
@@ -789,6 +796,7 @@ export default function PortalCampaignReport({
         }
         path = publicCampaignReportPath(String(data.token ?? ""), {
           hideBotClicks: hideBots,
+          botToggle,
         });
       }
       if (!path || path.startsWith("/r/?") || path === "/r/") {
@@ -801,8 +809,8 @@ export default function PortalCampaignReport({
         key: Date.now(),
         variant: "success",
         message: hideBots
-          ? "Report link copied (bot opens/clicks hidden)"
-          : "Report link copied",
+          ? "Report link copied (bot opens/clicks hidden; viewer can toggle)"
+          : "Report link copied (viewer can toggle bot opens/clicks)",
       });
       window.setTimeout(() => setShareCopied(false), 2000);
     } catch (error) {
@@ -1199,7 +1207,7 @@ export default function PortalCampaignReport({
               if (showBotClickUi) {
                 setSharePromptOpen(true);
               } else {
-                void shareReport(false);
+                void shareReport("show");
               }
             }}
           >
@@ -1256,8 +1264,8 @@ export default function PortalCampaignReport({
               <div>
                 <h3 id="drip-share-bot-title">Copy public report link</h3>
                 <p>
-                  Include bot opens/clicks for people who open this link? When
-                  hidden, Bot open and Bot click tags will not appear.
+                  Choose how bot opens/clicks appear for people who open this
+                  link. Export with toggle lets viewers turn them on or off.
                 </p>
               </div>
               <button
@@ -1269,20 +1277,27 @@ export default function PortalCampaignReport({
                 ×
               </button>
             </div>
-            <div className="crm-modal-actions an-share-bot-actions">
+            <div className="an-share-bot-actions">
               <button
                 type="button"
-                className="btn-soft"
-                onClick={() => void shareReport(false)}
+                className="btn-soft an-share-action-btn"
+                onClick={() => void shareReport("show")}
               >
-                Show bot opens/clicks
+                Show bots
               </button>
               <button
                 type="button"
-                className="btn-dark"
-                onClick={() => void shareReport(true)}
+                className="btn-soft an-share-action-btn"
+                onClick={() => void shareReport("hide")}
               >
-                Hide bot opens/clicks
+                Hide bots
+              </button>
+              <button
+                type="button"
+                className="btn-dark an-share-action-btn"
+                onClick={() => void shareReport("toggle")}
+              >
+                Export with toggle
               </button>
             </div>
           </div>

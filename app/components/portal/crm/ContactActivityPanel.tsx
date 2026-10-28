@@ -25,6 +25,8 @@ import {
 
 export type ActivityFilter = "all" | "email" | "call" | "message";
 
+const ACTIVITY_PAGE_SIZE = 10;
+
 type BuiltinKind = "call" | "whatsapp" | "message";
 
 type CampaignEmailPreview = {
@@ -468,11 +470,16 @@ export default function ContactActivityPanel({
   );
   const [emailLoadingId, setEmailLoadingId] = useState<string | null>(null);
   const [emailError, setEmailError] = useState("");
+  const [visibleCount, setVisibleCount] = useState(ACTIVITY_PAGE_SIZE);
 
   useEffect(() => {
     setCustomKinds(loadStoredList(CUSTOM_KINDS_KEY));
     setCustomOutcomes(loadStoredList(CUSTOM_OUTCOMES_KEY));
   }, []);
+
+  useEffect(() => {
+    setVisibleCount(ACTIVITY_PAGE_SIZE);
+  }, [filter, contact.id, compact]);
 
   const kindOptions = useMemo(() => {
     const builtins = BUILTIN_KINDS.map((item) => ({
@@ -559,7 +566,9 @@ export default function ContactActivityPanel({
     () => filterActivities(allActivities, filter),
     [allActivities, filter],
   );
-  const visible = compact ? filtered.slice(0, 8) : filtered;
+  const visible = filtered.slice(0, visibleCount);
+  const hasMore = filtered.length > visible.length;
+  const remaining = filtered.length - visible.length;
 
   const counts = useMemo(() => {
     const base = buildActivities(contact);
@@ -995,6 +1004,22 @@ export default function ContactActivityPanel({
               </div>
             );
           })}
+          {hasMore ? (
+            <div className="cd-activity-more">
+              <button
+                type="button"
+                className="cd-activity-more-btn"
+                onClick={() =>
+                  setVisibleCount((count) => count + ACTIVITY_PAGE_SIZE)
+                }
+              >
+                Show more
+                <span>
+                  {remaining} more
+                </span>
+              </button>
+            </div>
+          ) : null}
         </div>
       )}
 

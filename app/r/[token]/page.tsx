@@ -6,7 +6,11 @@ import { getDripCampaignByShareToken } from "@/lib/drip-campaigns-server";
 
 type PageProps = {
   params: Promise<{ token: string }>;
-  searchParams: Promise<{ a?: string; hideBotClicks?: string }>;
+  searchParams: Promise<{
+    a?: string;
+    hideBotClicks?: string;
+    botToggle?: string;
+  }>;
 };
 
 function parseHideBotParam(value: string | undefined) {
@@ -19,6 +23,10 @@ function parseHideBotParam(value: string | undefined) {
   return null;
 }
 
+function parseBotToggleParam(value: string | undefined) {
+  return value === "1" || value === "true";
+}
+
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { token } = await params;
   const found = await getDripCampaignByShareToken(token);
@@ -29,7 +37,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function PublicCampaignReportPage({ params, searchParams }: PageProps) {
   const { token } = await params;
-  const { a, hideBotClicks: hideBotParam } = await searchParams;
+  const {
+    a,
+    hideBotClicks: hideBotParam,
+    botToggle: botToggleParam,
+  } = await searchParams;
   const found = await getDripCampaignByShareToken(token);
   if (!found) {
     notFound();
@@ -38,13 +50,13 @@ export default async function PublicCampaignReportPage({ params, searchParams }:
   let analyticsToken: string | undefined;
   const hideBotFromQuery = parseHideBotParam(hideBotParam);
   let hideBotClicks = hideBotFromQuery === true;
-  let allowBotToggle = false;
+  let allowBotToggle = parseBotToggleParam(botToggleParam);
   const requested = a?.trim();
   if (requested) {
     const share = await getAnalyticsShareByToken(requested);
     if (share && share.projectId.toString() === found.projectId.toString()) {
       analyticsToken = requested;
-      allowBotToggle = Boolean(share.botToggle);
+      allowBotToggle = allowBotToggle || Boolean(share.botToggle);
       if (allowBotToggle) {
         hideBotClicks =
           hideBotFromQuery ?? Boolean(share.hideBotClicks);
