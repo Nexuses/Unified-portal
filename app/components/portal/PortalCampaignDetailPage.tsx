@@ -2925,6 +2925,194 @@ function PreviewTestModal({
   );
 }
 
+const EMAIL_BODY_FONT = "'Roboto', Arial, Helvetica, sans-serif";
+const ROBOTO_FONT_HREF =
+  "https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap";
+
+function looksLikeHtml(value: string) {
+  return /<\/?[a-z][\s\S]*>/i.test(value);
+}
+
+function isFullEmailDocument(html: string) {
+  return /<!DOCTYPE/i.test(html) || /<html[\s>]/i.test(html);
+}
+
+function extractEmailBody(html: string) {
+  const match = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (match) {
+    return match[1].trim();
+  }
+  return html.trim();
+}
+
+function paragraphHtmlFromPlainBlock(block: string) {
+  const html = escapeHtml(block.trim()).replace(/\n/g, "<br>\n    ");
+  return `<p style="margin: 0 0 12px; font-family: ${EMAIL_BODY_FONT}; font-size: 14px; line-height: 1.5; color: #111827;">
+    ${html}
+  </p>`;
+}
+
+/** Wrap body markup in a clean, indented Roboto email document. */
+function wrapAsFormattedEmail(bodyHtml: string) {
+  const body = bodyHtml.trim();
+  if (!body) {
+    return "";
+  }
+  const indentedBody = body
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link href="${ROBOTO_FONT_HREF}" rel="stylesheet">
+  <style type="text/css">
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: ${EMAIL_BODY_FONT};
+      font-size: 14px;
+      line-height: 1.5;
+      color: #111827;
+      -webkit-font-smoothing: antialiased;
+    }
+    p {
+      margin: 0 0 12px;
+      font-family: ${EMAIL_BODY_FONT};
+      font-size: 14px;
+      line-height: 1.5;
+      color: #111827;
+    }
+  </style>
+</head>
+<body>
+${indentedBody}
+</body>
+</html>`;
+}
+
+/** Plain text → properly formatted Roboto email HTML. */
+function plainTextToEmailHtml(text: string) {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return "";
+  }
+  const paragraphs = normalized
+    .split(/\n{2,}/)
+    .filter((block) => block.trim())
+    .map((block) => paragraphHtmlFromPlainBlock(block));
+  return wrapAsFormattedEmail(paragraphs.join("\n"));
+}
+
+/** Body fragment for the visual editor (no full document chrome). */
+function plainTextToBodyHtml(text: string) {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized
+    .split(/\n{2,}/)
+    .filter((block) => block.trim())
+    .map((block) => paragraphHtmlFromPlainBlock(block))
+    .join("\n");
+}
+
+const RICH_OR_LAYOUT_SELECTOR =
+  "table, img, style, link, center, section, header, footer, a, strong, em, b, i, u, ul, ol, li, h1, h2, h3, h4, h5, h6, hr, blockquote, pre, code";
+
+/**
+ * Normalize contentEditable / pasted markup into clean Roboto email HTML.
+ * Designed / rich HTML keeps structure; simple typed text becomes paragraphs.
+ */
+function formatEditorHtmlToEmail(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (!looksLikeHtml(trimmed)) {
+    return plainTextToEmailHtml(trimmed);
+  }
+  if (typeof document === "undefined") {
+    return isFullEmailDocument(trimmed)
+      ? trimmed
+      : wrapAsFormattedEmail(trimmed);
+  }
+
+  const parsed = new DOMParser().parseFromString(
+    isFullEmailDocument(trimmed)
+      ? trimmed
+      : `<div id="__compose_root">${trimmed}</div>`,
+    "text/html",
+  );
+  const root = isFullEmailDocument(trimmed)
+    ? parsed.body
+    : parsed.getElementById("__compose_root");
+  if (!root) {
+    return plainTextToEmailHtml(trimmed);
+  }
+
+  const richOrLayout = root.querySelector(RICH_OR_LAYOUT_SELECTOR);
+  if (richOrLayout) {
+    // Keep designed / rich HTML as-is when it is already a full document.
+    if (isFullEmailDocument(trimmed)) {
+      return trimmed;
+    }
+    return wrapAsFormattedEmail(
+      Array.from(root.childNodes)
+        .map((node) => {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            return (node as Element).outerHTML;
+          }
+          if (node.nodeType === Node.TEXT_NODE) {
+            const text = (node.textContent || "").trim();
+            return text ? escapeHtml(text) : "";
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+
+  const blocks: string[] = [];
+  const pushPlain = (text: string) => {
+    const cleaned = text.replace(/\u00a0/g, " ").replace(/\n+/g, "\n").trim();
+    if (!cleaned) {
+      return;
+    }
+    blocks.push(paragraphHtmlFromPlainBlock(cleaned));
+  };
+
+  for (const child of Array.from(root.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      pushPlain(child.textContent || "");
+      continue;
+    }
+    if (child.nodeType !== Node.ELEMENT_NODE) {
+      continue;
+    }
+    const el = child as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "br") {
+      continue;
+    }
+    if (tag === "div" || tag === "p" || tag === "span" || tag === "font") {
+      pushPlain(el.innerText || el.textContent || "");
+      continue;
+    }
+    blocks.push(el.outerHTML);
+  }
+
+  if (blocks.length === 0) {
+    pushPlain(root.innerText || root.textContent || "");
+  }
+
+  return wrapAsFormattedEmail(blocks.join("\n"));
+}
+
 function CustomHtmlEditor({
   campaign,
   campaignKind,
@@ -2946,13 +3134,43 @@ function CustomHtmlEditor({
 }) {
   const [htmlDraft, setHtmlDraft] = useState(initialHtml);
   const deferredHtml = useDeferredValue(htmlDraft);
+  /** compose = type/edit as text (auto HTML); code = raw HTML source */
+  const [editorMode, setEditorMode] = useState<"compose" | "code">("compose");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const moreRef = useRef<HTMLDivElement>(null);
   const htmlInputRef = useRef<HTMLTextAreaElement>(null);
+  const composeRef = useRef<HTMLDivElement>(null);
+  const composeSeededRef = useRef(false);
   const savingLockRef = useRef(false);
+
+  useEffect(() => {
+    const id = "drip-roboto-font";
+    if (document.getElementById(id)) {
+      return;
+    }
+    const link = document.createElement("link");
+    link.id = id;
+    link.rel = "stylesheet";
+    link.href = ROBOTO_FONT_HREF;
+    document.head.appendChild(link);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (editorMode !== "compose" || !composeRef.current) {
+      return;
+    }
+    if (composeSeededRef.current) {
+      return;
+    }
+    // Visual editor edits body content only (full document is built on code/save).
+    composeRef.current.innerHTML = htmlDraft.trim()
+      ? extractEmailBody(htmlDraft)
+      : "";
+    composeSeededRef.current = true;
+  }, [editorMode, htmlDraft]);
 
   useEffect(() => {
     if (!moreOpen) {
@@ -2969,6 +3187,89 @@ function CustomHtmlEditor({
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [moreOpen]);
 
+  function readLiveHtml() {
+    if (editorMode === "code") {
+      const live = htmlInputRef.current?.value ?? htmlDraft;
+      // Don't rewrite pasted full email templates on save.
+      if (isFullEmailDocument(live)) {
+        return live;
+      }
+      return formatEditorHtmlToEmail(live);
+    }
+    return formatEditorHtmlToEmail(
+      composeRef.current?.innerHTML ?? htmlDraft,
+    );
+  }
+
+  function switchToCode() {
+    const formatted = formatEditorHtmlToEmail(
+      composeRef.current?.innerHTML ?? htmlDraft,
+    );
+    setHtmlDraft(formatted);
+    composeSeededRef.current = false;
+    setEditorMode("code");
+  }
+
+  function switchToCompose() {
+    const live = htmlInputRef.current?.value ?? htmlDraft;
+    const next = looksLikeHtml(live)
+      ? formatEditorHtmlToEmail(live)
+      : plainTextToEmailHtml(live);
+    setHtmlDraft(next);
+    composeSeededRef.current = false;
+    setEditorMode("compose");
+  }
+
+  function handleComposeInput() {
+    const el = composeRef.current;
+    if (!el) {
+      return;
+    }
+    // Keep draft as a previewable fragment while typing; format on code/save.
+    setHtmlDraft(wrapAsFormattedEmail(el.innerHTML) || "");
+  }
+
+  function handleComposePaste(event: ClipboardEvent<HTMLDivElement>) {
+    const text = event.clipboardData.getData("text/plain");
+    const htmlClip = event.clipboardData.getData("text/html");
+    // Prefer pasted HTML when present; otherwise convert plain text → paragraphs.
+    if (htmlClip?.trim()) {
+      return;
+    }
+    if (!text.trim()) {
+      return;
+    }
+    event.preventDefault();
+    const converted = plainTextToBodyHtml(text);
+    const el = composeRef.current;
+    if (!el) {
+      return;
+    }
+    // Empty editor: replace. Otherwise insert at caret as HTML.
+    if (!el.textContent?.trim()) {
+      el.innerHTML = converted;
+    } else {
+      document.execCommand("insertHTML", false, converted);
+    }
+    setHtmlDraft(wrapAsFormattedEmail(el.innerHTML) || "");
+  }
+
+  function handleCodeBlur() {
+    const live = htmlInputRef.current?.value ?? htmlDraft;
+    if (!live.trim()) {
+      return;
+    }
+    // Plain text → formatted Roboto HTML. Leave full documents untouched.
+    if (isFullEmailDocument(live)) {
+      return;
+    }
+    const converted = formatEditorHtmlToEmail(live);
+    setHtmlDraft(converted);
+    if (htmlInputRef.current) {
+      htmlInputRef.current.value = converted;
+    }
+  }
+
   async function handleSaveAndQuit() {
     if (savingLockRef.current) {
       return;
@@ -2976,8 +3277,9 @@ function CustomHtmlEditor({
     savingLockRef.current = true;
     setSaving(true);
     setSaveError("");
-    // Always read the live textarea value — never trust a stale closure.
-    const htmlToSave = htmlInputRef.current?.value ?? htmlDraft;
+    // Always read the live editor value — never trust a stale closure.
+    const htmlToSave = readLiveHtml();
+    setHtmlDraft(htmlToSave);
     const resolvedSequenceId =
       typeof sequenceId === "string" && sequenceId.trim() ? sequenceId : null;
     try {
@@ -3105,17 +3407,57 @@ function CustomHtmlEditor({
         ) : null}
         <div className="drip-html-editor-panes">
           <div className="drip-html-editor-pane drip-html-editor-code">
-            <div className="drip-html-editor-pane-label">HTML</div>
-            <textarea
-              ref={htmlInputRef}
-              className="drip-html-editor-input"
-              value={htmlDraft}
-              onChange={(event) => setHtmlDraft(event.target.value)}
-              placeholder="Paste or write your custom HTML email here."
-              spellCheck={false}
-              disabled={saving}
-              aria-label="HTML source"
-            />
+            <div className="drip-html-editor-pane-head">
+              <div className="drip-html-editor-pane-label">
+                {editorMode === "compose" ? "Write" : "HTML"}
+              </div>
+              {editorMode === "compose" ? (
+                <button
+                  type="button"
+                  className="drip-html-editor-mode-btn"
+                  disabled={saving}
+                  onClick={switchToCode}
+                >
+                  View HTML code
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="drip-html-editor-mode-btn"
+                  disabled={saving}
+                  onClick={switchToCompose}
+                >
+                  Edit as text
+                </button>
+              )}
+            </div>
+            {editorMode === "compose" ? (
+              <div
+                ref={composeRef}
+                className="drip-html-editor-compose"
+                contentEditable={!saving}
+                suppressContentEditableWarning
+                role="textbox"
+                aria-multiline="true"
+                aria-label="Email body"
+                data-placeholder="Type or paste your email text here — it converts to HTML automatically."
+                onInput={handleComposeInput}
+                onPaste={handleComposePaste}
+                onBlur={handleComposeInput}
+              />
+            ) : (
+              <textarea
+                ref={htmlInputRef}
+                className="drip-html-editor-input"
+                value={htmlDraft}
+                onChange={(event) => setHtmlDraft(event.target.value)}
+                onBlur={handleCodeBlur}
+                placeholder="Paste or write your custom HTML email here. Plain text converts to HTML when you leave this field."
+                spellCheck={false}
+                disabled={saving}
+                aria-label="HTML source"
+              />
+            )}
           </div>
           <div className="drip-html-editor-pane drip-html-editor-preview">
             <div className="drip-html-editor-pane-label">Preview</div>
@@ -3133,7 +3475,7 @@ function CustomHtmlEditor({
                 />
               ) : (
                 <div className="drip-html-editor-preview-empty">
-                  Paste HTML on the left to see a live preview here.
+                  Type or paste on the left to see a live preview here.
                 </div>
               )}
             </div>
@@ -3153,8 +3495,13 @@ function CustomHtmlEditor({
           }
           onApplySpamFix={(fixedHtml) => {
             setHtmlDraft(fixedHtml);
+            composeSeededRef.current = false;
             if (htmlInputRef.current) {
               htmlInputRef.current.value = fixedHtml;
+            }
+            if (editorMode === "compose" && composeRef.current) {
+              composeRef.current.innerHTML = fixedHtml;
+              composeSeededRef.current = true;
             }
           }}
           onClose={() => setPreviewOpen(false)}
