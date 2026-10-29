@@ -13,6 +13,87 @@ function formatCount(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
+function formatRate(part: number, total: number) {
+  if (total <= 0) {
+    return "0%";
+  }
+  return `${((part / total) * 100).toFixed(1)}%`;
+}
+
+function HealthMetric({
+  label,
+  value,
+  detail,
+  compareLabel,
+  tone = "flat",
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  compareLabel: string;
+  tone?: "good" | "bad" | "flat";
+}) {
+  return (
+    <div className="perf-metric">
+      <div className="perf-metric-label">{label}</div>
+      <div className="perf-metric-value">{value}</div>
+      <div
+        className={`perf-metric-delta${
+          tone === "good" ? " is-good" : tone === "bad" ? " is-bad" : ""
+        }`}
+      >
+        {detail}
+      </div>
+      <div className="perf-metric-compare">{compareLabel}</div>
+    </div>
+  );
+}
+
+function HealthMetricsRow({
+  totals,
+  watchCount,
+  senderCount,
+}: {
+  totals: ProjectEmailHealth["totals"];
+  watchCount: number;
+  senderCount: number;
+}) {
+  const bounceRate = totals.sent > 0 ? (totals.bounces / totals.sent) * 100 : 0;
+
+  return (
+    <div className="perf-metrics email-health-perf is-three">
+      <HealthMetric
+        label="Emails sent"
+        value={formatCount(totals.sent)}
+        detail={formatCount(totals.opens)}
+        compareLabel="opens recorded"
+      />
+      <HealthMetric
+        label="Bounce rate"
+        value={formatRate(totals.bounces, totals.sent)}
+        detail={formatCount(totals.bounces)}
+        compareLabel="bounces"
+        tone={
+          bounceRate >= 5 ? "bad" : bounceRate > 0 && bounceRate < 2 ? "good" : "flat"
+        }
+      />
+      <HealthMetric
+        label="Needs attention"
+        value={formatCount(watchCount)}
+        detail={
+          watchCount === 0
+            ? "All clear"
+            : `${watchCount} watch`
+        }
+        compareLabel={
+          senderCount === 1 ? "of 1 sender" : `of ${formatCount(senderCount)} senders`
+        }
+        tone={watchCount > 0 ? "bad" : "good"}
+      />
+    </div>
+  );
+}
+
 function healthStatusLabel(status: SenderEmailHealth["status"]) {
   if (status === "good") return "Good";
   if (status === "fair") return "Fair";
@@ -196,9 +277,6 @@ export default function EmailHealthPanel({
       <div className="home-card email-health-card is-compact">
         <div className="home-card-head">
           <h3>Email health</h3>
-          <Link href={PORTAL_ROUTES["smtp-health"]} className="link-blue">
-            View all
-          </Link>
         </div>
 
         {!emailHealth && !error ? (
@@ -209,33 +287,11 @@ export default function EmailHealthPanel({
           <div className="planned-empty">No senders yet</div>
         ) : (
           <>
-            <div className="email-health-totals is-compact">
-              <div>
-                <div className="k">Sent</div>
-                <div className="v">{formatCount(emailHealth.totals.sent)}</div>
-              </div>
-              <div>
-                <div className="k">Replies</div>
-                <div className="v">
-                  {formatCount(emailHealth.totals.replies)}
-                </div>
-              </div>
-              <div>
-                <div className="k">Bounces</div>
-                <div className="v">
-                  {formatCount(emailHealth.totals.bounces)}
-                </div>
-              </div>
-            </div>
-            {watchCount > 0 ? (
-              <p className="email-health-watch-note">
-                {watchCount} sender{watchCount === 1 ? "" : "s"} need attention
-              </p>
-            ) : (
-              <p className="email-health-ok-note">
-                All shown senders look healthy
-              </p>
-            )}
+            <HealthMetricsRow
+              totals={emailHealth.totals}
+              watchCount={watchCount}
+              senderCount={emailHealth.senders.length}
+            />
             <div className="email-health-compact-list">
               {topSenders.map((row) => (
                 <div className="email-health-compact-row" key={row.id}>
@@ -261,7 +317,7 @@ export default function EmailHealthPanel({
 
         <div className="home-card-foot">
           <Link href={PORTAL_ROUTES["smtp-health"]} className="link-blue">
-            Sender health
+            Go to Sender health
           </Link>
         </div>
       </div>
@@ -294,27 +350,15 @@ export default function EmailHealthPanel({
         </div>
       ) : emailHealth ? (
         <>
-          <div className="email-health-summary">
-            <div className="email-health-summary-item">
-              <span className="k">Sent</span>
-              <span className="v">{formatCount(emailHealth.totals.sent)}</span>
-            </div>
-            <div className="email-health-summary-item">
-              <span className="k">Opens</span>
-              <span className="v">{formatCount(emailHealth.totals.opens)}</span>
-            </div>
-            <div className="email-health-summary-item">
-              <span className="k">Replies</span>
-              <span className="v">
-                {formatCount(emailHealth.totals.replies)}
-              </span>
-            </div>
-            <div className="email-health-summary-item">
-              <span className="k">Bounces</span>
-              <span className="v">
-                {formatCount(emailHealth.totals.bounces)}
-              </span>
-            </div>
+          <div className="email-health-summary-card">
+            <HealthMetricsRow
+              totals={emailHealth.totals}
+              watchCount={
+                emailHealth.senders.filter((row) => row.status === "watch")
+                  .length
+              }
+              senderCount={emailHealth.senders.length}
+            />
           </div>
 
           <div className="vs-section email-health-section">

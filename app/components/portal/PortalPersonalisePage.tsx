@@ -9,6 +9,7 @@ import {
   cleanSignatureHtml,
   contactNeedsEmail,
   defaultStepGaps,
+  formatPersonaliseEmail,
   pitchBlocks,
   stepDelayDays,
   type PitchInline,
@@ -808,6 +809,34 @@ export default function PortalPersonalisePage({
                 : `${missingEmails} contacts have no email. Add them before scheduling.`}
             </p>
           ) : null}
+          {plan.emailFixes && plan.emailFixes.length > 0 ? (
+            <div className="pz-email-fix-banner" role="status">
+              <div className="pz-email-fix-copy">
+                <strong>
+                  {plan.emailFixes.length === 1
+                    ? "1 email was reformatted"
+                    : `${plan.emailFixes.length} emails were reformatted`}
+                </strong>
+                <span>Preview the cleaned addresses below, then edit any that still look wrong.</span>
+              </div>
+              <ul className="pz-email-fix-list">
+                {plan.emailFixes.slice(0, 12).map((fix) => (
+                  <li key={`${fix.from}→${fix.to}`}>
+                    <span className="pz-email-fix-from" title={fix.contactLabel}>
+                      {fix.from}
+                    </span>
+                    <span aria-hidden="true">→</span>
+                    <span className="pz-email-fix-to">{fix.to}</span>
+                  </li>
+                ))}
+              </ul>
+              {plan.emailFixes.length > 12 ? (
+                <p className="pz-email-fix-more">
+                  +{plan.emailFixes.length - 12} more cleaned in the contact list
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           {unsubscribedCount > 0 ? (
             <div className="pz-unsub-banner" role="status">
               <span>
@@ -887,13 +916,21 @@ export default function PortalPersonalisePage({
                     ) : null}
                     <input
                       className={`pz-email${missing ? " is-missing" : ""}`}
-                      type="email"
+                      type="text"
+                      inputMode="email"
+                      autoComplete="email"
                       value={contact.email}
                       placeholder="Add email"
                       aria-label={`Email for ${personName(contact)}`}
                       onClick={(event) => event.stopPropagation()}
                       onKeyDown={(event) => event.stopPropagation()}
                       onChange={(event) => updateContact(index, { email: event.target.value })}
+                      onBlur={(event) => {
+                        const formatted = formatPersonaliseEmail(event.target.value);
+                        if (formatted && formatted !== contact.email) {
+                          updateContact(index, { email: formatted });
+                        }
+                      }}
                     />
                     {unsubscribed ? (
                       <>

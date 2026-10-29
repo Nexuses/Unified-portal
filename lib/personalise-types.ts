@@ -19,10 +19,18 @@ export type PersonaliseContact = {
   steps: PersonaliseStep[];
 };
 
+export type PersonaliseEmailFix = {
+  contactLabel: string;
+  from: string;
+  to: string;
+};
+
 export type PersonalisePlan = {
   listName: string;
   fileName: string;
   contacts: PersonaliseContact[];
+  /** Emails that were auto-formatted from the uploaded file. */
+  emailFixes?: PersonaliseEmailFix[];
 };
 
 export type PersonaliseSentStep = {
@@ -85,12 +93,72 @@ function asText(value: unknown) {
   return String(value ?? "").trim();
 }
 
-function cleanEmail(value: string) {
-  const email = value.trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Normalize messy spreadsheet emails into a sendable address.
+ * Examples: "mailto:A@B.com", "a @ b . com", "a [at] b [dot] com", "Name <a@b.com>"
+ */
+export function formatPersonaliseEmail(value: string) {
+  let email = String(value ?? "").trim();
+  if (!email) {
+    return "";
+  }
+
+  const angle = email.match(/<([^<>]*@[^<>]+)>/);
+  if (angle) {
+    email = angle[1].trim();
+  } else {
+    email = email.replace(/^mailto:/i, "").trim();
+  }
+
+  // Keep the token that looks most like an email when extra words are present.
+  if (/\s/.test(email) && /@/.test(email)) {
+    const token = email
+      .split(/[\s,;]+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .find((part) => part.includes("@"));
+    if (token) {
+      email = token;
+    }
+  }
+
+  email = email
+    .replace(/\s*[\[\(\{]\s*at\s*[\]\)\}]\s*/gi, "@")
+    .replace(/\s+\bat\b\s+/gi, "@")
+    .replace(/\s*[\[\(\{]\s*dot\s*[\]\)\}]\s*/gi, ".")
+    .replace(/\s+\bdot\b\s+/gi, ".")
+    .replace(/\s*@\s*/g, "@")
+    .replace(/\s*\.\s*/g, ".")
+    .replace(/\s+/g, "")
+    .replace(/^[,;:<>"]+|[,;:<>"]+$/g, "")
+    .toLowerCase();
+
+  // Common typo: comma used as the TLD separator (name@domain,com).
+  email = email.replace(/,([a-z]{2,})$/i, ".$1");
+
+  if (!EMAIL_RE.test(email)) {
     return "";
   }
   return email;
+}
+
+function cleanEmail(value: string) {
+  return formatPersonaliseEmail(value);
+}
+
+function emailWasReformatted(original: string, formatted: string) {
+  if (!formatted) {
+    return false;
+  }
+  const light = original.trim().toLowerCase().replace(/^mailto:/i, "").trim();
+  return light !== formatted;
+}
+
+function contactLabel(firstName: string, lastName: string, email: string) {
+  const name = [firstName, lastName].filter(Boolean).join(" ").trim();
+  return name || email || "Contact";
 }
 
 function cleanLinkedIn(value: string) {
@@ -175,8 +243,67 @@ export type PitchBlock =
 
 const SIGNOFF_RE =
   /^(with respect|with regards|best regards|kind regards|warm regards|regards|best|thanks|thank you|many thanks|sincerely|cheers|yours sincerely|yours truly)\s*,\s*/i;
+const GREETING_RE =
+  /^(hi|hello|hey|dear)\s+[A-Za-z][A-Za-z.'-]{0,40}(?:\s+[A-Za-z][A-Za-z.'-]{0,40}){0,3}\s*,\s+/i;
+const TRAILING_SIGNOFF_RE =
+  /\s+((?:with respect|with regards|best regards|kind regards|warm regards|regards|best|thanks|thank you|many thanks|sincerely|cheers|yours sincerely|yours truly)\s*,)\s+([A-Za-z][A-Za-z.'-]{0,40}(?:\s+[A-Za-z][A-Za-z.'-]{0,40}){0,2})\s*$/i;
 const BULLET_RE = /^\s*(?:[-•*▪●◦]|\d{1,2}[.)])\s+(.*)$/;
 const LABEL_RE = /^([^:\n]{2,60}):\s+(\S.*)$/;
+
+/**
+ * Spreadsheet cells often paste the whole pitch on one line. Expand that into
+ * greeting / paragraphs / sign-off so preview and sent HTML read like email.
+ */
+export function expandCollapsedPitch(body: string) {
+  const normalized = String(body ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\\n/g, "\n")
+    .trim();
+  if (!normalized) {
+    return normalized;
+  }
+
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const fusedGreeting = lines.some((line) => GREETING_RE.test(line) && line.length > 48);
+  const fusedSignoff = lines.some((line) => TRAILING_SIGNOFF_RE.test(line));
+  const longLine = lines.some((line) => line.length > 160);
+  // Already looks like a normal multi-line pitch — leave spacing alone.
+  if (lines.length > 1 && !fusedGreeting && !fusedSignoff && !longLine) {
+    return normalized;
+  }
+
+  let text = lines.join(" ").replace(/\s+/g, " ").trim();
+  const parts: string[] = [];
+
+  const greet = text.match(GREETING_RE);
+  if (greet) {
+    parts.push(greet[0].trim());
+    text = text.slice(greet[0].length).trim();
+  }
+
+  const signoff = text.match(TRAILING_SIGNOFF_RE);
+  let signoffLines: string[] = [];
+  if (signoff && typeof signoff.index === "number") {
+    signoffLines = [signoff[1].trim(), signoff[2].trim()];
+    text = text.slice(0, signoff.index).trim();
+  }
+
+  const sentences =
+    text
+      .match(/[^.!?]+[.!?]+(?:["')\]]+)?|[^.!?]+$/g)
+      ?.map((sentence) => sentence.trim())
+      .filter(Boolean) ?? (text ? [text] : []);
+
+  for (const sentence of sentences) {
+    parts.push(sentence);
+  }
+  parts.push(...signoffLines);
+  return parts.join("\n\n");
+}
 
 function inlineMarks(text: string): PitchInline[] {
   const parts: PitchInline[] = [];
@@ -226,7 +353,7 @@ function splitSignoff(lines: string[]) {
 /** Turns plain pitch text into paragraphs, bullet lists, and a sign-off. */
 export function pitchBlocks(body: string): PitchBlock[] {
   const lines = splitSignoff(
-    body
+    expandCollapsedPitch(body)
       .replace(/\r\n?/g, "\n")
       .split("\n")
       .map((line) => line.trim())
@@ -410,6 +537,7 @@ export function normalizePersonalisePlan(
   const rawContacts = Array.isArray(record.contacts) ? record.contacts : [];
   const seen = new Set<string>();
   const contacts: PersonaliseContact[] = [];
+  const emailFixes: PersonaliseEmailFix[] = [];
 
   for (const item of rawContacts) {
     if (!item || typeof item !== "object") {
@@ -427,7 +555,7 @@ export function normalizePersonalisePlan(
         continue;
       }
       const step = stepItem as Record<string, unknown>;
-      const body = asText(step.body).replace(/\\n/g, "\n");
+      const body = expandCollapsedPitch(asText(step.body).replace(/\\n/g, "\n"));
       if (!body) {
         continue;
       }
@@ -462,16 +590,26 @@ export function normalizePersonalisePlan(
         threadSubject = subject;
       }
     }
-    const email = cleanEmail(asText(row.email));
+    const rawEmail = asText(row.email);
+    const email = cleanEmail(rawEmail);
     if (email && seen.has(email)) {
       continue;
     }
     if (email) {
       seen.add(email);
     }
+    const first = firstName || lastName;
+    const last = firstName ? lastName : "";
+    if (email && emailWasReformatted(rawEmail, email)) {
+      emailFixes.push({
+        contactLabel: contactLabel(first, last, email),
+        from: rawEmail,
+        to: email,
+      });
+    }
     contacts.push({
-      firstName: firstName || lastName,
-      lastName: firstName ? lastName : "",
+      firstName: first,
+      lastName: last,
       email,
       companyName: asText(row.companyName),
       position: asText(row.position),
@@ -492,5 +630,6 @@ export function normalizePersonalisePlan(
     listName,
     fileName: fileName.trim(),
     contacts,
+    ...(emailFixes.length > 0 ? { emailFixes } : {}),
   };
 }

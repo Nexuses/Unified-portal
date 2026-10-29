@@ -1,6 +1,7 @@
 export type PortalPageId =
   | "dashboard"
   | "contacts"
+  | "lead-reports"
   | "lists"
   | "segments"
   | "companies"
@@ -49,6 +50,7 @@ export type PortalNavItem =
 export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   dashboard: "/portal",
   contacts: "/portal/crm/contacts",
+  "lead-reports": "/portal/crm/lead-reports",
   lists: "/portal/crm/lists",
   segments: "/portal/crm/segments",
   companies: "/portal/crm/companies",
@@ -172,6 +174,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
       { id: "segments", label: "Segments", href: PORTAL_ROUTES.segments },
       { id: "companies", label: "Companies", href: PORTAL_ROUTES.companies },
       { id: "enrich", label: "Enrich", href: PORTAL_ROUTES.enrich },
+      { id: "lead-reports", label: "Lead Reports", href: PORTAL_ROUTES["lead-reports"] },
     ],
   },
   {
@@ -250,6 +253,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
 export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   dashboard: "Home",
   contacts: "Contacts",
+  "lead-reports": "Lead Reports",
   lists: "Lists",
   segments: "Segments",
   companies: "Companies",
@@ -288,6 +292,7 @@ const DETAIL_TITLES: Record<string, string> = {
 
 export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/crm/contacts")) return "contacts";
+  if (pathname.startsWith("/portal/crm/lead-reports")) return "lead-reports";
   if (pathname.startsWith("/portal/crm/lists")) return "lists";
   if (pathname.startsWith("/portal/crm/segments")) return "segments";
   if (pathname.startsWith("/portal/crm/companies")) return "companies";

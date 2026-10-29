@@ -3751,7 +3751,8 @@ export async function listCampaignSendsForExport(
         botClick: 1,
         clickEvents: {
           $map: {
-            input: { $slice: [{ $ifNull: ["$clickEvents", []] }, 8] },
+            // Last 30 events so late human clicks aren’t dropped after early bot hits.
+            input: { $slice: [{ $ifNull: ["$clickEvents", []] }, -30] },
             as: "event",
             in: {
               url: "$$event.url",

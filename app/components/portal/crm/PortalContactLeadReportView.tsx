@@ -297,7 +297,10 @@ export default function PortalContactLeadReportView({
             Back
           </button>
         </div>
-        <div className="crm-empty">Loading contact...</div>
+        <div className="lr-loader lr-loader-page" role="status" aria-live="polite">
+          <span className="lr-loader-spinner" aria-hidden="true" />
+          <span>Loading lead report…</span>
+        </div>
       </>
     );
   }

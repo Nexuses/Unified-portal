@@ -8,7 +8,11 @@ import {
   sendCountsAsOpen,
   sendOpenPixelBlocked,
 } from "@/lib/open-pixel";
-import { BOT_CLICK_TAG, sendIsBotClick } from "@/lib/bot-click";
+import {
+  BOT_CLICK_TAG,
+  sendHasHumanClick,
+  sendIsBotClick,
+} from "@/lib/bot-click";
 import { BOT_OPEN_TAG, sendIsBotOnlyOpen, sendIsBotOpen } from "@/lib/bot-open";
 
 export const REPORT_DASH = "—";
@@ -290,11 +294,13 @@ export function buildCampaignReportTables({
 
   const engaged: Array<ReportEngageRow & { openedAtMs: number }> = [];
   for (const group of byEmail.values()) {
+    // Match overview / analytics: keep clickers with any human click event,
+    // even when sticky botClick was set by an earlier grace/scanner hit.
     const humanClick = group.some(
       (item) =>
         ((item.clickCount || 0) > 0 || item.clickedAt) &&
         !item.clickBurstIgnored &&
-        !sendIsBotClick(item),
+        sendHasHumanClick(item),
     );
     const anyClick = group.some(
       (item) =>
@@ -313,7 +319,7 @@ export function buildCampaignReportTables({
       group.find(
         (item) =>
           ((item.clickCount || 0) > 0 || item.clickedAt) &&
-          (!hideBotClicks || !sendIsBotClick(item)),
+          (!hideBotClicks || sendHasHumanClick(item)),
       ) ??
       group.find((item) => item.clickCount > 0) ??
       group.find((item) => sendCountsAsOpen(item)) ??

@@ -8,6 +8,7 @@ import {
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -120,7 +121,7 @@ function BotIcon({ size = 24 }: { size?: number }) {
 
 function tidyMarkdown(text: string) {
   let inFence = false;
-  return text
+  const cleaned = text
     .split("\n")
     .map((line) => {
       if (line.trimStart().startsWith("```")) inFence = !inFence;
@@ -131,6 +132,66 @@ function tidyMarkdown(text: string) {
       return line.slice(0, last) + line.slice(last + 2);
     })
     .join("\n");
+  return normalizeMarkdownTables(cleaned);
+}
+
+function splitRawTableRow(line: string) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim());
+}
+
+/** Pad uneven GFM table rows so columns line up when rendered. */
+function normalizeMarkdownTables(markdown: string) {
+  const lines = markdown.split("\n");
+  const out: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const separator = lines[index + 1]?.trim() ?? "";
+    const isTable =
+      Boolean(lines[index]?.includes("|")) &&
+      /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(separator);
+    if (!isTable) {
+      out.push(lines[index]);
+      index += 1;
+      continue;
+    }
+    const block: string[] = [lines[index], lines[index + 1]];
+    let cursor = index + 2;
+    while (
+      cursor < lines.length &&
+      lines[cursor].includes("|") &&
+      lines[cursor].trim()
+    ) {
+      block.push(lines[cursor]);
+      cursor += 1;
+    }
+    const dataRows = block
+      .filter((_, rowIndex) => rowIndex !== 1)
+      .map((line) => splitRawTableRow(line));
+    const width = Math.max(...dataRows.map((row) => row.length), 1);
+    const padded = block.map((line, rowIndex) => {
+      if (rowIndex === 1) {
+        const cells = Array.from({ length: width }, () => "---");
+        return `| ${cells.join(" | ")} |`;
+      }
+      const cells = splitRawTableRow(line);
+      while (cells.length < width) {
+        cells.push("");
+      }
+      return `| ${cells.slice(0, width).join(" | ")} |`;
+    });
+    // Blank line before tables helps GFM parse reliably in chat.
+    if (out.length > 0 && out[out.length - 1].trim() !== "") {
+      out.push("");
+    }
+    out.push(...padded);
+    index = cursor;
+  }
+  return out.join("\n");
 }
 
 function cleanCell(cell: string) {
@@ -172,6 +233,19 @@ function csvValue(value: string) {
   return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
+function downloadCsvFile(csv: string, filename: string) {
+  const url = URL.createObjectURL(
+    new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function downloadTablesCsv(markdown: string) {
   const tables = extractTables(markdown);
   if (tables.length === 0) {
@@ -181,15 +255,266 @@ function downloadTablesCsv(markdown: string) {
     .map((rows) => rows.map((row) => row.map(csvValue).join(",")).join("\r\n"))
     .join("\r\n\r\n");
   const heading = markdown.match(/^#{1,4}\s+(.+)$/m)?.[1] ?? "assistant-export";
-  const slug = heading.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50);
-  const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${slug || "assistant-export"}-${new Date().toISOString().slice(0, 10)}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  const slug = heading
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 50);
+  downloadCsvFile(
+    csv,
+    `${slug || "assistant-export"}-${new Date().toISOString().slice(0, 10)}.csv`,
+  );
+}
+
+function downloadHtmlTableCsv(table: HTMLTableElement) {
+  const rows = [...table.querySelectorAll("tr")].map((row) =>
+    [...row.querySelectorAll("th,td")].map((cell) =>
+      csvValue((cell.textContent || "").replace(/\s+/g, " ").trim()),
+    ),
+  );
+  if (rows.length === 0) {
+    return;
+  }
+  const csv = rows.map((row) => row.join(",")).join("\r\n");
+  downloadCsvFile(
+    csv,
+    `assistant-table-${new Date().toISOString().slice(0, 10)}.csv`,
+  );
+}
+
+function AssistantMarkdownTable({ children }: { children: ReactNode }) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <div className="pa-table-card">
+      <div className="pa-table-toolbar">
+        <button
+          type="button"
+          className="pa-table-export"
+          onClick={() => {
+            const table = wrapRef.current?.querySelector("table");
+            if (table) {
+              downloadHtmlTableCsv(table);
+            }
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 3v12" />
+            <path d="m7 10 5 5 5-5" />
+            <path d="M5 21h14" />
+          </svg>
+          Export
+        </button>
+      </div>
+      <div className="pa-table-wrap" ref={wrapRef}>
+        <table>{children}</table>
+      </div>
+    </div>
+  );
+}
+
+type AssistantStat = { label: string; value: string; hint?: string };
+
+type AssistantSegment =
+  | { type: "md"; text: string }
+  | { type: "stats"; items: AssistantStat[] };
+
+const STAT_LINE_RE =
+  /^([A-Za-z][A-Za-z0-9 /&+’'-]{1,40}):\s+(-?\d[\d,]*(?:\.\d+)?%?(?:\s*\([^)]+\))?|-)$/;
+
+function parseStatValue(rawInput: string): Pick<AssistantStat, "value" | "hint"> {
+  const raw = rawInput.replace(/\*\*/g, "").trim();
+  const hintMatch = raw.match(/\(([^)]+)\)\s*$/);
+  const value = hintMatch ? raw.slice(0, hintMatch.index).trim() : raw;
+  const hint = hintMatch?.[1]?.trim();
+  return hint ? { value, hint } : { value };
+}
+
+function parseStatLine(line: string): AssistantStat | null {
+  const match = line.trim().match(STAT_LINE_RE);
+  if (!match) {
+    return null;
+  }
+  return { label: match[1].trim(), ...parseStatValue(match[2]) };
+}
+
+function isTableSeparator(line: string) {
+  return /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(line.trim());
+}
+
+function isMetricValueHeader(cells: string[]) {
+  if (cells.length !== 2) {
+    return false;
+  }
+  const left = cells[0].replace(/\*\*/g, "").trim().toLowerCase();
+  const right = cells[1].replace(/\*\*/g, "").trim().toLowerCase();
+  return (
+    /^(metric|metrics|stat|stats|measure|kpi|field|name)$/.test(left) &&
+    /^(value|count|total|totals|number|amount)$/.test(right)
+  );
+}
+
+function statsFromMetricValueTable(block: string[]): AssistantStat[] | null {
+  if (block.length < 3 || !isTableSeparator(block[1] || "")) {
+    return null;
+  }
+  const header = splitRawTableRow(block[0] || "");
+  if (!isMetricValueHeader(header)) {
+    return null;
+  }
+  const items: AssistantStat[] = [];
+  for (const line of block.slice(2)) {
+    const cells = splitRawTableRow(line).map((cell) => cell.replace(/\*\*/g, "").trim());
+    if (cells.length < 2) {
+      continue;
+    }
+    const label = cells[0];
+    const parsed = parseStatValue(cells[1]);
+    if (!label || !parsed.value) {
+      continue;
+    }
+    items.push({ label, ...parsed });
+  }
+  return items.length >= 2 ? items : null;
+}
+
+function readMarkdownTableBlock(lines: string[], start: number) {
+  if (
+    !lines[start]?.includes("|") ||
+    !isTableSeparator(lines[start + 1] || "")
+  ) {
+    return null;
+  }
+  const block = [lines[start], lines[start + 1]];
+  let cursor = start + 2;
+  while (
+    cursor < lines.length &&
+    lines[cursor].includes("|") &&
+    lines[cursor].trim()
+  ) {
+    block.push(lines[cursor]);
+    cursor += 1;
+  }
+  return { block, end: cursor };
+}
+
+/** Pull Metric/Value tables and Delivered:/Opens: lines into scorecard segments. */
+function splitAssistantSegments(markdown: string): AssistantSegment[] {
+  const lines = markdown.split("\n");
+  const segments: AssistantSegment[] = [];
+  let mdBuffer: string[] = [];
+  let index = 0;
+
+  const flushMd = () => {
+    const text = mdBuffer.join("\n").trim();
+    if (text) {
+      segments.push({ type: "md", text });
+    }
+    mdBuffer = [];
+  };
+
+  while (index < lines.length) {
+    const table = readMarkdownTableBlock(lines, index);
+    if (table) {
+      const scorecards = statsFromMetricValueTable(table.block);
+      if (scorecards) {
+        flushMd();
+        segments.push({ type: "stats", items: scorecards });
+        index = table.end;
+        continue;
+      }
+      mdBuffer.push(...table.block);
+      index = table.end;
+      continue;
+    }
+
+    const first = parseStatLine(lines[index] || "");
+    if (!first) {
+      mdBuffer.push(lines[index] || "");
+      index += 1;
+      continue;
+    }
+    const items: AssistantStat[] = [first];
+    let cursor = index + 1;
+    while (cursor < lines.length) {
+      const blank = !(lines[cursor] || "").trim();
+      if (blank) {
+        if (cursor + 1 < lines.length && parseStatLine(lines[cursor + 1] || "")) {
+          cursor += 1;
+          continue;
+        }
+        break;
+      }
+      const next = parseStatLine(lines[cursor] || "");
+      if (!next) {
+        break;
+      }
+      items.push(next);
+      cursor += 1;
+    }
+    if (items.length >= 2) {
+      flushMd();
+      segments.push({ type: "stats", items });
+      index = cursor;
+      continue;
+    }
+    mdBuffer.push(lines[index] || "");
+    index += 1;
+  }
+  flushMd();
+  return segments.length > 0 ? segments : [{ type: "md", text: markdown }];
+}
+
+function AssistantStatCards({ items }: { items: AssistantStat[] }) {
+  return (
+    <div className="pa-stat-grid" role="group" aria-label="Report totals">
+      {items.map((item) => (
+        <div className="pa-stat-card" key={`${item.label}-${item.value}`}>
+          <div className="pa-stat-label">{item.label}</div>
+          <div className="pa-stat-value">{item.value}</div>
+          {item.hint ? <div className="pa-stat-hint">{item.hint}</div> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AssistantMarkdownBody({
+  content,
+  components,
+}: {
+  content: string;
+  components: Components;
+}) {
+  const prepared = tidyMarkdown(stripCsvMarker(content));
+  const segments = splitAssistantSegments(prepared);
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.type === "stats" ? (
+          <AssistantStatCards key={`stats-${index}`} items={segment.items} />
+        ) : (
+          <ReactMarkdown
+            key={`md-${index}`}
+            remarkPlugins={[remarkGfm]}
+            components={components}
+          >
+            {segment.text}
+          </ReactMarkdown>
+        ),
+      )}
+    </>
+  );
 }
 
 function stripCsvMarker(content: string) {
@@ -584,9 +909,7 @@ export default function PortalAssistant({
         </a>
       ),
     table: ({ children }) => (
-      <div className="pa-table-wrap">
-        <table>{children}</table>
-      </div>
+      <AssistantMarkdownTable>{children}</AssistantMarkdownTable>
     ),
   };
 
@@ -827,9 +1150,10 @@ export default function PortalAssistant({
                         <BotIcon size={24} />
                       </span>
                       <div className="pa-md">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdown}>
-                          {tidyMarkdown(stripCsvMarker(message.content))}
-                        </ReactMarkdown>
+                        <AssistantMarkdownBody
+                          content={message.content}
+                          components={markdown}
+                        />
                         {message.cards?.map((card, cardIndex) =>
                           card.kind === "pitch-research" ? (
                             <PortalPitchResearchCard key={card.jobId} card={card} />

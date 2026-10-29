@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "migrate:lead-reports": "node scripts/migrate-lead-reports.mjs",
+    "migrate:lead-reports:dry": "node scripts/migrate-lead-reports.mjs --dry-run"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",
