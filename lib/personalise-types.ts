@@ -253,6 +253,7 @@ const LABEL_RE = /^([^:\n]{2,60}):\s+(\S.*)$/;
 /**
  * Spreadsheet cells often paste the whole pitch on one line. Expand that into
  * greeting / paragraphs / sign-off so preview and sent HTML read like email.
+ * Well-formatted multi-paragraph bodies (blank lines already present) are left alone.
  */
 export function expandCollapsedPitch(body: string) {
   const normalized = String(body ?? "")
@@ -263,6 +264,11 @@ export function expandCollapsedPitch(body: string) {
     return normalized;
   }
 
+  // Author already used paragraph breaks — keep that formatting as written.
+  if (/\n\s*\n/.test(normalized)) {
+    return normalized.replace(/\n{3,}/g, "\n\n");
+  }
+
   const lines = normalized
     .split("\n")
     .map((line) => line.trim())
@@ -270,9 +276,9 @@ export function expandCollapsedPitch(body: string) {
 
   const fusedGreeting = lines.some((line) => GREETING_RE.test(line) && line.length > 48);
   const fusedSignoff = lines.some((line) => TRAILING_SIGNOFF_RE.test(line));
-  const longLine = lines.some((line) => line.length > 160);
-  // Already looks like a normal multi-line pitch — leave spacing alone.
-  if (lines.length > 1 && !fusedGreeting && !fusedSignoff && !longLine) {
+  // Multi-line pitches with normal structure — leave spacing alone (long
+  // paragraphs are common in real emails and must not trigger a reflow).
+  if (lines.length > 1 && !fusedGreeting && !fusedSignoff) {
     return normalized;
   }
 

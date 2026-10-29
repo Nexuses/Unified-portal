@@ -11,6 +11,7 @@ import {
   defaultStepGaps,
   formatPersonaliseEmail,
   pitchBlocks,
+  pitchToHtml,
   stepDelayDays,
   type PitchInline,
   type PersonaliseContact,
@@ -177,6 +178,10 @@ function PitchPreview({ body, signature }: { body: string; signature: string }) 
   );
 }
 
+function stepEditKey(contactIndex: number, stepIndex: number) {
+  return `${contactIndex}:${stepIndex}`;
+}
+
 export default function PortalPersonalisePage({
   onCreated,
   campaignId: initialCampaignId,
@@ -226,6 +231,11 @@ export default function PortalPersonalisePage({
   const timezones = useMemo(() => listCampaignTimezones(timezone), [timezone]);
   const [signatureTouched, setSignatureTouched] = useState(false);
   const [savedSignatures, setSavedSignatures] = useState<Record<string, string>>({});
+  const [editingSteps, setEditingSteps] = useState<Record<string, boolean>>({});
+  const [testToByStep, setTestToByStep] = useState<Record<string, string>>({});
+  const [testBusyKey, setTestBusyKey] = useState("");
+  const [testStatusByStep, setTestStatusByStep] = useState<Record<string, string>>({});
+  const draftSaveTimer = useRef<number | null>(null);
   const cleanSignature = useMemo(() => cleanSignatureHtml(signatureHtml), [signatureHtml]);
 
   useEffect(() => {
@@ -355,6 +365,102 @@ export default function PortalPersonalisePage({
       );
       return { ...current, contacts };
     });
+  }
+
+  function scheduleDraftSave(nextPlan: PersonalisePlan) {
+    if (draftSaveTimer.current) {
+      window.clearTimeout(draftSaveTimer.current);
+    }
+    draftSaveTimer.current = window.setTimeout(() => {
+      void persistDraft(nextPlan).catch(() => {
+        // Draft autosave is best-effort while editing copy.
+      });
+    }, 700);
+  }
+
+  function updateStep(
+    contactIndex: number,
+    stepIndex: number,
+    patch: Partial<Pick<PersonaliseStep, "subject" | "body">>,
+  ) {
+    setPlan((current) => {
+      if (!current) {
+        return current;
+      }
+      const contacts = current.contacts.map((contact, index) => {
+        if (index !== contactIndex) {
+          return contact;
+        }
+        return {
+          ...contact,
+          steps: contact.steps.map((step, indexStep) =>
+            indexStep === stepIndex ? { ...step, ...patch } : step,
+          ),
+        };
+      });
+      const nextPlan = { ...current, contacts };
+      scheduleDraftSave(nextPlan);
+      return nextPlan;
+    });
+  }
+
+  async function sendStepTest(contact: PersonaliseContact, step: PersonaliseStep, key: string) {
+    if (!senderId) {
+      setTestStatusByStep((current) => ({ ...current, [key]: "Select a sender first." }));
+      return;
+    }
+    const to = formatPersonaliseEmail(testToByStep[key] || "");
+    if (!to) {
+      setTestStatusByStep((current) => ({
+        ...current,
+        [key]: "Enter a test email address.",
+      }));
+      return;
+    }
+    setTestBusyKey(key);
+    setTestStatusByStep((current) => ({ ...current, [key]: "Sending…" }));
+    try {
+      const filled = filledStep(contact, step);
+      const subject = filled.subject || `Re: ${contact.steps[0]?.subject || "Hello"}`;
+      const html = applyContactVariables(
+        pitchToHtml(step.body, activeSignature),
+        {
+          firstName: contact.firstName,
+          lastName: contact.lastName,
+          fullName: personName(contact),
+          email: contact.email,
+          companyName: contact.companyName,
+          position: contact.position,
+          personalLinkedIn: contact.personalLinkedIn,
+        },
+        true,
+      );
+      const response = await fetch("/api/campaigns/test-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          senderId,
+          to: [to],
+          subject,
+          html,
+          replyTo: cleanReplyTo(replyTo) || undefined,
+          campaignName: plan?.listName || "Personalise test",
+        }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "Could not send the test email.");
+      }
+      setTestStatusByStep((current) => ({ ...current, [key]: `Sent to ${to}` }));
+      setTestToByStep((current) => ({ ...current, [key]: to }));
+    } catch (err) {
+      setTestStatusByStep((current) => ({
+        ...current,
+        [key]: err instanceof Error ? err.message : "Could not send the test email.",
+      }));
+    } finally {
+      setTestBusyKey("");
+    }
   }
 
   function changeStepGap(index: number, value: number) {
@@ -968,6 +1074,9 @@ export default function PortalPersonalisePage({
                     <ol className="pz-steps">
                       {contact.steps.map((step, stepIndex) => {
                         const filled = filledStep(contact, step);
+                        const key = stepEditKey(index, stepIndex);
+                        const editing = Boolean(editingSteps[key]);
+                        const testStatus = testStatusByStep[key] || "";
                         return (
                         <li key={`${step.label}-${stepIndex}`} className="pz-step">
                           <span className="pz-step-dot" aria-hidden="true">
@@ -989,18 +1098,118 @@ export default function PortalPersonalisePage({
                               ) : (
                                 <span className="pz-chip">Day 0 · Sent first</span>
                               )}
+                              <button
+                                type="button"
+                                className="btn-soft pz-step-edit-btn"
+                                onClick={() =>
+                                  setEditingSteps((current) => ({
+                                    ...current,
+                                    [key]: !editing,
+                                  }))
+                                }
+                              >
+                                {editing ? "Preview" : "Edit format"}
+                              </button>
                             </div>
-                            <div className="pz-subject">
-                              {filled.subject ? (
-                                <>
+                            {editing ? (
+                              <div className="pz-step-edit">
+                                <label className="pz-step-edit-field">
                                   <span>Subject</span>
-                                  <strong>{filled.subject}</strong>
-                                </>
-                              ) : (
-                                <span className="pz-thread">Reply in the same thread</span>
-                              )}
+                                  <input
+                                    type="text"
+                                    value={step.subject}
+                                    placeholder="Leave blank to reply in the same thread"
+                                    onChange={(event) =>
+                                      updateStep(index, stepIndex, { subject: event.target.value })
+                                    }
+                                  />
+                                </label>
+                                <label className="pz-step-edit-field">
+                                  <span>Email body</span>
+                                  <textarea
+                                    rows={12}
+                                    value={step.body}
+                                    spellCheck
+                                    autoFocus
+                                    onChange={(event) =>
+                                      updateStep(index, stepIndex, { body: event.target.value })
+                                    }
+                                  />
+                                </label>
+                                <p className="personalise-hint">
+                                  Keep blank lines between paragraphs. Lines starting with{" "}
+                                  <code>- </code> become bullets. Use <code>**bold**</code> for emphasis.
+                                </p>
+                              </div>
+                            ) : (
+                              <div
+                                className="pz-step-preview-hit"
+                                role="button"
+                                tabIndex={0}
+                                onClick={() =>
+                                  setEditingSteps((current) => ({
+                                    ...current,
+                                    [key]: true,
+                                  }))
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    setEditingSteps((current) => ({
+                                      ...current,
+                                      [key]: true,
+                                    }));
+                                  }
+                                }}
+                              >
+                                <div className="pz-subject">
+                                  {filled.subject ? (
+                                    <>
+                                      <span>Subject</span>
+                                      <strong>{filled.subject}</strong>
+                                    </>
+                                  ) : (
+                                    <span className="pz-thread">Reply in the same thread</span>
+                                  )}
+                                </div>
+                                <PitchPreview body={filled.body} signature={activeSignature} />
+                                <span className="pz-step-preview-hint">Click to edit</span>
+                              </div>
+                            )}
+                            <div className="pz-step-test">
+                              <label className="pz-step-test-field">
+                                <span>Send test</span>
+                                <input
+                                  type="email"
+                                  value={testToByStep[key] ?? ""}
+                                  placeholder="you@company.com"
+                                  onChange={(event) =>
+                                    setTestToByStep((current) => ({
+                                      ...current,
+                                      [key]: event.target.value,
+                                    }))
+                                  }
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                className="btn-soft"
+                                disabled={testBusyKey === key || !senderId}
+                                onClick={() => void sendStepTest(contact, step, key)}
+                              >
+                                {testBusyKey === key ? "Sending…" : "Send test"}
+                              </button>
+                              {testStatus ? (
+                                <span
+                                  className={`pz-step-test-status${
+                                    testStatus.startsWith("Sent") ? " is-ok" : ""
+                                  }`}
+                                  role="status"
+                                >
+                                  {testStatus}
+                                </span>
+                              ) : null}
                             </div>
-                            <PitchPreview body={filled.body} signature={activeSignature} />
                           </div>
                         </li>
                         );

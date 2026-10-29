@@ -169,11 +169,17 @@ function cellText(value: ExcelJS.CellValue) {
     return value.toISOString();
   }
   if (typeof value === "object") {
+    if ("richText" in value && Array.isArray(value.richText)) {
+      // Keep bold from Excel rich text as markdown so pitchToHtml can render it.
+      return value.richText
+        .map((part) => {
+          const text = String(part.text ?? "");
+          return part.font?.bold ? `**${text}**` : text;
+        })
+        .join("");
+    }
     if ("text" in value && value.text) {
       return String(value.text);
-    }
-    if ("richText" in value && Array.isArray(value.richText)) {
-      return value.richText.map((part) => part.text).join("");
     }
     if ("result" in value && value.result != null) {
       return String(value.result);
@@ -250,7 +256,9 @@ async function tableFromUpload(fileName: string, buffer: Buffer): Promise<string
     if (!sheet) return null;
     const rows: string[][] = [];
     sheet.eachRow({ includeEmpty: false }, (row) => {
-      const cells = (row.values as ExcelJS.CellValue[]).slice(1).map((value) => cellText(value).trim());
+      const cells = (row.values as ExcelJS.CellValue[])
+        .slice(1)
+        .map((value) => cellText(value).replace(/\r\n?/g, "\n").trim());
       if (cells.some(Boolean)) rows.push(cells);
     });
     return rows.length ? rows : null;
@@ -264,7 +272,7 @@ async function tableFromUpload(fileName: string, buffer: Buffer): Promise<string
         ? "\t"
         : ",";
     const rows = parseCsvRecords(text, delimiter).map((row) =>
-      row.map((cell) => cell.replace(/^\uFEFF/, "").trim()),
+      row.map((cell) => cell.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim()),
     );
     return rows.length ? rows : null;
   }
@@ -391,6 +399,184 @@ export function tryParsePersonaliseTable(
     },
     fileName,
   );
+}
+
+type WideStepColumn = {
+  bodyIndex: number;
+  subjectIndex: number;
+  day: number;
+  label: string;
+  sort: number;
+};
+
+/**
+ * Wide row-per-contact sheets: Email 1 / Follow-up N body (+ subject) columns.
+ * Matches samples like personalise-sample.csv and RSM personalised upload xlsx.
+ */
+function discoverWideStepColumns(headers: string[]): WideStepColumn[] {
+  const steps: WideStepColumn[] = [];
+  for (let index = 0; index < headers.length; index += 1) {
+    const header = headers[index].trim();
+    if (!header) continue;
+    const compact = compactHeader(header);
+    if (compact.includes("subject")) continue;
+
+    const emailMatch = header.match(/^(?:email|message|body)\s*(\d+)\b/i);
+    const followMatch =
+      header.match(/^follow[\s_-]*up\s*(\d+)\b/i) || header.match(/^fu\s*(\d+)\b/i);
+    if (!emailMatch && !followMatch) continue;
+
+    const num = Number((emailMatch || followMatch)![1]);
+    if (!Number.isFinite(num) || num < 1) continue;
+    const isFirstEmail = Boolean(emailMatch && num === 1);
+    const label = isFirstEmail
+      ? "First email"
+      : followMatch
+        ? `Follow-up ${num}`
+        : `Email ${num}`;
+    const sort = emailMatch ? num : 100 + num;
+
+    let day = -1;
+    const dayInBody = header.match(/\bday\s*(\d+)\b/i);
+    if (dayInBody) {
+      day = Math.max(0, Math.round(Number(dayInBody[1])));
+    }
+
+    let subjectIndex = -1;
+    for (let other = 0; other < headers.length; other += 1) {
+      const otherHeader = headers[other].trim();
+      const otherCompact = compactHeader(otherHeader);
+      if (!otherCompact.includes("subject")) continue;
+      if (emailMatch) {
+        const otherNum = otherHeader.match(/^(?:email|message|body)\s*(\d+)\b/i)?.[1];
+        if (otherNum !== String(num)) continue;
+      } else {
+        const otherNum =
+          otherHeader.match(/^follow[\s_-]*up\s*(\d+)\b/i)?.[1] ||
+          otherHeader.match(/^fu\s*(\d+)\b/i)?.[1];
+        if (otherNum !== String(num)) continue;
+      }
+      subjectIndex = other;
+      if (day < 0) {
+        const dayInSubject = otherHeader.match(/\bday\s*(\d+)\b/i);
+        if (dayInSubject) {
+          day = Math.max(0, Math.round(Number(dayInSubject[1])));
+        }
+      }
+      break;
+    }
+
+    if (day < 0) {
+      day = isFirstEmail ? 0 : Math.min(90, num * 3);
+    }
+
+    steps.push({ bodyIndex: index, subjectIndex, day, label, sort });
+  }
+  steps.sort((a, b) => a.sort - b.sort || a.bodyIndex - b.bodyIndex);
+  return steps;
+}
+
+/**
+ * One contact per row with Email 1 / Follow-up N columns. Parses without the LLM
+ * so well-formatted multiline bodies keep their paragraph breaks.
+ */
+export function tryParsePersonaliseWideTable(
+  table: string[][],
+  fileName = "",
+): PersonalisePlan | null {
+  if (table.length < 2) return null;
+  const headers = uniquifyCsvHeaders(table[0].map((cell) => String(cell ?? "").trim()));
+  const stepCols = discoverWideStepColumns(headers);
+  if (stepCols.length === 0) return null;
+  // Require a first email body column so random "Follow-up" notes don't false-trigger.
+  if (!stepCols.some((step) => step.sort === 1 || /^first email$/i.test(step.label))) {
+    return null;
+  }
+
+  const emailCol = findColumn(headers, ["email", "emailaddress", "mail"]);
+  if (emailCol < 0) return null;
+
+  const firstCol = findColumn(headers, ["firstname", "first", "fname", "givenname"]);
+  const lastCol = findColumn(headers, ["lastname", "last", "lname", "surname", "familyname"]);
+  const nameCol = findColumn(headers, ["name", "fullname", "contactname", "person"]);
+  const companyCol = findColumn(headers, [
+    "company",
+    "companyname",
+    "organisation",
+    "organization",
+    "org",
+  ]);
+  const positionCol = findColumn(headers, [
+    "position",
+    "title",
+    "jobtitle",
+    "role",
+    "designation",
+  ]);
+  const linkedInCol = findColumn(headers, [
+    "personallinkedin",
+    "linkedin",
+    "linkedinurl",
+    "profile",
+  ]);
+
+  const contacts: Array<{
+    firstName: string;
+    lastName: string;
+    email: string;
+    companyName: string;
+    position: string;
+    personalLinkedIn: string;
+    steps: Array<{ label: string; day: number; subject: string; body: string }>;
+  }> = [];
+
+  for (const raw of table.slice(1)) {
+    const cell = (index: number) =>
+      index >= 0 ? String(raw[index] ?? "").replace(/\r\n/g, "\n").trim() : "";
+    const email = cell(emailCol).toLowerCase();
+    if (!email.includes("@")) continue;
+
+    const steps = stepCols
+      .map((col) => ({
+        label: col.label,
+        day: col.day,
+        subject: cell(col.subjectIndex),
+        body: cell(col.bodyIndex),
+      }))
+      .filter((step) => step.body);
+
+    if (steps.length === 0) continue;
+
+    let firstName = cell(firstCol);
+    let lastName = cell(lastCol);
+    const fullName = cell(nameCol);
+    if (!firstName && !lastName && fullName) {
+      const parts = fullName.split(/\s+/);
+      firstName = parts[0] || "";
+      lastName = parts.slice(1).join(" ");
+    }
+
+    contacts.push({
+      firstName,
+      lastName,
+      email,
+      companyName: cell(companyCol),
+      position: cell(positionCol),
+      personalLinkedIn: cell(linkedInCol),
+      steps,
+    });
+  }
+
+  if (contacts.length === 0) return null;
+
+  const listName =
+    fileName
+      .replace(/\.[^.]+$/, "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim() || "Personalise campaign";
+
+  return normalizePersonalisePlan({ listName, contacts }, fileName);
 }
 
 /** Flatten CSV/TSV into one logical row per line for the AI outline path. */
@@ -987,12 +1173,16 @@ export async function extractPersonalisePlan(
   fileName: string,
   buffer: Buffer,
 ): Promise<PersonalisePlan> {
-  // Vertical cadence CSV/XLSX (Email + Message, one row per step): parse directly.
+  // Structured sheets: parse directly so formatting is not flattened by the LLM path.
   const table = await tableFromUpload(fileName, buffer);
   if (table) {
-    const structured = tryParsePersonaliseTable(table, fileName);
-    if (structured?.contacts.length) {
-      return structured;
+    const vertical = tryParsePersonaliseTable(table, fileName);
+    if (vertical?.contacts.length) {
+      return vertical;
+    }
+    const wide = tryParsePersonaliseWideTable(table, fileName);
+    if (wide?.contacts.length) {
+      return wide;
     }
   }
 
