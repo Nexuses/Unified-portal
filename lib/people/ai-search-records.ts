@@ -143,7 +143,7 @@ export function agentInputToFilters(input: AgentSearchInput): AiSearchFilters {
     search: input.keywordSearch ?? "",
     filters: {
       name: input.personName ? [input.personName] : [],
-      emailStatus: input.verifiedEmailsOnly ? ["verified"] : [],
+      emailStatus: input.verifiedEmailsOnly ? ["deliverables"] : [],
     },
     jobTitleFilter: {
       include: input.jobTitles ?? [],

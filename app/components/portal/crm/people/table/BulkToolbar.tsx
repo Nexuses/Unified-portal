@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Download, ListPlus, X } from "lucide-react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { Download, ListPlus, Trash2, X } from "lucide-react";
 
 export type BulkListOption = {
   id: string;
@@ -14,6 +14,9 @@ type BulkToolbarProps = {
   enableExport?: boolean;
   exporting?: boolean;
   onExport?: () => void;
+  enableDelete?: boolean;
+  deleting?: boolean;
+  onDelete?: () => void;
   onCopyIds: () => void;
   onCopyEmails?: () => void;
   onCopyPhones?: () => void;
@@ -24,6 +27,11 @@ type BulkToolbarProps = {
   listActionBusy?: boolean;
   onAddToList?: (listId: string) => void | Promise<void>;
   onCreateList?: (name: string) => void | Promise<void>;
+  /** Save selection (or current matches) into a new CRM list — label has no count. */
+  onSaveToList?: () => void;
+  saveToListBusy?: boolean;
+  /** When set, the bar is centered over this element (table/content) instead of the full screen. */
+  contentAnchorRef?: RefObject<HTMLElement | null>;
 };
 
 export default function BulkToolbar({
@@ -31,6 +39,9 @@ export default function BulkToolbar({
   enableExport,
   exporting,
   onExport,
+  enableDelete,
+  deleting,
+  onDelete,
   onCopyIds,
   onCopyEmails,
   onCopyPhones,
@@ -41,11 +52,17 @@ export default function BulkToolbar({
   listActionBusy = false,
   onAddToList,
   onCreateList,
+  onSaveToList,
+  saveToListBusy = false,
+  contentAnchorRef,
 }: BulkToolbarProps) {
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newListName, setNewListName] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
+  const [contentBounds, setContentBounds] = useState<{ left: number; width: number } | null>(
+    null,
+  );
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -83,6 +100,34 @@ export default function BulkToolbar({
     };
   }, [listMenuOpen]);
 
+  useEffect(() => {
+    if (selectedCount === 0) {
+      setContentBounds(null);
+      return;
+    }
+    const el = contentAnchorRef?.current;
+    if (!el) {
+      setContentBounds(null);
+      return;
+    }
+
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setContentBounds({ left: rect.left, width: rect.width });
+    };
+    update();
+
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [contentAnchorRef, selectedCount]);
+
   if (selectedCount === 0) return null;
 
   const showListActions = Boolean(onAddToList || onCreateList);
@@ -97,20 +142,57 @@ export default function BulkToolbar({
   }
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">
-      <div className="pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-lg">
+    <div
+      className="pointer-events-none fixed bottom-6 z-40 flex justify-center px-4"
+      style={
+        contentBounds
+          ? {
+              left: contentBounds.left,
+              width: contentBounds.width,
+              right: "auto",
+            }
+          : { insetInline: 0 }
+      }
+    >
+      <div className="pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-xl border-2 border-(--purple) bg-white px-3 py-2 shadow-lg">
         <span className="px-2 text-sm font-medium text-slate-700">
           {selectedCount} selected
         </span>
+        {onSaveToList ? (
+          <button
+            type="button"
+            onClick={onSaveToList}
+            disabled={saveToListBusy || deleting || exporting}
+            className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold bg-(--purple) text-white hover:bg-[#5b2fd0] disabled:opacity-60"
+          >
+            {saveToListBusy ? "Preparing..." : "Save to list"}
+          </button>
+        ) : null}
         {enableExport && onExport ? (
           <button
             type="button"
             onClick={onExport}
-            disabled={exporting}
+            disabled={exporting || deleting}
             className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold bg-(--purple) text-white hover:bg-[#5b2fd0] disabled:opacity-60"
           >
             <Download className="h-3.5 w-3.5" />
             {exporting ? "Exporting..." : "Export Selected"}
+          </button>
+        ) : null}
+
+        {enableDelete && onDelete ? (
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={deleting || exporting}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {deleting
+              ? "Deleting..."
+              : selectedCount === 1
+                ? "Delete contact"
+                : `Delete ${selectedCount}`}
           </button>
         ) : null}
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, Check, HelpCircle, Mail, User, X } from "lucide-react";
+import { Check, HelpCircle, Mail, X } from "lucide-react";
 import {
   EMAIL_STATUS_CATEGORIES,
   EMAIL_STATUS_OPTIONS,
@@ -16,13 +16,11 @@ interface EmailStatusFilterPanelProps {
 
 function StatusBadgeIcon({ icon }: { icon: EmailStatusIconId }) {
   const badgeClass =
-    icon === "verified"
+    icon === "deliverables"
       ? "bg-emerald-500 text-white"
-      : icon === "update_required"
+      : icon === "risky_deliverables"
         ? "bg-amber-500 text-white"
-        : icon === "unavailable"
-          ? "bg-red-500 text-white"
-          : "bg-slate-400 text-white";
+        : "bg-red-500 text-white";
 
   return (
     <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center">
@@ -30,12 +28,11 @@ function StatusBadgeIcon({ icon }: { icon: EmailStatusIconId }) {
       <span
         className={`absolute -bottom-0.5 -right-0.5 flex h-3 w-3 items-center justify-center rounded-full ${badgeClass}`}
       >
-        {icon === "verified" && <Check className="h-2 w-2" strokeWidth={3} aria-hidden />}
-        {icon === "unverified" && <HelpCircle className="h-2 w-2" strokeWidth={2.5} aria-hidden />}
-        {icon === "user_managed" && <User className="h-2 w-2" strokeWidth={2.5} aria-hidden />}
-        {icon === "update_required" && <Bell className="h-2 w-2" strokeWidth={2.5} aria-hidden />}
-        {icon === "unavailable" && <X className="h-2 w-2" strokeWidth={3} aria-hidden />}
-        {icon === "catch_all" && <HelpCircle className="h-2 w-2" strokeWidth={2.5} aria-hidden />}
+        {icon === "deliverables" && <Check className="h-2 w-2" strokeWidth={3} aria-hidden />}
+        {icon === "risky_deliverables" && (
+          <HelpCircle className="h-2 w-2" strokeWidth={2.5} aria-hidden />
+        )}
+        {icon === "not_found" && <X className="h-2 w-2" strokeWidth={3} aria-hidden />}
       </span>
     </span>
   );

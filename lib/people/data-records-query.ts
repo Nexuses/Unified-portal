@@ -1,3 +1,4 @@
+import type { ObjectId } from "mongodb";
 import {
   buildJobTitleFilterQuery,
   type JobTitleFilterPayload,
@@ -42,6 +43,58 @@ import {
 } from "@/lib/people/data-views";
 
 export type StatTab = "total" | "net_new" | "saved";
+
+/** CRM list membership for Enrich Saved / Net New (no DataTool pre-scan). */
+export type ProjectSavedScope = {
+  emails: string[];
+  recordIds: ObjectId[];
+};
+
+/** Above this, Saved uses dataToolIds only — huge email `$in` + filters trips Mongo multiplanner. */
+const SAVED_EMAIL_IN_CAP = 500;
+const NET_NEW_ID_NIN_CAP = 2_000;
+
+function buildProjectSavedMatchFilter(scope: ProjectSavedScope): Record<string, unknown> {
+  const branches: Record<string, unknown>[] = [];
+  if (scope.recordIds.length > 0) {
+    branches.push({ _id: { $in: scope.recordIds } });
+  }
+  if (scope.emails.length > 0 && scope.emails.length <= SAVED_EMAIL_IN_CAP) {
+    branches.push({ email: { $in: scope.emails } });
+  } else if (scope.emails.length > SAVED_EMAIL_IN_CAP && scope.recordIds.length === 0) {
+    // Still need a match path when we only have emails — keep it bounded.
+    branches.push({ email: { $in: scope.emails.slice(0, SAVED_EMAIL_IN_CAP) } });
+  }
+  if (branches.length === 0) {
+    return { _id: { $in: [] as ObjectId[] } };
+  }
+  return branches.length === 1 ? branches[0]! : { $or: branches };
+}
+
+function buildStatFilter(
+  stat: StatTab,
+  projectSavedScope?: ProjectSavedScope,
+): Record<string, unknown> {
+  if (projectSavedScope) {
+    if (stat === "saved") return buildProjectSavedMatchFilter(projectSavedScope);
+    if (stat === "net_new") {
+      // Never put list emails into Mongo `$nor`/`$nin` — that causes
+      // "multiplanner was selecting best plan … exceeded time limit" on save/select.
+      // Listed people are dropped via excludeExisting (in-memory email scan) instead.
+      const { recordIds } = projectSavedScope;
+      if (recordIds.length > 0 && recordIds.length <= NET_NEW_ID_NIN_CAP) {
+        return { _id: { $nin: recordIds } };
+      }
+      return {};
+    }
+    return {};
+  }
+  return stat === "net_new"
+    ? { isUsed: { $ne: true } }
+    : stat === "saved"
+      ? { isUsed: true }
+      : {};
+}
 
 type ViewFilters = Partial<
   Record<
@@ -429,9 +482,11 @@ export async function buildDataRecordsFilter(
   options: {
     resolvedView: DataView;
     listScopeFilter?: Record<string, unknown>;
+    /** When set, Saved/Net New use project list membership instead of global isUsed. */
+    projectSavedScope?: ProjectSavedScope;
   }
 ) {
-  const { resolvedView, listScopeFilter = {} } = options;
+  const { resolvedView, listScopeFilter = {}, projectSavedScope } = options;
   const {
     search,
     stat,
@@ -553,8 +608,7 @@ export async function buildDataRecordsFilter(
       columnFilterQuery,
     ].filter((entry) => Object.keys(entry).length > 0),
   };
-  const statFilter =
-    stat === "net_new" ? { isUsed: { $ne: true } } : stat === "saved" ? { isUsed: true } : {};
+  const statFilter = buildStatFilter(stat, projectSavedScope);
   const recordsFilter = {
     $and: [baseFilter, statFilter].filter((entry) => Object.keys(entry).length > 0),
   };

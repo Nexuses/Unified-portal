@@ -14,6 +14,7 @@ import { DataRecord, type IDataRecord } from "@/lib/people/models/DataRecord";
 import {
   emailsAlreadyInLists,
   getRecordsCollection,
+  projectListSavedScope,
   suppressionFor,
 } from "@/lib/datatool-server";
 import { isSuppressedAddress } from "@/lib/unsubscribe-server";
@@ -127,6 +128,24 @@ export async function getEnrichPeopleRecordsByIds(ids: string[]) {
   return fetchRecordsByIds(Array.from(new Set(ids)).slice(0, MAX_RECORDS_BY_IDS));
 }
 
+/** Permanently remove enrich people rows from the DataTool records collection. */
+export async function deleteEnrichPeopleRecordsByIds(ids: string[]) {
+  const unique = Array.from(new Set(ids.map((id) => String(id ?? "").trim()).filter(Boolean))).slice(
+    0,
+    MAX_RECORDS_BY_IDS,
+  );
+  const objectIds = unique.filter((id) => ObjectId.isValid(id)).map((id) => new ObjectId(id));
+  if (objectIds.length === 0) {
+    return { deleted: 0 };
+  }
+  const collection = await getRecordsCollection();
+  const result = await collection.deleteMany({
+    _id: { $in: objectIds },
+    recordType: "people",
+  });
+  return { deleted: result.deletedCount ?? 0 };
+}
+
 /**
  * Same contract as the data tool's `GET /api/data` (people view), plus
  * `excludeUnsubscribed=1` / `excludeExisting=1`, which drop matches that are
@@ -151,6 +170,7 @@ export async function queryEnrichPeople(searchParams: URLSearchParams, projectId
   const query = parseDataRecordsQuery(params);
   const { stat, jobTitleFilter, industryKeywordsFilter } = query;
 
+  const savedScope = await projectListSavedScope(projectId);
   const {
     baseFilter,
     recordsFilter,
@@ -158,7 +178,13 @@ export async function queryEnrichPeople(searchParams: URLSearchParams, projectId
     distinctDepartments,
     distinctIndustries,
     aliasOverrides,
-  } = await buildDataRecordsFilter(query, { resolvedView: "people" });
+  } = await buildDataRecordsFilter(query, {
+    resolvedView: "people",
+    projectSavedScope: {
+      emails: savedScope.emails,
+      recordIds: savedScope.recordIds,
+    },
+  });
 
   if (params.get("idsOnly") === "true") {
     return { ids: await selectMatchingIds(params, recordsFilter, projectId, exclusions) };
@@ -183,19 +209,23 @@ export async function queryEnrichPeople(searchParams: URLSearchParams, projectId
           .lean<IDataRecord[]>()
           .then((rows) => rows.map(toRecord));
 
-  // One aggregate covers Total / Net New / Saved — derive page total from it.
+  // Total from DataTool; Saved from CRM list membership (no DataTool join).
   const statsPromise = includeCounts
-    ? DataRecord.aggregate<{ total: number; netNew: number; saved: number }>([
-        { $match: baseFilter },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: 1 },
-            netNew: { $sum: { $cond: [{ $ne: ["$isUsed", true] }, 1, 0] } },
-            saved: { $sum: { $cond: [{ $eq: ["$isUsed", true] }, 1, 0] } },
-          },
-        },
-      ]).option({ maxTimeMS: 30_000 })
+    ? (async () => {
+        const totalAgg = await DataRecord.aggregate<{ total: number }>([
+          { $match: baseFilter },
+          { $group: { _id: null, total: { $sum: 1 } } },
+        ]).option({ maxTimeMS: 30_000 });
+        const total = Number(totalAgg[0]?.total ?? 0);
+        const saved = Math.min(
+          savedScope.listedCount || savedScope.emails.length,
+          total,
+        );
+        return [{ total, saved, netNew: Math.max(0, total - saved) }];
+      })().catch((error) => {
+        console.error("[enrich/people] stats failed", error);
+        return [] as Array<{ total: number; netNew: number; saved: number }>;
+      })
     : Promise.resolve([] as Array<{ total: number; netNew: number; saved: number }>);
 
   // Facets must never take down / delay the table: catch and continue with null.
@@ -217,16 +247,37 @@ export async function queryEnrichPeople(searchParams: URLSearchParams, projectId
   ]);
 
   const stats = statsAgg[0] ?? { total: 0, netNew: 0, saved: 0 };
+  const rawTotal = Number(stats.total ?? 0);
+  const rawSaved = Number(stats.saved ?? 0);
+  const rawNetNew = Number(stats.netNew ?? 0);
   const statTotal =
-    stat === "net_new"
-      ? Number(stats.netNew ?? 0)
-      : stat === "saved"
-        ? Number(stats.saved ?? 0)
-        : Number(stats.total ?? 0);
+    stat === "net_new" ? rawNetNew : stat === "saved" ? rawSaved : rawTotal;
+
+  // Remove chips can only reduce counts — never replace them with a larger scan size.
+  // (Net New's Mongo filter is intentionally loose for speed; a full exclusion scan
+  // can match more rows than the CRM-based Net New number, which previously inflated it.)
+  const removedU = scan && exclusions.unsubscribed ? scan.removedUnsubscribed : 0;
+  const removedE = scan && exclusions.existing ? scan.removedExisting : 0;
+  const removedFromStat = removedU + removedE;
+
+  let statsTotal = rawTotal;
+  let statsSaved = rawSaved;
+  let statsNetNew = rawNetNew;
+  if (scan && hasExclusions) {
+    // Subtract removals from Net New / Total only. Do NOT also cut Saved by
+    // removedExisting — that cancels out (netNew = total - saved stays flat).
+    statsNetNew = Math.max(0, rawNetNew - removedFromStat);
+    statsTotal = Math.max(0, rawTotal - removedFromStat);
+    statsSaved = Math.min(rawSaved, statsTotal);
+  }
+
   const total = scan
-    ? scan.capped
-      ? Math.max(scan.ids.length, statTotal - scan.removedUnsubscribed - scan.removedExisting)
-      : scan.ids.length
+    ? Math.min(
+        Math.max(0, statTotal - removedFromStat),
+        scan.capped
+          ? Math.max(scan.ids.length, Math.max(0, statTotal - removedFromStat))
+          : scan.ids.length,
+      )
     : statTotal;
 
   const rawFacets = sidebarMeta?.facets ?? {};
@@ -272,9 +323,9 @@ export async function queryEnrichPeople(searchParams: URLSearchParams, projectId
     limit,
     totalPages: Math.ceil(total / limit),
     stats: {
-      total: Number(stats.total ?? 0),
-      netNew: Number(stats.netNew ?? 0),
-      saved: Number(stats.saved ?? 0),
+      total: statsTotal,
+      netNew: statsNetNew,
+      saved: statsSaved,
     },
     exclusions: scan
       ? {
@@ -297,6 +348,19 @@ export async function queryEnrichPeople(searchParams: URLSearchParams, projectId
   };
 }
 
+/** Non-empty email — save-to-list only includes these contacts. */
+const HAS_EMAIL_FILTER: Filter<Document> = {
+  email: { $type: "string", $gt: "" },
+};
+
+function withEmailRequirement(
+  recordsFilter: Record<string, unknown>,
+  requireEmail: boolean,
+): Filter<Document> {
+  if (!requireEmail) return recordsFilter as Filter<Document>;
+  return { $and: [recordsFilter, HAS_EMAIL_FILTER] };
+}
+
 async function selectMatchingIds(
   params: URLSearchParams,
   recordsFilter: Record<string, unknown>,
@@ -312,11 +376,13 @@ async function selectMatchingIds(
       ? Math.floor(maxPerCompanyRaw)
       : null;
   const hasExclusions = exclusions.unsubscribed || exclusions.existing;
+  const requireEmail = params.get("requireEmail") === "1";
+  const matchFilter = withEmailRequirement(recordsFilter, requireEmail);
 
   let ids: string[];
   if (maxPerCompany) {
     const pipeline: Document[] = [
-      { $match: recordsFilter },
+      { $match: matchFilter },
       { $sort: { createdAt: -1 } },
       {
         $group: {
@@ -333,18 +399,23 @@ async function selectMatchingIds(
       pipeline.push({ $limit: selectLimit });
     }
     pipeline.push({ $project: { _id: "$ids" } });
-    const rows = await DataRecord.aggregate<{ _id: unknown }>(pipeline);
+    const rows = await DataRecord.aggregate<{ _id: unknown }>(pipeline).option({
+      maxTimeMS: 30_000,
+    });
     ids = rows.map((row) => String(row._id));
     if (hasExclusions) {
       const allowed = new Set(
-        (await scanWithExclusions(projectId, recordsFilter as Filter<Document>, exclusions)).ids
+        (await scanWithExclusions(projectId, matchFilter, exclusions)).ids
       );
       ids = ids.filter((id) => allowed.has(id));
     }
   } else if (hasExclusions) {
-    ids = (await scanWithExclusions(projectId, recordsFilter as Filter<Document>, exclusions)).ids;
+    ids = (await scanWithExclusions(projectId, matchFilter, exclusions)).ids;
   } else {
-    let idsQuery = DataRecord.find(recordsFilter).select("_id").sort({ createdAt: -1 });
+    let idsQuery = DataRecord.find(matchFilter)
+      .select("_id")
+      .sort({ createdAt: -1 })
+      .maxTimeMS(30_000);
     if (selectLimit) {
       idsQuery = idsQuery.limit(selectLimit);
     }
@@ -363,7 +434,14 @@ export async function countEnrichPeopleExclusions(
   params.set("view", "people");
   params.delete("listId");
   const query = parseDataRecordsQuery(params);
-  const { recordsFilter } = await buildDataRecordsFilter(query, { resolvedView: "people" });
+  const savedScope = await projectListSavedScope(projectId);
+  const { recordsFilter } = await buildDataRecordsFilter(query, {
+    resolvedView: "people",
+    projectSavedScope: {
+      emails: savedScope.emails,
+      recordIds: savedScope.recordIds,
+    },
+  });
   const key = JSON.stringify([projectId.toString(), recordsFilter]);
   const cached = countCache.get(key);
   if (cached && Date.now() - cached.at < SCAN_CACHE_MS) {

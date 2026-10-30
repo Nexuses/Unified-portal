@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, type RefObject } from "react";
 import EnterpriseDataTable from "@/app/components/portal/crm/people/table/EnterpriseDataTable";
 import {
   buildDataRecordColumns,
@@ -25,6 +25,8 @@ interface DataTablePanelProps {
   onSelectedIdsChange: (next: Set<string>) => void;
   onExportSelected?: (ids: string[]) => void | Promise<void>;
   exporting?: boolean;
+  onDeleteSelected?: (ids: string[]) => void | Promise<void>;
+  deleting?: boolean;
   columnFilters: ColumnFilterState;
   onColumnFiltersChange: (next: ColumnFilterState) => void;
   fillHeight?: boolean;
@@ -34,9 +36,13 @@ interface DataTablePanelProps {
   listActionBusy?: boolean;
   onAddToList?: (listId: string, ids: string[]) => void | Promise<void>;
   onCreateList?: (name: string, ids: string[]) => void | Promise<void>;
+  onSaveToList?: () => void;
+  saveToListBusy?: boolean;
   totalMatching?: number;
   selectingMatching?: boolean;
   onApplySelectionMenu?: (payload: SelectionMenuApplyPayload) => void | Promise<void>;
+  /** Center the bulk selection bar over this element (content column, not sidebar). */
+  contentAnchorRef?: RefObject<HTMLElement | null>;
 }
 
 export default function DataTablePanel({
@@ -51,6 +57,8 @@ export default function DataTablePanel({
   onSelectedIdsChange,
   onExportSelected,
   exporting = false,
+  onDeleteSelected,
+  deleting = false,
   columnFilters,
   onColumnFiltersChange,
   fillHeight = false,
@@ -60,9 +68,12 @@ export default function DataTablePanel({
   listActionBusy = false,
   onAddToList,
   onCreateList,
+  onSaveToList,
+  saveToListBusy = false,
   totalMatching = 0,
   selectingMatching = false,
   onApplySelectionMenu,
+  contentAnchorRef,
 }: DataTablePanelProps) {
   const columns = useMemo(
     () => buildDataRecordColumns(tableColumns),
@@ -89,6 +100,8 @@ export default function DataTablePanel({
       exporting={exporting}
       enableRowExport={Boolean(onExportSelected)}
       enableColumnFilters
+      onDeleteSelected={onDeleteSelected}
+      deleting={deleting}
       columnFilters={columnFilters}
       onColumnFiltersChange={onColumnFiltersChange}
       columnFilterMode="server"
@@ -136,6 +149,9 @@ export default function DataTablePanel({
       listActionBusy={listActionBusy}
       onAddToList={onAddToList}
       onCreateList={onCreateList}
+      onSaveToList={onSaveToList}
+      saveToListBusy={saveToListBusy}
+      contentAnchorRef={contentAnchorRef}
       selectionMenu={
         onApplySelectionMenu
           ? {

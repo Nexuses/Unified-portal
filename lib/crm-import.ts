@@ -14,6 +14,7 @@ import {
   planListSplitCounts,
 } from "@/lib/crm";
 import { countDistinctCompaniesForList } from "@/lib/crm-list-stats";
+import { invalidateProjectListSavedCache } from "@/lib/datatool-server";
 
 type ImportContext = {
   projectId: ObjectId;
@@ -493,6 +494,8 @@ export async function importContactsToList(
     [...affectedCompanyIds].map((id) => new ObjectId(id)),
   );
 
+  invalidateProjectListSavedCache(context.projectId);
+
   return {
     imported,
     skipped,
@@ -615,6 +618,8 @@ export async function splitList(
   });
   await db.collection<ListDoc>("lists").deleteOne({ _id: listId, projectId });
 
+  invalidateProjectListSavedCache(projectId);
+
   return {
     sourceListId: listId.toString(),
     lists: created,
@@ -678,6 +683,7 @@ export async function deleteLists(
     projectId,
     _id: { $in: allowedIds },
   });
+  invalidateProjectListSavedCache(projectId);
   return {
     deleted: result.deletedCount ?? 0,
     contactsDeleted,
@@ -692,4 +698,5 @@ export async function deleteProjectCrmData(projectId: ObjectId) {
     db.collection("contacts").deleteMany({ projectId }),
     db.collection("companies").deleteMany({ projectId }),
   ]);
+  invalidateProjectListSavedCache(projectId);
 }

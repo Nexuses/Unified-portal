@@ -30,6 +30,7 @@ import {
   type DataBrowserSessionState,
 } from "@/lib/people/data-browser/session-state";
 import {
+  clearDataBrowserCache,
   getCachedFacets,
   getCachedRecords,
   setCachedFacets,
@@ -245,6 +246,7 @@ export default function EnrichPeopleBrowser({
     existing: false,
   });
   const [preparingSave, setPreparingSave] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [selectingAll, setSelectingAll] = useState(false);
   const [error, setError] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -899,6 +901,8 @@ export default function EnrichPeopleBrowser({
       try {
         const params = buildQueryParams({ idsOnly: true });
         params.set("selectLimit", String(saveLimit));
+        // Save-to-list only includes contacts that have an email.
+        params.set("requireEmail", "1");
         const res = await fetch(`/api/crm/enrich/people?${params.toString()}`, {
           cache: "no-store",
         });
@@ -932,6 +936,45 @@ export default function EnrichPeopleBrowser({
   function handleExport() {
     if (selectedIds.size === 0) return;
     void onExport(Array.from(selectedIds));
+  }
+
+  async function handleDeleteSelected(ids: string[]) {
+    const unique = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+    if (unique.length === 0 || deleting) return;
+
+    const label =
+      unique.length === 1
+        ? "Delete this contact from Enrich? This cannot be undone."
+        : `Delete ${unique.length.toLocaleString()} contacts from Enrich? This cannot be undone.`;
+    if (!window.confirm(label)) return;
+
+    setDeleting(true);
+    setError("");
+    try {
+      const response = await fetch("/api/crm/enrich/people/records", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: unique }),
+      });
+      const data = (await response.json()) as { deleted?: number; error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to delete contacts");
+      }
+      const removed = new Set(unique);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of removed) next.delete(id);
+        return next;
+      });
+      setRecords((prev) => prev.filter((row) => !removed.has(row.id)));
+      setTotal((prev) => Math.max(0, prev - (data.deleted ?? unique.length)));
+      clearDataBrowserCache();
+      void fetchRecords();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete contacts");
+    } finally {
+      setDeleting(false);
+    }
   }
 
   function handleSearchSubmit(e: React.FormEvent) {
@@ -1357,7 +1400,7 @@ export default function EnrichPeopleBrowser({
             <button
               type="button"
               onClick={() => void handleExport()}
-              disabled={exporting}
+              disabled={exporting || deleting}
               className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-xs transition hover:border-slate-300 hover:bg-slate-50 disabled:opacity-60"
             >
               {exporting
@@ -1365,17 +1408,27 @@ export default function EnrichPeopleBrowser({
                 : `Export ${selectedIds.size} Selected`}
             </button>
           )}
+          {someSelected && (
+            <button
+              type="button"
+              onClick={() => void handleDeleteSelected(Array.from(selectedIds))}
+              disabled={deleting || exporting}
+              className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 shadow-xs transition hover:bg-red-100 disabled:opacity-60"
+            >
+              {deleting
+                ? "Deleting..."
+                : selectedIds.size === 1
+                  ? "Delete contact"
+                  : `Delete ${selectedIds.size.toLocaleString()}`}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void handleSaveToList(someSelected ? Array.from(selectedIds) : null)}
-            disabled={preparingSave || listActionBusy || total === 0}
+            disabled={preparingSave || listActionBusy || total === 0 || deleting}
             className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-md transition hover:bg-slate-800 disabled:opacity-60"
           >
-            {preparingSave
-              ? "Preparing..."
-              : someSelected
-                ? `Save ${selectedIds.size.toLocaleString()} to list`
-                : `Save ${Math.min(total, saveLimit).toLocaleString()} to list`}
+            {preparingSave ? "Preparing..." : "Save to list"}
           </button>
         </div>
       </div>
@@ -1570,6 +1623,8 @@ export default function EnrichPeopleBrowser({
               await onExport(ids);
             }}
             exporting={exporting}
+            onDeleteSelected={handleDeleteSelected}
+            deleting={deleting}
             fillHeight
             storageKey="portal-enrich-people"
             listOptions={listOptions}
@@ -1583,9 +1638,14 @@ export default function EnrichPeopleBrowser({
               return onAddToList(listId, ids);
             }}
             onCreateList={(name, ids) => handleSaveToList(ids, name)}
+            onSaveToList={() =>
+              void handleSaveToList(someSelected ? Array.from(selectedIds) : null)
+            }
+            saveToListBusy={preparingSave || listActionBusy}
             totalMatching={total}
             selectingMatching={selectingAll}
             onApplySelectionMenu={applySelectionMenu}
+            contentAnchorRef={panelsRef}
           />
         </div>
       </div>
@@ -1652,9 +1712,10 @@ export default function EnrichPeopleBrowser({
       )}
 
       <p className="text-xs text-slate-400">
-        Save to list with nothing selected saves up to{" "}
-        {saveLimit.toLocaleString()} matching people
-        {saveLimit < MAX_SAVE_RECORDS ? " (limited by your data credits)" : ""}.
+        Save to list only includes contacts with an email (up to{" "}
+        {saveLimit.toLocaleString()}
+        {saveLimit < MAX_SAVE_RECORDS ? ", limited by your data credits" : ""}
+        ).
       </p>
     </div>
   );

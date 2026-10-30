@@ -9,6 +9,7 @@ import {
   useState,
   type CSSProperties,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -97,6 +98,8 @@ type EnterpriseDataTableProps<T extends { id: string }> = {
   onSelectedIdsChange: (next: Set<string>) => void;
   onExportSelected?: (ids: string[]) => void | Promise<void>;
   exporting?: boolean;
+  onDeleteSelected?: (ids: string[]) => void | Promise<void>;
+  deleting?: boolean;
   bulkActions?: BulkActionConfig<T>;
   getDetailTitle?: (row: T) => string;
   getDetailSubtitle?: (row: T) => string;
@@ -127,6 +130,8 @@ type EnterpriseDataTableProps<T extends { id: string }> = {
   listActionBusy?: boolean;
   onAddToList?: (listId: string, ids: string[]) => void | Promise<void>;
   onCreateList?: (name: string, ids: string[]) => void | Promise<void>;
+  onSaveToList?: () => void;
+  saveToListBusy?: boolean;
   selectionMenu?: {
     totalMatching: number;
     entityLabel: string;
@@ -134,6 +139,8 @@ type EnterpriseDataTableProps<T extends { id: string }> = {
     selecting?: boolean;
     onApply: (payload: SelectionMenuApplyPayload) => void | Promise<void>;
   };
+  /** Center the bulk selection bar over this element (content column). Falls back to the table root. */
+  contentAnchorRef?: RefObject<HTMLElement | null>;
 };
 
 export default function EnterpriseDataTable<T extends { id: string }>({
@@ -147,6 +154,8 @@ export default function EnterpriseDataTable<T extends { id: string }>({
   onSelectedIdsChange,
   onExportSelected,
   exporting = false,
+  onDeleteSelected,
+  deleting = false,
   bulkActions,
   getDetailTitle,
   getDetailSubtitle,
@@ -166,7 +175,10 @@ export default function EnterpriseDataTable<T extends { id: string }>({
   listActionBusy = false,
   onAddToList,
   onCreateList,
+  onSaveToList,
+  saveToListBusy = false,
   selectionMenu,
+  contentAnchorRef,
 }: EnterpriseDataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
@@ -206,6 +218,7 @@ export default function EnterpriseDataTable<T extends { id: string }>({
   const columnMenuButtonRef = useRef<HTMLButtonElement>(null);
   const scrollParentRef = useRef<HTMLDivElement>(null);
   const selectionAnchorRef = useRef<HTMLInputElement>(null);
+  const tableRootRef = useRef<HTMLDivElement>(null);
 
   const filterState = columnFilters ?? internalColumnFilters;
 
@@ -571,10 +584,12 @@ export default function EnterpriseDataTable<T extends { id: string }>({
 
   return (
     <div
+      ref={tableRootRef}
       className={`relative min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm ${
         fillHeight ? "flex h-full flex-1 flex-col" : "flex-1"
       }`}
-    >      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-linear-to-b from-slate-50/70 to-white px-4 py-2.5">
+    >
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-linear-to-b from-slate-50/70 to-white px-4 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative" ref={columnMenuRef}>
             <button
@@ -1119,6 +1134,13 @@ export default function EnterpriseDataTable<T extends { id: string }>({
             ? () => void onExportSelected(Array.from(selectedIds))
             : undefined
         }
+        enableDelete={Boolean(onDeleteSelected)}
+        deleting={deleting}
+        onDelete={
+          onDeleteSelected
+            ? () => void onDeleteSelected(Array.from(selectedIds))
+            : undefined
+        }
         onCopyIds={() => {
           void copyText(Array.from(selectedIds).join("\n")).then(() =>
             flashCopied("IDs copied")
@@ -1170,6 +1192,9 @@ export default function EnterpriseDataTable<T extends { id: string }>({
             ? (name) => void onCreateList(name, Array.from(selectedIds))
             : undefined
         }
+        onSaveToList={onSaveToList}
+        saveToListBusy={saveToListBusy}
+        contentAnchorRef={contentAnchorRef ?? tableRootRef}
       />
 
       {contextMenu ? (
@@ -1225,12 +1250,38 @@ export default function EnterpriseDataTable<T extends { id: string }>({
             onClick={() => {
               const next = new Set(selectedIds);
               next.add(contextMenu.rowId);
+              onSelectedIdsChange(new Set([contextMenu.rowId]));
+              setContextMenu(null);
+            }}
+          >
+            Select only this contact
+          </button>
+          <button
+            type="button"
+            className="block w-full px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"
+            onClick={() => {
+              const next = new Set(selectedIds);
+              next.add(contextMenu.rowId);
               onSelectedIdsChange(next);
               setContextMenu(null);
             }}
           >
             Add to selection
           </button>
+          {onDeleteSelected ? (
+            <button
+              type="button"
+              className="block w-full px-3 py-1.5 text-left text-xs font-medium text-red-700 hover:bg-red-50"
+              disabled={deleting}
+              onClick={() => {
+                const id = contextMenu.rowId;
+                setContextMenu(null);
+                void onDeleteSelected([id]);
+              }}
+            >
+              Delete contact
+            </button>
+          ) : null}
         </div>
       ) : null}
 

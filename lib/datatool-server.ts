@@ -1,4 +1,10 @@
-import { MongoClient, type Collection, type Document, type Filter, type ObjectId } from "mongodb";
+import {
+  MongoClient,
+  ObjectId,
+  type Collection,
+  type Document,
+  type Filter,
+} from "mongodb";
 import type { ContactDoc, ListMembershipDoc } from "@/lib/crm";
 import { getDb } from "@/lib/mongodb";
 import { getSuppressionSets, isSuppressedAddress } from "@/lib/unsubscribe-server";
@@ -268,40 +274,87 @@ export type EnrichExclusions = {
   existing?: boolean;
 };
 
-const LISTED_EMAILS_CACHE_MS = 60 * 1000;
-const listedEmailsCache = new Map<string, { at: number; emails: Promise<Set<string>> }>();
+const LISTED_SCOPE_CACHE_MS = 5 * 60 * 1000;
+const CONTACT_LOOKUP_CHUNK = 1_000;
+
+export type ProjectListSavedScope = {
+  /** Lowercased emails of contacts on at least one project list. */
+  emails: string[];
+  /** DataTool record ids from contact attributes.dataToolId when present. */
+  recordIds: ObjectId[];
+  /** Distinct listed contacts in this project (CRM). */
+  listedCount: number;
+};
+
+const projectListSavedCache = new Map<
+  string,
+  { at: number; scope: Promise<ProjectListSavedScope> }
+>();
+
+function tryObjectId(value: unknown): ObjectId | null {
+  if (typeof value !== "string" || !ObjectId.isValid(value)) return null;
+  return new ObjectId(value);
+}
+
+/**
+ * CRM-only scope for Enrich Saved/Net New — no DataTool scans.
+ * Saved count = listed contacts/emails for this project.
+ */
+export function projectListSavedScope(projectId: ObjectId): Promise<ProjectListSavedScope> {
+  const key = projectId.toString();
+  const cached = projectListSavedCache.get(key);
+  if (cached && Date.now() - cached.at < LISTED_SCOPE_CACHE_MS) {
+    return cached.scope;
+  }
+  const scope = (async (): Promise<ProjectListSavedScope> => {
+    const db = await getDb();
+    const listedIdStrs = (
+      await db
+        .collection<ListMembershipDoc>("list_memberships")
+        .distinct("contactId", { projectId })
+    ).map((id) => String(id));
+    const listedObjectIds = listedIdStrs
+      .map((id) => tryObjectId(id))
+      .filter((id): id is ObjectId => Boolean(id));
+
+    const emails = new Set<string>();
+    const recordIds = new Map<string, ObjectId>();
+    const contacts = db.collection<ContactDoc>("contacts");
+    for (let i = 0; i < listedObjectIds.length; i += CONTACT_LOOKUP_CHUNK) {
+      const chunk = listedObjectIds.slice(i, i + CONTACT_LOOKUP_CHUNK);
+      const rows = await contacts
+        .find({ _id: { $in: chunk } })
+        .project<{ _id: ObjectId; email?: string; attributes?: Record<string, string> }>({
+          _id: 1,
+          email: 1,
+          "attributes.dataToolId": 1,
+        })
+        .toArray();
+      for (const contact of rows) {
+        const email = contact.email?.trim().toLowerCase();
+        if (email) emails.add(email);
+        const recordId = tryObjectId(contact.attributes?.dataToolId);
+        if (recordId) recordIds.set(recordId.toString(), recordId);
+      }
+    }
+    return {
+      emails: Array.from(emails),
+      recordIds: Array.from(recordIds.values()),
+      listedCount: listedObjectIds.length,
+    };
+  })();
+  projectListSavedCache.set(key, { at: Date.now(), scope });
+  scope.catch(() => projectListSavedCache.delete(key));
+  return scope;
+}
+
+export function invalidateProjectListSavedCache(projectId: ObjectId) {
+  projectListSavedCache.delete(projectId.toString());
+}
 
 /** Lowercased emails of project contacts that belong to at least one CRM list. */
 export function emailsAlreadyInLists(projectId: ObjectId) {
-  const key = projectId.toString();
-  const cached = listedEmailsCache.get(key);
-  if (cached && Date.now() - cached.at < LISTED_EMAILS_CACHE_MS) {
-    return cached.emails;
-  }
-  const emails = (async () => {
-    const db = await getDb();
-    const listedIds = new Set(
-      (
-        await db
-          .collection<ListMembershipDoc>("list_memberships")
-          .distinct("contactId", { projectId })
-      ).map((id) => String(id)),
-    );
-    const result = new Set<string>();
-    const cursor = db
-      .collection<ContactDoc>("contacts")
-      .find({ projectId })
-      .project<{ _id: ObjectId; email?: string }>({ _id: 1, email: 1 });
-    for await (const contact of cursor) {
-      if (contact.email && listedIds.has(contact._id.toString())) {
-        result.add(contact.email.trim().toLowerCase());
-      }
-    }
-    return result;
-  })();
-  listedEmailsCache.set(key, { at: Date.now(), emails });
-  emails.catch(() => listedEmailsCache.delete(key));
-  return emails;
+  return projectListSavedScope(projectId).then((scope) => new Set(scope.emails));
 }
 
 const SUPPRESSION_CACHE_MS = 5 * 60 * 1000;
@@ -325,7 +378,7 @@ export function suppressionFor(projectId: ObjectId) {
 /** Start loading exclusion data so the Remove buttons respond quickly. */
 function warmExclusions(projectId: ObjectId) {
   void suppressionFor(projectId).catch(() => undefined);
-  void emailsAlreadyInLists(projectId).catch(() => undefined);
+  void projectListSavedScope(projectId).catch(() => undefined);
 }
 
 const SCAN_CACHE_MS = 2 * 60 * 1000;

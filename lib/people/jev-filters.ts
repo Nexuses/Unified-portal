@@ -225,11 +225,13 @@ export function applyJevDecisions(
 
     if (decisions.verifiedEmails !== undefined) {
       const emailStatus = (next.filters.emailStatus ?? []).filter(
-        (status) => status !== "verified"
+        (status) => status !== "deliverables" && status !== "verified"
       );
       if (decisions.verifiedEmails) {
-        if (!next.filters.emailStatus?.includes("verified")) added.push("verified emails");
-        emailStatus.push("verified");
+        if (!next.filters.emailStatus?.includes("deliverables")) {
+          added.push("deliverable emails");
+        }
+        emailStatus.push("deliverables");
       }
       next = { ...next, filters: { ...next.filters, emailStatus } };
     }

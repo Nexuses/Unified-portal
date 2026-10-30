@@ -1,12 +1,6 @@
 export type EmailStatusCategoryId = "safe" | "caution" | "do_not_send";
 
-export type EmailStatusIconId =
-  | "verified"
-  | "unverified"
-  | "user_managed"
-  | "update_required"
-  | "unavailable"
-  | "catch_all";
+export type EmailStatusIconId = "deliverables" | "risky_deliverables" | "not_found";
 
 export type EmailStatusOption = {
   id: string;
@@ -26,53 +20,29 @@ export const EMAIL_STATUS_CATEGORIES: Array<{ id: EmailStatusCategoryId; label: 
 
 export const EMAIL_STATUS_OPTIONS: EmailStatusOption[] = [
   {
-    id: "verified",
-    label: "Verified",
+    id: "deliverables",
+    label: "deliverables",
     category: "safe",
-    matchPattern: "^\\s*(valid|verified|deliverable)\\s*$",
+    matchPattern: "^\\s*deliverables?\\s*$",
     badgeClass: "bg-emerald-100 text-emerald-800",
-    icon: "verified",
+    icon: "deliverables",
   },
   {
-    id: "unverified",
-    label: "Unverified",
+    id: "risky_deliverables",
+    label: "Risky deliverables",
     category: "caution",
-    matchPattern: "^\\s*(unverified|unknown|extrapolated)\\s*$",
-    badgeClass: "bg-slate-100 text-slate-600",
-    icon: "unverified",
-  },
-  {
-    id: "catch_all",
-    label: "Risky / catch-all",
-    category: "caution",
-    // Imported sheets carry many misspellings ("risky delivereble", "risky deliverables", ...).
-    matchPattern: "^\\s*(catch[\\s_-]?all|accept[\\s_-]?all|risky(\\s+deliv\\w*)?)\\s*$",
+    // Imported sheets carry misspellings ("risky delivereble", "risky deliverable", ...).
+    matchPattern: "^\\s*risky(\\s+deliv\\w*)?\\s*$",
     badgeClass: "bg-amber-100 text-amber-900",
-    icon: "catch_all",
+    icon: "risky_deliverables",
   },
   {
-    id: "user_managed",
-    label: "User managed",
-    category: "caution",
-    matchPattern: "^\\s*user[\\s_-]?managed\\s*$",
-    badgeClass: "bg-slate-100 text-slate-600",
-    icon: "user_managed",
-  },
-  {
-    id: "update_required",
-    label: "Update required",
+    id: "not_found",
+    label: "not found",
     category: "do_not_send",
-    matchPattern: "^\\s*(update[\\s_-]?required|email no longer verified)\\s*$",
-    badgeClass: "bg-amber-100 text-amber-900",
-    icon: "update_required",
-  },
-  {
-    id: "unavailable",
-    label: "Unavailable",
-    category: "do_not_send",
-    matchPattern: "^\\s*(unavailable|invalid|undeliverable|no public business email added)\\s*$",
+    matchPattern: "^\\s*not[\\s_-]?found\\s*$",
     badgeClass: "bg-red-100 text-red-800",
-    icon: "unavailable",
+    icon: "not_found",
   },
 ];
 

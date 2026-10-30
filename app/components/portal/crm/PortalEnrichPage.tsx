@@ -155,7 +155,10 @@ export default function PortalEnrichPage() {
   const [credits, setCredits] = useState<DataCreditStatus | null>(null);
 
   const [saveOpen, setSaveOpen] = useState(false);
+  const [saveStep, setSaveStep] = useState<"count" | "name">("count");
+  const [saveCandidates, setSaveCandidates] = useState<DataToolRecord[]>([]);
   const [saveRecords, setSaveRecords] = useState<DataToolRecord[]>([]);
+  const [saveDesiredCount, setSaveDesiredCount] = useState(1);
   const [saveSummary, setSaveSummary] = useState("");
   const [listName, setListName] = useState("");
   const [saving, setSaving] = useState(false);
@@ -321,6 +324,53 @@ export default function PortalEnrichPage() {
     }
   }
 
+  async function lookupDuplicatesForRecords(records: DataToolRecord[]) {
+    setCheckingDuplicates(true);
+    setDuplicates([]);
+    const emails = [
+      ...new Set(
+        records.map((record) => String(record.email ?? "").trim().toLowerCase()).filter(Boolean),
+      ),
+    ];
+    try {
+      if (emails.length === 0) return;
+      const matchMap = new Map<string, ExistingListRef[]>();
+      const LOOKUP_CHUNK = 500;
+      for (let index = 0; index < emails.length; index += LOOKUP_CHUNK) {
+        const emailChunk = emails.slice(index, index + LOOKUP_CHUNK);
+        const response = await fetch("/api/crm/contacts/lookup-lists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ emails: emailChunk }),
+        });
+        const data = await response.json();
+        if (!response.ok) continue;
+        for (const match of (data.matches as
+          | Array<{ email: string; lists: ExistingListRef[] }>
+          | undefined) ?? []) {
+          matchMap.set(match.email.toLowerCase(), match.lists);
+        }
+      }
+      const nextDuplicates: DuplicateMatch[] = [];
+      for (const record of records) {
+        const email = String(record.email ?? "").trim().toLowerCase();
+        const matched = email ? matchMap.get(email) ?? [] : [];
+        if (matched.length === 0) continue;
+        nextDuplicates.push({
+          recordId: record.id,
+          email,
+          name: recordLabel(record),
+          lists: matched,
+        });
+      }
+      setDuplicates(nextDuplicates);
+    } catch {
+      // Keep save usable if lookup fails.
+    } finally {
+      setCheckingDuplicates(false);
+    }
+  }
+
   async function openSaveModal(context: EnrichSelectionContext, name?: string) {
     if (loadingSave) return;
     if (context.ids.length > ENRICH_MAX_SAVE) {
@@ -333,71 +383,71 @@ export default function PortalEnrichPage() {
     }
     setLoadingSave(true);
     setActionError("");
-    let toSave: DataToolRecord[];
+    let loaded: DataToolRecord[];
     try {
-      toSave = await fetchEnrichRecords(context.ids);
+      loaded = await fetchEnrichRecords(context.ids);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Failed to load contacts");
       setLoadingSave(false);
       return;
     }
     setLoadingSave(false);
-    if (toSave.length === 0) return;
+
+    const withEmail = loaded.filter((record) => String(record.email ?? "").trim().length > 0);
+    if (withEmail.length === 0) {
+      setActionError("None of these contacts have an email address.");
+      return;
+    }
+
+    const creditCap = credits ? credits.remaining : ENRICH_MAX_SAVE;
+    const maxSavable = Math.min(withEmail.length, ENRICH_MAX_SAVE, Math.max(0, creditCap));
+    if (maxSavable === 0) {
+      setActionError("No data credits left this month.");
+      return;
+    }
 
     const stamp = new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    setSaveRecords(toSave);
+    setSaveCandidates(withEmail);
+    setSaveRecords([]);
+    setSaveDesiredCount(maxSavable);
     setSaveSummary(context.filtersSummary);
     setListName(name?.trim() || `Enriched ${stamp}`);
     setSaveError("");
     setSaveProgress(null);
     setDuplicates([]);
+    setSaveStep("count");
     setSaveOpen(true);
-    setCheckingDuplicates(true);
+  }
 
-    const emails = [
-      ...new Set(
-        toSave.map((record) => String(record.email ?? "").trim().toLowerCase()).filter(Boolean),
-      ),
-    ];
+  const saveCountLimit = Math.min(
+    saveCandidates.length,
+    ENRICH_MAX_SAVE,
+    credits ? Math.max(0, credits.remaining) : ENRICH_MAX_SAVE,
+  );
 
-    try {
-      if (emails.length === 0) {
-        return;
-      }
-      const matchMap = new Map<string, ExistingListRef[]>();
-      const LOOKUP_CHUNK = 500;
-      for (let index = 0; index < emails.length; index += LOOKUP_CHUNK) {
-        const emailChunk = emails.slice(index, index + LOOKUP_CHUNK);
-        const response = await fetch("/api/crm/contacts/lookup-lists", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ emails: emailChunk }),
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          continue;
-        }
-        for (const match of (data.matches as
-          | Array<{ email: string; lists: ExistingListRef[] }>
-          | undefined) ?? []) {
-          matchMap.set(match.email.toLowerCase(), match.lists);
-        }
-      }
-      const nextDuplicates: DuplicateMatch[] = [];
-      for (const record of toSave) {
-        const email = String(record.email ?? "").trim().toLowerCase();
-        const matched = email ? matchMap.get(email) ?? [] : [];
-        if (matched.length === 0) {
-          continue;
-        }
-        nextDuplicates.push({ recordId: record.id, email, name: recordLabel(record), lists: matched });
-      }
-      setDuplicates(nextDuplicates);
-    } catch {
-      // Keep save usable if lookup fails.
-    } finally {
-      setCheckingDuplicates(false);
-    }
+  function clampSaveDesiredCount(raw: number) {
+    if (!Number.isFinite(raw) || raw < 1) return 1;
+    return Math.min(Math.floor(raw), Math.max(1, saveCountLimit));
+  }
+
+  function continueSaveToNameStep() {
+    const desired = clampSaveDesiredCount(saveDesiredCount);
+    const chosen = saveCandidates.slice(0, desired);
+    setSaveDesiredCount(desired);
+    setSaveRecords(chosen);
+    setSaveStep("name");
+    void lookupDuplicatesForRecords(chosen);
+  }
+
+  function closeSaveModal() {
+    if (saving) return;
+    setSaveOpen(false);
+    setSaveStep("count");
+    setSaveCandidates([]);
+    setSaveRecords([]);
+    setDuplicates([]);
+    setSaveError("");
+    setSaveProgress(null);
   }
 
   function removeDuplicateFromSave(recordId: string) {
@@ -448,8 +498,7 @@ export default function PortalEnrichPage() {
           filtersSummary: saveSummary,
         });
       }
-      setSaveOpen(false);
-      setDuplicates([]);
+      closeSaveModal();
       if (listId) {
         router.push(portalListRoute(listId));
       }
@@ -591,14 +640,7 @@ export default function PortalEnrichPage() {
       )}
 
       {saveOpen ? (
-        <div
-          className="crm-modal-backdrop"
-          onClick={() => {
-            if (!saving) {
-              setSaveOpen(false);
-            }
-          }}
-        >
+        <div className="crm-modal-backdrop" onClick={closeSaveModal}>
           <div
             className="crm-modal enrich-save-modal"
             onClick={(event) => event.stopPropagation()}
@@ -610,121 +652,177 @@ export default function PortalEnrichPage() {
               <div>
                 <h3 id="enrich-save-title">Save to list</h3>
                 <p>
-                  Create a new CRM list with {saveRecords.length.toLocaleString()} contact
-                  {saveRecords.length === 1 ? "" : "s"}. All enrich fields are saved on each
-                  contact.
+                  {saveStep === "count"
+                    ? "Choose how many contacts to save. We only save contacts that have an email."
+                    : `Create a CRM list with ${saveRecords.length.toLocaleString()} contact${saveRecords.length === 1 ? "" : "s"} that have an email.`}
                 </p>
               </div>
               <button
                 type="button"
                 className="crm-modal-close"
-                onClick={() => setSaveOpen(false)}
+                onClick={closeSaveModal}
                 aria-label="Close"
                 disabled={saving}
               >
                 ×
               </button>
             </div>
-            <div className="crm-modal-body">
-              <div className="crm-field">
-                <label htmlFor="enrich-list-name">List name</label>
-                <input
-                  id="enrich-list-name"
-                  value={listName}
-                  onChange={(event) => setListName(event.target.value)}
-                  placeholder="e.g. SaaS VPs US"
-                  disabled={saving}
-                  autoFocus
-                />
-              </div>
 
-              {checkingDuplicates ? (
-                <p className="enrich-dup-status">Checking for existing emails…</p>
-              ) : null}
-
-              {!checkingDuplicates && duplicates.length > 0 ? (
-                <div className="enrich-dup-panel">
-                  <div className="enrich-dup-panel-head">
-                    <div>
-                      <strong>{duplicates.length} already in your lists</strong>
-                      <p>
-                        These emails already belong to other CRM lists. Remove
-                        them before saving, or keep them to add again.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="btn-soft enrich-danger-btn"
-                      onClick={removeAllDuplicatesFromSave}
-                      disabled={saving}
-                    >
-                      Remove all
-                    </button>
+            {saveStep === "count" ? (
+              <>
+                <div className="crm-modal-body">
+                  <div className="enrich-save-hint">
+                    <strong>{saveCandidates.length.toLocaleString()}</strong> contact
+                    {saveCandidates.length === 1 ? "" : "s"} have an email and can be saved.
+                    Contacts without an email are skipped.
                   </div>
-                  <ul className="enrich-dup-list">
-                    {duplicates.map((row) => (
-                      <li key={row.recordId}>
+                  <div className="crm-field">
+                    <label htmlFor="enrich-save-count">How many contacts do you want to save?</label>
+                    <input
+                      id="enrich-save-count"
+                      type="number"
+                      min={1}
+                      max={Math.max(1, saveCountLimit)}
+                      value={saveDesiredCount}
+                      onChange={(event) => {
+                        const raw = event.target.value;
+                        if (raw === "") {
+                          setSaveDesiredCount(1);
+                          return;
+                        }
+                        setSaveDesiredCount(clampSaveDesiredCount(Number(raw)));
+                      }}
+                      onBlur={() => setSaveDesiredCount((n) => clampSaveDesiredCount(n))}
+                      autoFocus
+                    />
+                  </div>
+                  {credits ? (
+                    <p className="enrich-dup-status">
+                      Data credits remaining: {credits.remaining.toLocaleString()}
+                    </p>
+                  ) : null}
+                  {saveError ? <div className="crm-error">{saveError}</div> : null}
+                </div>
+                <div className="crm-modal-foot">
+                  <button type="button" className="btn-link-purple" onClick={closeSaveModal}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-dark"
+                    onClick={continueSaveToNameStep}
+                    disabled={saveCountLimit === 0}
+                  >
+                    Continue
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="crm-modal-body">
+                  <div className="crm-field">
+                    <label htmlFor="enrich-list-name">List name</label>
+                    <input
+                      id="enrich-list-name"
+                      value={listName}
+                      onChange={(event) => setListName(event.target.value)}
+                      placeholder="e.g. SaaS VPs US"
+                      disabled={saving}
+                      autoFocus
+                    />
+                  </div>
+
+                  {checkingDuplicates ? (
+                    <p className="enrich-dup-status">Checking for existing emails…</p>
+                  ) : null}
+
+                  {!checkingDuplicates && duplicates.length > 0 ? (
+                    <div className="enrich-dup-panel">
+                      <div className="enrich-dup-panel-head">
                         <div>
-                          <div className="enrich-name">{row.name}</div>
-                          <div className="enrich-meta">{row.email}</div>
-                          <div className="enrich-meta">
-                            In{" "}
-                            {row.lists
-                              .map((list) => `${list.name} (#${list.displayId})`)
-                              .join(", ")}
-                          </div>
+                          <strong>{duplicates.length} already in your lists</strong>
+                          <p>
+                            These emails already belong to other CRM lists. Remove them before
+                            saving, or keep them to add again.
+                          </p>
                         </div>
                         <button
                           type="button"
                           className="btn-soft enrich-danger-btn"
-                          onClick={() => removeDuplicateFromSave(row.recordId)}
+                          onClick={removeAllDuplicatesFromSave}
                           disabled={saving}
                         >
-                          Remove
+                          Remove all
                         </button>
-                      </li>
-                    ))}
-                  </ul>
+                      </div>
+                      <ul className="enrich-dup-list">
+                        {duplicates.map((row) => (
+                          <li key={row.recordId}>
+                            <div>
+                              <div className="enrich-name">{row.name}</div>
+                              <div className="enrich-meta">{row.email}</div>
+                              <div className="enrich-meta">
+                                In{" "}
+                                {row.lists
+                                  .map((list) => `${list.name} (#${list.displayId})`)
+                                  .join(", ")}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn-soft enrich-danger-btn"
+                              onClick={() => removeDuplicateFromSave(row.recordId)}
+                              disabled={saving}
+                            >
+                              Remove
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {!checkingDuplicates && duplicates.length === 0 && saveRecords.length > 0 ? (
+                    <p className="enrich-dup-status ok">
+                      No selected emails are already on other lists.
+                    </p>
+                  ) : null}
+
+                  {saving && saveProgress ? (
+                    <p className="enrich-dup-status">
+                      Saving {saveProgress.done.toLocaleString()} of{" "}
+                      {saveProgress.total.toLocaleString()}…
+                    </p>
+                  ) : null}
+
+                  {saveError ? <div className="crm-error">{saveError}</div> : null}
                 </div>
-              ) : null}
-
-              {!checkingDuplicates && duplicates.length === 0 && saveRecords.length > 0 ? (
-                <p className="enrich-dup-status ok">
-                  No selected emails are already on other lists.
-                </p>
-              ) : null}
-
-              {saving && saveProgress ? (
-                <p className="enrich-dup-status">
-                  Saving {saveProgress.done.toLocaleString()} of{" "}
-                  {saveProgress.total.toLocaleString()}…
-                </p>
-              ) : null}
-
-              {saveError ? <div className="crm-error">{saveError}</div> : null}
-            </div>
-            <div className="crm-modal-foot">
-              <button
-                type="button"
-                className="btn-link-purple"
-                onClick={() => setSaveOpen(false)}
-                disabled={saving}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn-dark"
-                onClick={() => void saveToList()}
-                disabled={
-                  saving || !listName.trim() || saveRecords.length === 0 || checkingDuplicates
-                }
-              >
-                {saving
-                  ? "Saving…"
-                  : `Save ${saveRecords.length.toLocaleString()} contact${saveRecords.length === 1 ? "" : "s"}`}
-              </button>
-            </div>
+                <div className="crm-modal-foot">
+                  <button
+                    type="button"
+                    className="btn-link-purple"
+                    onClick={() => {
+                      if (!saving) setSaveStep("count");
+                    }}
+                    disabled={saving}
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-dark"
+                    onClick={() => void saveToList()}
+                    disabled={
+                      saving || !listName.trim() || saveRecords.length === 0 || checkingDuplicates
+                    }
+                  >
+                    {saving
+                      ? "Saving…"
+                      : `Save ${saveRecords.length.toLocaleString()} contact${saveRecords.length === 1 ? "" : "s"}`}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       ) : null}
