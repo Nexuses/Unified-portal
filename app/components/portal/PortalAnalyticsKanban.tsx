@@ -9,7 +9,9 @@ import {
   companyFaviconUrl,
   DEFAULT_STAGE_COLOR,
   fetchKanbanBoard,
+  fetchKanbanLists,
   KANBAN_DOT_COLORS,
+  KANBAN_STAGE_RULES,
   patchKanbanBoard,
   kanbanPeopleForBotFilter,
   personReachesStageRule,
@@ -18,10 +20,15 @@ import {
   stageIdForPerson,
   type KanbanBoard,
   type KanbanCampaignRef,
+  type KanbanList,
   type KanbanManualPerson,
   type KanbanPerson,
   type KanbanStage,
 } from "@/lib/analytics-kanban";
+import {
+  campaignKeysFromPipeline,
+  mergeImportedStages,
+} from "@/lib/analytics-kanban-pipeline-import";
 import {
   fetchDripCampaigns,
   type DripCampaign,
@@ -169,9 +176,18 @@ export default function PortalAnalyticsKanban({
   );
   const [editingCampaigns, setEditingCampaigns] = useState(false);
   const [allCampaigns, setAllCampaigns] = useState<DripCampaign[]>([]);
+  const [pipelineLists, setPipelineLists] = useState<KanbanList[]>([]);
+  const [campaignEditSource, setCampaignEditSource] = useState<"campaigns" | "pipeline">(
+    "campaigns",
+  );
   const [pickedCampaigns, setPickedCampaigns] = useState<string[]>([]);
+  const [sourcePipelineId, setSourcePipelineId] = useState("");
+  const [pipelineScope, setPipelineScope] = useState<"full" | "stages">("full");
+  const [pipelineStageIds, setPipelineStageIds] = useState<string[]>([]);
+  const [importPipelineStages, setImportPipelineStages] = useState(true);
   const [savingCampaigns, setSavingCampaigns] = useState(false);
   const [campaignQuery, setCampaignQuery] = useState("");
+  const [pipelineQuery, setPipelineQuery] = useState("");
   const [visibleByStage, setVisibleByStage] = useState<Record<string, number>>({});
   const [editingStageId, setEditingStageId] = useState("");
   const [editingStageName, setEditingStageName] = useState("");
@@ -860,9 +876,60 @@ export default function PortalAnalyticsKanban({
     });
   }, [campaignQuery, pickableCampaigns]);
 
+  const otherPipelines = useMemo(
+    () => pipelineLists.filter((item) => item.id !== board?.id),
+    [pipelineLists, board?.id],
+  );
+
+  const visiblePipelines = useMemo(() => {
+    const query = pipelineQuery.trim().toLowerCase();
+    if (!query) {
+      return otherPipelines;
+    }
+    return otherPipelines.filter(
+      (item) =>
+        item.name.toLowerCase().includes(query) ||
+        item.campaigns.some((campaign) => campaign.name.toLowerCase().includes(query)),
+    );
+  }, [otherPipelines, pipelineQuery]);
+
+  const sourcePipeline = useMemo(
+    () => otherPipelines.find((item) => item.id === sourcePipelineId) ?? null,
+    [otherPipelines, sourcePipelineId],
+  );
+
+  function campaignRefKey(campaign: KanbanCampaignRef) {
+    return `${campaign.kind}:${campaign.campaignId}`;
+  }
+
+  function applyPipelineSelection(pipeline: KanbanList) {
+    setSourcePipelineId(pipeline.id);
+    setPipelineScope("full");
+    setPipelineStageIds(pipeline.stages.map((stage) => stage.id));
+    setPickedCampaigns((current) => {
+      const next = new Set(current);
+      for (const key of campaignKeysFromPipeline(pipeline)) {
+        next.add(key);
+      }
+      return [...next];
+    });
+  }
+
+  function stagesToImport(pipeline: KanbanList): KanbanStage[] {
+    return pipelineScope === "full"
+      ? pipeline.stages
+      : pipeline.stages.filter((stage) => pipelineStageIds.includes(stage.id));
+  }
+
   async function openCampaignEditor() {
     setEditingCampaigns(true);
+    setCampaignEditSource("campaigns");
     setCampaignQuery("");
+    setPipelineQuery("");
+    setSourcePipelineId("");
+    setPipelineScope("full");
+    setPipelineStageIds([]);
+    setImportPipelineStages(true);
     setChatOpen(false);
     if (board) {
       setPickedCampaigns(
@@ -871,39 +938,95 @@ export default function PortalAnalyticsKanban({
         ),
       );
     }
-    if (allCampaigns.length > 0) {
-      return;
-    }
     try {
-      const [drip, oneone] = await Promise.all([
-        fetchDripCampaigns("drip"),
-        fetchDripCampaigns("oneone"),
-      ]);
-      setAllCampaigns([...drip, ...oneone]);
+      const tasks: Array<Promise<void>> = [];
+      if (allCampaigns.length === 0) {
+        tasks.push(
+          Promise.all([fetchDripCampaigns("drip"), fetchDripCampaigns("oneone")]).then(
+            ([drip, oneone]) => {
+              setAllCampaigns([...drip, ...oneone]);
+            },
+          ),
+        );
+      }
+      if (pipelineLists.length === 0) {
+        tasks.push(
+          fetchKanbanLists().then((lists) => {
+            setPipelineLists(lists);
+          }),
+        );
+      }
+      if (tasks.length > 0) {
+        await Promise.all(tasks);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load campaigns");
     }
   }
 
   async function saveCampaigns() {
-    if (!board || pickedCampaigns.length === 0 || savingCampaigns) {
+    if (!board || savingCampaigns) {
       return;
     }
-    const campaigns: KanbanCampaignRef[] = pickableCampaigns
+
+    const fromPickable = pickableCampaigns
       .filter((campaign) => pickedCampaigns.includes(campaignKey(campaign)))
       .map((campaign) => ({
         campaignId: campaign.id,
-        kind: campaign.kind === "oneone" ? "oneone" : "drip",
+        kind: (campaign.kind === "oneone" ? "oneone" : "drip") as KanbanCampaignRef["kind"],
         name: campaign.name,
       }));
+
+    const fromPipelines: KanbanCampaignRef[] = [];
+    if (sourcePipeline) {
+      for (const campaign of sourcePipeline.campaigns) {
+        if (pickedCampaigns.includes(campaignRefKey(campaign))) {
+          fromPipelines.push({
+            campaignId: campaign.campaignId,
+            kind: campaign.kind === "oneone" ? "oneone" : "drip",
+            name: campaign.name,
+          });
+        }
+      }
+    }
+
+    const byKey = new Map<string, KanbanCampaignRef>();
+    for (const campaign of [...fromPickable, ...fromPipelines, ...board.campaigns]) {
+      const key = campaignRefKey(campaign);
+      if (pickedCampaigns.includes(key) && !byKey.has(key)) {
+        byKey.set(key, {
+          campaignId: campaign.campaignId,
+          kind: campaign.kind === "oneone" ? "oneone" : "drip",
+          name: campaign.name,
+        });
+      }
+    }
+    const campaigns = [...byKey.values()];
     if (campaigns.length === 0) {
-      setError("Select at least one campaign");
+      setError("Select at least one campaign or an old pipeline");
       return;
     }
+
+    const patch: {
+      campaigns: KanbanCampaignRef[];
+      stages?: KanbanStage[];
+    } = { campaigns };
+
+    if (
+      campaignEditSource === "pipeline" &&
+      importPipelineStages &&
+      sourcePipeline
+    ) {
+      const incoming = stagesToImport(sourcePipeline);
+      if (incoming.length > 0) {
+        patch.stages = mergeImportedStages(board.stages, incoming);
+      }
+    }
+
     setSavingCampaigns(true);
     setError("");
     try {
-      const saved = await patchKanbanBoard(board.id, { campaigns });
+      const saved = await patchKanbanBoard(board.id, patch);
       setBoard(saved);
       setEditingCampaigns(false);
     } catch (err) {
@@ -1158,47 +1281,224 @@ export default function PortalAnalyticsKanban({
         <div className="an-kanban-campaigns">
           <div className="an-kanban-campaigns-top">
             <strong>Edit campaigns</strong>
-            <span>Add or remove sent and running campaigns on this board.</span>
+            <span>
+              Add campaigns directly, or pull campaigns and stages from an old
+              pipeline.
+            </span>
           </div>
-          {pickableCampaigns.length === 0 ? (
-            <p>No sent or running campaigns yet.</p>
-          ) : (
-            <input
-              className="an-kanban-pick-search"
-              value={campaignQuery}
-              onChange={(event) => setCampaignQuery(event.target.value)}
-              placeholder="Search campaigns…"
-            />
-          )}
-          {pickableCampaigns.length === 0 ? null : visibleCampaigns.length === 0 ? (
-            <p>No campaigns match that search.</p>
-          ) : (
-            <div className="an-kanban-pick-list">
-              {visibleCampaigns.map((campaign) => {
-                const key = campaignKey(campaign);
-                return (
-                  <label key={key} className="an-kanban-pick-row">
-                    <input
-                      type="checkbox"
-                      checked={pickedCampaigns.includes(key)}
-                      onChange={() =>
-                        setPickedCampaigns((current) =>
-                          current.includes(key)
-                            ? current.filter((item) => item !== key)
-                            : [...current, key],
-                        )
-                      }
-                    />
-                    <strong>{campaign.name}</strong>
-                    <em>
-                      {campaign.kind === "oneone" ? "1-1" : "Drip"} ·{" "}
-                      {campaign.status === "sending" ? "Running" : campaign.status === "paused" ? "Paused" : "Sent"}
-                    </em>
-                  </label>
-                );
-              })}
+          <div className="an-kanban-create-accordions">
+            <div
+              className={`an-kanban-accordion${campaignEditSource === "campaigns" ? " is-open" : ""}`}
+            >
+              <button
+                type="button"
+                className="an-kanban-accordion-trigger"
+                aria-expanded={campaignEditSource === "campaigns"}
+                onClick={() => setCampaignEditSource("campaigns")}
+              >
+                <span>Campaigns</span>
+                <em>
+                  {pickedCampaigns.length > 0
+                    ? `${pickedCampaigns.length} selected`
+                    : "Pick sent or running campaigns"}
+                </em>
+              </button>
+              {campaignEditSource === "campaigns" ? (
+                <div className="an-kanban-accordion-body">
+                  <div className="an-kanban-pick">
+                    {pickableCampaigns.length === 0 ? (
+                      <p>No sent or running campaigns yet.</p>
+                    ) : (
+                      <input
+                        className="an-kanban-pick-search"
+                        value={campaignQuery}
+                        onChange={(event) => setCampaignQuery(event.target.value)}
+                        placeholder="Search campaigns…"
+                      />
+                    )}
+                    {pickableCampaigns.length === 0 ? null : visibleCampaigns.length === 0 ? (
+                      <p>No campaigns match that search.</p>
+                    ) : (
+                      <div className="an-kanban-pick-list">
+                        {visibleCampaigns.map((campaign) => {
+                          const key = campaignKey(campaign);
+                          return (
+                            <label key={key} className="an-kanban-pick-row">
+                              <input
+                                type="checkbox"
+                                checked={pickedCampaigns.includes(key)}
+                                onChange={() =>
+                                  setPickedCampaigns((current) =>
+                                    current.includes(key)
+                                      ? current.filter((item) => item !== key)
+                                      : [...current, key],
+                                  )
+                                }
+                              />
+                              <strong>{campaign.name}</strong>
+                              <em>
+                                {campaign.kind === "oneone" ? "1-1" : "Drip"} ·{" "}
+                                {campaign.status === "sending"
+                                  ? "Running"
+                                  : campaign.status === "paused"
+                                    ? "Paused"
+                                    : "Sent"}
+                              </em>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
-          )}
+
+            <div
+              className={`an-kanban-accordion${campaignEditSource === "pipeline" ? " is-open" : ""}`}
+            >
+              <button
+                type="button"
+                className="an-kanban-accordion-trigger"
+                aria-expanded={campaignEditSource === "pipeline"}
+                onClick={() => setCampaignEditSource("pipeline")}
+              >
+                <span>Old pipeline</span>
+                <em>
+                  {sourcePipeline
+                    ? pipelineScope === "full"
+                      ? `${sourcePipeline.name} · full pipeline`
+                      : `${sourcePipeline.name} · ${pipelineStageIds.length} stage${pipelineStageIds.length === 1 ? "" : "s"}`
+                    : "Import campaigns from another board"}
+                </em>
+              </button>
+              {campaignEditSource === "pipeline" ? (
+                <div className="an-kanban-accordion-body">
+                  <div className="an-kanban-pick">
+                    {otherPipelines.length === 0 ? (
+                      <p>No other pipelines available yet.</p>
+                    ) : (
+                      <input
+                        className="an-kanban-pick-search"
+                        value={pipelineQuery}
+                        onChange={(event) => setPipelineQuery(event.target.value)}
+                        placeholder="Search pipelines…"
+                      />
+                    )}
+                    {otherPipelines.length === 0 ? null : visiblePipelines.length === 0 ? (
+                      <p>No pipelines match that search.</p>
+                    ) : (
+                      <div className="an-kanban-pick-list">
+                        {visiblePipelines.map((pipeline) => {
+                          const active = sourcePipelineId === pipeline.id;
+                          return (
+                            <div key={pipeline.id} className="an-kanban-pipeline-block">
+                              <label className="an-kanban-pick-row">
+                                <input
+                                  type="radio"
+                                  name="kanban-edit-source-pipeline"
+                                  checked={active}
+                                  onChange={() => applyPipelineSelection(pipeline)}
+                                />
+                                <strong>{pipeline.name}</strong>
+                                <em>
+                                  {pipeline.campaigns.length} campaign
+                                  {pipeline.campaigns.length === 1 ? "" : "s"} ·{" "}
+                                  {pipeline.stages.length} stage
+                                  {pipeline.stages.length === 1 ? "" : "s"}
+                                </em>
+                              </label>
+                              {active ? (
+                                <div className="an-kanban-pipeline-stages">
+                                  <label className="an-kanban-pick-row an-kanban-pipeline-scope">
+                                    <input
+                                      type="radio"
+                                      name={`kanban-edit-pipeline-scope-${pipeline.id}`}
+                                      checked={pipelineScope === "full"}
+                                      onChange={() => {
+                                        setPipelineScope("full");
+                                        setPipelineStageIds(
+                                          pipeline.stages.map((stage) => stage.id),
+                                        );
+                                        applyPipelineSelection(pipeline);
+                                      }}
+                                    />
+                                    <strong>Full pipeline</strong>
+                                    <em>Add all campaigns from this board</em>
+                                  </label>
+                                  <label className="an-kanban-pick-row an-kanban-pipeline-scope">
+                                    <input
+                                      type="radio"
+                                      name={`kanban-edit-pipeline-scope-${pipeline.id}`}
+                                      checked={pipelineScope === "stages"}
+                                      onChange={() => setPipelineScope("stages")}
+                                    />
+                                    <strong>Choose stages</strong>
+                                    <em>Pick stages to import (campaigns still added)</em>
+                                  </label>
+                                  {pipelineScope === "stages" ? (
+                                    <div className="an-kanban-pipeline-stage-list">
+                                      {pipeline.stages.map((stage) => (
+                                        <label
+                                          key={stage.id}
+                                          className="an-kanban-pick-row an-kanban-pipeline-stage"
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={pipelineStageIds.includes(stage.id)}
+                                            onChange={() =>
+                                              setPipelineStageIds((current) =>
+                                                current.includes(stage.id)
+                                                  ? current.filter((id) => id !== stage.id)
+                                                  : [...current, stage.id],
+                                              )
+                                            }
+                                          />
+                                          <strong>
+                                            <i
+                                              className="an-kanban-dot"
+                                              style={{ background: stage.color }}
+                                              aria-hidden
+                                            />
+                                            {stage.name}
+                                          </strong>
+                                          <em>
+                                            {stage.rule
+                                              ? KANBAN_STAGE_RULES.find(
+                                                  (item) => item.value === stage.rule,
+                                                )?.label || stage.rule
+                                              : "Custom"}
+                                          </em>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  <label className="an-kanban-pick-row an-kanban-pipeline-scope">
+                                    <input
+                                      type="checkbox"
+                                      checked={importPipelineStages}
+                                      onChange={(event) =>
+                                        setImportPipelineStages(event.target.checked)
+                                      }
+                                    />
+                                    <strong>Also import stages</strong>
+                                    <em>Merge selected stages into this board</em>
+                                  </label>
+                                  {pipeline.campaigns.length === 0 ? (
+                                    <p>This pipeline has no campaigns linked.</p>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
           <div className="an-kanban-add-actions">
             <button
               type="button"

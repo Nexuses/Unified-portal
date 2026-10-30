@@ -136,6 +136,8 @@ export type KanbanList = {
   id: string;
   name: string;
   campaigns: KanbanCampaignRef[];
+  /** Stage defs for “copy from old pipeline” when creating a new list. */
+  stages: KanbanStage[];
   createdAt: string;
   updatedAt: string;
 };
@@ -284,13 +286,28 @@ export async function fetchKanbanLists(): Promise<KanbanList[]> {
       typeof data?.error === "string" ? data.error : "Failed to load lists",
     );
   }
-  return Array.isArray(data) ? (data as KanbanList[]) : [];
+  if (!Array.isArray(data)) {
+    return [];
+  }
+  return data.map((item) => {
+    const row = item as KanbanList;
+    return {
+      ...row,
+      stages: Array.isArray(row.stages) ? row.stages : [],
+      campaigns: Array.isArray(row.campaigns) ? row.campaigns : [],
+    };
+  });
 }
 
 export async function createKanbanList(input: {
   name: string;
   campaigns: KanbanCampaignRef[];
-  stages?: Array<Pick<KanbanStage, "name" | "color" | "rule">>;
+  stages?: Array<
+    Pick<KanbanStage, "name" | "color"> & {
+      rule?: KanbanStageRule;
+      custom?: boolean;
+    }
+  >;
 }): Promise<KanbanBoard> {
   const response = await fetch("/api/analytics/kanban", {
     method: "POST",

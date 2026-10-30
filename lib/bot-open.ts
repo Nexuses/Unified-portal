@@ -1,4 +1,8 @@
-import { sendHasHumanClick, type SendClickHints } from "@/lib/bot-click";
+import {
+  sendHasHumanClick,
+  sendIsBotClick,
+  type SendClickHints,
+} from "@/lib/bot-click";
 
 /** Matches campaign open bot-grace (first 25s after send). */
 export const BOT_OPEN_GRACE_MS = 25_000;
@@ -67,12 +71,12 @@ export function botOpenLabel(send: SendOpenHints) {
 }
 
 /**
- * When hiding bot engagement: exclude opens that look bot-like unless the
- * contact also has a human click (click proves a real open).
+ * When hiding bot engagement: exclude opens that look bot-like, or opens that
+ * only came with scanner/multi-link clicks, unless a real human click remains.
  */
 export function sendIsBotOnlyOpen(send: SendOpenHideHints) {
-  if (!sendIsBotOpen(send)) {
+  if (sendHasHumanClick(send)) {
     return false;
   }
-  return !sendHasHumanClick(send);
+  return sendIsBotOpen(send) || sendIsBotClick(send);
 }

@@ -20,6 +20,7 @@ import {
 } from "@/lib/projects";
 import {
   injectCampaignTracking,
+  isClickTrapUrl,
   isNonNavigationalTrackedUrl,
   resolveUtmConfig,
   resolveUsableTrackingOrigin,
@@ -42,7 +43,12 @@ import {
   sendCountsAsOpen,
   sendOpenPixelBlocked,
 } from "@/lib/open-pixel";
-import { BOT_CLICK_TAG, clickEventIsBot, sendIsBotClick } from "@/lib/bot-click";
+import {
+  BOT_CLICK_TAG,
+  clickEventIsBot,
+  sendHasHumanClick,
+  sendIsBotClick,
+} from "@/lib/bot-click";
 import { BOT_OPEN_TAG, sendIsBotOnlyOpen, sendIsBotOpen } from "@/lib/bot-open";
 import {
   GMAIL_DAILY_LIMIT_DEFAULT,
@@ -184,7 +190,7 @@ export type CampaignSendDoc = {
     url: string;
     at: Date;
     ignored?: boolean;
-    /** Instant-click projects: counted but tagged as bot (grace/burst). */
+    /** Counted but tagged as bot (honeypot trap or multi-link burst). */
     bot?: boolean;
     ip?: string;
     userAgent?: string;
@@ -195,7 +201,7 @@ export type CampaignSendDoc = {
   clickBurstIgnored?: boolean;
   /**
    * Instant-click projects: send has at least one counted bot/scanner click
-   * (within grace or burst) that should show the Bot click tag.
+   * (honeypot trap or burst) that should show the Bot click tag.
    */
   botClick?: boolean;
   unsubscribedAt?: Date;
@@ -2652,7 +2658,10 @@ function availableAtForNewStep(
 
 /** Bot-tag / filter window for opens (always-on Action Open for every project). */
 export const OPEN_BOT_GRACE_MS = 25_000;
-/** Bot-tag window for clicks (always-on Action Click for every project). */
+/**
+ * @deprecated Click bots use the /nxs-click-trap honeypot. Kept for legacy
+ * skipClickGrace=false path only.
+ */
 export const CLICK_BOT_GRACE_MS = 25_000;
 /** Ignore counted clicks closer together than this (link scanners). */
 export const CLICK_MIN_GAP_MS = 2_000;
@@ -2684,7 +2693,7 @@ function isWithinBotGracePeriod(
 }
 
 async function getProjectEngagementFlags(_projectId: ObjectId) {
-  // Action Open + Click are always on for every project (25s bot-tag window).
+  // Opens: count + 25s bot-tag. Clicks: count + honeypot trap / burst bot-tag.
   return {
     skipOpenGrace: true,
     skipClickGrace: true,
@@ -2998,17 +3007,18 @@ export async function recordCampaignClick(
   const client = engagementMetaFields(meta);
   const clickEventBase = { at: now, ...client };
 
-  // Instant-click projects count every click, including multi-link bursts,
-  // but tag grace/burst hits as bot clicks for the report toggle.
+  // Count every click; tag honeypot trap + multi-link bursts as bot clicks.
   if (skipClickGrace) {
     const priorEvents = send.clickEvents ?? [];
-    const withinGrace = isWithinBotGracePeriod(send, CLICK_BOT_GRACE_MS);
+    const trapHit =
+      isClickTrapUrl(clickedUrl) ||
+      priorEvents.some((event) => isClickTrapUrl(event.url ?? ""));
     const burst = detectClickBurst({
       events: priorEvents,
       now,
       nextUrl: clickedUrl,
     });
-    const isBot = withinGrace || burst.ignore;
+    const isBot = trapHit || burst.ignore;
     await sends.updateOne(
       { _id: send._id },
       {
@@ -3260,7 +3270,7 @@ export type CampaignSendRecipient = {
   clickedIp?: string;
   /** Device class from the latest counted click. */
   clickedDevice?: "mobile" | "tablet" | "desktop" | "unknown";
-  /** e.g. "Bot click" for grace/burst clicks on instant-click projects. */
+  /** e.g. "Bot click" for honeypot trap / burst clicks. */
   clickTag?: string;
   botClick?: boolean;
   unsubscribedAt?: string;
@@ -3420,11 +3430,8 @@ export async function listCampaignSendRecipients(
           return true;
         });
         if (countable.length === 0) continue;
-        if (
-          hideBotClicks &&
-          sendIsBotClick(doc) &&
-          countable.every((event) => clickEventIsBot(doc, event))
-        ) {
+        // Drop multi-link scanner crumbs that survive per-event trap/burst checks.
+        if (hideBotClicks && !sendHasHumanClick(doc)) {
           continue;
         }
         if (countable.some((event) => (event.url || doc.clickedUrl || "").trim())) {
@@ -3579,7 +3586,7 @@ export async function listCampaignSendRecipients(
       if (countable.length === 0) {
         continue;
       }
-      if (hideBotClicks && sendIsBotClick(doc) && countable.every((event) => clickEventIsBot(doc, event))) {
+      if (hideBotClicks && !sendHasHumanClick(doc)) {
         continue;
       }
 
@@ -3731,6 +3738,7 @@ export async function listCampaignSendsForExport(
         openPixelBlocked: 1,
         botOpen: 1,
         openedDevice: 1,
+        openedIp: 1,
         openEvents: {
           $map: {
             input: { $slice: [{ $ifNull: ["$openEvents", []] }, 3] },
@@ -3738,6 +3746,7 @@ export async function listCampaignSendsForExport(
             in: {
               at: "$$event.at",
               device: "$$event.device",
+              ip: "$$event.ip",
               inferredFromClick: "$$event.inferredFromClick",
               bot: "$$event.bot",
             },
@@ -3766,6 +3775,8 @@ export async function listCampaignSendsForExport(
         },
         clickCount: 1,
         unsubscribedAt: 1,
+        bouncedAt: 1,
+        repliedAt: 1,
         sequenceIndex: 1,
       },
     })

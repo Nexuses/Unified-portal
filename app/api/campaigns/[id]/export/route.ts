@@ -4,8 +4,9 @@ import { listCampaignSendsForExport } from "@/lib/campaign-blasts-server";
 import { getProjectDripCampaign } from "@/lib/drip-campaigns-server";
 import { parseCampaignKind } from "@/lib/drip-campaigns";
 import {
-  buildCampaignReportWorkbook,
+  buildCampaignReportExportWorkbook,
   campaignReportFilename,
+  parseCampaignReportExportFormat,
 } from "@/lib/campaign-report-excel";
 import {
   isSessionError,
@@ -34,15 +35,21 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const hideBotClicks =
       session.instantClick &&
       request.nextUrl.searchParams.get("hideBotClicks") === "1";
+    const format = parseCampaignReportExportFormat(
+      request.nextUrl.searchParams.get("format"),
+    );
     const sends = await listCampaignSendsForExport(projectId, id, kind);
-    const buffer = await buildCampaignReportWorkbook({
-      campaignName: campaign.name,
-      timezone: campaign.timezone || "Asia/Kolkata",
-      sentAt: campaign.sentAt,
-      sends,
-      hideBotClicks,
-    });
-    const filename = campaignReportFilename(campaign.name);
+    const buffer = await buildCampaignReportExportWorkbook(
+      {
+        campaignName: campaign.name,
+        timezone: campaign.timezone || "Asia/Kolkata",
+        sentAt: campaign.sentAt,
+        sends,
+        hideBotClicks,
+      },
+      format,
+    );
+    const filename = campaignReportFilename(campaign.name, format);
 
     return new NextResponse(new Uint8Array(buffer), {
       headers: {

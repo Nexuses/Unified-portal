@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { listCampaignSendsForExport } from "@/lib/campaign-blasts-server";
 import { getDripCampaignByShareToken } from "@/lib/drip-campaigns-server";
 import {
-  buildCampaignReportWorkbook,
+  buildCampaignReportExportWorkbook,
   campaignReportFilename,
+  parseCampaignReportExportFormat,
 } from "@/lib/campaign-report-excel";
 
 type RouteContext = {
@@ -18,21 +19,25 @@ export async function GET(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Report not found" }, { status: 404 });
     }
 
-    const hideBotClicks =
-      new URL(request.url).searchParams.get("hideBotClicks") === "1";
+    const url = new URL(request.url);
+    const hideBotClicks = url.searchParams.get("hideBotClicks") === "1";
+    const format = parseCampaignReportExportFormat(url.searchParams.get("format"));
     const sends = await listCampaignSendsForExport(
       found.projectId,
       found.campaign.id,
       found.campaign.kind,
     );
-    const buffer = await buildCampaignReportWorkbook({
-      campaignName: found.campaign.name,
-      timezone: found.campaign.timezone || "Asia/Kolkata",
-      sentAt: found.campaign.sentAt,
-      sends,
-      hideBotClicks,
-    });
-    const filename = campaignReportFilename(found.campaign.name);
+    const buffer = await buildCampaignReportExportWorkbook(
+      {
+        campaignName: found.campaign.name,
+        timezone: found.campaign.timezone || "Asia/Kolkata",
+        sentAt: found.campaign.sentAt,
+        sends,
+        hideBotClicks,
+      },
+      format,
+    );
+    const filename = campaignReportFilename(found.campaign.name, format);
 
     return new NextResponse(new Uint8Array(buffer), {
       headers: {

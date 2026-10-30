@@ -289,7 +289,26 @@ export function campaignTrackingUrls(origin: string, token: string) {
     open: `${base}/t/o/${token}`,
     click: (url: string) => `${base}/t/c/${token}?u=${encodeURIComponent(url)}`,
     unsubscribe: `${base}/t/u/${token}`,
+    /** Hidden honeypot destination — scanners that hit every link trip this. */
+    clickTrap: `${base}/nxs-click-trap`,
   };
+}
+
+/** True when this destination is the bot honeypot trap link. */
+export function isClickTrapUrl(url: string) {
+  const raw = String(url ?? "").trim();
+  if (!raw) {
+    return false;
+  }
+  if (/nxs-click-trap/i.test(raw)) {
+    return true;
+  }
+  try {
+    const parsed = new URL(raw);
+    return /\/nxs-click-trap\/?$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function isTrackingOrUnsubscribeUrl(url: string) {
@@ -374,6 +393,21 @@ function injectOpenPixel(html: string, openUrl: string) {
     return html.replace(/<\/body>/i, `${pixel}</body>`);
   }
   return `${html}${pixel}`;
+}
+
+/**
+ * Off-screen honeypot link. Link scanners that open every href trip it;
+ * humans almost never do. Used instead of the 25s click bot-grace window.
+ */
+function injectClickTrap(html: string, trackedTrapHref: string) {
+  if (/nxs-click-trap/i.test(html)) {
+    return html;
+  }
+  const trap = `<div style="max-height:0;overflow:hidden;opacity:0;mso-hide:all;" aria-hidden="true"><a href="${trackedTrapHref}" tabindex="-1" style="font-size:0;line-height:0;color:transparent;text-decoration:none;">&#8203;</a></div>`;
+  if (/<body\b[^>]*>/i.test(html)) {
+    return html.replace(/<body\b[^>]*>/i, (open) => `${open}${trap}`);
+  }
+  return `${trap}${html}`;
 }
 
 function isUnsubscribeMergeInner(inner: string) {
@@ -551,6 +585,8 @@ export function injectCampaignTracking(
         utm?.enabled ? applyUtmParams(href, utm, campaignName) : href;
       return urls.click(destination);
     });
+    // Trap must be wrapped like other links so /t/c/ records the honeypot hit.
+    next = injectClickTrap(next, urls.click(urls.clickTrap));
   } else if (utm?.enabled) {
     // Naked links with UTM params only — no /t/c/ click wrapper.
     next = wrapTrackedLinks(withUnsubscribe, (href) =>

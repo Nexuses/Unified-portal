@@ -1,6 +1,19 @@
 import ExcelJS from "exceljs";
 import type { CampaignSendDoc } from "@/lib/campaign-blasts-server";
-import { buildCampaignReportTables, REPORT_DASH } from "@/lib/campaign-report-tables";
+import {
+  asDate,
+  buildCampaignReportTables,
+  formatInZone,
+  REPORT_DASH,
+} from "@/lib/campaign-report-tables";
+
+export type CampaignReportExportFormat = "formatted" | "rows";
+
+export function parseCampaignReportExportFormat(
+  value: string | null | undefined,
+): CampaignReportExportFormat {
+  return value === "rows" ? "rows" : "formatted";
+}
 
 const COLORS = {
   titleNavy: "FF0B1F3A",
@@ -93,12 +106,209 @@ function rowFill(index: number) {
   return index % 2 === 0 ? COLORS.rowWhite : COLORS.rowAlt;
 }
 
-export function campaignReportFilename(campaignName: string) {
+export function campaignReportFilename(
+  campaignName: string,
+  format: CampaignReportExportFormat = "formatted",
+) {
   const safe = campaignName
     .replace(/[\\/:*?"<>|]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return `${safe || "Campaign"} Report.xlsx`;
+  const base = safe || "Campaign";
+  return format === "rows" ? `${base} Row Export.xlsx` : `${base} Report.xlsx`;
+}
+
+function fullTimestamp(value: Date | string | undefined, timeZone: string) {
+  const date = asDate(value);
+  if (!date) return "";
+  const local = `${formatInZone(date, timeZone, "date")} ${formatInZone(date, timeZone, "time")}`.trim();
+  return local || date.toISOString();
+}
+
+function isoTimestamp(value: Date | string | undefined) {
+  const date = asDate(value);
+  return date ? date.toISOString() : "";
+}
+
+function personName(send: CampaignSendDoc) {
+  return (
+    send.fullName ||
+    `${send.firstName ?? ""} ${send.lastName ?? ""}`.trim() ||
+    send.email
+  ).trim();
+}
+
+function serializeOpenEvents(send: CampaignSendDoc, timeZone: string) {
+  return (send.openEvents ?? [])
+    .map((event) => {
+      const bits = [
+        fullTimestamp(event.at, timeZone),
+        event.device || "",
+        event.ip || "",
+        event.bot ? "bot" : "",
+        event.inferredFromClick ? "inferred_from_click" : "",
+      ].filter(Boolean);
+      return bits.join(" | ");
+    })
+    .filter(Boolean)
+    .join(" || ");
+}
+
+function serializeClickEvents(send: CampaignSendDoc, timeZone: string) {
+  return (send.clickEvents ?? [])
+    .map((event) => {
+      const bits = [
+        fullTimestamp(event.at, timeZone),
+        event.url || "",
+        event.device || "",
+        event.ip || "",
+        event.bot ? "bot" : "",
+        event.ignored ? "ignored" : "",
+      ].filter(Boolean);
+      return bits.join(" | ");
+    })
+    .filter(Boolean)
+    .join(" || ");
+}
+
+/** Flat one-row-per-send workbook with full timestamps and event history. */
+export async function buildCampaignReportRowsWorkbook({
+  campaignName,
+  timezone,
+  sends,
+}: {
+  campaignName: string;
+  timezone: string;
+  sentAt?: string | Date;
+  sends: CampaignSendDoc[];
+  hideBotClicks?: boolean;
+}) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "Unified Portal";
+  workbook.created = new Date();
+
+  const sheet = workbook.addWorksheet("Row export");
+  const headers = [
+    "#",
+    "Person Name",
+    "Email",
+    "Company",
+    "Status",
+    "Error",
+    "Step",
+    "Sent At",
+    "Sent At (ISO)",
+    "Opened At",
+    "Opened At (ISO)",
+    "Open Count",
+    "Open Device",
+    "Open IP",
+    "Bot Open",
+    "Open Pixel Blocked",
+    "Open Events",
+    "Clicked At",
+    "Clicked At (ISO)",
+    "Click Count",
+    "Clicked URL",
+    "Click Device",
+    "Click IP",
+    "Bot Click",
+    "Click Burst Ignored",
+    "Click Events",
+    "Unsubscribed At",
+    "Unsubscribed At (ISO)",
+    "Bounced At",
+    "Bounced At (ISO)",
+    "Replied At",
+    "Replied At (ISO)",
+  ];
+  headers.forEach((header, index) => {
+    sheet.getColumn(index + 1).width = Math.min(Math.max(header.length + 2, 12), 42);
+  });
+  sheet.getColumn(17).width = 48;
+  sheet.getColumn(26).width = 48;
+
+  paintMergedBanner(
+    sheet,
+    1,
+    headers.length,
+    `${campaignName} · Row export (all timestamps)`,
+    COLORS.titleNavy,
+    13,
+    26,
+  );
+  paintMergedBanner(
+    sheet,
+    2,
+    headers.length,
+    `${sends.length} sends · timezone ${timezone}`,
+    COLORS.subtitleBlue,
+    10,
+    20,
+  );
+  paintHeaderRow(sheet, 4, headers);
+
+  sends.forEach((send, index) => {
+    const fill = rowFill(index);
+    const step =
+      typeof send.sequenceIndex === "number" ? `Email Step ${send.sequenceIndex + 1}` : "Email Step 1";
+    const values: ExcelJS.CellValue[] = [
+      index + 1,
+      personName(send),
+      send.email || "",
+      send.companyName || "",
+      send.status || "",
+      send.error || "",
+      step,
+      fullTimestamp(send.sentAt, timezone),
+      isoTimestamp(send.sentAt),
+      fullTimestamp(send.openedAt, timezone),
+      isoTimestamp(send.openedAt),
+      send.openCount ?? 0,
+      send.openedDevice || "",
+      send.openedIp || "",
+      send.botOpen ? "yes" : "",
+      send.openPixelBlocked ? "yes" : "",
+      serializeOpenEvents(send, timezone),
+      fullTimestamp(send.clickedAt, timezone),
+      isoTimestamp(send.clickedAt),
+      send.clickCount ?? 0,
+      send.clickedUrl || "",
+      send.clickedDevice || "",
+      send.clickedIp || "",
+      send.botClick ? "yes" : "",
+      send.clickBurstIgnored ? "yes" : "",
+      serializeClickEvents(send, timezone),
+      fullTimestamp(send.unsubscribedAt, timezone),
+      isoTimestamp(send.unsubscribedAt),
+      fullTimestamp(send.bouncedAt, timezone),
+      isoTimestamp(send.bouncedAt),
+      fullTimestamp(send.repliedAt, timezone),
+      isoTimestamp(send.repliedAt),
+    ];
+    values.forEach((value, col) => {
+      paintCell(sheet, 5 + index, col + 1, value, { fill, size: 10 });
+    });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
+}
+
+export async function buildCampaignReportExportWorkbook(
+  args: {
+    campaignName: string;
+    timezone: string;
+    sentAt?: string | Date;
+    sends: CampaignSendDoc[];
+    hideBotClicks?: boolean;
+  },
+  format: CampaignReportExportFormat = "formatted",
+) {
+  if (format === "rows") {
+    return buildCampaignReportRowsWorkbook(args);
+  }
+  return buildCampaignReportWorkbook(args);
 }
 
 export async function buildCampaignReportWorkbook({

@@ -295,7 +295,7 @@ export function buildCampaignReportTables({
   const engaged: Array<ReportEngageRow & { openedAtMs: number }> = [];
   for (const group of byEmail.values()) {
     // Match overview / analytics: keep clickers with any human click event,
-    // even when sticky botClick was set by an earlier grace/scanner hit.
+    // even when sticky botClick was set by an earlier trap/scanner hit.
     const humanClick = group.some(
       (item) =>
         ((item.clickCount || 0) > 0 || item.clickedAt) &&

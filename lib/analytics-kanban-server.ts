@@ -245,19 +245,31 @@ function stagesFromSetup(value: unknown): KanbanStage[] {
     if (!item || typeof item !== "object") {
       continue;
     }
-    const row = item as Partial<KanbanStage>;
+    const row = item as Partial<KanbanStage> & { custom?: boolean };
     const name = String(row.name ?? "").trim().slice(0, 40);
-    if (!name || !isKanbanStageRule(row.rule)) {
-      throw new Error("Each stage needs a name and a trigger");
-    }
-    if (usedRules.has(row.rule)) {
-      throw new Error("Each trigger can only be used by one stage");
+    if (!name) {
+      throw new Error("Each stage needs a name");
     }
     if (usedNames.has(name.toLowerCase())) {
       throw new Error(`Stage "${name}" is listed twice`);
     }
-    usedRules.add(row.rule);
     usedNames.add(name.toLowerCase());
+
+    // Custom stages (from old pipelines) have no engagement sync rule.
+    const isCustom = row.custom === true || !isKanbanStageRule(row.rule);
+    if (isCustom) {
+      stages.push({
+        id: `custom-${new ObjectId().toString().slice(-8)}`,
+        name,
+        color: normalizeStageColor(row.color),
+      });
+      continue;
+    }
+
+    if (usedRules.has(row.rule!)) {
+      throw new Error("Each trigger can only be used by one stage");
+    }
+    usedRules.add(row.rule!);
     stages.push({
       id: `stage-${new ObjectId().toString().slice(-8)}`,
       name,
@@ -309,6 +321,7 @@ function mapList(doc: KanbanDoc): KanbanList {
     id: doc._id.toString(),
     name: doc.name,
     campaigns: Array.isArray(doc.campaigns) ? doc.campaigns : [],
+    stages: normalizeStages(doc.stages),
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
   };

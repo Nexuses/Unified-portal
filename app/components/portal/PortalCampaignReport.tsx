@@ -242,6 +242,7 @@ export default function PortalCampaignReport({
   const [instantClickEnabled, setInstantClickEnabled] = useState(false);
   const showBotEngagement = !hideBotClicks;
   const [sharePromptOpen, setSharePromptOpen] = useState(false);
+  const [exportPromptOpen, setExportPromptOpen] = useState(false);
   const peoplePageSize = 50;
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
@@ -695,10 +696,11 @@ export default function PortalCampaignReport({
     setPeopleView(null);
   }
 
-  async function exportReport() {
+  async function exportReport(format: "formatted" | "rows") {
     if (exporting) {
       return;
     }
+    setExportPromptOpen(false);
     setExporting(true);
     setExportError("");
     try {
@@ -709,15 +711,12 @@ export default function PortalCampaignReport({
       if (hideBotClicks) {
         params.set("hideBotClicks", "1");
       }
+      params.set("format", format);
       const query = params.toString();
       const response = await fetch(
         publicToken
-          ? `/api/public/reports/${encodeURIComponent(publicToken)}/export${
-              query ? `?${query}` : ""
-            }`
-          : `/api/campaigns/${encodeURIComponent(campaign.id)}/export${
-              query ? `?${query}` : ""
-            }`,
+          ? `/api/public/reports/${encodeURIComponent(publicToken)}/export?${query}`
+          : `/api/campaigns/${encodeURIComponent(campaign.id)}/export?${query}`,
         { cache: "no-store" },
       );
       if (!response.ok) {
@@ -732,7 +731,10 @@ export default function PortalCampaignReport({
       const asciiName = disposition.match(/filename="([^"]+)"/i)?.[1];
       const filename = utfName
         ? decodeURIComponent(utfName)
-        : asciiName || `${campaign.name} Report.xlsx`;
+        : asciiName ||
+          (format === "rows"
+            ? `${campaign.name} Row Export.xlsx`
+            : `${campaign.name} Report.xlsx`);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -1231,7 +1233,10 @@ export default function PortalCampaignReport({
           <button
             type="button"
             className="drip-report-export"
-            onClick={() => void exportReport()}
+            onClick={() => {
+              setExportError("");
+              setExportPromptOpen(true);
+            }}
             disabled={exporting}
           >
             {exporting ? "Exporting…" : "Export report"}
@@ -1239,6 +1244,58 @@ export default function PortalCampaignReport({
         </div>
       </div>
       {exportError ? <p className="drip-report-export-error">{exportError}</p> : null}
+      {exportPromptOpen ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => !exporting && setExportPromptOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="crm-modal an-share-bot-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="drip-export-format-title"
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="drip-export-format-title">Export report</h3>
+                <p>
+                  Choose a download format. Row export is one row per contact with
+                  full timestamps. Formatted export is the styled multi-sheet report.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                onClick={() => setExportPromptOpen(false)}
+                disabled={exporting}
+              >
+                ×
+              </button>
+            </div>
+            <div className="an-share-bot-actions">
+              <button
+                type="button"
+                className="btn-soft an-share-action-btn"
+                onClick={() => void exportReport("rows")}
+                disabled={exporting}
+              >
+                Row export
+              </button>
+              <button
+                type="button"
+                className="btn-dark an-share-action-btn"
+                onClick={() => void exportReport("formatted")}
+                disabled={exporting}
+              >
+                Formatted export
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {shareToast ? (
         <ReportToast
           key={shareToast.key}
