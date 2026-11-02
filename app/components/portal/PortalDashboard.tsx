@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import type { Contact } from "@/lib/crm";
 import type { CampaignStatus, DripCampaign } from "@/lib/drip-campaigns";
 import { DEFAULT_PROJECT_SENDING_LIMIT } from "@/lib/projects";
@@ -282,20 +289,38 @@ function smoothLinePath(coords: Array<{ x: number; y: number }>) {
   return d;
 }
 
-function PerfChart({
+type PerfPoint = {
+  key: string;
+  label: string;
+  sent: number;
+  opened: number;
+};
+
+function PerfChartCanvas({
   points,
+  size = "card",
+  onOpen,
 }: {
-  points: Array<{ key: string; label: string; sent: number; opened: number }>;
+  points: PerfPoint[];
+  size?: "card" | "modal";
+  onOpen?: () => void;
 }) {
-  const width = 640;
-  const height = 240;
-  const padL = 30;
-  const padR = 6;
-  const padT = 8;
-  const padB = 24;
+  const reactId = useId().replace(/:/g, "");
+  const sentFillId = `perfSentFill-${reactId}`;
+  const openedFillId = `perfOpenedFill-${reactId}`;
+  const clipId = `perfPlotClip-${reactId}`;
+  const isModal = size === "modal";
+  const width = isModal ? 960 : 640;
+  const height = isModal ? 420 : 240;
+  const padL = isModal ? 44 : 30;
+  const padR = isModal ? 16 : 6;
+  const padT = isModal ? 16 : 8;
+  const padB = isModal ? 36 : 24;
   const plotRadius = 12;
   const innerW = width - padL - padR;
   const innerH = height - padT - padB;
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
   const maxY = Math.max(
     1,
     ...points.map((p) => Math.max(p.sent, p.opened)),
@@ -343,103 +368,265 @@ function PerfChart({
     .filter(
       (i) => i === 0 || i === points.length - 1 || i % xLabelStep === 0,
     );
-  // Option B: denser markers along the curve
   const dotStep =
     points.length <= 20 ? 1 : Math.max(1, Math.round((points.length - 1) / 18));
 
+  function nearestIndex(clientX: number, svg: SVGSVGElement) {
+    if (points.length === 0) {
+      return null;
+    }
+    const rect = svg.getBoundingClientRect();
+    if (rect.width <= 0) {
+      return null;
+    }
+    const svgX = ((clientX - rect.left) / rect.width) * width;
+    let best = 0;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < points.length; i += 1) {
+      const dist = Math.abs(xAt(i) - svgX);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  function handleMove(event: ReactMouseEvent<SVGSVGElement>) {
+    setHoverIndex(nearestIndex(event.clientX, event.currentTarget));
+  }
+
+  const hover = hoverIndex !== null ? points[hoverIndex] : null;
+  const hoverX = hoverIndex !== null ? xAt(hoverIndex) : 0;
+  const tooltipLeftPct = Math.min(
+    88,
+    Math.max(12, (hoverX / width) * 100),
+  );
+  const openRate =
+    hover && hover.sent > 0 ? hover.opened / hover.sent : hover ? 0 : 0;
+
   return (
-    <svg
-      className="perf-chart-svg"
-      viewBox={`0 0 ${width} ${height}`}
-      role="img"
-      aria-label="Emails sent and opened over time"
-    >
-      <defs>
-        <linearGradient id="perfSentFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#5b2fd1" stopOpacity="0.22" />
-          <stop offset="50%" stopColor="#5b2fd1" stopOpacity="0.08" />
-          <stop offset="100%" stopColor="#5b2fd1" stopOpacity="0" />
-        </linearGradient>
-        <linearGradient id="perfOpenedFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#b7a3f0" stopOpacity="0.3" />
-          <stop offset="55%" stopColor="#b7a3f0" stopOpacity="0.1" />
-          <stop offset="100%" stopColor="#b7a3f0" stopOpacity="0" />
-        </linearGradient>
-        <clipPath id="perfPlotClip">
-          <rect
-            x={padL}
-            y={padT}
-            width={innerW}
-            height={innerH}
-            rx={plotRadius}
-            ry={plotRadius}
-          />
-        </clipPath>
-      </defs>
-      <rect
-        className="perf-chart-plot"
-        x={padL}
-        y={padT}
-        width={innerW}
-        height={innerH}
-        rx={plotRadius}
-        ry={plotRadius}
-      />
-      {yTicks.map((tick) => {
-        const y = yAt(tick);
-        return (
-          <g key={`y-${tick}`}>
-            <line
-              x1={padL}
-              x2={width - padR}
-              y1={y}
-              y2={y}
-              className="perf-chart-grid"
+    <div className={`perf-chart-interactive${isModal ? " is-modal" : ""}`}>
+      <svg
+        className={`perf-chart-svg${isModal ? " is-modal" : ""}`}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Emails sent and opened over time. Hover for details. Click to enlarge."
+        onMouseMove={handleMove}
+        onMouseLeave={() => setHoverIndex(null)}
+        onClick={() => {
+          if (onOpen) {
+            onOpen();
+          }
+        }}
+        style={onOpen ? { cursor: "zoom-in" } : undefined}
+      >
+        <defs>
+          <linearGradient id={sentFillId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#5b2fd1" stopOpacity="0.22" />
+            <stop offset="50%" stopColor="#5b2fd1" stopOpacity="0.08" />
+            <stop offset="100%" stopColor="#5b2fd1" stopOpacity="0" />
+          </linearGradient>
+          <linearGradient id={openedFillId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#b7a3f0" stopOpacity="0.3" />
+            <stop offset="55%" stopColor="#b7a3f0" stopOpacity="0.1" />
+            <stop offset="100%" stopColor="#b7a3f0" stopOpacity="0" />
+          </linearGradient>
+          <clipPath id={clipId}>
+            <rect
+              x={padL}
+              y={padT}
+              width={innerW}
+              height={innerH}
+              rx={plotRadius}
+              ry={plotRadius}
             />
-            <text x={padL - 6} y={y + 3} className="perf-chart-axis" textAnchor="end">
-              {formatAxisCount(tick)}
-            </text>
-          </g>
-        );
-      })}
-      <g clipPath="url(#perfPlotClip)">
-        <path d={areaPath("sent")} fill="url(#perfSentFill)" />
-        <path d={areaPath("opened")} fill="url(#perfOpenedFill)" />
-        <path d={linePath("sent")} className="perf-chart-line is-sent" />
-        <path d={linePath("opened")} className="perf-chart-line is-opened" />
-        {points.map((p, i) =>
-          i % dotStep === 0 || i === points.length - 1 ? (
-            <g key={`dot-${p.key}`}>
-              <circle
-                cx={xAt(i)}
-                cy={yAt(p.sent)}
-                r={3.5}
-                className="perf-chart-dot is-sent"
+          </clipPath>
+        </defs>
+        <rect
+          className="perf-chart-plot"
+          x={padL}
+          y={padT}
+          width={innerW}
+          height={innerH}
+          rx={plotRadius}
+          ry={plotRadius}
+        />
+        {yTicks.map((tick) => {
+          const y = yAt(tick);
+          return (
+            <g key={`y-${tick}`}>
+              <line
+                x1={padL}
+                x2={width - padR}
+                y1={y}
+                y2={y}
+                className="perf-chart-grid"
+              />
+              <text
+                x={padL - 6}
+                y={y + 3}
+                className="perf-chart-axis"
+                textAnchor="end"
+              >
+                {formatAxisCount(tick)}
+              </text>
+            </g>
+          );
+        })}
+        <g clipPath={`url(#${clipId})`}>
+          <path d={areaPath("sent")} fill={`url(#${sentFillId})`} />
+          <path d={areaPath("opened")} fill={`url(#${openedFillId})`} />
+          <path d={linePath("sent")} className="perf-chart-line is-sent" />
+          <path d={linePath("opened")} className="perf-chart-line is-opened" />
+          {points.map((p, i) =>
+            i % dotStep === 0 || i === points.length - 1 ? (
+              <g key={`dot-${p.key}`}>
+                <circle
+                  cx={xAt(i)}
+                  cy={yAt(p.sent)}
+                  r={isModal ? 4.2 : 3.5}
+                  className="perf-chart-dot is-sent"
+                />
+                <circle
+                  cx={xAt(i)}
+                  cy={yAt(p.opened)}
+                  r={isModal ? 4 : 3.2}
+                  className="perf-chart-dot is-opened"
+                />
+              </g>
+            ) : null,
+          )}
+          {hoverIndex !== null ? (
+            <g className="perf-chart-hover">
+              <line
+                x1={hoverX}
+                x2={hoverX}
+                y1={padT}
+                y2={padT + innerH}
+                className="perf-chart-crosshair"
               />
               <circle
-                cx={xAt(i)}
-                cy={yAt(p.opened)}
-                r={3.2}
-                className="perf-chart-dot is-opened"
+                cx={hoverX}
+                cy={yAt(points[hoverIndex].sent)}
+                r={isModal ? 6 : 5}
+                className="perf-chart-dot is-sent is-active"
+              />
+              <circle
+                cx={hoverX}
+                cy={yAt(points[hoverIndex].opened)}
+                r={isModal ? 5.5 : 4.5}
+                className="perf-chart-dot is-opened is-active"
               />
             </g>
-          ) : null,
-        )}
-      </g>
-      {labelIndexes.map((i) => (
-        <text
-          key={`x-${points[i].key}`}
-          x={xAt(i)}
-          y={height - 5}
-          className="perf-chart-axis"
-          textAnchor={
-            i === 0 ? "start" : i === points.length - 1 ? "end" : "middle"
-          }
+          ) : null}
+        </g>
+        {labelIndexes.map((i) => (
+          <text
+            key={`x-${points[i].key}`}
+            x={xAt(i)}
+            y={height - 5}
+            className="perf-chart-axis"
+            textAnchor={
+              i === 0 ? "start" : i === points.length - 1 ? "end" : "middle"
+            }
+          >
+            {points[i].label}
+          </text>
+        ))}
+      </svg>
+      {hover ? (
+        <div
+          className="perf-chart-tooltip"
+          style={{ left: `${tooltipLeftPct}%` }}
+          role="tooltip"
         >
-          {points[i].label}
-        </text>
-      ))}
-    </svg>
+          <p className="perf-chart-tooltip-date">{hover.label}</p>
+          <div className="perf-chart-tooltip-row">
+            <span>
+              <i className="is-sent" /> Sent
+            </span>
+            <strong>{formatCount(hover.sent)}</strong>
+          </div>
+          <div className="perf-chart-tooltip-row">
+            <span>
+              <i className="is-opened" /> Opened
+            </span>
+            <strong>{formatCount(hover.opened)}</strong>
+          </div>
+          <div className="perf-chart-tooltip-row is-muted">
+            <span>Open rate</span>
+            <strong>{formatRate(openRate)}</strong>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PerfChart({ points }: { points: PerfPoint[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!expanded) {
+      return;
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setExpanded(false);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [expanded]);
+
+  return (
+    <>
+      <PerfChartCanvas points={points} onOpen={() => setExpanded(true)} />
+      {expanded ? (
+        <div
+          className="perf-chart-modal-backdrop"
+          role="presentation"
+          onClick={() => setExpanded(false)}
+        >
+          <div
+            className="perf-chart-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Campaign performance chart"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="perf-chart-modal-head">
+              <div>
+                <h3>Campaign performance</h3>
+                <p>Hover any point for sent, opened, and open rate.</p>
+              </div>
+              <button
+                type="button"
+                className="perf-chart-modal-close"
+                onClick={() => setExpanded(false)}
+              >
+                Close
+              </button>
+            </div>
+            <PerfChartCanvas points={points} size="modal" />
+            <div className="perf-legend">
+              <span>
+                <i className="is-sent" /> Sent
+              </span>
+              <span>
+                <i className="is-opened" /> Opened
+              </span>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 

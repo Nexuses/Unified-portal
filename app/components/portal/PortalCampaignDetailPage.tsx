@@ -43,6 +43,7 @@ import {
   DEFAULT_UTM_SOURCE,
   emailHasUnsubscribe,
 } from "@/lib/campaign-tracking";
+import { applyDeterministicDeliverabilityFixes } from "@/lib/deliverability-content-fix";
 import {
   AUTOMATION_FOLLOW_UP_TAG,
   ensureAutomationCampaignTags,
@@ -2135,6 +2136,75 @@ type SpamCheckResult = {
   checkedWith: string;
 };
 
+type DeliverabilityCheckStatus = "success" | "warning" | "failure" | "neutral";
+
+type DeliverabilityCheckItem = {
+  title: string;
+  status: DeliverabilityCheckStatus;
+  mark: number;
+  description: string;
+  detail?: string;
+};
+
+type DeliverabilityReport = {
+  score: number;
+  rating: string;
+  comment: string;
+  inboxEmail: string;
+  messageInfo: {
+    subject: string;
+    from: string;
+    receivedAt: string;
+    labels: string[];
+  };
+  spamAssassin: {
+    rawScore: number;
+    displayScore: number;
+    rules: Array<{ name: string; score: number; description: string }>;
+    error?: string;
+  };
+  authentication: {
+    spf: DeliverabilityCheckItem;
+    dkim: DeliverabilityCheckItem;
+    dmarc: DeliverabilityCheckItem;
+  };
+  blacklists: {
+    ip: string | null;
+    listedCount: number;
+    checks: Array<{
+      label: string;
+      zone: string;
+      listed: boolean;
+      detail?: string;
+    }>;
+  };
+  content: DeliverabilityCheckItem[];
+  checkedAt: string;
+};
+
+function deliverabilityScoreTone(score: number) {
+  if (score >= 7) return "low";
+  if (score >= 5) return "moderate";
+  return "high";
+}
+
+function deliverabilityStatusLabel(status: DeliverabilityCheckStatus) {
+  if (status === "success") return "Pass";
+  if (status === "warning") return "Warn";
+  if (status === "failure") return "Fail";
+  return "Info";
+}
+
+function formatDeliverabilityMark(mark: number) {
+  const rounded = Math.round(mark * 10) / 10;
+  if (rounded === 0) return "0";
+  return `${rounded > 0 ? "+" : ""}${rounded}`;
+}
+
+function applyClientContentFixes(html: string) {
+  return applyDeterministicDeliverabilityFixes(html);
+}
+
 function PreviewTestModal({
   campaign,
   html,
@@ -2170,6 +2240,24 @@ function PreviewTestModal({
   const [spamApplied, setSpamApplied] = useState(false);
   const spamAppliedHtmlRef = useRef("");
   const spamSectionRef = useRef<HTMLDivElement>(null);
+  const [deliverabilityOpen, setDeliverabilityOpen] = useState(false);
+  const [deliverabilityChecking, setDeliverabilityChecking] = useState(false);
+  const [deliverabilityFixing, setDeliverabilityFixing] = useState(false);
+  const [deliverabilityScoreHelpOpen, setDeliverabilityScoreHelpOpen] =
+    useState(false);
+  const [deliverabilityStatus, setDeliverabilityStatus] = useState("");
+  const [deliverabilityReport, setDeliverabilityReport] =
+    useState<DeliverabilityReport | null>(null);
+  const deliverabilityHtmlRef = useRef(html);
+  const deliverabilitySubjectRef = useRef(campaign.subject ?? "");
+
+  useEffect(() => {
+    deliverabilityHtmlRef.current = html;
+  }, [html]);
+
+  useEffect(() => {
+    deliverabilitySubjectRef.current = campaign.subject ?? "";
+  }, [campaign.subject]);
 
   useEffect(() => {
     if (spamResult) {
@@ -2313,6 +2401,220 @@ function PreviewTestModal({
       );
     } finally {
       setSpamApplying(false);
+    }
+  }
+
+  async function runDeliverabilityTest(options?: {
+    htmlOverride?: string;
+    subjectOverride?: string;
+    /** When true, keep the existing report visible while testing (AI re-test). */
+    keepCurrentReport?: boolean;
+  }): Promise<DeliverabilityReport | null> {
+    if (deliverabilityChecking) {
+      return null;
+    }
+    const sourceHtml = (options?.htmlOverride ?? deliverabilityHtmlRef.current ?? html).trim();
+    const sourceSubject =
+      options?.subjectOverride ??
+      deliverabilitySubjectRef.current ??
+      campaign.subject ??
+      "";
+    if (!sourceHtml) {
+      return null;
+    }
+    if (!campaign.senderId) {
+      setDeliverabilityStatus("Select a sender before running the deliverability test.");
+      setDeliverabilityOpen(true);
+      return null;
+    }
+
+    const testSubject = applyVariableMap(sourceSubject, testVariables);
+    const testHtml = applyVariableMap(sourceHtml, testVariables, true, {
+      preserveUnsubscribe: true,
+    });
+
+    setDeliverabilityOpen(true);
+    setDeliverabilityChecking(true);
+    setDeliverabilityScoreHelpOpen(false);
+    setDeliverabilityStatus("");
+    if (!options?.keepCurrentReport) {
+      setDeliverabilityReport(null);
+    }
+
+    try {
+      const response = await fetch("/api/campaigns/deliverability-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          senderId: campaign.senderId,
+          subject: testSubject || sourceSubject || "",
+          html: testHtml || sourceHtml,
+          fromName: campaign.senderName,
+          replyTo: campaign.replyToEnabled ? campaign.replyToEmail : undefined,
+          campaignName: campaign.name,
+          utmEnabled: campaign.utmEnabled,
+          utmSourceEnabled: campaign.utmSourceEnabled,
+          utmSource: campaign.utmSource,
+          utmMediumEnabled: campaign.utmMediumEnabled,
+          utmMedium: campaign.utmMedium,
+          utmCampaignEnabled: campaign.utmCampaignEnabled,
+          utmCampaign: campaign.utmCampaign,
+          openTrackingOff: campaign.openTrackingOff,
+          clickTrackingOff: campaign.clickTrackingOff,
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as
+        | (DeliverabilityReport & { error?: string })
+        | null;
+      if (!response.ok || !data || data.error) {
+        throw new Error(data?.error || "Deliverability test failed");
+      }
+      setDeliverabilityReport(data);
+      return data;
+    } catch (error) {
+      setDeliverabilityStatus(
+        error instanceof Error ? error.message : "Deliverability test failed",
+      );
+      return null;
+    } finally {
+      setDeliverabilityChecking(false);
+    }
+  }
+
+  async function fixDeliverabilityWithAi() {
+    if (
+      !deliverabilityReport ||
+      deliverabilityFixing ||
+      deliverabilityChecking ||
+      !html.trim()
+    ) {
+      return;
+    }
+
+    const previousReport = deliverabilityReport;
+    const previousHtml = deliverabilityHtmlRef.current || html;
+    const previousSubject =
+      deliverabilitySubjectRef.current || campaign.subject || "";
+    const previousScore = previousReport.score;
+
+    setDeliverabilityFixing(true);
+    setDeliverabilityStatus("");
+    try {
+      const authNotes = [
+        previousReport.authentication.spf,
+        previousReport.authentication.dkim,
+        previousReport.authentication.dmarc,
+      ]
+        .filter((item) => item.status !== "success")
+        .map((item) => item.title);
+
+      const blacklistNotes = previousReport.blacklists.checks
+        .filter((check) => check.listed)
+        .map((check) => `${check.label} listed`);
+
+      const response = await fetch("/api/campaigns/deliverability-fix", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: previousSubject,
+          html: previousHtml,
+          score: previousScore,
+          spamAssassinRules: previousReport.spamAssassin.rules,
+          contentIssues: previousReport.content,
+          authenticationNotes: authNotes,
+          blacklistNotes,
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as {
+        fixedHtml?: string;
+        fixedSubject?: string;
+        summary?: string;
+        error?: string;
+      } | null;
+      if (!response.ok || !data?.fixedHtml) {
+        throw new Error(data?.error || "AI fix failed");
+      }
+
+      const candidateHtml = data.fixedHtml;
+      const candidateSubject = data.fixedSubject || previousSubject;
+
+      setDeliverabilityStatus(
+        data.summary
+          ? `${data.summary} Re-testing before saving…`
+          : "AI draft ready. Re-testing before saving…",
+      );
+      setDeliverabilityFixing(false);
+
+      const nextReport = await runDeliverabilityTest({
+        htmlOverride: candidateHtml,
+        subjectOverride: candidateSubject,
+        keepCurrentReport: true,
+      });
+
+      if (!nextReport) {
+        deliverabilityHtmlRef.current = previousHtml;
+        deliverabilitySubjectRef.current = previousSubject;
+        setDeliverabilityReport(previousReport);
+        setDeliverabilityStatus(
+          "AI re-test failed. Original email kept — no changes saved.",
+        );
+        return;
+      }
+
+      if (nextReport.score < previousScore) {
+        // Full AI rewrite dropped the score. Still try content-only fixes
+        // (missing alt, strip scripts) so warnings like "images missing alt"
+        // can be fixed without keeping a worse SA rewrite.
+        const contentOnlyHtml = applyClientContentFixes(previousHtml);
+        if (contentOnlyHtml !== previousHtml) {
+          setDeliverabilityStatus(
+            `Full AI draft scored lower (${nextReport.score}/10). Trying content-only fixes…`,
+          );
+          const contentReport = await runDeliverabilityTest({
+            htmlOverride: contentOnlyHtml,
+            subjectOverride: previousSubject,
+            keepCurrentReport: true,
+          });
+          if (contentReport && contentReport.score >= previousScore) {
+            deliverabilityHtmlRef.current = contentOnlyHtml;
+            deliverabilitySubjectRef.current = previousSubject;
+            await onApplySpamFix?.(contentOnlyHtml, previousSubject);
+            setDeliverabilityReport(contentReport);
+            setDeliverabilityStatus(
+              contentReport.score > previousScore
+                ? `Content fixes improved score ${previousScore}/10 → ${contentReport.score}/10 (alt text etc.). Saved.`
+                : `Content fixes applied (e.g. image alt text) without lowering score. Saved.`,
+            );
+            return;
+          }
+        }
+
+        deliverabilityHtmlRef.current = previousHtml;
+        deliverabilitySubjectRef.current = previousSubject;
+        setDeliverabilityReport(previousReport);
+        setDeliverabilityStatus(
+          `AI draft scored ${nextReport.score}/10, worse than ${previousScore}/10. Changes were not saved.`,
+        );
+        return;
+      }
+
+      deliverabilityHtmlRef.current = candidateHtml;
+      deliverabilitySubjectRef.current = candidateSubject;
+      await onApplySpamFix?.(candidateHtml, candidateSubject);
+      setDeliverabilityReport(nextReport);
+      setDeliverabilityStatus(
+        nextReport.score > previousScore
+          ? `AI improved score ${previousScore}/10 → ${nextReport.score}/10. Changes saved.`
+          : `AI kept score at ${nextReport.score}/10. Changes saved.`,
+      );
+    } catch (error) {
+      deliverabilityHtmlRef.current = previousHtml;
+      deliverabilitySubjectRef.current = previousSubject;
+      setDeliverabilityReport(previousReport);
+      setDeliverabilityStatus(
+        error instanceof Error ? error.message : "AI fix failed",
+      );
+      setDeliverabilityFixing(false);
     }
   }
 
@@ -2505,53 +2807,428 @@ function PreviewTestModal({
 
         <div className="drip-preview-body">
           <div className="drip-preview-left">
-            <div className="drip-preview-top">
-              <div className="drip-preview-meta">
-                <div className="drip-preview-meta-row">
-                  <span className="label">From:</span>
-                  <span className="value">{campaign.senderEmail || ""}</span>
+            {deliverabilityOpen ? (
+              <div className="drip-deliverability-panel">
+                <div className="drip-deliverability-panel-head">
+                  <button
+                    type="button"
+                    className="btn-soft drip-deliverability-back"
+                    disabled={deliverabilityChecking}
+                    onClick={() => {
+                      setDeliverabilityOpen(false);
+                      setDeliverabilityScoreHelpOpen(false);
+                    }}
+                  >
+                    ← Back to email
+                  </button>
+                  <div>
+                    <h4>Deliverability report</h4>
+                    <p>
+                      {deliverabilityChecking
+                        ? "Sending a real test email and analyzing it…"
+                        : deliverabilityReport
+                          ? deliverabilityReport.comment
+                          : "Mail-tester style score from a live send."}
+                    </p>
+                  </div>
                 </div>
-                <div className="drip-preview-meta-row">
-                  <span className="label">Subject:</span>
-                  <span className="value">{previewSubject}</span>
-                </div>
-                <div className="drip-preview-meta-row">
-                  <span className="label">Preview:</span>
-                  <span className="value">{previewPreviewText}</span>
+
+                <div className="drip-deliverability-body">
+                  {deliverabilityChecking ? (
+                    <div className="drip-deliverability-loading">
+                      <span className="drip-btn-spinner" aria-hidden="true" />
+                      <div>
+                        <strong>Analyzing inbox delivery</strong>
+                        <span>
+                          AgentMail inbox → send via your SMTP → SpamAssassin +
+                          auth + DNSBL
+                        </span>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {deliverabilityStatus ? (
+                    <div
+                      className={`drip-preview-status${
+                        /not saved|failed|worse|error|unavailable|select a sender/i.test(
+                          deliverabilityStatus,
+                        )
+                          ? " error"
+                          : ""
+                      }`}
+                    >
+                      {deliverabilityStatus}
+                    </div>
+                  ) : null}
+
+                  {deliverabilityReport ? (
+                    <>
+                      <div className="drip-spam-score-row">
+                        <span
+                          className={`drip-spam-score drip-spam-score-${deliverabilityScoreTone(deliverabilityReport.score)}`}
+                        >
+                          {deliverabilityReport.score}
+                          <small>/10</small>
+                        </span>
+                        <div className="drip-spam-score-meta">
+                          <strong>{deliverabilityReport.rating}</strong>
+                          <span>
+                            Sent to {deliverabilityReport.inboxEmail}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className={`drip-deliverability-score-help${
+                            deliverabilityScoreHelpOpen ? " is-open" : ""
+                          }`}
+                          aria-label="How is this score calculated?"
+                          aria-expanded={deliverabilityScoreHelpOpen}
+                          onClick={() =>
+                            setDeliverabilityScoreHelpOpen((open) => !open)
+                          }
+                        >
+                          ?
+                        </button>
+                      </div>
+
+                      {deliverabilityScoreHelpOpen ? (
+                        <div className="drip-deliverability-score-explainer">
+                          <strong>How the /10 score is calculated</strong>
+                          <ol>
+                            <li>
+                              Start from SpamAssassin:{" "}
+                              <code>10 − raw SA score</code>, clamped to 0–10
+                              (higher SA raw = worse).
+                            </li>
+                            <li>
+                              Subtract auth penalties: SPF fail −1, DKIM fail
+                              −1, DMARC fail −1.5; softfail/none −0.5.
+                            </li>
+                            <li>
+                              Subtract blacklist hits: −1.5 per listing (max
+                              −3).
+                            </li>
+                            <li>
+                              Subtract content warnings (missing alt, low
+                              text/HTML ratio, shorteners, scripts, etc.).
+                            </li>
+                            <li>Final score is clamped to 0–10.</li>
+                          </ol>
+                          <p>
+                            Ratings: 9+ Excellent · 7+ Good · 5+ Fair · 3+ Poor
+                            · below 3 Spam risk.
+                          </p>
+                          <ul className="drip-deliverability-score-breakdown">
+                            <li>
+                              <span>SpamAssassin base</span>
+                              <strong>
+                                {deliverabilityReport.spamAssassin.displayScore}
+                              </strong>
+                            </li>
+                            <li>
+                              <span>SPF</span>
+                              <strong>
+                                {formatDeliverabilityMark(
+                                  deliverabilityReport.authentication.spf.mark,
+                                )}
+                              </strong>
+                            </li>
+                            <li>
+                              <span>DKIM</span>
+                              <strong>
+                                {formatDeliverabilityMark(
+                                  deliverabilityReport.authentication.dkim.mark,
+                                )}
+                              </strong>
+                            </li>
+                            <li>
+                              <span>DMARC</span>
+                              <strong>
+                                {formatDeliverabilityMark(
+                                  deliverabilityReport.authentication.dmarc
+                                    .mark,
+                                )}
+                              </strong>
+                            </li>
+                            <li>
+                              <span>
+                                Blacklists
+                                {deliverabilityReport.blacklists.listedCount
+                                  ? ` (${deliverabilityReport.blacklists.listedCount})`
+                                  : ""}
+                              </span>
+                              <strong>
+                                {formatDeliverabilityMark(
+                                  Math.max(
+                                    -3,
+                                    deliverabilityReport.blacklists
+                                      .listedCount * -1.5,
+                                  ),
+                                )}
+                              </strong>
+                            </li>
+                            <li>
+                              <span>Content</span>
+                              <strong>
+                                {formatDeliverabilityMark(
+                                  deliverabilityReport.content.reduce(
+                                    (sum, item) => sum + item.mark,
+                                    0,
+                                  ),
+                                )}
+                              </strong>
+                            </li>
+                            <li className="is-total">
+                              <span>Final</span>
+                              <strong>{deliverabilityReport.score}/10</strong>
+                            </li>
+                          </ul>
+                        </div>
+                      ) : null}
+
+                      <div className="drip-deliverability-fix-row">
+                        <button
+                          type="button"
+                          className="btn-dark"
+                          disabled={
+                            deliverabilityFixing ||
+                            deliverabilityChecking ||
+                            !campaign.senderId
+                          }
+                          onClick={() => void fixDeliverabilityWithAi()}
+                        >
+                          {deliverabilityFixing ? (
+                            <>
+                              <span
+                                className="drip-btn-spinner"
+                                aria-hidden="true"
+                              />
+                              Fixing with AI...
+                            </>
+                          ) : deliverabilityChecking ? (
+                            "Re-testing..."
+                          ) : (
+                            "Fix with AI & re-test"
+                          )}
+                        </button>
+                        <p className="drip-spam-test-copy">
+                          AI drafts a fix and re-tests first. Changes are saved
+                          only if the new score is the same or higher — never
+                          if it drops. SPF/DKIM/DMARC and blacklists need
+                          DNS/SMTP changes.
+                        </p>
+                      </div>
+
+                      <div className="drip-deliverability-section">
+                        <h4>Message</h4>
+                        <ul className="drip-deliverability-list">
+                          <li>
+                            <span>Subject</span>
+                            <strong>
+                              {deliverabilityReport.messageInfo.subject}
+                            </strong>
+                          </li>
+                          <li>
+                            <span>From</span>
+                            <strong>
+                              {deliverabilityReport.messageInfo.from}
+                            </strong>
+                          </li>
+                          <li>
+                            <span>Received</span>
+                            <strong>
+                              {new Date(
+                                deliverabilityReport.messageInfo.receivedAt,
+                              ).toLocaleString()}
+                            </strong>
+                          </li>
+                        </ul>
+                      </div>
+
+                      <div className="drip-deliverability-section">
+                        <h4>
+                          SpamAssassin{" "}
+                          <small>
+                            raw {deliverabilityReport.spamAssassin.rawScore} →{" "}
+                            {deliverabilityReport.spamAssassin.displayScore}/10
+                          </small>
+                        </h4>
+                        {deliverabilityReport.spamAssassin.error ? (
+                          <p className="drip-preview-status error">
+                            SpamAssassin unavailable:{" "}
+                            {deliverabilityReport.spamAssassin.error}
+                          </p>
+                        ) : deliverabilityReport.spamAssassin.rules.length >
+                          0 ? (
+                          <ul className="drip-deliverability-rules">
+                            {deliverabilityReport.spamAssassin.rules.map(
+                              (rule, index) => (
+                                <li
+                                  key={`${rule.name}-${rule.score}-${index}`}
+                                >
+                                  <span
+                                    className={
+                                      rule.score > 0
+                                        ? "is-bad"
+                                        : rule.score < 0
+                                          ? "is-good"
+                                          : ""
+                                    }
+                                  >
+                                    {rule.score > 0 ? "+" : ""}
+                                    {rule.score}
+                                  </span>
+                                  <strong>{rule.name}</strong>
+                                  <em>{rule.description}</em>
+                                </li>
+                              ),
+                            )}
+                          </ul>
+                        ) : (
+                          <p className="drip-spam-test-copy">
+                            No notable SpamAssassin rules matched.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="drip-deliverability-section">
+                        <h4>Authentication</h4>
+                        <ul className="drip-deliverability-checks">
+                          {(
+                            [
+                              deliverabilityReport.authentication.spf,
+                              deliverabilityReport.authentication.dkim,
+                              deliverabilityReport.authentication.dmarc,
+                            ] as DeliverabilityCheckItem[]
+                          ).map((item) => (
+                            <li
+                              key={item.title}
+                              className={`is-${item.status}`}
+                            >
+                              <span>
+                                {deliverabilityStatusLabel(item.status)}
+                              </span>
+                              <div>
+                                <strong>{item.title}</strong>
+                                <em>{item.detail || item.description}</em>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      <div className="drip-deliverability-section">
+                        <h4>
+                          Blacklists
+                          {deliverabilityReport.blacklists.ip
+                            ? ` · ${deliverabilityReport.blacklists.ip}`
+                            : ""}
+                        </h4>
+                        {deliverabilityReport.blacklists.checks.length === 0 ? (
+                          <p className="drip-spam-test-copy">
+                            Could not detect a public sending IP from Received
+                            headers.
+                          </p>
+                        ) : (
+                          <ul className="drip-deliverability-checks">
+                            {deliverabilityReport.blacklists.checks.map(
+                              (check) => (
+                                <li
+                                  key={check.zone}
+                                  className={
+                                    check.listed ? "is-failure" : "is-success"
+                                  }
+                                >
+                                  <span>
+                                    {check.listed ? "Listed" : "Clean"}
+                                  </span>
+                                  <div>
+                                    <strong>{check.label}</strong>
+                                    <em>{check.detail || check.zone}</em>
+                                  </div>
+                                </li>
+                              ),
+                            )}
+                          </ul>
+                        )}
+                      </div>
+
+                      <div className="drip-deliverability-section">
+                        <h4>Content</h4>
+                        <ul className="drip-deliverability-checks">
+                          {deliverabilityReport.content.map((item) => (
+                            <li
+                              key={item.title}
+                              className={`is-${item.status}`}
+                            >
+                              <span>
+                                {deliverabilityStatusLabel(item.status)}
+                              </span>
+                              <div>
+                                <strong>{item.title}</strong>
+                                <em>{item.detail || item.description}</em>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </>
+                  ) : null}
                 </div>
               </div>
-              <div className="drip-preview-device-row">
-              <button
-                type="button"
-                className={device === "desktop" ? "active" : undefined}
-                aria-label="Desktop preview"
-                onClick={() => setDevice("desktop")}
-              >
-                <DesktopPreviewIcon />
-              </button>
-              <button
-                type="button"
-                className={device === "mobile" ? "active" : undefined}
-                aria-label="Mobile preview"
-                onClick={() => setDevice("mobile")}
-              >
-                <MobilePreviewIcon />
-              </button>
-            </div>
-            </div>
-            {noUnsubscribeWarning ? <NoUnsubscribeWarning /> : null}
-            <div className={`drip-preview-frame ${device}`}>
-              {previewHtml.trim() ? (
-                <iframe
-                  key={`preview-${tab}-${selectedContactId}-${Object.values(activeValues).join("|")}`}
-                  title="Email preview"
-                  sandbox=""
-                  srcDoc={previewHtml}
-                />
-              ) : (
-                <div className="drip-preview-empty">Paste HTML to preview this email.</div>
-              )}
-            </div>
+            ) : (
+              <>
+                <div className="drip-preview-top">
+                  <div className="drip-preview-meta">
+                    <div className="drip-preview-meta-row">
+                      <span className="label">From:</span>
+                      <span className="value">{campaign.senderEmail || ""}</span>
+                    </div>
+                    <div className="drip-preview-meta-row">
+                      <span className="label">Subject:</span>
+                      <span className="value">{previewSubject}</span>
+                    </div>
+                    <div className="drip-preview-meta-row">
+                      <span className="label">Preview:</span>
+                      <span className="value">{previewPreviewText}</span>
+                    </div>
+                  </div>
+                  <div className="drip-preview-device-row">
+                    <button
+                      type="button"
+                      className={device === "desktop" ? "active" : undefined}
+                      aria-label="Desktop preview"
+                      onClick={() => setDevice("desktop")}
+                    >
+                      <DesktopPreviewIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className={device === "mobile" ? "active" : undefined}
+                      aria-label="Mobile preview"
+                      onClick={() => setDevice("mobile")}
+                    >
+                      <MobilePreviewIcon />
+                    </button>
+                  </div>
+                </div>
+                {noUnsubscribeWarning ? <NoUnsubscribeWarning /> : null}
+                <div className={`drip-preview-frame ${device}`}>
+                  {previewHtml.trim() ? (
+                    <iframe
+                      key={`preview-${tab}-${selectedContactId}-${Object.values(activeValues).join("|")}`}
+                      title="Email preview"
+                      sandbox=""
+                      srcDoc={previewHtml}
+                    />
+                  ) : (
+                    <div className="drip-preview-empty">
+                      Paste HTML to preview this email.
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           <aside className="drip-preview-right">
@@ -2933,6 +3610,47 @@ function PreviewTestModal({
 
                   {spamStatus ? (
                     <div className="drip-preview-status error">{spamStatus}</div>
+                  ) : null}
+                </div>
+
+                <div className="drip-spam-test drip-deliverability-test">
+                  <div className="drip-preview-recipients-label">
+                    Deliverability test
+                  </div>
+                  <p className="drip-spam-test-copy">
+                    Sends a real email via your SMTP sender to AgentMail, then
+                    scores SpamAssassin, SPF/DKIM/DMARC, blacklists, and content
+                    — like mail-tester.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn-soft drip-spam-run"
+                    disabled={
+                      deliverabilityChecking ||
+                      !html.trim() ||
+                      !campaign.senderId
+                    }
+                    onClick={() => void runDeliverabilityTest()}
+                  >
+                    {deliverabilityChecking ? (
+                      <>
+                        <span className="drip-btn-spinner" aria-hidden="true" />
+                        Testing...
+                      </>
+                    ) : deliverabilityReport ? (
+                      "Run deliverability test again"
+                    ) : (
+                      "Run deliverability test"
+                    )}
+                  </button>
+                  {deliverabilityReport && !deliverabilityOpen ? (
+                    <button
+                      type="button"
+                      className="btn-soft drip-spam-run"
+                      onClick={() => setDeliverabilityOpen(true)}
+                    >
+                      View last report ({deliverabilityReport.score}/10)
+                    </button>
                   ) : null}
                 </div>
               </>
