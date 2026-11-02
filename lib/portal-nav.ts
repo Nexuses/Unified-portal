@@ -121,6 +121,10 @@ export function publicAnalyticsPath(token: string) {
   return `/a/${token}`;
 }
 
+export function publicAllProjectsStatsPath(token: string) {
+  return `/ap/${encodeURIComponent(token)}`;
+}
+
 export function publicKanbanPath(token: string) {
   return `/k/${token}`;
 }

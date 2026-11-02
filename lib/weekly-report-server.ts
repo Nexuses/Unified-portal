@@ -1,29 +1,34 @@
 import nodemailer from "nodemailer";
 import { ObjectId } from "mongodb";
-import { getAnalyticsDashboard } from "@/lib/analytics-server";
 import { analyticsRangeIso } from "@/lib/analytics";
-import type { CampaignSendDoc } from "@/lib/campaign-blasts-server";
+import type {
+  ProjectsEngagementReport,
+  WeeklyProjectStats,
+} from "@/lib/all-projects-stats";
+import { sendHasHumanClick } from "@/lib/bot-click";
+import { sendIsBotOnlyOpen } from "@/lib/bot-open";
+import {
+  sendHasCountableClick,
+  type CampaignSendDoc,
+} from "@/lib/campaign-blasts-server";
+import type { ContactDoc } from "@/lib/crm";
 import { getDb } from "@/lib/mongodb";
+import { sendCountsAsOpen } from "@/lib/open-pixel";
+
+export type {
+  AllProjectsStatsDays,
+  ProjectsEngagementReport,
+  WeeklyProjectStats,
+} from "@/lib/all-projects-stats";
+export {
+  ALL_PROJECTS_STATS_DAYS,
+  parseAllProjectsStatsDays,
+} from "@/lib/all-projects-stats";
 
 const WEEKLY_REPORT_META = "weekly_report_meta";
 
 const NEXUSES_LOGO_URL =
   "https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png";
-
-export type WeeklyProjectStats = {
-  projectId: string;
-  projectName: string;
-  delivered: number;
-  opens: number;
-  clicks: number;
-  replies: number;
-  contactsAdded: number;
-  unsubscribed: number;
-  failed: number;
-  openRate: number;
-  clickRate: number;
-  replyRate: number;
-};
 
 export type WeeklyReportPayload = {
   weekKey: string;
@@ -106,16 +111,30 @@ function zonedParts(date: Date, timeZone: string) {
 }
 
 /**
+ * Past `days` calendar days in the report timezone, ending today (inclusive).
+ * days=7 → today and the previous 6 days.
+ */
+export function reportRangeForDays(
+  days: number,
+  now = new Date(),
+  timeZone = weeklyReportTimezone(),
+) {
+  const span = Math.max(1, Math.floor(days));
+  const todayKey = zonedDateKey(now, timeZone);
+  const startDate = new Date(`${todayKey}T00:00:00.000Z`);
+  startDate.setUTCDate(startDate.getUTCDate() - (span - 1));
+  const from = startDate.toISOString().slice(0, 10);
+  const to = todayKey;
+  return { from, to, rangeKey: `${from}_${to}` };
+}
+
+/**
  * Past 7 calendar days in the report timezone, ending today.
  * Friday run → previous Saturday through Friday (inclusive).
  */
 export function weeklyReportRange(now = new Date(), timeZone = weeklyReportTimezone()) {
-  const todayKey = zonedDateKey(now, timeZone);
-  const startDate = new Date(`${todayKey}T00:00:00.000Z`);
-  startDate.setUTCDate(startDate.getUTCDate() - 6);
-  const from = startDate.toISOString().slice(0, 10);
-  const to = todayKey;
-  return { from, to, weekKey: `${from}_${to}` };
+  const { from, to, rangeKey } = reportRangeForDays(7, now, timeZone);
+  return { from, to, weekKey: rangeKey };
 }
 
 /**
@@ -143,59 +162,292 @@ function formatInt(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
-async function countUniqueReplies(
-  projectId: ObjectId,
-  fromInput: string,
-  toInput: string,
-) {
-  const { from, to } = analyticsRangeIso(fromInput, toInput);
-  const db = await getDb();
-  const emails = await db.collection<CampaignSendDoc>("campaign_sends").distinct("email", {
-    projectId,
-    repliedAt: { $gte: from, $lte: to },
-  });
-  return emails.filter((email) => typeof email === "string" && email.trim()).length;
+type ProjectUniqueBucket = {
+  delivered: Set<string>;
+  opens: Set<string>;
+  clicks: Set<string>;
+  unsubscribed: Set<string>;
+};
+
+function emptyProjectBucket(): ProjectUniqueBucket {
+  return {
+    delivered: new Set(),
+    opens: new Set(),
+    clicks: new Set(),
+    unsubscribed: new Set(),
+  };
 }
 
-export async function buildWeeklyReport(
-  now = new Date(),
-): Promise<WeeklyReportPayload> {
+/** Match portal / weekly report (Show bot opens/clicks off). */
+function sendCountsAsReportOpen(send: CampaignSendDoc) {
+  if (!sendCountsAsOpen(send)) {
+    return false;
+  }
+  return !sendIsBotOnlyOpen(send);
+}
+
+function sendCountsAsReportClick(send: CampaignSendDoc) {
+  if (!sendHasCountableClick(send)) {
+    return false;
+  }
+  return sendHasHumanClick(send);
+}
+
+function countMapFromGroup(
+  rows: Array<{ _id: ObjectId | null; count: number }>,
+) {
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    if (!row._id) {
+      continue;
+    }
+    map.set(row._id.toString(), row.count);
+  }
+  return map;
+}
+
+const ENGAGEMENT_REPORT_CACHE_TTL_MS = 45_000;
+const engagementReportCache = new Map<
+  string,
+  { expiresAt: number; value: ProjectsEngagementReport }
+>();
+
+/**
+ * Same per-project engagement stats as the weekly email.
+ * Pass `days` for a rolling window, or `from`+`to` (YYYY-MM-DD) for a custom range.
+ * Bots hidden (matches weekly report). Batches Mongo reads across all projects.
+ */
+export async function buildProjectsEngagementReport(
+  options: {
+    days?: number;
+    from?: string;
+    to?: string;
+    now?: Date;
+  } = { days: 7 },
+): Promise<ProjectsEngagementReport> {
+  const now = options.now ?? new Date();
   const timezone = weeklyReportTimezone();
-  const { from, to, weekKey } = weeklyReportRange(now, timezone);
+  const customFrom = String(options.from ?? "").trim();
+  const customTo = String(options.to ?? "").trim();
+  const useCustom = Boolean(customFrom && customTo);
+
+  let from: string;
+  let to: string;
+  let rangeKey: string;
+  let span: number;
+
+  if (useCustom) {
+    const bounds = analyticsRangeIso(customFrom, customTo);
+    from = customFrom;
+    to = customTo;
+    rangeKey = `${from}_${to}`;
+    span = Math.max(
+      1,
+      Math.round(
+        (Date.UTC(
+          bounds.to.getUTCFullYear(),
+          bounds.to.getUTCMonth(),
+          bounds.to.getUTCDate(),
+        ) -
+          Date.UTC(
+            bounds.from.getUTCFullYear(),
+            bounds.from.getUTCMonth(),
+            bounds.from.getUTCDate(),
+          )) /
+          (24 * 60 * 60 * 1000),
+      ) + 1,
+    );
+  } else {
+    const days = Math.max(1, Math.floor(options.days ?? 7));
+    ({ from, to, rangeKey } = reportRangeForDays(days, now, timezone));
+    span = days;
+  }
+
+  const cacheKey = `${rangeKey}|${timezone}|d${span}`;
+  const cached = engagementReportCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   const db = await getDb();
+  const { from: fromDate, to: toDate } = analyticsRangeIso(from, to);
   const projects = await db
-    .collection<{ _id: ObjectId; name: string }>("projects")
+    .collection<{ _id: ObjectId; name: string; logoUrl?: string }>("projects")
     .find({})
-    .project({ name: 1 })
+    .project({ name: 1, logoUrl: 1 })
     .sort({ name: 1 })
     .toArray();
 
-  const rows: WeeklyProjectStats[] = [];
-  for (const project of projects) {
-    const dashboard = await getAnalyticsDashboard(
-      project._id,
+  if (projects.length === 0) {
+    const empty: ProjectsEngagementReport = {
       from,
       to,
-      project.name || "Project",
-      { hideBotClicks: true },
-    );
-    const replies = await countUniqueReplies(project._id, from, to);
-    const delivered = dashboard.totals.delivered;
-    rows.push({
-      projectId: project._id.toString(),
-      projectName: project.name || "Untitled project",
-      delivered,
-      opens: dashboard.totals.opens,
-      clicks: dashboard.totals.clicks,
-      replies,
-      contactsAdded: dashboard.totals.contactsAdded || 0,
-      unsubscribed: dashboard.totals.unsubscribed,
-      failed: dashboard.totals.failed,
-      openRate: rate(dashboard.totals.opens, delivered),
-      clickRate: rate(dashboard.totals.clicks, delivered),
-      replyRate: rate(replies, delivered),
+      rangeKey,
+      days: span,
+      timezone,
+      generatedAt: now.toISOString(),
+      projects: [],
+      totals: {
+        delivered: 0,
+        opens: 0,
+        clicks: 0,
+        replies: 0,
+        contactsAdded: 0,
+        unsubscribed: 0,
+        failed: 0,
+        openRate: 0,
+        clickRate: 0,
+        replyRate: 0,
+      },
+    };
+    engagementReportCache.set(cacheKey, {
+      expiresAt: Date.now() + ENGAGEMENT_REPORT_CACHE_TTL_MS,
+      value: empty,
     });
+    return empty;
   }
+
+  const projectIds = projects.map((project) => project._id);
+
+  const [sendDocs, failedRows, contactRows, replyRows] = await Promise.all([
+    db
+      .collection<CampaignSendDoc>("campaign_sends")
+      .find({
+        projectId: { $in: projectIds },
+        status: "sent",
+        sentAt: { $gte: fromDate, $lte: toDate },
+      })
+      .project({
+        projectId: 1,
+        email: 1,
+        sentAt: 1,
+        bouncedAt: 1,
+        openCount: 1,
+        openedAt: 1,
+        openEvents: 1,
+        openPixelBlocked: 1,
+        botOpen: 1,
+        clickCount: 1,
+        clickedAt: 1,
+        clickedUrl: 1,
+        clickEvents: 1,
+        clickBurstIgnored: 1,
+        botClick: 1,
+        unsubscribedAt: 1,
+      })
+      .toArray() as Promise<CampaignSendDoc[]>,
+    db
+      .collection<CampaignSendDoc>("campaign_sends")
+      .aggregate<{ _id: ObjectId; count: number }>([
+        {
+          $match: {
+            projectId: { $in: projectIds },
+            status: "failed",
+            updatedAt: { $gte: fromDate, $lte: toDate },
+          },
+        },
+        { $group: { _id: "$projectId", count: { $sum: 1 } } },
+      ])
+      .toArray(),
+    db
+      .collection<ContactDoc>("contacts")
+      .aggregate<{ _id: ObjectId; count: number }>([
+        {
+          $match: {
+            projectId: { $in: projectIds },
+            createdAt: { $gte: fromDate, $lte: toDate },
+          },
+        },
+        { $group: { _id: "$projectId", count: { $sum: 1 } } },
+      ])
+      .toArray(),
+    db
+      .collection<CampaignSendDoc>("campaign_sends")
+      .aggregate<{ _id: ObjectId; count: number }>([
+        {
+          $match: {
+            projectId: { $in: projectIds },
+            repliedAt: { $gte: fromDate, $lte: toDate },
+            email: { $type: "string", $ne: "" },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              projectId: "$projectId",
+              email: { $toLower: { $trim: { input: "$email" } } },
+            },
+          },
+        },
+        { $group: { _id: "$_id.projectId", count: { $sum: 1 } } },
+      ])
+      .toArray(),
+  ]);
+
+  const failedByProject = countMapFromGroup(failedRows);
+  const contactsByProject = countMapFromGroup(contactRows);
+  const repliesByProject = countMapFromGroup(replyRows);
+
+  const buckets = new Map<string, ProjectUniqueBucket>();
+  for (const project of projects) {
+    buckets.set(project._id.toString(), emptyProjectBucket());
+  }
+
+  for (const doc of sendDocs) {
+    const projectKey = doc.projectId?.toString?.() ?? "";
+    const bucket = buckets.get(projectKey);
+    if (!bucket) {
+      continue;
+    }
+    const email = String(doc.email ?? "")
+      .trim()
+      .toLowerCase();
+    if (!email || !doc.sentAt) {
+      continue;
+    }
+    const sentAt = doc.sentAt instanceof Date ? doc.sentAt : new Date(doc.sentAt);
+    if (Number.isNaN(sentAt.getTime())) {
+      continue;
+    }
+
+    if (!doc.bouncedAt) {
+      bucket.delivered.add(email);
+    }
+    if (sendCountsAsReportOpen(doc)) {
+      bucket.opens.add(email);
+    }
+    if (sendCountsAsReportClick(doc)) {
+      bucket.clicks.add(email);
+    }
+    if (doc.unsubscribedAt) {
+      bucket.unsubscribed.add(email);
+    }
+  }
+
+  const rows: WeeklyProjectStats[] = projects.map((project) => {
+    const id = project._id.toString();
+    const bucket = buckets.get(id) ?? emptyProjectBucket();
+    const delivered = bucket.delivered.size;
+    const opens = bucket.opens.size;
+    const clicks = bucket.clicks.size;
+    const replies = repliesByProject.get(id) ?? 0;
+    const logoUrl = project.logoUrl?.trim() || "";
+    return {
+      projectId: id,
+      projectName: project.name || "Untitled project",
+      ...(logoUrl ? { logoUrl } : {}),
+      delivered,
+      opens,
+      clicks,
+      replies,
+      contactsAdded: contactsByProject.get(id) ?? 0,
+      unsubscribed: bucket.unsubscribed.size,
+      failed: failedByProject.get(id) ?? 0,
+      openRate: rate(opens, delivered),
+      clickRate: rate(clicks, delivered),
+      replyRate: rate(replies, delivered),
+    };
+  });
 
   rows.sort((a, b) => b.delivered - a.delivered || a.projectName.localeCompare(b.projectName));
 
@@ -227,14 +479,35 @@ export async function buildWeeklyReport(
   totals.clickRate = rate(totals.clicks, totals.delivered);
   totals.replyRate = rate(totals.replies, totals.delivered);
 
-  return {
-    weekKey,
+  const report: ProjectsEngagementReport = {
     from,
     to,
+    rangeKey,
+    days: span,
     timezone,
     generatedAt: now.toISOString(),
     projects: rows,
     totals,
+  };
+  engagementReportCache.set(cacheKey, {
+    expiresAt: Date.now() + ENGAGEMENT_REPORT_CACHE_TTL_MS,
+    value: report,
+  });
+  return report;
+}
+
+export async function buildWeeklyReport(
+  now = new Date(),
+): Promise<WeeklyReportPayload> {
+  const report = await buildProjectsEngagementReport({ days: 7, now });
+  return {
+    weekKey: report.rangeKey,
+    from: report.from,
+    to: report.to,
+    timezone: report.timezone,
+    generatedAt: report.generatedAt,
+    projects: report.projects,
+    totals: report.totals,
   };
 }
 

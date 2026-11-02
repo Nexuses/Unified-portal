@@ -14,6 +14,11 @@ const navItems = [
     meta: "Manage projects and users",
   },
   {
+    label: "All projects",
+    href: "/admin/projects",
+    meta: "Engagement stats across every project",
+  },
+  {
     label: "Integrations",
     href: "/admin/integrations",
     meta: "API keys with read and write access",
