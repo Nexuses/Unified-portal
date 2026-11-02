@@ -47,12 +47,40 @@ type WeeklyReportMetaDoc = {
   lastTo?: string;
 };
 
+const DEFAULT_WEEKLY_REPORT_TIMEZONE = "Asia/Kolkata";
+
 function env(name: string) {
   return (process.env[name] || "").trim();
 }
 
+/** Keep IANA-ish chars only — strips BOM / smart quotes / trailing junk like `ø`. */
+function sanitizeTimezone(value: string) {
+  return value
+    .normalize("NFKC")
+    .replace(/^\uFEFF/, "")
+    .replace(/["'`]/g, "")
+    .replace(/[^A-Za-z0-9_+\-/]/g, "")
+    .trim();
+}
+
+function isValidTimeZone(timeZone: string) {
+  if (!timeZone) {
+    return false;
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function weeklyReportTimezone() {
-  return env("WEEKLY_REPORT_TIMEZONE") || "Asia/Kolkata";
+  const raw = sanitizeTimezone(env("WEEKLY_REPORT_TIMEZONE"));
+  if (isValidTimeZone(raw)) {
+    return raw;
+  }
+  return DEFAULT_WEEKLY_REPORT_TIMEZONE;
 }
 
 export function weeklyReportConfig() {
