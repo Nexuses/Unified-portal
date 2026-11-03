@@ -25,6 +25,10 @@ export type LeadReportListItem = Contact & {
   leadStageLabel?: string;
   leadProject?: string;
   leadOwner?: string;
+  /** Job title / role from profile or CRM attributes. */
+  position?: string;
+  /** Solutions linked on the lead report (legacy comma-joined attr). */
+  solutions?: string[];
   /** When the lead report was made (legacy or first flagged). */
   leadReportAt?: string;
   /** True when the email is unsubscribed / on the suppression list. */
@@ -41,7 +45,36 @@ export type ListLeadReportsOptions = {
   pageSize?: number;
   q?: string;
   stage?: string;
+  /** Exact solution name (matches within comma-joined leadReportSolutions). */
+  solution?: string;
 };
+
+function leadReportBaseFilter(projectId: ObjectId): Record<string, unknown> {
+  return {
+    projectId,
+    $or: [
+      { [`attributes.${LEAD_REPORT_ATTR.flag}`]: "1" },
+      { [`attributes.${LEAD_REPORT_ATTR.legacyId}`]: { $exists: true, $ne: "" } },
+      { "profile.leadStage": { $exists: true, $nin: [null, ""] } },
+    ],
+  };
+}
+
+function parseSolutions(raw: string | undefined) {
+  return String(raw ?? "")
+    .split(/[,;|]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function resolvePosition(doc: ContactDoc) {
+  return (
+    doc.profile?.title?.trim() ||
+    doc.attributes?.position?.trim() ||
+    doc.attributes?.title?.trim() ||
+    ""
+  );
+}
 
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -61,6 +94,8 @@ function toListItem(
 ): LeadReportListItem {
   const contact = mapContact(doc);
   const stage = (doc.profile?.leadStage || "").trim();
+  const position = resolvePosition(doc);
+  const solutions = parseSolutions(doc.attributes?.[LEAD_REPORT_ATTR.solutions]);
   const leadReportAt =
     doc.attributes?.[LEAD_REPORT_ATTR.createdAt]?.trim() ||
     contact.createdAt ||
@@ -73,12 +108,41 @@ function toListItem(
       : undefined,
     leadProject: doc.attributes?.[LEAD_REPORT_ATTR.project] || undefined,
     leadOwner: doc.attributes?.[LEAD_REPORT_ATTR.owner] || undefined,
+    position: position || undefined,
+    solutions: solutions.length > 0 ? solutions : undefined,
     leadReportAt,
     unsubscribed: unsubscribed || contact.subscribed === false,
     lists,
     listNames: lists.map((list) => list.name),
     hasLeadReport: true,
   };
+}
+
+/** Distinct solution names across lead reports in the project (for filter UI). */
+export async function listLeadReportSolutions(projectId: ObjectId) {
+  const collection = (await getDb()).collection<ContactDoc>("contacts");
+  const docs = await collection
+    .find(
+      {
+        ...leadReportBaseFilter(projectId),
+        [`attributes.${LEAD_REPORT_ATTR.solutions}`]: {
+          $exists: true,
+          $nin: [null, ""],
+        },
+      },
+      { projection: { [`attributes.${LEAD_REPORT_ATTR.solutions}`]: 1 } },
+    )
+    .toArray();
+
+  const unique = new Set<string>();
+  for (const doc of docs) {
+    for (const solution of parseSolutions(
+      doc.attributes?.[LEAD_REPORT_ATTR.solutions],
+    )) {
+      unique.add(solution);
+    }
+  }
+  return [...unique].sort((a, b) => a.localeCompare(b));
 }
 
 async function listsByContactIds(projectId: ObjectId, contactIds: ObjectId[]) {
@@ -138,18 +202,20 @@ export async function listProjectLeadReports(
   const page = Math.max(1, Math.floor(options?.page ?? 1));
   const q = String(options?.q ?? "").trim();
   const stage = String(options?.stage ?? "").trim();
+  const solution = String(options?.solution ?? "").trim();
 
-  const filter: Record<string, unknown> = {
-    projectId,
-    $or: [
-      { [`attributes.${LEAD_REPORT_ATTR.flag}`]: "1" },
-      { [`attributes.${LEAD_REPORT_ATTR.legacyId}`]: { $exists: true, $ne: "" } },
-      { "profile.leadStage": { $exists: true, $nin: [null, ""] } },
-    ],
-  };
+  const filter: Record<string, unknown> = leadReportBaseFilter(projectId);
 
   if (stage) {
     filter["profile.leadStage"] = stage;
+  }
+
+  if (solution) {
+    // Match whole token inside comma/semicolon-separated solutions string.
+    filter[`attributes.${LEAD_REPORT_ATTR.solutions}`] = {
+      $regex: `(^|[,;|\\s])${escapeRegex(solution)}([,;|\\s]|$)`,
+      $options: "i",
+    };
   }
 
   if (q) {
@@ -161,15 +227,19 @@ export async function listProjectLeadReports(
           { firstName: regex },
           { lastName: regex },
           { companyName: regex },
+          { "profile.title": regex },
+          { "attributes.position": regex },
+          { "attributes.title": regex },
           { [`attributes.${LEAD_REPORT_ATTR.project}`]: regex },
           { [`attributes.${LEAD_REPORT_ATTR.owner}`]: regex },
+          { [`attributes.${LEAD_REPORT_ATTR.solutions}`]: regex },
         ],
       },
     ];
   }
 
   const collection = (await getDb()).collection<ContactDoc>("contacts");
-  const [total, docs] = await Promise.all([
+  const [total, docs, solutions] = await Promise.all([
     collection.countDocuments(filter),
     collection
       .find(filter)
@@ -177,6 +247,7 @@ export async function listProjectLeadReports(
       .skip((page - 1) * pageSize)
       .limit(pageSize)
       .toArray(),
+    listLeadReportSolutions(projectId),
   ]);
 
   const leadDocs = docs.filter(isLeadReportContact);
@@ -196,6 +267,7 @@ export async function listProjectLeadReports(
         isSuppressedAddress(doc.email, suppression),
       ),
     ),
+    solutions,
     total,
     page,
     pageSize,

@@ -7343,13 +7343,30 @@ export default function PortalCampaignDetailPage({
     );
   }
 
-  if (personalise && setupViewing) {
+  // Personalise never uses the drip / 1-1 step wizard. Drafts without an
+  // upload plan (e.g. duplicated after rollout) and setup/paused edits use
+  // the Personalise sequence view instead.
+  if (
+    personalise &&
+    (setupViewing ||
+      campaign.status === "draft" ||
+      (campaign.status === "paused" && pausedEditing))
+  ) {
     return (
       <PersonaliseCampaignView
         campaignId={campaign.id}
         sequences={campaignSequences(campaign)}
-        editable={campaign.status === "paused"}
-        onBack={() => setSetupViewing(false)}
+        editable={
+          campaign.status === "draft" || campaign.status === "paused"
+        }
+        onBack={() => {
+          if (setupViewing || pausedEditing) {
+            setSetupViewing(false);
+            setPausedEditing(false);
+            return;
+          }
+          void goBackToList();
+        }}
         onSaved={setCampaign}
       />
     );

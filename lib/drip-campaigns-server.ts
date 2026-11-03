@@ -1031,6 +1031,12 @@ export async function duplicateProjectDripCampaign(
   const tags = (existing.tags ?? []).filter(
     (tag) => tag !== "automation" && tag !== "automation-follow-up",
   );
+  const isPersonalise = tags.includes("personalise");
+  // Keep the uploaded Personalise sheet plan so duplicate opens the
+  // Personalise editor, not the drip / 1-1 setup wizard.
+  const personalisePlan = existing.personalisePlan
+    ? structuredClone(existing.personalisePlan)
+    : undefined;
 
   const doc: DripCampaignDoc = {
     _id: new ObjectId(),
@@ -1062,6 +1068,7 @@ export async function duplicateProjectDripCampaign(
     hasDesign: existing.hasDesign,
     designHtml: existing.designHtml,
     designSourceCampaignId: existing.designSourceCampaignId || existing.campaignId,
+    signatureHtml: existing.signatureHtml,
     replyToEnabled: existing.replyToEnabled,
     replyToEmail: existing.replyToEmail,
     ccEnabled: existing.ccEnabled,
@@ -1087,6 +1094,7 @@ export async function duplicateProjectDripCampaign(
     sendStartDay: existing.sendStartDay,
     sendEndDay: existing.sendEndDay,
     emailGapMinutes: existing.emailGapMinutes,
+    ...(isPersonalise && personalisePlan ? { personalisePlan } : {}),
     timeline: [
       {
         id: randomBytes(6).toString("hex"),

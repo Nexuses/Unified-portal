@@ -151,7 +151,10 @@ export default function PortalDripPage({
   }
 
   function campaignPath(campaign: DripCampaign, extra?: string) {
-    const path = portalCampaignRoute(campaign.id, fetchKind, campaign.tags);
+    const tags = personalise
+      ? Array.from(new Set([...(campaign.tags ?? []), "personalise"]))
+      : campaign.tags;
+    const path = portalCampaignRoute(campaign.id, fetchKind, tags);
     return extra ? `${path}${extra}` : path;
   }
   const [campaigns, setCampaigns] = useState<DripCampaign[]>([]);

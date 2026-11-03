@@ -27,6 +27,7 @@ import {
   normalizePersonalisePlan,
   cleanReplyTo,
   cleanSignatureHtml,
+  personaliseEmphasizeTerms,
   pitchToHtml,
   stepDelayDays,
   type PersonaliseContact,
@@ -356,7 +357,9 @@ export async function rolloutPersonaliseCampaign(input: {
       // Fill {{firstname}} / {{name}} / etc. from this contact's columns (or Name).
       subjectLine: applyContactVariables(step.subject, mergeContact, false),
       htmlBody: applyContactVariables(
-        pitchToHtml(step.body, signatureHtml),
+        pitchToHtml(step.body, signatureHtml, {
+          emphasize: personaliseEmphasizeTerms(contact),
+        }),
         mergeContact,
         true,
       ),

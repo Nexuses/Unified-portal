@@ -25,15 +25,37 @@ type PortalAppShellProps = {
   children: React.ReactNode;
 };
 
+const SIDEBAR_COLLAPSED_KEY = "portal.sidebar.collapsed";
+
 export default function PortalAppShell({ user, children }: PortalAppShellProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [ready, setReady] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     setReady(true);
+    try {
+      setSidebarCollapsed(
+        window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1",
+      );
+    } catch {
+      // Ignore storage failures.
+    }
   }, []);
+
+  function toggleSidebarCollapsed() {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        // Ignore storage failures.
+      }
+      return next;
+    });
+  }
 
   const highlightPage = useMemo(
     () => getHighlightPageFromPathname(pathname),
@@ -66,8 +88,10 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
   }
 
   return (
-    <div className="shell">
+    <div className={`shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <PortalSidebar
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={toggleSidebarCollapsed}
         highlightPage={highlightPage}
         openGroups={openGroups}
         pathname={pathname}

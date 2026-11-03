@@ -311,6 +311,181 @@ export function expandCollapsedPitch(body: string) {
   return parts.join("\n\n");
 }
 
+/** Labels whose values should always render bold in the email HTML. */
+const IMPORTANT_LABEL_RE =
+  /^(solutions?|products?|offerings?|platforms?|tools?|software|services?|modules?|features?|packages?|plans?|company|organisation|organization|client|brand|deck|demo|important|key(?:\s+points?)?|notes?|highlights?|benefits?|outcomes?|results?|impacts?|usp|roi|value)$/i;
+
+/** Soft / conversational lines — never auto-bold as whole sentences. */
+const SOFT_POINT_RE =
+  /\b(hope (this|you)|just (wanted|checking|following)|reaching out|wanted to|following up|wondering if|would you|could we|let me know|looking forward|feel free|please (find|see|let)|thanks for|thank you for|may i|humbly ask)\b/i;
+
+const IMPORTANT_CUE_RE =
+  /^(important(?:ly)?|key(?:\s+point)?|note|n\.?b\.?|highlight|remember|pro tip|tip|worth noting|bottom line|tl;?dr)\b/i;
+
+const METRIC_CLAIM_RE =
+  /\d+\s*%|\b\d+[xX]\b|\$[\d,]+(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+\b|\b\d+\s*(?:hours?|days?|weeks?|months?|years?|mins?|minutes?)\b/i;
+
+/** Common sentence starters that look like product names but aren’t. */
+const NAME_STOPWORDS = new Set(
+  [
+    "Meanwhile",
+    "Importantly",
+    "However",
+    "Therefore",
+    "Additionally",
+    "Furthermore",
+    "Finally",
+    "Also",
+    "Here",
+    "This",
+    "That",
+    "These",
+    "Those",
+    "There",
+    "Our",
+    "Your",
+    "Their",
+    "We",
+    "I",
+    "It",
+    "Please",
+    "Thanks",
+    "Thank",
+    "Hello",
+    "Hi",
+    "Dear",
+    "Best",
+    "Kind",
+    "Warm",
+    "May",
+    "Just",
+    "Looking",
+    "Would",
+    "Could",
+    "Should",
+    "With",
+    "After",
+    "Before",
+    "Once",
+    "When",
+    "While",
+    "Since",
+    "Because",
+    "Although",
+    "Today",
+    "Yesterday",
+    "Tomorrow",
+  ].map((word) => word.toLowerCase()),
+);
+
+function isImportantLabel(label: string) {
+  return IMPORTANT_LABEL_RE.test(label.trim());
+}
+
+function stripBoldMarkers(text: string) {
+  return text.replace(/\*\*(.+?)\*\*/g, "$1");
+}
+
+/** Pointers / bullets always start with a capital letter in the rendered email. */
+function capitalizePointer(text: string) {
+  const match = String(text ?? "").match(/^(\s*)(\S)([\s\S]*)$/);
+  if (!match) {
+    return text;
+  }
+  if (!/[a-z]/.test(match[2])) {
+    return text;
+  }
+  return `${match[1]}${match[2].toUpperCase()}${match[3]}`;
+}
+
+function splitSentences(text: string): string[] {
+  return (
+    text
+      .match(/[^.!?]+[.!?]+(?:["')\]]+)?|[^.!?]+$/g)
+      ?.map((sentence) => sentence.trim())
+      .filter(Boolean) ?? (text.trim() ? [text.trim()] : [])
+  );
+}
+
+function lineMentionsTerm(text: string, terms: string[]) {
+  const lower = text.toLowerCase();
+  for (const term of terms) {
+    const needle = term.toLowerCase();
+    if (needle.length < 2) continue;
+    let from = 0;
+    while (from <= lower.length - needle.length) {
+      const index = lower.indexOf(needle, from);
+      if (index < 0) break;
+      if (hasWordBoundary(text, index, term.length)) {
+        return true;
+      }
+      from = index + 1;
+    }
+  }
+  return false;
+}
+
+/**
+ * Pitch lines worth bolding: product intros, showcase lines, metrics, and
+ * declarative sentences that name the solution/company. Soft / greeting /
+ * question lines stay plain. Bullets are handled separately (capitalized, not
+ * fully bold).
+ */
+function isImportantSentence(text: string, emphasize: string[] = []) {
+  const cleaned = stripBoldMarkers(text).trim();
+  if (cleaned.length < 12 || cleaned.length > 220) {
+    return false;
+  }
+  if (SOFT_POINT_RE.test(cleaned)) {
+    return false;
+  }
+  if (GREETING_RE.test(`${cleaned} `) || SIGNOFF_RE.test(`${cleaned} `)) {
+    return false;
+  }
+  if (/^(hi|hello|hey|dear)\b/i.test(cleaned)) {
+    return false;
+  }
+  if (IMPORTANT_CUE_RE.test(cleaned) || METRIC_CLAIM_RE.test(cleaned)) {
+    return true;
+  }
+  // "Shamil is an end-to-end workflow platform that could:"
+  if (/\b[A-Z][A-Za-z0-9][\w&'.-]{1,38}\s+is\s+(?:an?|the)\s+/.test(cleaned)) {
+    return true;
+  }
+  // "Labib, the AI assistant, shows how everything is moving."
+  if (
+    /,\s+the\s+(?:AI\s+)?(?:assistant|platform|tool|product|solution|app|agent|system|software)\b/i.test(
+      cleaned,
+    )
+  ) {
+    return true;
+  }
+  // Declarative line that names the product/company (skip questions).
+  if (
+    emphasize.length > 0 &&
+    cleaned.length <= 180 &&
+    !/[?]$/.test(cleaned) &&
+    lineMentionsTerm(cleaned, emphasize)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isLikelyProductName(name: string) {
+  const trimmed = name.trim();
+  if (trimmed.length < 3 || trimmed.length > 40) {
+    return false;
+  }
+  if (NAME_STOPWORDS.has(trimmed.toLowerCase())) {
+    return false;
+  }
+  // Prefer proper-looking names (Shamil, Labib, Nexus Guard).
+  return /^[A-Z][A-Za-z0-9][\w&'.-]*(?:\s+[A-Z][A-Za-z0-9][\w&'.-]*){0,3}$/.test(
+    trimmed,
+  );
+}
+
 function inlineMarks(text: string): PitchInline[] {
   const parts: PitchInline[] = [];
   const pattern = /\*\*(.+?)\*\*/g;
@@ -329,6 +504,125 @@ function inlineMarks(text: string): PitchInline[] {
   return parts.length > 0 ? parts : [{ text }];
 }
 
+function hasWordBoundary(text: string, index: number, length: number) {
+  const before = index === 0 || !/[A-Za-z0-9]/.test(text[index - 1] ?? "");
+  const after =
+    index + length >= text.length ||
+    !/[A-Za-z0-9]/.test(text[index + length] ?? "");
+  return before && after;
+}
+
+/**
+ * Bold whole-word occurrences of important terms (company / solution names)
+ * without undoing existing **markdown** bold spans.
+ */
+function emphasizeInline(parts: PitchInline[], terms: string[]): PitchInline[] {
+  const cleaned = [
+    ...new Set(
+      terms
+        .map((term) => String(term ?? "").trim())
+        .filter((term) => term.length >= 2),
+    ),
+  ].sort((a, b) => b.length - a.length);
+  if (cleaned.length === 0) {
+    return parts;
+  }
+
+  const next: PitchInline[] = [];
+  for (const part of parts) {
+    if (part.bold || !part.text) {
+      next.push(part);
+      continue;
+    }
+    let remaining = part.text;
+    while (remaining) {
+      let earliest = -1;
+      let hit = "";
+      for (const term of cleaned) {
+        const lower = remaining.toLowerCase();
+        const needle = term.toLowerCase();
+        let from = 0;
+        while (from <= lower.length - needle.length) {
+          const index = lower.indexOf(needle, from);
+          if (index < 0) break;
+          if (hasWordBoundary(remaining, index, term.length)) {
+            if (earliest < 0 || index < earliest) {
+              earliest = index;
+              hit = remaining.slice(index, index + term.length);
+            }
+            break;
+          }
+          from = index + 1;
+        }
+      }
+      if (earliest < 0 || !hit) {
+        next.push({ text: remaining });
+        break;
+      }
+      if (earliest > 0) {
+        next.push({ text: remaining.slice(0, earliest) });
+      }
+      next.push({ text: hit, bold: true });
+      remaining = remaining.slice(earliest + hit.length);
+    }
+  }
+  return next.length > 0 ? next : parts;
+}
+
+/**
+ * Markdown bold + important metric/cue sentences + company/product names.
+ * Bullets stay normal weight (except names/labels) so the email doesn’t shout.
+ */
+function renderPitchInline(
+  text: string,
+  emphasize: string[],
+  kind: "paragraph" | "bullet",
+): PitchInline[] {
+  const raw = String(text ?? "");
+  if (!raw.trim()) {
+    return [{ text: raw }];
+  }
+
+  // Author already used **bold** — keep that and only layer term emphasis.
+  if (/\*\*.+?\*\*/.test(raw)) {
+    return emphasizeInline(inlineMarks(raw), emphasize);
+  }
+
+  if (kind === "paragraph") {
+    // Prefer bolding the whole line when it's an important pitch line.
+    if (isImportantSentence(raw, emphasize)) {
+      return [{ text: stripBoldMarkers(raw), bold: true }];
+    }
+    const sentences = splitSentences(raw);
+    if (sentences.length > 1) {
+      const parts: PitchInline[] = [];
+      let cursor = 0;
+      let anyImportant = false;
+      for (const sentence of sentences) {
+        const at = raw.indexOf(sentence, cursor);
+        if (at > cursor) {
+          parts.push({ text: raw.slice(cursor, at) });
+        }
+        if (isImportantSentence(sentence, emphasize)) {
+          anyImportant = true;
+          parts.push({ text: sentence, bold: true });
+        } else {
+          parts.push({ text: sentence });
+        }
+        cursor = at >= 0 ? at + sentence.length : cursor + sentence.length;
+      }
+      if (cursor < raw.length) {
+        parts.push({ text: raw.slice(cursor) });
+      }
+      if (anyImportant) {
+        return emphasizeInline(parts.length > 0 ? parts : [{ text: raw }], emphasize);
+      }
+    }
+  }
+
+  return emphasizeInline(inlineMarks(raw), emphasize);
+}
+
 function labelBullet(line: string): PitchBullet | null {
   const match = line.match(LABEL_RE);
   if (!match) {
@@ -338,7 +632,15 @@ function labelBullet(line: string): PitchBullet | null {
   if (label.split(/\s+/).length > 8 || /[.!?]$/.test(label)) {
     return null;
   }
-  return { label, text: inlineMarks(match[2].trim()) };
+  const value = match[2].trim();
+  // Solution / product / company values stay bold; other labels stay plain.
+  if (isImportantLabel(label)) {
+    return {
+      label,
+      text: [{ text: stripBoldMarkers(value), bold: true }],
+    };
+  }
+  return { label, text: inlineMarks(value) };
 }
 
 function splitSignoff(lines: string[]) {
@@ -356,8 +658,17 @@ function splitSignoff(lines: string[]) {
   return out;
 }
 
+export type PitchRenderOptions = {
+  /** Names to bold in the body (company, solution, etc.). */
+  emphasize?: string[];
+};
+
 /** Turns plain pitch text into paragraphs, bullet lists, and a sign-off. */
-export function pitchBlocks(body: string): PitchBlock[] {
+export function pitchBlocks(
+  body: string,
+  options?: PitchRenderOptions,
+): PitchBlock[] {
+  const emphasize = options?.emphasize ?? [];
   const lines = splitSignoff(
     expandCollapsedPitch(body)
       .replace(/\r\n?/g, "\n")
@@ -388,8 +699,18 @@ export function pitchBlocks(body: string): PitchBlock[] {
     const marked = line.match(BULLET_RE);
     if (marked) {
       list = list ?? [];
-      const labelled = labelBullet(marked[1]);
-      list.push(labelled ?? { text: inlineMarks(marked[1]) });
+      const pointer = capitalizePointer(marked[1]);
+      const labelled = labelBullet(pointer);
+      if (labelled) {
+        list.push({
+          ...labelled,
+          text: emphasizeInline(labelled.text, emphasize),
+        });
+      } else {
+        list.push({
+          text: renderPitchInline(pointer, emphasize, "bullet"),
+        });
+      }
       continue;
     }
 
@@ -397,12 +718,18 @@ export function pitchBlocks(body: string): PitchBlock[] {
     const nextLabelled = index + 1 < lines.length && labelBullet(lines[index + 1]);
     if (labelled && (list || listIntro || nextLabelled)) {
       list = list ?? [];
-      list.push(labelled);
+      list.push({
+        ...labelled,
+        text: emphasizeInline(labelled.text, emphasize),
+      });
       continue;
     }
 
     closeList();
-    blocks.push({ type: "paragraph", text: inlineMarks(line) });
+    blocks.push({
+      type: "paragraph",
+      text: renderPitchInline(line, emphasize, "paragraph"),
+    });
     listIntro = /:\s*$/.test(line);
   }
 
@@ -474,11 +801,15 @@ export function applyCampaignSignature(html: string, signatureHtml: string) {
   return `${base}\n${block}`;
 }
 
-export function pitchToHtml(body: string, signatureHtml = "") {
+export function pitchToHtml(
+  body: string,
+  signatureHtml = "",
+  options?: PitchRenderOptions,
+) {
   const signature = cleanSignatureHtml(signatureHtml);
   const signatureBlock = signature ? `<div style="margin:8px 0 0">${signature}</div>` : "";
   let signed = false;
-  const html = pitchBlocks(body)
+  const html = pitchBlocks(body, options)
     .map((block) => {
       if (block.type === "list") {
         const items = block.items
@@ -501,6 +832,57 @@ export function pitchToHtml(body: string, signatureHtml = "") {
     .join("")
     .concat(signature && !signed ? `<div style="margin:18px 0 0">${signature}</div>` : "");
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#222">${html}</div>`;
+}
+
+/** Pull product / assistant names from natural pitch copy (e.g. Shamil, Labib). */
+function extractProductNames(body: string): string[] {
+  const text = String(body ?? "");
+  const found: string[] = [];
+  const patterns = [
+    // "Shamil is an end-to-end workflow platform"
+    /\b([A-Z][A-Za-z0-9][\w&'.-]{0,38})\s+is\s+(?:an?|the)\s+/g,
+    // "Labib, the AI assistant" / "Nexus, the platform"
+    /\b([A-Z][A-Za-z0-9][\w&'.-]{0,38}),\s+the\s+(?:AI\s+)?(?:assistant|platform|tool|product|solution|app|agent|system|software)\b/g,
+    // "meet Labib" / "introducing Shamil"
+    /\b(?:meet|introducing|called|named)\s+([A-Z][A-Za-z0-9][\w&'.-]{0,38})\b/g,
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text))) {
+      const name = match[1]?.trim();
+      if (name && isLikelyProductName(name)) {
+        found.push(name);
+      }
+    }
+  }
+  return found;
+}
+
+/** Terms worth bolding for a personalise contact (company + solutions + product names). */
+export function personaliseEmphasizeTerms(input: {
+  companyName?: string;
+  steps?: Array<{ body?: string }>;
+}) {
+  const terms: string[] = [];
+  const company = String(input.companyName ?? "").trim();
+  if (company) {
+    terms.push(company);
+  }
+  for (const step of input.steps ?? []) {
+    const body = String(step.body ?? "");
+    terms.push(...extractProductNames(body));
+    for (const line of body.split(/\n/)) {
+      const trimmed = line.replace(/^\s*(?:[-•*▪●◦]|\d{1,2}[.)])\s+/, "").trim();
+      const match = trimmed.match(LABEL_RE);
+      if (!match) continue;
+      if (!isImportantLabel(match[1])) continue;
+      const value = stripBoldMarkers(match[2].trim());
+      if (value.length >= 2 && value.length <= 80) {
+        terms.push(value);
+      }
+    }
+  }
+  return [...new Set(terms)];
 }
 
 export function contactNeedsEmail(contact: PersonaliseContact) {

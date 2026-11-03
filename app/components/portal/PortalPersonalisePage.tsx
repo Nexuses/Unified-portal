@@ -10,6 +10,7 @@ import {
   contactNeedsEmail,
   defaultStepGaps,
   formatPersonaliseEmail,
+  personaliseEmphasizeTerms,
   pitchBlocks,
   pitchToHtml,
   stepDelayDays,
@@ -127,8 +128,19 @@ function Inline({ parts }: { parts: PitchInline[] }) {
   );
 }
 
-function PitchPreview({ body, signature }: { body: string; signature: string }) {
-  const blocks = useMemo(() => pitchBlocks(body), [body]);
+function PitchPreview({
+  body,
+  signature,
+  emphasize = [],
+}: {
+  body: string;
+  signature: string;
+  emphasize?: string[];
+}) {
+  const blocks = useMemo(
+    () => pitchBlocks(body, { emphasize }),
+    [body, emphasize],
+  );
   return (
     <div className="pz-pitch">
       {blocks.map((block, index) => {
@@ -423,7 +435,9 @@ export default function PortalPersonalisePage({
       const filled = filledStep(contact, step);
       const subject = filled.subject || `Re: ${contact.steps[0]?.subject || "Hello"}`;
       const html = applyContactVariables(
-        pitchToHtml(step.body, activeSignature),
+        pitchToHtml(step.body, activeSignature, {
+          emphasize: personaliseEmphasizeTerms(contact),
+        }),
         {
           firstName: contact.firstName,
           lastName: contact.lastName,
@@ -1138,7 +1152,9 @@ export default function PortalPersonalisePage({
                                 </label>
                                 <p className="personalise-hint">
                                   Keep blank lines between paragraphs. Lines starting with{" "}
-                                  <code>- </code> become bullets. Use <code>**bold**</code> for emphasis.
+                                  <code>- </code> become bullets (first letter capitalized). Use{" "}
+                                  <code>**bold**</code> for emphasis. Solution/product names,
+                                  labels, and important/metric sentences are bolded automatically.
                                 </p>
                               </div>
                             ) : (
@@ -1172,7 +1188,11 @@ export default function PortalPersonalisePage({
                                     <span className="pz-thread">Reply in the same thread</span>
                                   )}
                                 </div>
-                                <PitchPreview body={filled.body} signature={activeSignature} />
+                                <PitchPreview
+                                  body={filled.body}
+                                  signature={activeSignature}
+                                  emphasize={personaliseEmphasizeTerms(contact)}
+                                />
                                 <span className="pz-step-preview-hint">Click to edit</span>
                               </div>
                             )}

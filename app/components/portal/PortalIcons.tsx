@@ -232,8 +232,9 @@ export function IconChevronRight({ className }: IconProps) {
 export function IconSidebarToggle({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
       <path d="M9 4.5v15" />
+      <path d="m14.5 9.5 2.5 2.5-2.5 2.5" />
     </svg>
   );
 }

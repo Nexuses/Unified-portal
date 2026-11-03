@@ -23,6 +23,7 @@ export async function GET(request: NextRequest) {
       pageSize: Number(params.get("pageSize") ?? "50"),
       q: params.get("q") ?? "",
       stage: params.get("stage") ?? "",
+      solution: params.get("solution") ?? "",
     });
     return NextResponse.json(data);
   } catch (error) {

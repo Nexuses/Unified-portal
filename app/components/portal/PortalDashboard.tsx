@@ -310,16 +310,36 @@ function PerfChartCanvas({
   const openedFillId = `perfOpenedFill-${reactId}`;
   const clipId = `perfPlotClip-${reactId}`;
   const isModal = size === "modal";
-  const width = isModal ? 960 : 640;
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [measuredWidth, setMeasuredWidth] = useState(0);
   const height = isModal ? 420 : 240;
   const padL = isModal ? 44 : 30;
   const padR = isModal ? 16 : 6;
   const padT = isModal ? 16 : 8;
   const padB = isModal ? 36 : 24;
   const plotRadius = 12;
+  const fallbackWidth = isModal ? 960 : 640;
+  const width = Math.max(measuredWidth || fallbackWidth, isModal ? 640 : 320);
   const innerW = width - padL - padR;
   const innerH = height - padT - padB;
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const sync = () => {
+      const next = Math.round(el.getBoundingClientRect().width);
+      if (next > 0) {
+        setMeasuredWidth(next);
+      }
+    };
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isModal]);
 
   const maxY = Math.max(
     1,
@@ -406,7 +426,10 @@ function PerfChartCanvas({
     hover && hover.sent > 0 ? hover.opened / hover.sent : hover ? 0 : 0;
 
   return (
-    <div className={`perf-chart-interactive${isModal ? " is-modal" : ""}`}>
+    <div
+      ref={wrapRef}
+      className={`perf-chart-interactive${isModal ? " is-modal" : ""}`}
+    >
       <svg
         className={`perf-chart-svg${isModal ? " is-modal" : ""}`}
         viewBox={`0 0 ${width} ${height}`}
