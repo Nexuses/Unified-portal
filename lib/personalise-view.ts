@@ -118,6 +118,7 @@ export async function getPersonaliseCampaignSnapshot(
     listName: blast.listName ?? "",
     senderId: blast.senderId ?? "",
     senderEmail: blast.senderEmail,
+    senderName: blast.senderName?.trim() || "",
     senderProvider: String((sender as { provider?: string } | null)?.provider ?? ""),
     replyTo: blast.replyTo?.trim() ?? "",
     timezone: blast.timezone || "Asia/Kolkata",

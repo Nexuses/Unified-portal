@@ -137,6 +137,7 @@ export default function PersonaliseCampaignView({
   const [senders, setSenders] = useState<SmtpSenderOption[]>([]);
   const [listName, setListName] = useState("");
   const [senderId, setSenderId] = useState("");
+  const [senderName, setSenderName] = useState("");
   const [replyTo, setReplyTo] = useState("");
   const [windowStart, setWindowStart] = useState("09:00");
   const [windowEnd, setWindowEnd] = useState("18:00");
@@ -180,6 +181,10 @@ export default function PersonaliseCampaignView({
       return;
     }
     setListName(snapshot.listName || snapshot.name);
+    setSenderName(
+      snapshot.senderName ||
+        (snapshot.senderEmail ? senderLabel(snapshot.senderEmail) : ""),
+    );
     setReplyTo(snapshot.replyTo || "");
     setWindowStart(snapshot.windowStart || "09:00");
     setWindowEnd(snapshot.windowEnd || "18:00");
@@ -272,7 +277,7 @@ export default function PersonaliseCampaignView({
           listName: name || undefined,
           senderId: sender.id,
           senderEmail: sender.fromEmail,
-          senderName: senderLabel(sender.fromEmail),
+          senderName: senderName.trim() || senderLabel(sender.fromEmail),
           replyToEnabled: Boolean(replyAddress),
           replyToEmail: replyAddress,
           windowStart,
@@ -366,7 +371,7 @@ export default function PersonaliseCampaignView({
               <h3 className="pz-card-title">Campaign setup</h3>
               {editable ? (
                 <>
-                  <div className="personalise-fields">
+                  <div className="personalise-fields personalise-fields-top">
                     <div className="crm-field">
                       <label htmlFor="personalise-edit-list">List name</label>
                       <input
@@ -383,28 +388,27 @@ export default function PersonaliseCampaignView({
                         className="pz-sender-select"
                         senders={senders}
                         value={senderId}
-                        onChange={setSenderId}
+                        onChange={(nextId) => {
+                          setSenderId(nextId);
+                          const selected = senders.find((item) => item.id === nextId);
+                          if (selected) {
+                            setSenderName(senderLabel(selected.fromEmail));
+                          }
+                        }}
                         placeholder="No sender yet"
                       />
                     </div>
                     <div className="crm-field">
-                      <label htmlFor="personalise-edit-start">Start sending</label>
+                      <label htmlFor="personalise-edit-sender-name">Sender name</label>
                       <input
-                        id="personalise-edit-start"
-                        type="time"
-                        value={windowStart}
-                        onChange={(event) => setWindowStart(event.target.value)}
+                        id="personalise-edit-sender-name"
+                        value={senderName}
+                        placeholder="Name shown to recipients"
+                        onChange={(event) => setSenderName(event.target.value)}
                       />
                     </div>
-                    <div className="crm-field">
-                      <label htmlFor="personalise-edit-end">Stop sending</label>
-                      <input
-                        id="personalise-edit-end"
-                        type="time"
-                        value={windowEnd}
-                        onChange={(event) => setWindowEnd(event.target.value)}
-                      />
-                    </div>
+                  </div>
+                  <div className="personalise-fields personalise-fields-schedule">
                     <div className="crm-field">
                       <label htmlFor="personalise-edit-start-day">Start day</label>
                       <select
@@ -434,6 +438,24 @@ export default function PersonaliseCampaignView({
                           </option>
                         ))}
                       </select>
+                    </div>
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-start">Start</label>
+                      <input
+                        id="personalise-edit-start"
+                        type="time"
+                        value={windowStart}
+                        onChange={(event) => setWindowStart(event.target.value)}
+                      />
+                    </div>
+                    <div className="crm-field">
+                      <label htmlFor="personalise-edit-end">End</label>
+                      <input
+                        id="personalise-edit-end"
+                        type="time"
+                        value={windowEnd}
+                        onChange={(event) => setWindowEnd(event.target.value)}
+                      />
                     </div>
                   </div>
                   <div className="personalise-fields personalise-fields-extra">
@@ -539,7 +561,11 @@ export default function PersonaliseCampaignView({
                         iconOnly
                         providerId={(snapshot.senderProvider || undefined) as SmtpProviderId | undefined}
                       />
-                      <span>{snapshot.senderEmail || "—"}</span>
+                      <span>
+                        {snapshot.senderName
+                          ? `${snapshot.senderName} <${snapshot.senderEmail || ""}>`
+                          : snapshot.senderEmail || "—"}
+                      </span>
                     </dd>
                   </div>
                   <div>

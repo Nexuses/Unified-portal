@@ -44,6 +44,7 @@ export type PersonaliseRolloutInput = {
   fileName?: string;
   contacts?: PersonaliseContact[];
   senderId?: string;
+  senderName?: string;
   windowStart?: string;
   windowEnd?: string;
   sendStartDay?: number;
@@ -263,8 +264,11 @@ export async function rolloutPersonaliseCampaign(input: {
     );
   }
 
+  const requestedSenderName = String(input.body.senderName ?? "").trim();
   const senderName =
-    formatSenderDisplayName(fromEmail).match(/^(.+?)\s*</)?.[1]?.trim() || fromEmail;
+    requestedSenderName ||
+    formatSenderDisplayName(fromEmail).match(/^(.+?)\s*</)?.[1]?.trim() ||
+    fromEmail;
   const now = new Date();
   const timeline: BlastTimelineEvent[] = [];
   if (scheduledFor) {

@@ -63,6 +63,7 @@ export type PersonaliseCampaignSnapshot = {
   listName: string;
   senderId: string;
   senderEmail: string;
+  senderName: string;
   senderProvider: string;
   replyTo: string;
   timezone: string;

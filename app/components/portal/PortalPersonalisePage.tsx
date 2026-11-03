@@ -41,6 +41,17 @@ type SenderOption = {
   fromEmail: string;
 };
 
+function senderDisplayName(fromEmail: string, providerName = "") {
+  const local = fromEmail.split("@")[0] ?? "";
+  const name = local
+    .replace(/[._-]+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+  return name || providerName || fromEmail;
+}
+
 type RolloutResult = {
   campaignId: string;
 };
@@ -217,6 +228,7 @@ export default function PortalPersonalisePage({
   const [draftCampaignId, setDraftCampaignId] = useState(initialCampaignId || "");
   const [senders, setSenders] = useState<SenderOption[]>([]);
   const [senderId, setSenderId] = useState(initialCampaign?.senderId || "");
+  const [senderName, setSenderName] = useState(initialCampaign?.senderName || "");
   const [replyTo, setReplyTo] = useState(initialCampaign?.replyToEmail || "");
   const [windowStart, setWindowStart] = useState(initialCampaign?.windowStart || "09:00");
   const [windowEnd, setWindowEnd] = useState(initialCampaign?.windowEnd || "18:00");
@@ -296,7 +308,20 @@ export default function PortalPersonalisePage({
         }
         if (!cancelled) {
           setSenders(data);
-          setSenderId((current) => current || data[0]?.id || "");
+          setSenderId((current) => {
+            const nextId = current || data[0]?.id || "";
+            if (nextId) {
+              const selected = data.find((item) => item.id === nextId);
+              if (selected) {
+                setSenderName((name) =>
+                  name.trim()
+                    ? name
+                    : senderDisplayName(selected.fromEmail, selected.providerName),
+                );
+              }
+            }
+            return nextId;
+          });
         }
       } catch {
         // The rollout form shows an empty sender list.
@@ -498,6 +523,7 @@ export default function PortalPersonalisePage({
       recipients: nextPlan.contacts.length,
       subject: firstSubject || undefined,
       senderId: senderId || undefined,
+      senderName: senderName.trim() || undefined,
       windowStart,
       windowEnd,
       sendStartDay,
@@ -581,6 +607,7 @@ export default function PortalPersonalisePage({
           fileName: plan.fileName,
           contacts: plan.contacts,
           senderId,
+          senderName: senderName.trim(),
           windowStart,
           windowEnd,
           sendStartDay,
@@ -755,7 +782,7 @@ export default function PortalPersonalisePage({
 
           <div className="pz-card">
           <h3 className="pz-card-title">Campaign setup</h3>
-          <div className="personalise-fields">
+          <div className="personalise-fields personalise-fields-top">
             <div className="crm-field">
               <label htmlFor="personalise-list-name">List name</label>
               <input
@@ -776,28 +803,29 @@ export default function PortalPersonalisePage({
                 className="pz-sender-select"
                 senders={senders}
                 value={senderId}
-                onChange={setSenderId}
+                onChange={(nextId) => {
+                  setSenderId(nextId);
+                  const selected = senders.find((item) => item.id === nextId);
+                  if (selected) {
+                    setSenderName(
+                      senderDisplayName(selected.fromEmail, selected.providerName),
+                    );
+                  }
+                }}
                 placeholder="No sender yet"
               />
             </div>
             <div className="crm-field">
-              <label htmlFor="personalise-start">Start sending</label>
+              <label htmlFor="personalise-sender-name">Sender name</label>
               <input
-                id="personalise-start"
-                type="time"
-                value={windowStart}
-                onChange={(event) => setWindowStart(event.target.value)}
+                id="personalise-sender-name"
+                value={senderName}
+                placeholder="Name shown to recipients"
+                onChange={(event) => setSenderName(event.target.value)}
               />
             </div>
-            <div className="crm-field">
-              <label htmlFor="personalise-end">Stop sending</label>
-              <input
-                id="personalise-end"
-                type="time"
-                value={windowEnd}
-                onChange={(event) => setWindowEnd(event.target.value)}
-              />
-            </div>
+          </div>
+          <div className="personalise-fields personalise-fields-schedule">
             <div className="crm-field">
               <label htmlFor="personalise-start-day">Start day</label>
               <select
@@ -827,6 +855,24 @@ export default function PortalPersonalisePage({
                   </option>
                 ))}
               </select>
+            </div>
+            <div className="crm-field">
+              <label htmlFor="personalise-start">Start</label>
+              <input
+                id="personalise-start"
+                type="time"
+                value={windowStart}
+                onChange={(event) => setWindowStart(event.target.value)}
+              />
+            </div>
+            <div className="crm-field">
+              <label htmlFor="personalise-end">End</label>
+              <input
+                id="personalise-end"
+                type="time"
+                value={windowEnd}
+                onChange={(event) => setWindowEnd(event.target.value)}
+              />
             </div>
           </div>
           <div className="personalise-fields personalise-fields-extra">

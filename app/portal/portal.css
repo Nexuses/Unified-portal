@@ -9652,6 +9652,12 @@ a.an-kanban-card-name.is-link:hover{
 }
 .pz-card-title{margin:0;font-size:15px;font-weight:700;color:var(--ink);}
 .personalise-fields{display:grid;grid-template-columns:1.4fr 1.6fr 1fr 1fr;gap:12px;}
+.personalise-fields-top{grid-template-columns:1.2fr 1.5fr 1.2fr;gap:12px;}
+.personalise-fields-schedule{
+  margin-top:2px;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,.9fr) minmax(0,.9fr);
+  justify-content:end;
+}
 .personalise-fields .crm-field label{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .personalise-fields .crm-field{min-width:0;justify-content:flex-end;}
 .pz-sender-select .drip-sender-select-trigger{height:42px;border-radius:10px;}
@@ -9885,14 +9891,18 @@ a.an-kanban-card-name.is-link:hover{
 }
 .personalise-actions .btn-dark{min-width:120px;justify-content:center;}
 @media (max-width:1100px){
-  .personalise-fields{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .personalise-fields,
+  .personalise-fields-top,
+  .personalise-fields-schedule{grid-template-columns:repeat(2,minmax(0,1fr));}
 }
 @media (max-width:820px){
   .pz-contact-head{flex-wrap:wrap;}
   .pz-email{width:100%;order:5;}
 }
 @media (max-width:720px){
-  .personalise-fields{grid-template-columns:1fr;}
+  .personalise-fields,
+  .personalise-fields-top,
+  .personalise-fields-schedule{grid-template-columns:1fr;}
   .personalise-setup-head{align-items:flex-start;flex-direction:column;}
 }
 @media (max-width:860px){
