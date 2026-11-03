@@ -133,6 +133,11 @@ export function publicLeadReportPath(token: string) {
   return `/l/${encodeURIComponent(token)}`;
 }
 
+/** Public share for the whole project lead-reports list. */
+export function publicLeadReportsPath(token: string) {
+  return `/lr/${encodeURIComponent(token)}`;
+}
+
 export function portalListRoute(id: string) {
   return `/portal/crm/lists/${id}`;
 }

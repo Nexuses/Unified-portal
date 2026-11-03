@@ -391,33 +391,51 @@ export default function PortalFileManagerPage() {
         </p>
       ) : null}
 
-      <div className="fm-search" role="search">
-        <label className="fm-buckets-label" htmlFor="fm-search-input">
-          Search
-        </label>
-        <div className="search-input fm-search-input">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
-            <path
-              d="M20 20l-3.5-3.5"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-            />
-          </svg>
-          <input
-            id="fm-search-input"
-            className="lists-search-input"
-            type="search"
-            value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
-            placeholder="Search by file name…"
-            autoComplete="off"
-          />
+      <div className="fm-controls" aria-label="File filters and buckets">
+        <div className="fm-toolbar-group fm-filters" aria-label="File type filters">
+          <div className="fm-buckets-label">Filter</div>
+          <div className="fm-filter-row">
+            {TYPE_FILTERS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`fm-filter-chip${
+                  typeFilter === item.id ? " is-active" : ""
+                }`}
+                onClick={() => selectType(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
 
-      <div className="fm-toolbar" aria-label="Buckets and filters">
+        <div className="fm-search" role="search">
+          <label className="fm-buckets-label" htmlFor="fm-search-input">
+            Search
+          </label>
+          <div className="search-input fm-search-input">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
+              <path
+                d="M20 20l-3.5-3.5"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+            <input
+              id="fm-search-input"
+              className="lists-search-input"
+              type="search"
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="Search by file name…"
+              autoComplete="off"
+            />
+          </div>
+        </div>
+
         <div className="fm-toolbar-group" aria-label="Buckets">
           <div className="fm-buckets-label">All buckets</div>
           <div className="fm-buckets-row">
@@ -450,24 +468,6 @@ export default function PortalFileManagerPage() {
             {buckets.length === 0 ? (
               <p className="fm-nav-empty">No buckets found</p>
             ) : null}
-          </div>
-        </div>
-        <div className="fm-toolbar-divider" aria-hidden="true" />
-        <div className="fm-toolbar-group fm-filters" aria-label="File type filters">
-          <div className="fm-buckets-label">Filter</div>
-          <div className="fm-filter-row">
-            {TYPE_FILTERS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`fm-filter-chip${
-                  typeFilter === item.id ? " is-active" : ""
-                }`}
-                onClick={() => selectType(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
           </div>
         </div>
       </div>

@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ContactDetail, ContactProfile } from "@/lib/crm";
+import { downloadCsv } from "@/lib/csv";
+import { LEAD_REPORT_ATTR } from "@/lib/lead-report-map";
+import { getLeadStatusLabel, normalizeLeadStatus } from "@/lib/lead-status";
 import { portalContactRoute } from "@/lib/portal-nav";
 import LeadReportOverview, {
   type LeadSectionKey,
@@ -128,6 +131,65 @@ export default function PortalContactLeadReportView({
     } finally {
       setShareBusy(false);
     }
+  }
+
+  function exportContactCsv() {
+    if (!contact) return;
+    const position =
+      contact.profile?.title ||
+      contact.attributes?.position ||
+      contact.attributes?.title ||
+      "";
+    const solutions = String(
+      contact.attributes?.[LEAD_REPORT_ATTR.solutions] || "",
+    );
+    const stage = contact.profile?.leadStage
+      ? getLeadStatusLabel(normalizeLeadStatus(contact.profile.leadStage))
+      : "";
+    const filename = `lead-report-${(contact.email || contact.id || "contact")
+      .replace(/[^a-zA-Z0-9._-]+/g, "-")
+      .slice(0, 64)}.csv`;
+    const noteText = (contact.profile?.notes || [])
+      .map((note) => String(note.body || "").trim())
+      .filter(Boolean)
+      .join(" | ");
+    downloadCsv(
+      filename,
+      [
+        "First name",
+        "Last name",
+        "Email",
+        "Company",
+        "Position",
+        "Stage",
+        "Solution",
+        "Project",
+        "Owner",
+        "Phone",
+        "LinkedIn",
+        "Company description",
+        "Notes",
+      ],
+      [
+        [
+          contact.firstName || "",
+          contact.lastName || "",
+          contact.email || "",
+          contact.companyName || "",
+          position,
+          stage,
+          solutions,
+          contact.attributes?.[LEAD_REPORT_ATTR.project] || "",
+          contact.attributes?.[LEAD_REPORT_ATTR.owner] || "",
+          contact.profile?.phone || contact.attributes?.phone || "",
+          contact.profile?.linkedinUrl ||
+            contact.attributes?.personalLinkedIn ||
+            "",
+          contact.profile?.company?.description || "",
+          noteText,
+        ],
+      ],
+    );
   }
 
   useEffect(() => {
@@ -391,6 +453,14 @@ export default function PortalContactLeadReportView({
               </svg>
             </button>
           </div>
+          <button
+            type="button"
+            className="btn-soft lead-share-btn"
+            disabled={!contact}
+            onClick={() => exportContactCsv()}
+          >
+            Export CSV
+          </button>
           <button
             type="button"
             className="btn-soft lead-share-btn"

@@ -13,6 +13,14 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { Contact } from "@/lib/crm";
+import { downloadCsv } from "@/lib/csv";
+import {
+  LEAD_REPORT_COLUMN_OPTIONS,
+  columnIdsFromVisibility,
+  defaultLeadReportColumnVisibility,
+  type LeadReportColumnId,
+  type LeadReportColumnVisibility,
+} from "@/lib/lead-reports-columns";
 import {
   LEAD_STATUS_LABELS,
   LEAD_STATUS_ORDER,
@@ -63,35 +71,8 @@ type ListResponse = {
 const PAGE_SIZE = 50;
 const COLUMNS_STORAGE_KEY = "portal.leadReports.visibleColumns.v1";
 
-const LEAD_REPORT_COLUMN_OPTIONS = [
-  { id: "lead", label: "Lead", locked: true },
-  { id: "email", label: "Email" },
-  { id: "company", label: "Company" },
-  { id: "position", label: "Position" },
-  { id: "solution", label: "Solution" },
-  { id: "lists", label: "Lists" },
-  { id: "stage", label: "Stage" },
-  { id: "date", label: "Date" },
-] as const;
-
-type LeadReportColumnId = (typeof LEAD_REPORT_COLUMN_OPTIONS)[number]["id"];
-type LeadReportColumnVisibility = Record<LeadReportColumnId, boolean>;
-
-function defaultColumnVisibility(): LeadReportColumnVisibility {
-  return {
-    lead: true,
-    email: true,
-    company: true,
-    position: true,
-    solution: true,
-    lists: true,
-    stage: true,
-    date: true,
-  };
-}
-
 function loadColumnVisibility(): LeadReportColumnVisibility {
-  const defaults = defaultColumnVisibility();
+  const defaults = defaultLeadReportColumnVisibility();
   if (typeof window === "undefined") {
     return defaults;
   }
@@ -121,6 +102,52 @@ function parseAttrSolutions(raw: unknown) {
     .filter(Boolean);
 }
 
+const CSV_HEADERS = [
+  "Lead",
+  "Email",
+  "Company",
+  "Position",
+  "Solution",
+  "Lists",
+  "Stage",
+  "Date",
+  "Project",
+  "Owner",
+] as const;
+
+function leadReportCsvRow(item: LeadReportItem): string[] {
+  const name = displayName(item);
+  const position =
+    item.position ||
+    item.attributes?.position ||
+    item.attributes?.title ||
+    "";
+  const solutions =
+    item.solutions && item.solutions.length > 0
+      ? item.solutions
+      : parseAttrSolutions(item.attributes?.leadReportSolutions);
+  const lists =
+    item.lists && item.lists.length > 0
+      ? item.lists.map((list) => list.name)
+      : item.listNames || [];
+  const stage =
+    item.leadStageLabel ||
+    (item.leadStage ? getLeadStatusLabel(normalizeLeadStatus(item.leadStage)) : "");
+  const reportAt = item.leadReportAt || item.createdAt || item.updatedAt;
+  return [
+    name,
+    item.email || "",
+    item.companyName || "",
+    position,
+    solutions.join(", "),
+    lists.join(", "),
+    stage,
+    formatLeadDate(reportAt),
+    item.leadProject || item.attributes?.leadReportProject || "",
+    item.leadOwner || item.attributes?.leadReportOwner || "",
+  ];
+}
+
 export default function PortalLeadReportsPage() {
   const router = useRouter();
   const [items, setItems] = useState<LeadReportItem[]>([]);
@@ -137,13 +164,17 @@ export default function PortalLeadReportsPage() {
   const [searchResults, setSearchResults] = useState<Contact[]>([]);
   const [searching, setSearching] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [columnMenuPos, setColumnMenuPos] = useState<{
     top: number;
     left: number;
   } | null>(null);
   const [visibleColumns, setVisibleColumns] = useState<LeadReportColumnVisibility>(
-    defaultColumnVisibility,
+    defaultLeadReportColumnVisibility,
   );
   const columnMenuRef = useRef<HTMLDivElement | null>(null);
   const columnMenuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -216,10 +247,7 @@ export default function PortalLeadReportsPage() {
   }
 
   const visibleColumnIds = useMemo(
-    () =>
-      LEAD_REPORT_COLUMN_OPTIONS.filter((column) => visibleColumns[column.id]).map(
-        (column) => column.id,
-      ),
+    () => columnIdsFromVisibility(visibleColumns),
     [visibleColumns],
   );
 
@@ -240,7 +268,7 @@ export default function PortalLeadReportsPage() {
       (sum, id) => sum + widths[id],
       0,
     );
-    return content + 72; // action
+    return content + 72; // open action
   }, [visibleColumnIds]);
 
   const load = useCallback(async () => {
@@ -346,6 +374,83 @@ export default function PortalLeadReportsPage() {
     }
   }
 
+  async function exportCsv() {
+    if (exporting) return;
+    setExporting(true);
+    setError("");
+    try {
+      const collected: LeadReportItem[] = [];
+      let pageIndex = 1;
+      let totalPages = 1;
+      do {
+        const params = new URLSearchParams({
+          page: String(pageIndex),
+          pageSize: "100",
+        });
+        if (q.trim()) params.set("q", q.trim());
+        if (stage) params.set("stage", stage);
+        if (solution) params.set("solution", solution);
+        const response = await fetch(`/api/crm/lead-reports?${params}`, {
+          cache: "no-store",
+        });
+        const data = (await response.json()) as ListResponse & { error?: string };
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to export lead reports");
+        }
+        collected.push(...(data.items || []));
+        totalPages = Math.max(1, data.totalPages || 1);
+        pageIndex += 1;
+      } while (pageIndex <= totalPages && pageIndex <= 50);
+
+      if (collected.length === 0) {
+        throw new Error("No lead reports to export for the current filters.");
+      }
+
+      downloadCsv(
+        `lead-reports-${new Date().toISOString().slice(0, 10)}.csv`,
+        [...CSV_HEADERS],
+        collected.map(leadReportCsvRow),
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to export lead reports",
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function sharePublicLink() {
+    if (shareBusy) return;
+    setShareBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/crm/lead-reports/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ columns: visibleColumnIds }),
+      });
+      const data = (await response.json()) as { url?: string; error?: string };
+      if (!response.ok || !data.url) {
+        throw new Error(data.error || "Failed to create public URL");
+      }
+      setShareUrl(data.url);
+      try {
+        await navigator.clipboard.writeText(data.url);
+        setShareCopied(true);
+        window.setTimeout(() => setShareCopied(false), 2400);
+      } catch {
+        /* banner still shows the URL for manual copy */
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to create public URL",
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
   return (
     <div className="crm-page">
       <div className="crm-page-head">
@@ -356,10 +461,43 @@ export default function PortalLeadReportsPage() {
             CRM contact.
           </p>
         </div>
-        <button type="button" className="btn-dark" onClick={() => setCreateOpen(true)}>
-          Create lead report
-        </button>
+        <div className="lr-page-actions">
+          <button
+            type="button"
+            className="btn-soft"
+            disabled={exporting || loading || total === 0}
+            onClick={() => void exportCsv()}
+          >
+            {exporting ? "Exporting…" : "Export CSV"}
+          </button>
+          <button
+            type="button"
+            className="btn-soft"
+            disabled={shareBusy}
+            onClick={() => void sharePublicLink()}
+          >
+            {shareCopied
+              ? "Public URL copied"
+              : shareBusy
+                ? "Creating…"
+                : "Share public link"}
+          </button>
+          <button type="button" className="btn-dark" onClick={() => setCreateOpen(true)}>
+            Create lead report
+          </button>
+        </div>
       </div>
+
+      {shareUrl ? (
+        <div className="an-share-banner">
+          <span>Share all lead reports with a client:</span>
+          <input
+            readOnly
+            value={shareUrl}
+            onFocus={(event) => event.currentTarget.select()}
+          />
+        </div>
+      ) : null}
 
       <div className="crm-filter-row lr-list-toolbar">
         <input
