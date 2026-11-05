@@ -87,6 +87,10 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
     return <div className="lead-report-shell">{children}</div>;
   }
 
+  if (pathname.startsWith("/portal/smtp/assistant")) {
+    return <div className="project-agent-shell">{children}</div>;
+  }
+
   return (
     <div className={`shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <PortalSidebar
@@ -102,6 +106,7 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
       <div className="main">
         <PortalTopbar
           fullName={user.fullName}
+          projectName={user.projectName}
           pageTitle={pageTitle}
           onLogout={handleLogout}
         />

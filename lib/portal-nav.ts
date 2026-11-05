@@ -16,6 +16,7 @@ export type PortalPageId =
   | "analytics-kanban"
   | "smtp"
   | "smtp-health"
+  | "project-assistant"
   | "branding"
   | "knowledge"
   | "inbox"
@@ -66,6 +67,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   smtp: "/portal/smtp",
   "smtp-health": "/portal/smtp/health",
   branding: "/portal/branding",
+  "project-assistant": "/portal/smtp/assistant",
   knowledge: "/portal/knowledge-base",
   inbox: "/portal/inbox",
   activity: "/portal/activity",
@@ -278,6 +280,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   smtp: "Senders",
   "smtp-health": "Sender health",
   branding: "Branding",
+  "project-assistant": "Project AI Assistant",
   knowledge: "Knowledge Base",
   inbox: "Master Inbox",
   activity: "Activity Feed",
@@ -317,6 +320,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/marketing/campaigns/")) return "drip";
   if (pathname.startsWith("/portal/analytics/kanban")) return "analytics-kanban";
   if (pathname.startsWith("/portal/analytics")) return "analytics";
+  if (pathname.startsWith("/portal/smtp/assistant")) return "project-assistant";
   if (pathname.startsWith("/portal/smtp/health")) return "smtp-health";
   if (pathname.startsWith("/portal/smtp")) return "smtp";
   if (pathname.startsWith("/portal/branding")) return "branding";

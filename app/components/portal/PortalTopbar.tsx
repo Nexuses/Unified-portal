@@ -11,11 +11,13 @@ import {
   PORTAL_NOTIFICATIONS,
   type PortalNotification,
 } from "@/lib/portal-notifications";
+import { PORTAL_ROUTES } from "@/lib/portal-nav";
 import ApiCreditButton from "./ApiCreditButton";
 import { IconBell, IconChevronDown } from "./PortalIcons";
 
 type PortalTopbarProps = {
   fullName: string;
+  projectName: string;
   pageTitle: string;
   onLogout: () => void;
 };
@@ -44,10 +46,11 @@ function applyTheme(theme: ThemeMode) {
 
 export default function PortalTopbar({
   fullName,
+  projectName,
   pageTitle,
   onLogout,
 }: PortalTopbarProps) {
-  const firstName = fullName.split(" ")[0] ?? fullName;
+  const workspaceName = projectName || fullName;
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [seenInPanel, setSeenInPanel] = useState<Set<string>>(new Set());
@@ -195,16 +198,27 @@ export default function PortalTopbar({
           <button
             type="button"
             className={`org-pill${openMenu === "user" ? " open" : ""}`}
+            aria-label={`${workspaceName} menu`}
+            title={workspaceName}
             aria-haspopup="menu"
             aria-expanded={openMenu === "user"}
             onClick={() => toggleMenu("user")}
           >
-            <div className="avatar">{getInitials(fullName)}</div>
-            {firstName}
+            <div className="avatar">{getInitials(workspaceName)}</div>
+            <span className="org-pill-name">{workspaceName}</span>
             <IconChevronDown />
           </button>
           {openMenu === "user" ? (
             <div className="org-dropdown" role="menu">
+              <div className="org-dropdown-label">{workspaceName}</div>
+              <Link
+                href={PORTAL_ROUTES["project-assistant"]}
+                role="menuitem"
+                className="org-dropdown-item"
+                onClick={() => setOpenMenu(null)}
+              >
+                Project AI Assistant
+              </Link>
               <button
                 type="button"
                 role="menuitem"

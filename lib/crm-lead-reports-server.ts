@@ -333,6 +333,73 @@ export async function ensureContactLeadReport(
   return updated ? toListItem(updated) : null;
 }
 
+/** Normalize solution names: trim, drop empties, de-dupe case-insensitively. */
+export function normalizeSolutionNames(values: readonly unknown[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const name = String(value ?? "").trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(name);
+  }
+  return result;
+}
+
+/** Replace the solution list on a lead report contact. */
+export async function updateLeadReportSolutions(
+  projectId: ObjectId,
+  contactId: ObjectId,
+  solutions: readonly unknown[],
+): Promise<LeadReportListItem | null> {
+  const db = await getDb();
+  const existing = await db.collection<ContactDoc>("contacts").findOne({
+    _id: contactId,
+    projectId,
+  });
+  if (!existing) {
+    return null;
+  }
+
+  const names = normalizeSolutionNames(solutions);
+  const attributes = { ...(existing.attributes || {}) };
+  attributes[LEAD_REPORT_ATTR.flag] = "1";
+  if (!attributes[LEAD_REPORT_ATTR.createdAt]) {
+    attributes[LEAD_REPORT_ATTR.createdAt] =
+      existing.createdAt?.toISOString?.() || new Date().toISOString();
+  }
+  if (names.length > 0) {
+    attributes[LEAD_REPORT_ATTR.solutions] = names.join(", ");
+  } else {
+    delete attributes[LEAD_REPORT_ATTR.solutions];
+  }
+
+  await db.collection<ContactDoc>("contacts").updateOne(
+    { _id: contactId, projectId },
+    { $set: { attributes, updatedAt: new Date() } },
+  );
+
+  const updated = await db.collection<ContactDoc>("contacts").findOne({
+    _id: contactId,
+    projectId,
+  });
+  if (!updated) {
+    return null;
+  }
+
+  const [listsByContact, suppression] = await Promise.all([
+    listsByContactIds(projectId, [updated._id]),
+    getSuppressionSets(projectId),
+  ]);
+  return toListItem(
+    updated,
+    listsByContact.get(updated._id.toString()) || [],
+    isSuppressedAddress(updated.email, suppression),
+  );
+}
+
 export async function createLeadReportContact(
   projectId: ObjectId,
   input: {

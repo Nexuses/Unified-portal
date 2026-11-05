@@ -29,6 +29,7 @@ import {
   normalizeLeadStatus,
 } from "@/lib/lead-status";
 import { portalContactRoute, portalListRoute } from "@/lib/portal-nav";
+import LeadReportSolutionCell from "./LeadReportSolutionCell";
 
 function formatLeadDate(value?: string) {
   if (!value) return "";
@@ -102,6 +103,12 @@ function parseAttrSolutions(raw: unknown) {
     .filter(Boolean);
 }
 
+function leadReportSolutions(item: LeadReportItem): string[] {
+  return item.solutions && item.solutions.length > 0
+    ? item.solutions
+    : parseAttrSolutions(item.attributes?.leadReportSolutions);
+}
+
 const CSV_HEADERS = [
   "Lead",
   "Email",
@@ -122,10 +129,7 @@ function leadReportCsvRow(item: LeadReportItem): string[] {
     item.attributes?.position ||
     item.attributes?.title ||
     "";
-  const solutions =
-    item.solutions && item.solutions.length > 0
-      ? item.solutions
-      : parseAttrSolutions(item.attributes?.leadReportSolutions);
+  const solutions = leadReportSolutions(item);
   const lists =
     item.lists && item.lists.length > 0
       ? item.lists.map((list) => list.name)
@@ -168,6 +172,7 @@ export default function PortalLeadReportsPage() {
   const [shareBusy, setShareBusy] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
+  const [savingSolutionId, setSavingSolutionId] = useState<string | null>(null);
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [columnMenuPos, setColumnMenuPos] = useState<{
     top: number;
@@ -371,6 +376,87 @@ export default function PortalLeadReportsPage() {
       setError(err instanceof Error ? err.message : "Could not open lead report");
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function saveRowSolution(item: LeadReportItem, next: string) {
+    if (savingSolutionId) return;
+    setSavingSolutionId(item.id);
+    setError("");
+    const previous = leadReportSolutions(item);
+    const previousAttr = item.attributes?.leadReportSolutions;
+    const name = next.trim();
+    // Optimistic update so the cell responds immediately.
+    setItems((current) =>
+      current.map((row) =>
+        row.id === item.id
+          ? {
+              ...row,
+              solutions: name ? [name] : undefined,
+              attributes: {
+                ...(row.attributes || {}),
+                leadReportSolutions: name,
+              },
+            }
+          : row,
+      ),
+    );
+    try {
+      const response = await fetch("/api/crm/lead-reports/solutions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contactId: item.id, solution: name }),
+      });
+      const data = (await response.json()) as {
+        item?: LeadReportItem;
+        solution?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.item) {
+        throw new Error(data.error || "Could not save solution");
+      }
+      const saved = data.item;
+      setItems((current) =>
+        current.map((row) =>
+          row.id === item.id
+            ? {
+                ...row,
+                ...saved,
+                solutions:
+                  data.solution && data.solution.length > 0
+                    ? [data.solution]
+                    : undefined,
+              }
+            : row,
+        ),
+      );
+      if (data.solution) {
+        setSolutionOptions((current) => {
+          const names = new Set(current);
+          names.add(data.solution as string);
+          return [...names].sort((a, b) => a.localeCompare(b));
+        });
+      }
+    } catch (err) {
+      setItems((current) =>
+        current.map((row) =>
+          row.id === item.id
+            ? {
+                ...row,
+                solutions: previous.length > 0 ? previous : undefined,
+                attributes: {
+                  ...(row.attributes || {}),
+                  leadReportSolutions: previousAttr,
+                },
+              }
+            : row,
+        ),
+      );
+      setError(
+        err instanceof Error ? err.message : "Could not save solution",
+      );
+    } finally {
+      setSavingSolutionId(null);
     }
   }
 
@@ -666,13 +752,7 @@ export default function PortalLeadReportsPage() {
                   item.attributes?.position ||
                   item.attributes?.title ||
                   "";
-                const solutions =
-                  item.solutions && item.solutions.length > 0
-                    ? item.solutions
-                    : parseAttrSolutions(
-                        item.attributes?.leadReportSolutions,
-                      );
-                const solutionsLabel = solutions.join(", ");
+                const solutions = leadReportSolutions(item);
                 const reportAt =
                   item.leadReportAt || item.createdAt || item.updatedAt;
                 const dateLabel = formatLeadDate(reportAt);
@@ -725,14 +805,12 @@ export default function PortalLeadReportsPage() {
                     ) : null}
                     {visibleColumns.solution ? (
                       <td className="lr-col-solution">
-                        <span
-                          className="lr-cell-text"
-                          title={solutionsLabel || undefined}
-                        >
-                          {solutionsLabel || (
-                            <span className="contact-empty-dash">—</span>
-                          )}
-                        </span>
+                        <LeadReportSolutionCell
+                          value={solutions[0] ?? ""}
+                          options={solutionOptions}
+                          saving={savingSolutionId === item.id}
+                          onSave={(next) => void saveRowSolution(item, next)}
+                        />
                       </td>
                     ) : null}
                     {visibleColumns.lists ? (

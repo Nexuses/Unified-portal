@@ -1063,7 +1063,8 @@ async function listContactLists(projectId: ObjectId, args: Record<string, unknow
     .toArray();
   return {
     lists: lists.map((list) => ({
-      id: list.displayId,
+      id: list._id.toString(),
+      displayId: list.displayId,
       name: list.name,
       contacts: list.contactCount,
       createdAt: list.createdAt.toISOString(),
@@ -1076,6 +1077,7 @@ async function listSenders(projectId: ObjectId) {
   const senders = await getProjectSenders(projectId);
   return {
     senders: senders.map((sender) => ({
+      id: sender.id,
       email: sender.fromEmail,
       provider: sender.providerName,
       dailyLimit: sender.dailyLimit,

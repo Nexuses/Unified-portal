@@ -137,6 +137,18 @@ export function IconIntegrations({ className }: IconProps) {
   );
 }
 
+export function IconProjectAssistant({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" {...stroke}>
+      <rect x="5" y="7" width="14" height="11" rx="3" />
+      <circle cx="9.2" cy="12.2" r="1.15" fill="currentColor" stroke="none" />
+      <circle cx="14.8" cy="12.2" r="1.15" fill="currentColor" stroke="none" />
+      <path d="M9.5 15.2c.7.7 1.6 1.1 2.5 1.1s1.8-.4 2.5-1.1" />
+      <path d="M12 4.2v2.2M8.2 5.2l1.2 1.6M15.8 5.2l-1.2 1.6" />
+    </svg>
+  );
+}
+
 export function IconAutomation({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
