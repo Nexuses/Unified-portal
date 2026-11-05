@@ -33,6 +33,7 @@ import {
   fetchDripCampaigns,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
+import type { CrmList } from "@/lib/crm";
 import { PORTAL_ROUTES, portalContactRoute } from "@/lib/portal-nav";
 import { formatAnalyticsExpiry } from "@/lib/analytics";
 import PipelineFunnelChart from "@/app/components/portal/PipelineFunnelChart";
@@ -177,10 +178,13 @@ export default function PortalAnalyticsKanban({
   const [editingCampaigns, setEditingCampaigns] = useState(false);
   const [allCampaigns, setAllCampaigns] = useState<DripCampaign[]>([]);
   const [pipelineLists, setPipelineLists] = useState<KanbanList[]>([]);
-  const [campaignEditSource, setCampaignEditSource] = useState<"campaigns" | "pipeline">(
-    "campaigns",
-  );
+  const [campaignEditSource, setCampaignEditSource] = useState<
+    "campaigns" | "pipeline" | "list"
+  >("campaigns");
   const [pickedCampaigns, setPickedCampaigns] = useState<string[]>([]);
+  const [crmLists, setCrmLists] = useState<CrmList[]>([]);
+  const [selectedEditListIds, setSelectedEditListIds] = useState<string[]>([]);
+  const [listQuery, setListQuery] = useState("");
   const [sourcePipelineId, setSourcePipelineId] = useState("");
   const [pipelineScope, setPipelineScope] = useState<"full" | "stages">("full");
   const [pipelineStageIds, setPipelineStageIds] = useState<string[]>([]);
@@ -898,6 +902,34 @@ export default function PortalAnalyticsKanban({
     [otherPipelines, sourcePipelineId],
   );
 
+  const visibleCrmLists = useMemo(() => {
+    const query = listQuery.trim().toLowerCase();
+    const sorted = [...crmLists].sort((a, b) => a.name.localeCompare(b.name));
+    if (!query) {
+      return sorted;
+    }
+    return sorted.filter(
+      (list) =>
+        list.name.toLowerCase().includes(query) ||
+        String(list.displayId).includes(query),
+    );
+  }, [crmLists, listQuery]);
+
+  const selectedEditListSummary = useMemo(() => {
+    if (selectedEditListIds.length === 0) {
+      return null;
+    }
+    const picked = crmLists.filter((list) => selectedEditListIds.includes(list.id));
+    const contacts = picked.reduce((sum, list) => sum + (list.contactCount || 0), 0);
+    return {
+      count: picked.length,
+      contacts,
+    };
+  }, [crmLists, selectedEditListIds]);
+
+  const campaignEditReady =
+    pickedCampaigns.length > 0 || selectedEditListIds.length > 0;
+
   function campaignRefKey(campaign: KanbanCampaignRef) {
     return `${campaign.kind}:${campaign.campaignId}`;
   }
@@ -921,11 +953,21 @@ export default function PortalAnalyticsKanban({
       : pipeline.stages.filter((stage) => pipelineStageIds.includes(stage.id));
   }
 
+  function toggleEditCrmList(listId: string) {
+    setSelectedEditListIds((current) =>
+      current.includes(listId)
+        ? current.filter((id) => id !== listId)
+        : [...current, listId],
+    );
+  }
+
   async function openCampaignEditor() {
     setEditingCampaigns(true);
     setCampaignEditSource("campaigns");
     setCampaignQuery("");
     setPipelineQuery("");
+    setListQuery("");
+    setSelectedEditListIds([]);
     setSourcePipelineId("");
     setPipelineScope("full");
     setPipelineStageIds([]);
@@ -954,6 +996,15 @@ export default function PortalAnalyticsKanban({
           fetchKanbanLists().then((lists) => {
             setPipelineLists(lists);
           }),
+        );
+      }
+      if (crmLists.length === 0) {
+        tasks.push(
+          fetch("/api/crm/lists", { cache: "no-store" })
+            .then((response) => response.json())
+            .then((listData) => {
+              setCrmLists(Array.isArray(listData) ? listData : []);
+            }),
         );
       }
       if (tasks.length > 0) {
@@ -1002,15 +1053,20 @@ export default function PortalAnalyticsKanban({
       }
     }
     const campaigns = [...byKey.values()];
-    if (campaigns.length === 0) {
-      setError("Select at least one campaign or an old pipeline");
+    if (campaigns.length === 0 && selectedEditListIds.length === 0) {
+      setError("Select at least one campaign, old pipeline, or CRM list");
       return;
     }
 
     const patch: {
       campaigns: KanbanCampaignRef[];
       stages?: KanbanStage[];
+      listIds?: string[];
     } = { campaigns };
+
+    if (selectedEditListIds.length > 0) {
+      patch.listIds = selectedEditListIds;
+    }
 
     if (
       campaignEditSource === "pipeline" &&
@@ -1282,8 +1338,8 @@ export default function PortalAnalyticsKanban({
           <div className="an-kanban-campaigns-top">
             <strong>Edit campaigns</strong>
             <span>
-              Add campaigns directly, or pull campaigns and stages from an old
-              pipeline.
+              Add campaigns directly, pull campaigns and stages from an old
+              pipeline, or load contacts from CRM lists.
             </span>
           </div>
           <div className="an-kanban-create-accordions">
@@ -1498,6 +1554,69 @@ export default function PortalAnalyticsKanban({
                 </div>
               ) : null}
             </div>
+
+            <div
+              className={`an-kanban-accordion${campaignEditSource === "list" ? " is-open" : ""}`}
+            >
+              <button
+                type="button"
+                className="an-kanban-accordion-trigger"
+                aria-expanded={campaignEditSource === "list"}
+                onClick={() => setCampaignEditSource("list")}
+              >
+                <span>From list</span>
+                <em>
+                  {selectedEditListSummary
+                    ? `${selectedEditListSummary.count} list${selectedEditListSummary.count === 1 ? "" : "s"} · ${selectedEditListSummary.contacts.toLocaleString()} contact${selectedEditListSummary.contacts === 1 ? "" : "s"}`
+                    : "Load everyone from one or more CRM lists"}
+                </em>
+              </button>
+              {campaignEditSource === "list" ? (
+                <div className="an-kanban-accordion-body">
+                  <div className="an-kanban-pick">
+                    {crmLists.length === 0 ? (
+                      <p>No CRM lists yet. Create one under Lists first.</p>
+                    ) : (
+                      <input
+                        className="an-kanban-pick-search"
+                        value={listQuery}
+                        onChange={(event) => setListQuery(event.target.value)}
+                        placeholder="Search lists…"
+                      />
+                    )}
+                    {crmLists.length === 0 ? null : visibleCrmLists.length === 0 ? (
+                      <p>No lists match that search.</p>
+                    ) : (
+                      <div className="an-kanban-pick-list">
+                        {selectedEditListIds.length > 0 ? (
+                          <button
+                            type="button"
+                            className="btn-link-purple"
+                            onClick={() => setSelectedEditListIds([])}
+                          >
+                            Clear lists
+                          </button>
+                        ) : null}
+                        {visibleCrmLists.map((list) => (
+                          <label key={list.id} className="an-kanban-pick-row">
+                            <input
+                              type="checkbox"
+                              checked={selectedEditListIds.includes(list.id)}
+                              onChange={() => toggleEditCrmList(list.id)}
+                            />
+                            <strong>{list.name}</strong>
+                            <em>
+                              #{list.displayId} · {list.contactCount.toLocaleString()}{" "}
+                              contact{list.contactCount === 1 ? "" : "s"}
+                            </em>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
           </div>
           <div className="an-kanban-add-actions">
             <button
@@ -1510,7 +1629,7 @@ export default function PortalAnalyticsKanban({
             <button
               type="button"
               className="btn-dark"
-              disabled={savingCampaigns || pickedCampaigns.length === 0}
+              disabled={savingCampaigns || !campaignEditReady}
               onClick={() => void saveCampaigns()}
             >
               {savingCampaigns ? "Saving…" : "Save campaigns"}

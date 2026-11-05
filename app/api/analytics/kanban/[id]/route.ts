@@ -57,7 +57,9 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       campaigns?: KanbanCampaignRef[];
       manualPeople?: KanbanManualPerson[];
       excludedEmails?: string[];
+      listIds?: string[];
     } | null;
+    const listIds = Array.isArray(body?.listIds) ? body.listIds : [];
     const board = await patchProjectKanbanBoard(
       new ObjectId(session.projectId),
       id,
@@ -68,12 +70,14 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
         campaigns: body?.campaigns,
         manualPeople: body?.manualPeople,
         excludedEmails: body?.excludedEmails,
+        listIds,
       },
       {
         skipPeople:
           body?.campaigns === undefined &&
           body?.manualPeople === undefined &&
-          body?.excludedEmails === undefined,
+          body?.excludedEmails === undefined &&
+          listIds.length === 0,
       },
     );
     if (!board) {

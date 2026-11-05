@@ -962,6 +962,7 @@ export async function patchProjectKanbanBoard(
     campaigns?: KanbanCampaignRef[];
     manualPeople?: KanbanManualPerson[];
     excludedEmails?: string[];
+    listIds?: string[];
   },
   options?: { skipPeople?: boolean },
 ): Promise<KanbanBoard | null> {
@@ -995,10 +996,30 @@ export async function patchProjectKanbanBoard(
     patch.campaigns !== undefined
       ? normalizeCampaigns(patch.campaigns)
       : current.campaigns || [];
-  if (campaigns.length === 0) {
-    throw new Error("Select at least one campaign");
+  const listIds = [
+    ...new Set(
+      (patch.listIds ?? [])
+        .map((id) => String(id ?? "").trim())
+        .filter((id) => ObjectId.isValid(id)),
+    ),
+  ].map((id) => new ObjectId(id));
+  const hasList = listIds.length > 0;
+  if (campaigns.length === 0 && !hasList) {
+    const existingManual =
+      patch.manualPeople !== undefined
+        ? normalizeManualPeople(patch.manualPeople)
+        : normalizeManualPeople(current.manualPeople);
+    const existingPlacements =
+      patch.placements !== undefined
+        ? normalizePlacements(patch.placements)
+        : normalizePlacements(current.placements);
+    const boardHasManualPeople =
+      existingManual.length > 0 || Object.keys(existingPlacements).length > 0;
+    if (!boardHasManualPeople) {
+      throw new Error("Select at least one campaign or CRM list");
+    }
   }
-  const manualPeople =
+  let manualPeople =
     patch.manualPeople !== undefined
       ? normalizeManualPeople(patch.manualPeople)
       : normalizeManualPeople(current.manualPeople);
@@ -1006,6 +1027,24 @@ export async function patchProjectKanbanBoard(
     patch.excludedEmails !== undefined
       ? normalizeExcludedEmails(patch.excludedEmails)
       : normalizeExcludedEmails(current.excludedEmails);
+  if (hasList) {
+    const seeded = await seedKanbanPeopleFromLists(projectId, listIds, stages);
+    const manualByEmail = new Map(
+      manualPeople.map((person) => [person.email.trim().toLowerCase(), person]),
+    );
+    for (const person of seeded.manualPeople) {
+      const email = person.email.trim().toLowerCase();
+      if (!manualByEmail.has(email)) {
+        manualByEmail.set(email, person);
+      }
+    }
+    manualPeople = [...manualByEmail.values()];
+    for (const [email, stageId] of Object.entries(seeded.placements)) {
+      if (!placements[email]) {
+        placements[email] = stageId;
+      }
+    }
+  }
   const validIds = new Set(stages.map((stage) => stage.id));
   const cleaned: Record<string, string> = {};
   for (const [email, stageId] of Object.entries(placements)) {
@@ -1031,7 +1070,8 @@ export async function patchProjectKanbanBoard(
   const loadPeople =
     !options?.skipPeople ||
     patch.manualPeople !== undefined ||
-    patch.excludedEmails !== undefined;
+    patch.excludedEmails !== undefined ||
+    hasList;
   const campaignPeople = loadPeople
     ? await loadPeopleCached(projectId, campaigns)
     : [];

@@ -347,6 +347,7 @@ export async function patchKanbanBoard(
     campaigns?: KanbanCampaignRef[];
     manualPeople?: KanbanManualPerson[];
     excludedEmails?: string[];
+    listIds?: string[];
   },
 ): Promise<KanbanBoard> {
   const response = await fetch(`/api/analytics/kanban/${encodeURIComponent(id)}`, {

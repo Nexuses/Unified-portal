@@ -76,6 +76,7 @@ export default function PortalAnalyticsKanbanHistory() {
   const [pipelineStageIds, setPipelineStageIds] = useState<string[]>([]);
   const [pipelineQuery, setPipelineQuery] = useState("");
   const [stageRows, setStageRows] = useState<StageRow[]>(engagementStageRows);
+  const [stageSetupKey, setStageSetupKey] = useState("");
   const [campaignQuery, setCampaignQuery] = useState("");
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -242,7 +243,16 @@ export default function PortalAnalyticsKanbanHistory() {
     setName("");
     setStep(1);
     setStageRows(engagementStageRows());
+    setStageSetupKey("");
     setShowCreate(true);
+  }
+
+  function stageSetupSourceKey() {
+    return [
+      hasCampaignSource ? "c" : "",
+      hasListSource ? `l:${[...selectedListIds].sort().join(",")}` : "",
+      hasPipelineSource ? `p:${sourceBoardId}:${pipelineScope}:${[...pipelineStageIds].sort().join(",")}` : "",
+    ].join("|");
   }
 
   function selectSourceBoard(board: KanbanList) {
@@ -286,15 +296,19 @@ export default function PortalAnalyticsKanbanHistory() {
     if (!step1Ready) {
       return;
     }
-    setStageRows(
-      buildCreateStageRows({
-        hasCampaigns: hasCampaignSource,
-        hasList: hasListSource,
-        pipeline: hasPipelineSource ? sourceBoard : null,
-        pipelineScope,
-        pipelineStageIds,
-      }),
-    );
+    const key = stageSetupSourceKey();
+    if (key !== stageSetupKey) {
+      setStageRows(
+        buildCreateStageRows({
+          hasCampaigns: hasCampaignSource,
+          hasList: hasListSource,
+          pipeline: hasPipelineSource ? sourceBoard : null,
+          pipelineScope,
+          pipelineStageIds,
+        }),
+      );
+      setStageSetupKey(key);
+    }
     setStep(2);
   }
 
@@ -370,7 +384,8 @@ export default function PortalAnalyticsKanbanHistory() {
         }
       }
       const picked = [...byKey.values()];
-      if (picked.length === 0 && !hasListSource) {
+      const listIds = [...selectedListIds];
+      if (picked.length === 0 && listIds.length === 0) {
         throw new Error("Select at least one campaign, an old pipeline, or a CRM list");
       }
       const stages = stageRows.map((row) => ({
@@ -383,7 +398,7 @@ export default function PortalAnalyticsKanbanHistory() {
       const board = await createKanbanList({
         name: title,
         campaigns: picked,
-        ...(selectedListIds.length > 0 ? { listIds: selectedListIds } : {}),
+        listIds,
         stages,
       });
       router.push(portalKanbanRoute(board.id));
