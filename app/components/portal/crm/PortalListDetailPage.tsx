@@ -185,6 +185,10 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
   const columnMenuRef = useRef<HTMLDivElement | null>(null);
   const columnMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const columnMenuPanelRef = useRef<HTMLDivElement | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
 
   const visibleOptionalColumns = useMemo(
     () =>
@@ -285,6 +289,14 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [columnMenuOpen]);
+
+  useLayoutEffect(() => {
+    if (!renameOpen) {
+      return;
+    }
+    renameInputRef.current?.focus();
+    renameInputRef.current?.select();
+  }, [renameOpen]);
 
   async function loadListPage(nextPage = page) {
     const requestId = ++requestIdRef.current;
@@ -545,6 +557,58 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
     }
   }
 
+  function openRenameModal() {
+    if (!list || list.name === "Unsubscribe") {
+      return;
+    }
+    setRenameValue(list.name);
+    setRenameOpen(true);
+  }
+
+  async function confirmRenameList() {
+    if (!list || renaming) {
+      return;
+    }
+    const nextName = renameValue.trim();
+    if (!nextName) {
+      setError("List name is required");
+      return;
+    }
+    if (nextName === list.name) {
+      setRenameOpen(false);
+      return;
+    }
+
+    setRenaming(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/crm/lists/${encodeURIComponent(listId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: nextName }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to rename list");
+      }
+      const updated = data.list as CrmList | undefined;
+      setList((current) =>
+        current
+          ? { ...current, name: updated?.name ?? nextName }
+          : current,
+      );
+      setSuccessNote(`List renamed to "${updated?.name ?? nextName}".`);
+      setRenameOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to rename list");
+    } finally {
+      setRenaming(false);
+    }
+  }
+
   return (
     <>
       <div className="crm-page-head">
@@ -572,6 +636,16 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
           </p>
         </div>
         <div className="crm-actions">
+          {list && list.name !== "Unsubscribe" ? (
+            <button
+              type="button"
+              className="btn-soft"
+              onClick={openRenameModal}
+              disabled={loading || renaming}
+            >
+              Rename
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn-dark"
@@ -1051,6 +1125,82 @@ export default function PortalListDetailPage({ listId }: PortalListDetailPagePro
                 disabled={saving}
               >
                 {saving ? "Saving…" : "Add contact"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {renameOpen ? (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => {
+            if (!renaming) {
+              setRenameOpen(false);
+            }
+          }}
+        >
+          <div
+            className="crm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="list-detail-rename-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="crm-modal-head">
+              <div>
+                <h3 id="list-detail-rename-title">Edit list name</h3>
+                <p>Update the name for this list.</p>
+              </div>
+              <button
+                type="button"
+                className="crm-modal-close"
+                aria-label="Close"
+                disabled={renaming}
+                onClick={() => setRenameOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="crm-modal-body">
+              <div className="crm-field">
+                <label htmlFor="list-detail-rename-input">List name</label>
+                <input
+                  ref={renameInputRef}
+                  id="list-detail-rename-input"
+                  type="text"
+                  value={renameValue}
+                  maxLength={120}
+                  disabled={renaming}
+                  onChange={(event) => setRenameValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void confirmRenameList();
+                    }
+                  }}
+                />
+              </div>
+            </div>
+            <div
+              className="crm-modal-foot"
+              style={{ justifyContent: "flex-end", gap: 8 }}
+            >
+              <button
+                type="button"
+                className="btn-soft"
+                disabled={renaming}
+                onClick={() => setRenameOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-dark"
+                disabled={renaming || !renameValue.trim()}
+                onClick={() => void confirmRenameList()}
+              >
+                {renaming ? "Saving..." : "Save"}
               </button>
             </div>
           </div>

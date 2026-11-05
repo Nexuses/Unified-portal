@@ -24,6 +24,7 @@ import {
   fetchDripCampaigns,
   type DripCampaign,
 } from "@/lib/drip-campaigns";
+import type { CrmList } from "@/lib/crm";
 
 type StageRow = StageSetupRow;
 
@@ -66,6 +67,10 @@ export default function PortalAnalyticsKanbanHistory() {
   const [selected, setSelected] = useState<string[]>([]);
   const [campaignsOpen, setCampaignsOpen] = useState(true);
   const [pipelineOpen, setPipelineOpen] = useState(false);
+  const [listOpen, setListOpen] = useState(false);
+  const [crmLists, setCrmLists] = useState<CrmList[]>([]);
+  const [selectedListIds, setSelectedListIds] = useState<string[]>([]);
+  const [listQuery, setListQuery] = useState("");
   const [sourceBoardId, setSourceBoardId] = useState("");
   const [pipelineScope, setPipelineScope] = useState<PipelineScope>("full");
   const [pipelineStageIds, setPipelineStageIds] = useState<string[]>([]);
@@ -125,6 +130,7 @@ export default function PortalAnalyticsKanbanHistory() {
   );
 
   const hasCampaignSource = selected.length > 0;
+  const hasListSource = selectedListIds.length > 0;
   const hasPipelineSource = Boolean(
     sourceBoard &&
       sourceBoard.campaigns.length > 0 &&
@@ -145,7 +151,34 @@ export default function PortalAnalyticsKanbanHistory() {
     );
   }, [lists, pipelineQuery]);
 
-  const step1Ready = Boolean(name.trim() && (hasCampaignSource || hasPipelineSource));
+  const visibleCrmLists = useMemo(() => {
+    const query = listQuery.trim().toLowerCase();
+    const sorted = [...crmLists].sort((a, b) => a.name.localeCompare(b.name));
+    if (!query) {
+      return sorted;
+    }
+    return sorted.filter(
+      (list) =>
+        list.name.toLowerCase().includes(query) ||
+        String(list.displayId).includes(query),
+    );
+  }, [crmLists, listQuery]);
+
+  const selectedListSummary = useMemo(() => {
+    if (selectedListIds.length === 0) {
+      return null;
+    }
+    const picked = crmLists.filter((list) => selectedListIds.includes(list.id));
+    const contacts = picked.reduce((sum, list) => sum + (list.contactCount || 0), 0);
+    return {
+      count: picked.length,
+      contacts,
+    };
+  }, [crmLists, selectedListIds]);
+
+  const step1Ready = Boolean(
+    name.trim() && (hasCampaignSource || hasPipelineSource || hasListSource),
+  );
 
   function campaignStatusLabel(campaign: DripCampaign) {
     if (campaign.status === "sending") {
@@ -163,16 +196,21 @@ export default function PortalAnalyticsKanbanHistory() {
       setLoading(true);
       setError("");
       try {
-        const [nextLists, drip, oneone] = await Promise.all([
+        const [nextLists, drip, oneone, listsResponse] = await Promise.all([
           fetchKanbanLists(),
           fetchDripCampaigns("drip"),
           fetchDripCampaigns("oneone"),
+          fetch("/api/crm/lists", { cache: "no-store" }),
         ]);
         if (cancelled) {
           return;
         }
         setLists(nextLists);
         setCampaigns([...drip, ...oneone]);
+        if (listsResponse.ok) {
+          const listData = await listsResponse.json().catch(() => null);
+          setCrmLists(Array.isArray(listData) ? listData : []);
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Failed to load");
@@ -192,8 +230,11 @@ export default function PortalAnalyticsKanbanHistory() {
   function openCreate() {
     setCampaignQuery("");
     setPipelineQuery("");
+    setListQuery("");
     setCampaignsOpen(true);
     setPipelineOpen(false);
+    setListOpen(false);
+    setSelectedListIds([]);
     setSourceBoardId("");
     setPipelineScope("full");
     setPipelineStageIds([]);
@@ -225,6 +266,14 @@ export default function PortalAnalyticsKanbanHistory() {
     );
   }
 
+  function toggleCrmList(listId: string) {
+    setSelectedListIds((current) =>
+      current.includes(listId)
+        ? current.filter((id) => id !== listId)
+        : [...current, listId],
+    );
+  }
+
   function toggleCampaign(key: string) {
     setSelected((current) =>
       current.includes(key)
@@ -240,6 +289,7 @@ export default function PortalAnalyticsKanbanHistory() {
     setStageRows(
       buildCreateStageRows({
         hasCampaigns: hasCampaignSource,
+        hasList: hasListSource,
         pipeline: hasPipelineSource ? sourceBoard : null,
         pipelineScope,
         pipelineStageIds,
@@ -320,8 +370,8 @@ export default function PortalAnalyticsKanbanHistory() {
         }
       }
       const picked = [...byKey.values()];
-      if (picked.length === 0) {
-        throw new Error("Select at least one campaign or an old pipeline with campaigns");
+      if (picked.length === 0 && !hasListSource) {
+        throw new Error("Select at least one campaign, an old pipeline, or a CRM list");
       }
       const stages = stageRows.map((row) => ({
         name: row.name.trim(),
@@ -330,7 +380,12 @@ export default function PortalAnalyticsKanbanHistory() {
           ? { custom: true as const }
           : { rule: row.rule }),
       }));
-      const board = await createKanbanList({ name: title, campaigns: picked, stages });
+      const board = await createKanbanList({
+        name: title,
+        campaigns: picked,
+        ...(selectedListIds.length > 0 ? { listIds: selectedListIds } : {}),
+        stages,
+      });
       router.push(portalKanbanRoute(board.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create list");
@@ -360,8 +415,8 @@ export default function PortalAnalyticsKanbanHistory() {
         <div>
           <h2>Pipeline</h2>
           <p className="desc">
-            Saved boards. Create a list from campaigns or copy stages from an
-            old pipeline, then open it to work the board.
+            Saved boards. Create a list from campaigns, a CRM list, or copy
+            stages from an old pipeline, then open it to work the board.
           </p>
         </div>
         <div className="crm-actions">
@@ -390,12 +445,14 @@ export default function PortalAnalyticsKanbanHistory() {
             <h3>{step === 1 ? "Choose source" : "Set up stages"}</h3>
             <p className="drip-create-copy">
               {step === 1
-                ? "Name the list. You can pick campaigns, an old pipeline, or both."
+                ? "Name the list. Pick campaigns, a CRM list, an old pipeline, or any combination."
                 : hasCampaignSource && hasPipelineSource
                   ? "Synced stages (Sent / Open / Click / Reply) plus Custom stages from the old pipeline — old boards cannot sync engagement rules."
                   : hasPipelineSource
                     ? "Custom stages from the old pipeline. Engagement cannot be synced from another board."
-                    : "Name each stage and pick what moves a person into it. People go to the furthest synced stage they reach."}
+                    : hasListSource && !hasCampaignSource
+                      ? "Custom stages for your list. Everyone from the list starts in the first stage; drag cards or add stages as you go."
+                      : "Name each stage and pick what moves a person into it. People go to the furthest synced stage they reach."}
             </p>
             {step === 1 ? (
               <>
@@ -587,6 +644,67 @@ export default function PortalAnalyticsKanbanHistory() {
                                   </div>
                                 );
                               })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className={`an-kanban-accordion${listOpen ? " is-open" : ""}`}>
+                    <button
+                      type="button"
+                      className="an-kanban-accordion-trigger"
+                      aria-expanded={listOpen}
+                      onClick={() => setListOpen((open) => !open)}
+                    >
+                      <span>From list</span>
+                      <em>
+                        {selectedListSummary
+                          ? `${selectedListSummary.count} list${selectedListSummary.count === 1 ? "" : "s"} · ${selectedListSummary.contacts.toLocaleString()} contact${selectedListSummary.contacts === 1 ? "" : "s"}`
+                          : "Load everyone from one or more CRM lists"}
+                      </em>
+                    </button>
+                    {listOpen ? (
+                      <div className="an-kanban-accordion-body">
+                        <div className="an-kanban-pick">
+                          {crmLists.length === 0 ? (
+                            <p>No CRM lists yet. Create one under Lists first.</p>
+                          ) : (
+                            <input
+                              className="an-kanban-pick-search"
+                              value={listQuery}
+                              onChange={(event) => setListQuery(event.target.value)}
+                              placeholder="Search lists…"
+                            />
+                          )}
+                          {crmLists.length === 0 ? null : visibleCrmLists.length === 0 ? (
+                            <p>No lists match that search.</p>
+                          ) : (
+                            <div className="an-kanban-pick-list">
+                              {selectedListIds.length > 0 ? (
+                                <button
+                                  type="button"
+                                  className="btn-link-purple"
+                                  onClick={() => setSelectedListIds([])}
+                                >
+                                  Clear lists
+                                </button>
+                              ) : null}
+                              {visibleCrmLists.map((list) => (
+                                <label key={list.id} className="an-kanban-pick-row">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedListIds.includes(list.id)}
+                                    onChange={() => toggleCrmList(list.id)}
+                                  />
+                                  <strong>{list.name}</strong>
+                                  <em>
+                                    #{list.displayId} · {list.contactCount.toLocaleString()}{" "}
+                                    contact{list.contactCount === 1 ? "" : "s"}
+                                  </em>
+                                </label>
+                              ))}
                             </div>
                           )}
                         </div>

@@ -81,6 +81,20 @@ const board = {
 }
 
 {
+  // CRM list only → default custom stage
+  const rows = buildCreateStageRows({
+    hasCampaigns: false,
+    hasList: true,
+    pipeline: null,
+    pipelineScope: "full",
+    pipelineStageIds: [],
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].custom, true);
+  assert.equal(rows[0].name, "Stage 1");
+}
+
+{
   // Both → Sent/Open/Click/Reply + custom from pipeline
   const rows = buildCreateStageRows({
     hasCampaigns: true,

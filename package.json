@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:bot": "tsx --test lib/bot-engagement.test.ts",
     "migrate:lead-reports": "node scripts/migrate-lead-reports.mjs",
     "migrate:lead-reports:dry": "node scripts/migrate-lead-reports.mjs --dry-run"
   },
@@ -43,6 +44,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

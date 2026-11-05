@@ -46,7 +46,6 @@ import {
 import {
   BOT_CLICK_TAG,
   clickEventIsBot,
-  sendHasHumanClick,
   sendIsBotClick,
 } from "@/lib/bot-click";
 import { BOT_OPEN_TAG, sendIsBotOnlyOpen, sendIsBotOpen } from "@/lib/bot-open";
@@ -3430,10 +3429,6 @@ export async function listCampaignSendRecipients(
           return true;
         });
         if (countable.length === 0) continue;
-        // Drop multi-link scanner crumbs that survive per-event trap/burst checks.
-        if (hideBotClicks && !sendHasHumanClick(doc)) {
-          continue;
-        }
         if (countable.some((event) => (event.url || doc.clickedUrl || "").trim())) {
           emails.add(key);
         }
@@ -3584,9 +3579,6 @@ export async function listCampaignSendRecipients(
         return true;
       });
       if (countable.length === 0) {
-        continue;
-      }
-      if (hideBotClicks && !sendHasHumanClick(doc)) {
         continue;
       }
 

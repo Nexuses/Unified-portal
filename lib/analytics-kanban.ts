@@ -302,6 +302,7 @@ export async function fetchKanbanLists(): Promise<KanbanList[]> {
 export async function createKanbanList(input: {
   name: string;
   campaigns: KanbanCampaignRef[];
+  listIds?: string[];
   stages?: Array<
     Pick<KanbanStage, "name" | "color"> & {
       rule?: KanbanStageRule;

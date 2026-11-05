@@ -59,14 +59,29 @@ export function customStageRowsFromPipeline(
   }));
 }
 
+/** Default custom columns when the board is seeded from a CRM list only. */
+export function listSourceStageRows(): StageSetupRow[] {
+  return [
+    {
+      key: "list-stage-1",
+      name: "Stage 1",
+      color: KANBAN_DOT_COLORS[0],
+      custom: true,
+      customLabel: "From list",
+    },
+  ];
+}
+
 /**
  * Build step-2 rows from create sources:
  * - campaigns only → Sent/Open/Click/Reply
  * - old pipeline only → custom stages
+ * - CRM list only → default custom stage(s)
  * - both → engagement + custom from pipeline
  */
 export function buildCreateStageRows(input: {
   hasCampaigns: boolean;
+  hasList?: boolean;
   pipeline: Pick<KanbanList, "stages"> | null;
   pipelineScope: PipelineScope;
   pipelineStageIds: string[];
@@ -86,7 +101,13 @@ export function buildCreateStageRows(input: {
   if (custom.length > 0) {
     return custom;
   }
-  return engagement.length > 0 ? engagement : engagementStageRows();
+  if (engagement.length > 0) {
+    return engagement;
+  }
+  if (input.hasList) {
+    return listSourceStageRows();
+  }
+  return engagementStageRows();
 }
 
 /** Merge old-pipeline stages onto a board as custom columns (no rule sync). */

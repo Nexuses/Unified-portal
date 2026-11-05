@@ -39,11 +39,13 @@ export async function POST(request: NextRequest) {
       name?: string;
       campaigns?: KanbanCampaignRef[];
       stages?: unknown;
+      listIds?: string[];
     } | null;
     const board = await createProjectKanbanBoard(new ObjectId(session.projectId), {
       name: String(body?.name ?? ""),
       campaigns: Array.isArray(body?.campaigns) ? body.campaigns : [],
       stages: body?.stages,
+      listIds: Array.isArray(body?.listIds) ? body.listIds : [],
     });
     return NextResponse.json(board, { status: 201, headers: NO_STORE });
   } catch (error) {

@@ -295,21 +295,7 @@ export function campaignTrackingUrls(origin: string, token: string) {
 }
 
 /** True when this destination is the bot honeypot trap link. */
-export function isClickTrapUrl(url: string) {
-  const raw = String(url ?? "").trim();
-  if (!raw) {
-    return false;
-  }
-  if (/nxs-click-trap/i.test(raw)) {
-    return true;
-  }
-  try {
-    const parsed = new URL(raw);
-    return /\/nxs-click-trap\/?$/i.test(parsed.pathname);
-  } catch {
-    return false;
-  }
-}
+export { isClickTrapUrl } from "./click-trap";
 
 function isTrackingOrUnsubscribeUrl(url: string) {
   return (

@@ -1,82 +1,42 @@
 import {
-  sendHasHumanClick,
+  sendHasHumanOpen,
   sendIsBotClick,
-  type SendClickHints,
-} from "@/lib/bot-click";
+  type SendEngagementHints,
+} from "@/lib/bot-engagement";
 
-/** Matches campaign open bot-grace (first 25s after send). */
+/** Matches campaign open bot-grace (first 25s after send) for ingest tagging. */
 export const BOT_OPEN_GRACE_MS = 25_000;
 
-/** Shown in campaign report Opens view when an open is bot-like. */
 export const BOT_OPEN_TAG = "Bot open";
 
-type OpenHint = {
-  at?: Date | string;
-  bot?: boolean;
-};
+export type { OpenHint, SendOpenHints } from "@/lib/bot-engagement";
 
-type SendOpenHints = {
-  sentAt?: Date | string | null;
-  openedAt?: Date | string | null;
-  botOpen?: boolean;
-  openEvents?: OpenHint[];
-};
-
-type SendOpenHideHints = SendOpenHints & SendClickHints;
-
-function asTimeMs(value: Date | string | null | undefined) {
-  if (!value) {
-    return NaN;
+function sendHasOpenSignal(send: SendEngagementHints) {
+  if (send.openPixelBlocked) {
+    return true;
   }
-  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
-  return Number.isFinite(ms) ? ms : NaN;
+  return Boolean(send.openedAt) || (send.openCount ?? 0) > 0;
 }
 
-/** True when this send's counted open should be tagged as a bot open. */
-export function sendIsBotOpen(send: SendOpenHints) {
-  if (send.botOpen) {
+/** True when this send's counted open should be tagged as a bot open (Show bots ON). */
+export function sendIsBotOpen(send: SendEngagementHints) {
+  if (sendHasHumanOpen(send)) {
+    return false;
+  }
+  if (sendHasOpenSignal(send)) {
     return true;
   }
-  const events = send.openEvents ?? [];
-  if (events.some((event) => event.bot === true)) {
-    return true;
-  }
-  const openedAt = asTimeMs(send.openedAt);
-  const sentAt = asTimeMs(send.sentAt);
-  if (
-    Number.isFinite(openedAt) &&
-    Number.isFinite(sentAt) &&
-    openedAt - sentAt < BOT_OPEN_GRACE_MS
-  ) {
-    return true;
-  }
-  if (events.length > 0) {
-    const first = [...events].sort(
-      (left, right) => asTimeMs(left.at) - asTimeMs(right.at),
-    )[0];
-    const at = asTimeMs(first?.at);
-    if (
-      Number.isFinite(at) &&
-      Number.isFinite(sentAt) &&
-      at - sentAt < BOT_OPEN_GRACE_MS
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return sendIsBotClick(send);
 }
 
-export function botOpenLabel(send: SendOpenHints) {
+export function botOpenLabel(send: SendEngagementHints) {
   return sendIsBotOpen(send) ? BOT_OPEN_TAG : "";
 }
 
 /**
- * When hiding bot engagement: exclude opens that look bot-like, or opens that
- * only came with scanner/multi-link clicks, unless a real human click remains.
+ * When hiding bot engagement: exclude opens with only bot-like pixel loads,
+ * unless a human click or non-bot open remains (implied open).
  */
-export function sendIsBotOnlyOpen(send: SendOpenHideHints) {
-  if (sendHasHumanClick(send)) {
-    return false;
-  }
-  return sendIsBotOpen(send) || sendIsBotClick(send);
+export function sendIsBotOnlyOpen(send: SendEngagementHints) {
+  return !sendHasHumanOpen(send);
 }

@@ -7,6 +7,7 @@ import {
   resolveAnalyticsShareExpiry,
 } from "@/lib/analytics";
 import { mapContact, type ContactDoc } from "@/lib/crm";
+import { listProjectListContactIds } from "@/lib/crm-contacts-server";
 import type { CampaignKind } from "@/lib/drip-campaigns";
 import type { CampaignBlastDoc, CampaignSendDoc } from "@/lib/campaign-blasts-server";
 import {
@@ -232,6 +233,81 @@ function normalizeStages(value: unknown): KanbanStage[] {
     }
   }
   return next.length > 0 ? next : DEFAULT_KANBAN_STAGES;
+}
+
+async function seedKanbanPeopleFromLists(
+  projectId: ObjectId,
+  listIds: ObjectId[],
+  stages: KanbanStage[],
+): Promise<{ manualPeople: KanbanManualPerson[]; placements: Record<string, string> }> {
+  const firstStageId = stages[0]?.id;
+  if (!firstStageId) {
+    throw new Error("Add at least one stage");
+  }
+  if (listIds.length === 0) {
+    throw new Error("Select at least one CRM list");
+  }
+
+  const db = await getDb();
+  const placements: Record<string, string> = {};
+  const manualPeople: KanbanManualPerson[] = [];
+  const seenEmails = new Set<string>();
+  const seenListIds = new Set<string>();
+
+  for (const listId of listIds) {
+    const key = listId.toString();
+    if (seenListIds.has(key)) {
+      continue;
+    }
+    seenListIds.add(key);
+
+    const list = await db.collection("lists").findOne({ _id: listId, projectId });
+    if (!list) {
+      throw new Error("List not found");
+    }
+
+    const { ids } = await listProjectListContactIds(projectId, listId);
+    if (ids.length === 0) {
+      continue;
+    }
+
+    const objectIds = ids
+      .filter((id) => ObjectId.isValid(id))
+      .map((id) => new ObjectId(id));
+    if (objectIds.length === 0) {
+      continue;
+    }
+
+    const docs = await db
+      .collection<ContactDoc>("contacts")
+      .find({ projectId, _id: { $in: objectIds } })
+      .toArray();
+
+    for (const doc of docs) {
+      const contact = mapContact(doc);
+      const person = kanbanPersonFromContact(contact);
+      const email = person.email.trim().toLowerCase();
+      if (!email.includes("@") || seenEmails.has(email)) {
+        continue;
+      }
+      seenEmails.add(email);
+      placements[email] = firstStageId;
+      manualPeople.push({
+        email,
+        fullName: person.fullName,
+        companyName: person.companyName,
+        contactId: person.contactId,
+        companyDomain: person.companyDomain,
+        companyLogoUrl: person.companyLogoUrl,
+      });
+    }
+  }
+
+  if (manualPeople.length === 0) {
+    throw new Error("Selected lists have no contacts");
+  }
+
+  return { manualPeople, placements };
 }
 
 function stagesFromSetup(value: unknown): KanbanStage[] {
@@ -780,39 +856,61 @@ export async function listProjectKanbanBoards(
 
 export async function createProjectKanbanBoard(
   projectId: ObjectId,
-  input: { name: string; campaigns: KanbanCampaignRef[]; stages?: unknown },
+  input: {
+    name: string;
+    campaigns: KanbanCampaignRef[];
+    stages?: unknown;
+    listIds?: string[];
+  },
 ): Promise<KanbanBoard> {
   const name = input.name.trim();
   const campaigns = normalizeCampaigns(input.campaigns);
+  const listIds = [
+    ...new Set(
+      (input.listIds ?? [])
+        .map((id) => String(id ?? "").trim())
+        .filter((id) => ObjectId.isValid(id)),
+    ),
+  ].map((id) => new ObjectId(id));
+  const hasList = listIds.length > 0;
   if (!name) {
     throw new Error("List name is required");
   }
-  if (campaigns.length === 0) {
-    throw new Error("Select at least one sent or running campaign");
+  if (campaigns.length === 0 && !hasList) {
+    throw new Error("Select at least one campaign, or a CRM list");
   }
   const stages = stagesFromSetup(input.stages);
   const db = await getDb();
   const now = new Date();
+
+  let manualPeople: KanbanManualPerson[] = [];
+  let placements: Record<string, string> = {};
+  if (hasList) {
+    const seeded = await seedKanbanPeopleFromLists(projectId, listIds, stages);
+    manualPeople = seeded.manualPeople;
+    placements = seeded.placements;
+  }
+
   const doc: KanbanDoc = {
     _id: new ObjectId(),
     projectId,
     name,
     campaigns,
     stages,
-    placements: {},
+    placements,
+    ...(manualPeople.length > 0 ? { manualPeople } : {}),
     createdAt: now,
     updatedAt: now,
   };
   await db.collection<KanbanDoc>("analytics_kanban").insertOne(doc);
-  const manualPeople = normalizeManualPeople(doc.manualPeople);
   const people = mergeBoardPeople(
-    await loadPeopleCached(projectId, campaigns),
+    campaigns.length > 0 ? await loadPeopleCached(projectId, campaigns) : [],
     manualPeople,
   );
   return {
     ...mapList(doc),
     stages: doc.stages,
-    placements: {},
+    placements,
     manualPeople,
     excludedEmails: [],
     people,
