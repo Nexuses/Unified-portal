@@ -10,6 +10,7 @@ import { portalContactRoute } from "@/lib/portal-nav";
 import LeadReportOverview, {
   type LeadSectionKey,
 } from "@/app/components/portal/crm/LeadReportOverview";
+import PortalToast from "@/app/components/portal/PortalToast";
 
 type PortalContactLeadReportViewProps = {
   contactId: string;
@@ -17,6 +18,14 @@ type PortalContactLeadReportViewProps = {
 };
 
 type SectionKey = LeadSectionKey;
+
+type LeadReportToast = {
+  key: number;
+  message: string;
+  variant: "success" | "info";
+  persistent?: boolean;
+  durationMs?: number;
+};
 
 function emptyProfile(): ContactProfile {
   return {
@@ -77,10 +86,9 @@ export default function PortalContactLeadReportView({
   const [contact, setContact] = useState<ContactDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [toast, setToast] = useState<LeadReportToast | null>(null);
   const [editing, setEditing] = useState<SectionKey | null>(null);
   const [saving, setSaving] = useState(false);
-  const [enriching, setEnriching] = useState(false);
   const [shareBusy, setShareBusy] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
@@ -93,9 +101,17 @@ export default function PortalContactLeadReportView({
     attributes: {} as Record<string, string>,
   });
 
+  function showToast(next: Omit<LeadReportToast, "key"> | null) {
+    if (!next) {
+      setToast(null);
+      return;
+    }
+    setToast({ ...next, key: Date.now() });
+  }
+
   useEffect(() => {
     setEditing(null);
-    setNotice("");
+    setToast(null);
     setShareCopied(false);
     setShareUrl("");
     enrichAttemptedFor.current = null;
@@ -220,8 +236,11 @@ export default function PortalContactLeadReportView({
           return;
         }
         enrichAttemptedFor.current = contactId;
-        setEnriching(true);
-        setNotice("Enriching with Apollo…");
+        showToast({
+          message: "Searching the web for contact details…",
+          variant: "info",
+          persistent: true,
+        });
         try {
           const enrichResponse = await fetch(
             `/api/crm/contacts/${contactId}/apollo-enrich`,
@@ -235,26 +254,28 @@ export default function PortalContactLeadReportView({
           }
           if (enrichResponse.ok) {
             applyContact(enrichData, setContact, setDraftProfile, setDraftCore);
-            setNotice("Enriched with Apollo");
-            window.setTimeout(() => {
-              if (!cancelled) setNotice("");
-            }, 2400);
+            showToast({
+              message: "Contact details updated from public sources",
+              variant: "success",
+              durationMs: 3200,
+            });
           } else if (enrichResponse.status === 409) {
-            setNotice("");
+            showToast(null);
           } else {
-            setNotice("");
-            setError(enrichData.error || "Apollo enrich failed");
+            showToast(null);
+            setError(
+              enrichData.error ||
+                "We could not find additional contact details online.",
+            );
           }
         } catch (err) {
           if (!cancelled) {
-            setNotice("");
+            showToast(null);
             setError(
-              err instanceof Error ? err.message : "Apollo enrich failed",
+              err instanceof Error
+                ? err.message
+                : "We could not find additional contact details online.",
             );
-          }
-        } finally {
-          if (!cancelled) {
-            setEnriching(false);
           }
         }
       } catch (err) {
@@ -285,7 +306,7 @@ export default function PortalContactLeadReportView({
     });
     setEditing(section);
     setError("");
-    setNotice("");
+    showToast(null);
   }
 
   function cancelEdit() {
@@ -305,7 +326,7 @@ export default function PortalContactLeadReportView({
     if (!contact || !editing) return;
     setSaving(true);
     setError("");
-    setNotice("");
+    showToast(null);
     try {
       const body =
         editing === "information" ||
@@ -332,7 +353,11 @@ export default function PortalContactLeadReportView({
       }
       applyContact(data, setContact, setDraftProfile, setDraftCore);
       setEditing(null);
-      setNotice("Saved");
+      showToast({
+        message: "Changes saved",
+        variant: "success",
+        durationMs: 2800,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
     } finally {
@@ -404,13 +429,8 @@ export default function PortalContactLeadReportView({
           </svg>
           Back
         </button>
-        {enriching ? (
-          <span className="lead-enrich-status" role="status">
-            Enriching with Apollo…
-          </span>
-        ) : null}
         <div className="lead-report-toolbar-right">
-          <div className="cd-pager">
+          <div className="cd-pager lead-report-pager">
             <button
               type="button"
               aria-label="Previous contact"
@@ -477,7 +497,16 @@ export default function PortalContactLeadReportView({
       </div>
 
       {error ? <p className="crm-error">{error}</p> : null}
-      {notice ? <p className="fm-notice">{notice}</p> : null}
+      {toast ? (
+        <PortalToast
+          key={toast.key}
+          message={toast.message}
+          variant={toast.variant}
+          durationMs={toast.durationMs}
+          persistent={toast.persistent}
+          onDone={() => setToast(null)}
+        />
+      ) : null}
       {shareUrl ? (
         <div className="an-share-banner">
           <span>Share this lead report with a client:</span>

@@ -84,17 +84,34 @@ export function isPortalPageAllowed(
 export function isPortalPathAllowed(
   pathname: string,
   allowed: PortalPageId[] | null | undefined,
+  searchParams?: { get(name: string): string | null } | null,
 ): boolean {
   if (hasFullPortalNav(allowed)) {
     return true;
   }
-  const pageId = getHighlightPageFromPathnameForAccess(pathname);
+  const pageId = resolvePortalAccessPageId(pathname, searchParams);
   return isPortalPageAllowed(pageId, allowed);
+}
+
+/** Map URL (+ optional query) to the nav permission that guards it. */
+export function resolvePortalAccessPageId(
+  pathname: string,
+  searchParams?: { get(name: string): string | null } | null,
+): PortalPageId {
+  if (
+    /^\/portal\/crm\/contacts\/[^/]+$/.test(pathname) &&
+    searchParams?.get("view") === "lead-report"
+  ) {
+    return "lead-reports";
+  }
+  return getHighlightPageFromPathnameForAccess(pathname);
 }
 
 function getHighlightPageFromPathnameForAccess(pathname: string): PortalPageId {
   // Keep in sync with portal-nav highlight rules for access checks.
-  if (pathname.startsWith("/portal/crm/contacts")) return "contacts";
+  if (pathname.startsWith("/portal/crm/contacts")) {
+    return "contacts";
+  }
   if (pathname.startsWith("/portal/crm/lead-reports")) return "lead-reports";
   if (pathname.startsWith("/portal/crm/lists")) return "lists";
   if (pathname.startsWith("/portal/crm/segments")) return "segments";

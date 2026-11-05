@@ -81,17 +81,18 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
   const showProjectAssistantMenu =
     !isClientShare || (allowedNav?.includes("project-assistant") ?? false);
   const pathAllowed =
-    !allowedNav?.length || isPortalPathAllowed(pathname, allowedNav);
+    !allowedNav?.length ||
+    isPortalPathAllowed(pathname, allowedNav, searchParams);
 
   useLayoutEffect(() => {
     if (!allowedNav?.length) {
       return;
     }
-    if (isPortalPathAllowed(pathname, allowedNav)) {
+    if (isPortalPathAllowed(pathname, allowedNav, searchParams)) {
       return;
     }
     router.replace(defaultPortalLandingHref(allowedNav));
-  }, [allowedNav, pathname, router]);
+  }, [allowedNav, pathname, router, searchParams]);
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });

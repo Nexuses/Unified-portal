@@ -765,8 +765,9 @@ export default function PortalLeadReportsPage() {
                           href={portalContactRoute(
                             item.id,
                             "/portal/crm/lead-reports",
+                            { view: "lead-report" },
                           )}
-                          title={`View ${displayName(item)} in CRM`}
+                          title={`Open lead report for ${displayName(item)}`}
                         >
                           <strong>{displayName(item)}</strong>
                         </Link>
