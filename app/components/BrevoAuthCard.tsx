@@ -57,9 +57,12 @@ export default function BrevoAuthCard({
         throw new Error(data.error || "Invalid email or password");
       }
 
-      router.push(
-        redirectTo || (authMode === "admin" ? "/admin/dashboard" : "/portal"),
-      );
+      const destination =
+        typeof data.redirectTo === "string" && data.redirectTo.startsWith("/")
+          ? data.redirectTo
+          : redirectTo || (authMode === "admin" ? "/admin/dashboard" : "/portal");
+
+      router.push(destination);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

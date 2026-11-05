@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
+import type { PortalPageId } from "@/lib/portal-nav";
 import type { AdminDoc, SessionAdmin } from "@/lib/admins";
 import {
   DEFAULT_PROJECT_SENDING_LIMIT,
@@ -20,6 +21,9 @@ export type SessionUser = {
   sendingLimit: number;
   /** Always true: Action Click is on for every project (bot hide/tag UI). */
   instantClick: boolean;
+  accountType?: "standard" | "client_share";
+  /** Set for client-share logins; omitted for full workspace users. */
+  allowedNavPages?: PortalPageId[];
 };
 
 export type { SessionAdmin };
@@ -29,6 +33,8 @@ type UserDoc = {
   fullName: string;
   email: string;
   projectId: ObjectId;
+  accountType?: "standard" | "client_share";
+  allowedNavPages?: PortalPageId[];
 };
 
 type ProjectDoc = {
@@ -80,6 +86,12 @@ export async function getSessionUser(): Promise<SessionUser | null> {
       project?.sendingLimit ?? DEFAULT_PROJECT_SENDING_LIMIT,
     ),
     instantClick: true,
+    ...(user.accountType === "client_share"
+      ? {
+          accountType: "client_share" as const,
+          allowedNavPages: user.allowedNavPages || [],
+        }
+      : { accountType: "standard" as const }),
   };
 }
 

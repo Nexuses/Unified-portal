@@ -3,6 +3,8 @@ import bcrypt from "bcryptjs";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import { USER_SESSION_COOKIE } from "@/lib/auth";
+import { defaultPortalLandingHref } from "@/lib/portal-nav-access";
+import type { PortalPageId } from "@/lib/portal-nav";
 
 type UserDoc = {
   _id: ObjectId;
@@ -10,6 +12,8 @@ type UserDoc = {
   email: string;
   passwordHash: string;
   projectId: ObjectId;
+  accountType?: "standard" | "client_share";
+  allowedNavPages?: PortalPageId[];
 };
 
 type ProjectDoc = {
@@ -53,6 +57,15 @@ export async function POST(request: NextRequest) {
       _id: user.projectId,
     });
 
+    const isClientShare = user.accountType === "client_share";
+    const allowedNavPages: PortalPageId[] = isClientShare
+      ? user.allowedNavPages || []
+      : [];
+    const redirectTo =
+      isClientShare && allowedNavPages.length > 0
+        ? defaultPortalLandingHref(allowedNavPages)
+        : "/portal";
+
     const response = NextResponse.json({
       id: user._id.toString(),
       fullName: user.fullName,
@@ -60,6 +73,9 @@ export async function POST(request: NextRequest) {
       projectId: user.projectId.toString(),
       projectName: project?.name || "Unknown",
       projectLogoUrl: project?.logoUrl?.trim() || "",
+      accountType: isClientShare ? "client_share" : "standard",
+      ...(isClientShare ? { allowedNavPages } : {}),
+      redirectTo,
     });
 
     response.cookies.set(USER_SESSION_COOKIE, user._id.toString(), {

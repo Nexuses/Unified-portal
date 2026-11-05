@@ -1,12 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   getHighlightPageFromPathname,
   getOpenGroupsFromPathname,
   getPageTitleFromPathname,
+  type PortalPageId,
 } from "@/lib/portal-nav";
+import {
+  defaultPortalLandingHref,
+  isPortalPathAllowed,
+} from "@/lib/portal-nav-access";
 import PortalAssistant from "./PortalAssistant";
 import PortalSidebar from "./PortalSidebar";
 import PortalTopbar from "./PortalTopbar";
@@ -18,6 +23,8 @@ export type PortalUser = {
   projectId: string;
   projectName: string;
   projectLogoUrl?: string;
+  accountType?: "standard" | "client_share";
+  allowedNavPages?: PortalPageId[];
 };
 
 type PortalAppShellProps = {
@@ -69,13 +76,29 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
   const isLeadReportView =
     /^\/portal\/crm\/contacts\/[^/]+$/.test(pathname) &&
     searchParams.get("view") === "lead-report";
+  const isClientShare = user.accountType === "client_share";
+  const allowedNav = isClientShare ? user.allowedNavPages : null;
+  const showProjectAssistantMenu =
+    !isClientShare || (allowedNav?.includes("project-assistant") ?? false);
+  const pathAllowed =
+    !allowedNav?.length || isPortalPathAllowed(pathname, allowedNav);
+
+  useLayoutEffect(() => {
+    if (!allowedNav?.length) {
+      return;
+    }
+    if (isPortalPathAllowed(pathname, allowedNav)) {
+      return;
+    }
+    router.replace(defaultPortalLandingHref(allowedNav));
+  }, [allowedNav, pathname, router]);
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/login");
   }
 
-  if (!ready) {
+  if (!ready || !pathAllowed) {
     return <div className="portal-loading-screen">Loading your workspace...</div>;
   }
 
@@ -101,6 +124,7 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
         pathname={pathname}
         projectName={user.projectName}
         projectLogoUrl={user.projectLogoUrl ?? ""}
+        allowedNavPages={allowedNav}
       />
 
       <div className="main">
@@ -109,6 +133,7 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
           projectName={user.projectName}
           pageTitle={pageTitle}
           onLogout={handleLogout}
+          showProjectAssistantMenu={showProjectAssistantMenu}
         />
 
         <div
@@ -122,7 +147,9 @@ export default function PortalAppShell({ user, children }: PortalAppShellProps) 
           {children}
         </div>
       </div>
-      <PortalAssistant projectId={user.projectId} projectName={user.projectName} />
+      {!showProjectAssistantMenu ? null : (
+        <PortalAssistant projectId={user.projectId} projectName={user.projectName} />
+      )}
     </div>
   );
 }

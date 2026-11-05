@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   isNavItemActive,
@@ -10,6 +10,7 @@ import {
   type PortalNavGroupId,
   type PortalPageId,
 } from "@/lib/portal-nav";
+import { filterPortalNav } from "@/lib/portal-nav-access";
 import { getNavIcon, IconSidebarToggle } from "./PortalIcons";
 
 type PortalSidebarProps = {
@@ -20,6 +21,7 @@ type PortalSidebarProps = {
   pathname: string;
   projectName: string;
   projectLogoUrl: string;
+  allowedNavPages?: PortalPageId[] | null;
 };
 
 export default function PortalSidebar({
@@ -30,8 +32,13 @@ export default function PortalSidebar({
   pathname,
   projectName,
   projectLogoUrl,
+  allowedNavPages,
 }: PortalSidebarProps) {
   const router = useRouter();
+  const navItems = useMemo(
+    () => filterPortalNav(PORTAL_NAV, allowedNavPages),
+    [allowedNavPages],
+  );
   const [manualOpen, setManualOpen] = useState<
     Partial<Record<PortalNavGroupId, boolean>>
   >({});
@@ -105,7 +112,14 @@ export default function PortalSidebar({
 
     setManualOpen((current) => ({ ...current, [groupId]: true }));
     if (!openGroups[groupId]) {
-      router.push(PORTAL_GROUP_DEFAULTS[groupId]);
+      const group = navItems.find(
+        (item) => item.type === "group" && item.id === groupId,
+      );
+      if (group && group.type === "group") {
+        router.push(group.children[0]?.href || group.href);
+      } else {
+        router.push(PORTAL_GROUP_DEFAULTS[groupId]);
+      }
     }
   }
 
@@ -157,7 +171,7 @@ export default function PortalSidebar({
         </div>
 
         <nav className="nav">
-          {PORTAL_NAV.map((item) => {
+          {navItems.map((item) => {
             if (item.type === "item") {
               const Icon = getNavIcon(item.id);
               const isActive = isNavItemActive(item.href, pathname);

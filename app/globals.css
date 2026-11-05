@@ -421,6 +421,65 @@ body {
   align-items: start;
 }
 
+.admin-layout--stack {
+  grid-template-columns: 1fr;
+  max-width: 980px;
+}
+
+.admin-field-hint {
+  margin: 4px 0 10px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.admin-nav-permissions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fafafa;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.admin-nav-permissions-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #374151;
+  margin-bottom: 8px;
+}
+
+.admin-nav-permissions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px 12px;
+  padding-left: 22px;
+}
+
+.admin-nav-permissions-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #111827;
+}
+
+.admin-nav-count-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .admin-users-card {
   padding: 22px 20px;
   max-width: 720px;

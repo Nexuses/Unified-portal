@@ -14,6 +14,11 @@ const navItems = [
     meta: "Manage projects and users",
   },
   {
+    label: "Client share login",
+    href: "/admin/client-share-login",
+    meta: "Client portal logins with limited navigation",
+  },
+  {
     label: "All projects",
     href: "/admin/projects",
     meta: "Engagement stats across every project",

@@ -34,7 +34,12 @@ export async function GET() {
     const db = await getDb();
     const users = await db
       .collection<UserDoc>("users")
-      .find({})
+      .find({
+        $or: [
+          { accountType: { $exists: false } },
+          { accountType: { $ne: "client_share" } },
+        ],
+      })
       .sort({ createdAt: -1 })
       .toArray();
 

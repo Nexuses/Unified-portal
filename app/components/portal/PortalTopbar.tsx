@@ -20,6 +20,7 @@ type PortalTopbarProps = {
   projectName: string;
   pageTitle: string;
   onLogout: () => void;
+  showProjectAssistantMenu?: boolean;
 };
 
 type OpenMenu = "notifications" | "user" | null;
@@ -49,6 +50,7 @@ export default function PortalTopbar({
   projectName,
   pageTitle,
   onLogout,
+  showProjectAssistantMenu = true,
 }: PortalTopbarProps) {
   const workspaceName = projectName || fullName;
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
@@ -211,14 +213,16 @@ export default function PortalTopbar({
           {openMenu === "user" ? (
             <div className="org-dropdown" role="menu">
               <div className="org-dropdown-label">{workspaceName}</div>
-              <Link
-                href={PORTAL_ROUTES["project-assistant"]}
-                role="menuitem"
-                className="org-dropdown-item"
-                onClick={() => setOpenMenu(null)}
-              >
-                Project AI Assistant
-              </Link>
+              {showProjectAssistantMenu ? (
+                <Link
+                  href={PORTAL_ROUTES["project-assistant"]}
+                  role="menuitem"
+                  className="org-dropdown-item"
+                  onClick={() => setOpenMenu(null)}
+                >
+                  Project AI Assistant
+                </Link>
+              ) : null}
               <button
                 type="button"
                 role="menuitem"
