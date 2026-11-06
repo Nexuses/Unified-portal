@@ -12,6 +12,7 @@ import {
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import PortalBoatCard from "@/app/components/portal/PortalBoatCard";
 import PortalPeopleSearchCard from "@/app/components/portal/PortalPeopleSearchCard";
 import PortalPitchResearchCard from "@/app/components/portal/PortalPitchResearchCard";
 import { CSV_MARKER, UPLOAD_MARKER, type AssistantCard } from "@/lib/assistant";
@@ -48,6 +49,7 @@ function formatBytes(bytes: number) {
 }
 
 const SUGGESTIONS = [
+  "Open the LinkedIn computer",
   "Give me an overview of this project",
   "Find directors at construction companies in Saudi Arabia",
   "Research my company list and write custom pitches",
@@ -588,6 +590,7 @@ export default function PortalAssistant({
   const [pendingPrompt, setPendingPrompt] = useState("");
   const [uploading, setUploading] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState("");
+  const [computerUrl, setComputerUrl] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1067,12 +1070,13 @@ export default function PortalAssistant({
       {open ? (
         <div className="pa-backdrop" onClick={() => setOpen(false)}>
           <div
-            className="pa-modal"
+            className={`pa-modal${computerUrl ? " has-computer" : ""}`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="pa-title"
             onClick={(event) => event.stopPropagation()}
           >
+            <div className="pa-chat">
             <header className="pa-head">
               <span className="pa-avatar">
                 <BotIcon size={34} />
@@ -1157,6 +1161,12 @@ export default function PortalAssistant({
                         {message.cards?.map((card, cardIndex) =>
                           card.kind === "pitch-research" ? (
                             <PortalPitchResearchCard key={card.jobId} card={card} />
+                          ) : card.kind === "boat-desktop" ? (
+                            <PortalBoatCard
+                              key={card.sandboxId}
+                              card={card}
+                              onOpen={setComputerUrl}
+                            />
                           ) : (
                             <PortalPeopleSearchCard
                               key={cardIndex}
@@ -1393,6 +1403,30 @@ export default function PortalAssistant({
             </form>
             {speech.error ? <p className="pa-mic-error">{speech.error}</p> : null}
             <p className="pa-hint">Enter to send · Shift + Enter for a new line · Answers use live project data</p>
+            </div>
+            {computerUrl ? (
+              <aside className="pa-desktop" aria-label="LinkedIn computer">
+                <header className="pa-desktop-bar">
+                  <strong>Computer</strong>
+                  <div className="pa-desktop-actions">
+                    <a href={computerUrl} target="_blank" rel="noopener noreferrer">
+                      New tab
+                    </a>
+                    <button type="button" onClick={() => setComputerUrl("")} aria-label="Close computer">
+                      ×
+                    </button>
+                  </div>
+                </header>
+                <div className="pa-desktop-stage">
+                  <iframe
+                    className="pa-desktop-frame"
+                    src={computerUrl}
+                    title="LinkedIn computer"
+                    allow="clipboard-read; clipboard-write; fullscreen; autoplay"
+                  />
+                </div>
+              </aside>
+            ) : null}
           </div>
         </div>
       ) : null}

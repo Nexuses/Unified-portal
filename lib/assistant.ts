@@ -1,6 +1,15 @@
 import type { AiSearchFilters } from "@/lib/people/ai-search";
 import type { AssistantPitchResearchCard } from "@/lib/pitch-research";
 
+/** Cloud computer the chat can start, drive, and show on screen. */
+export type AssistantBoatCard = {
+  kind: "boat-desktop";
+  sandboxId: string;
+  name: string;
+  state: string;
+  summary: string;
+};
+
 /** Line the assistant ends a reply with when the user asked for a CSV download. */
 export const CSV_MARKER = "[[download-csv]]";
 
@@ -16,4 +25,7 @@ export type AssistantPeopleSearchCard = {
 };
 
 /** Result cards shown under an assistant reply. */
-export type AssistantCard = AssistantPeopleSearchCard | AssistantPitchResearchCard;
+export type AssistantCard =
+  | AssistantPeopleSearchCard
+  | AssistantPitchResearchCard
+  | AssistantBoatCard;

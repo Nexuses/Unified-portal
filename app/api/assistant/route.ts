@@ -8,7 +8,7 @@ import {
   requirePortalSession,
 } from "@/lib/require-portal-session";
 
-export const maxDuration = 180;
+export const maxDuration = 240;
 
 export async function POST(request: NextRequest) {
   try {

@@ -19,7 +19,22 @@ import {
 } from "@/lib/campaign-blasts-server";
 import { PORTAL_ROUTES, portalCampaignRoute } from "@/lib/portal-nav";
 import type { Contact } from "@/lib/crm";
-import type { AssistantCard, AssistantPeopleSearchCard } from "@/lib/assistant";
+import type { AssistantBoatCard, AssistantCard, AssistantPeopleSearchCard } from "@/lib/assistant";
+import {
+  boatConfigured,
+  ensureProjectBoat,
+  getBoatSandbox,
+  isBoatRunning,
+  projectBoatStatus,
+  refreshBoatTask,
+  rememberBoatTask,
+  runBoatCommand,
+  runBoatDesktopTask,
+  savedBoatTask,
+  shellQuote,
+  stopBoatSandbox,
+  type BoatSandbox,
+} from "@/lib/boat";
 import { createPitchResearchJob, normalizeCompanyInputs } from "@/lib/pitch-research-server";
 import { PITCH_RESEARCH_MAX_COMPANIES, type AssistantPitchResearchCard } from "@/lib/pitch-research";
 import { searchWeb } from "@/lib/web-search-server";
@@ -45,7 +60,7 @@ export type AssistantToolDefinition = {
   };
 };
 
-/** Read-only lookups the assistant can run against the signed-in project. */
+/** Lookups and the project's Boat computer. Portal records stay read-only. */
 export const ASSISTANT_TOOLS: AssistantToolDefinition[] = [
   {
     type: "function",
@@ -426,6 +441,107 @@ export const ASSISTANT_TOOLS: AssistantToolDefinition[] = [
         required: ["field", "query"],
         additionalProperties: false,
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "boat_status",
+      description:
+        "Status of this project's LinkedIn computer (a Boat cloud desktop). Does not start it or spend machine time.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "boat_start",
+      description:
+        "Start this project's LinkedIn computer, or resume its saved disk if it was stopped. A LinkedIn login from last time comes back. Shows an Open computer card in the chat.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "boat_do",
+      description:
+        "Hand a task to the agent that can see this computer's screen and use the mouse and keyboard. Use this for anything on the desktop: open or read a Google Sheet, click through Gmail, compose, and send. Pass the user's request in their words. Do not ask them to restate columns, a subject, or which account if they already asked you to do it or it is on screen.",
+      parameters: {
+        type: "object",
+        properties: {
+          task: {
+            type: "string",
+            description: "What the user wants done on the computer, including any subject or message they gave.",
+          },
+          fresh: {
+            type: "boolean",
+            description: "True only when this is unrelated to the task already running. Default continues that task.",
+          },
+        },
+        required: ["task"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "boat_check",
+      description:
+        "Check the desktop agent's current task. Use when the user asks if it finished, or to pick up a task that was still running. Does not start new work.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "boat_run",
+      description:
+        "Run one shell command on this project's computer. Use for files and terminal checks. Do not use it to read a Google Sheet or click Gmail; use boat_do for that.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "A single shell command. No interactive prompts." },
+          timeoutSeconds: { type: "number", description: "1-90. Default 25." },
+        },
+        required: ["command"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "boat_open_url",
+      description:
+        "Open an http(s) page in Chrome on the LinkedIn computer's desktop. Use https://www.linkedin.com/login for sign-in, or a profile URL the user named. Shows an Open computer card so the user can watch.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Absolute http or https URL." },
+        },
+        required: ["url"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "boat_desktop",
+      description:
+        "Show the LinkedIn computer screen in the chat. Call this when the user wants to see, sign in, or watch the computer. Do not paste a desktop URL in the reply.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "boat_stop",
+      description:
+        "Stop the LinkedIn computer. Boat saves the disk, including a LinkedIn login, and stops billing. Resume later with boat_start.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
 ];
@@ -1160,6 +1276,216 @@ async function runLookup(
   }
 }
 
+function boatCard(sandbox: BoatSandbox, summary: string): AssistantBoatCard {
+  return {
+    kind: "boat-desktop",
+    sandboxId: sandbox.id,
+    name: sandbox.name || "LinkedIn computer",
+    state: sandbox.state,
+    summary,
+  };
+}
+
+function boatNotReady(sandbox: BoatSandbox) {
+  return {
+    output: {
+      sandboxId: sandbox.id,
+      state: sandbox.state,
+      error: sandbox.error,
+      message: `The computer is ${sandbox.state}. Ask again in a few seconds.`,
+    },
+  };
+}
+
+async function runBoatTool(
+  context: AssistantToolContext,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ output: unknown; card?: AssistantCard }> {
+  if (!boatConfigured()) {
+    return {
+      output: {
+        error: "Boat is not set up. An admin needs to add BOAT_API_KEY to the server.",
+      },
+    };
+  }
+  try {
+    if (name === "boat_status") {
+      const status = await projectBoatStatus(context.projectId);
+      return {
+        output: status.sandbox
+          ? {
+              configured: true,
+              sandboxId: status.sandbox.id,
+              name: status.sandbox.name,
+              state: status.sandbox.state,
+              running: isBoatRunning(status.sandbox.state),
+            }
+          : { configured: true, state: "none", message: "No computer yet. boat_start creates one." },
+      };
+    }
+
+    if (name === "boat_stop") {
+      const status = await projectBoatStatus(context.projectId);
+      if (!status.sandbox) {
+        return { output: { state: "none", message: "There is no computer to stop." } };
+      }
+      if (status.sandbox.state === "archived" || status.sandbox.state === "archiving") {
+        return {
+          output: {
+            sandboxId: status.sandbox.id,
+            state: status.sandbox.state,
+            message: "Already stopped. The disk, including a LinkedIn login, is saved.",
+          },
+        };
+      }
+      await stopBoatSandbox(status.sandbox.id);
+      return {
+        output: {
+          sandboxId: status.sandbox.id,
+          state: "archiving",
+          message: "Stopping. The disk is saved and billing pauses once it finishes.",
+        },
+      };
+    }
+
+    if (name === "boat_check") {
+      const saved = await savedBoatTask(context.projectId);
+      if (!saved) {
+        return { output: { status: "none", message: "No desktop task has been started." } };
+      }
+      const current = await refreshBoatTask(saved.sandboxId, saved.promptId, saved.conversationId);
+      const live = await getBoatSandbox(saved.sandboxId).catch(() => null);
+      return {
+        ...(live && isBoatRunning(live.state)
+          ? {
+              card: boatCard(
+                live,
+                current.done
+                  ? "The desktop agent finished. Open the computer to review it."
+                  : "The desktop agent is still working. Open the computer to watch.",
+              ),
+            }
+          : {}),
+        output: {
+          status: current.status,
+          done: current.done,
+          report: current.report || "No report yet.",
+          shownToUser: current.done
+            ? "Summarize the report in one or two sentences."
+            : "Say it is still working on the computer, in one or two sentences.",
+        },
+      };
+    }
+
+    const sandbox = await ensureProjectBoat(context.projectId);
+    if (!isBoatRunning(sandbox.state)) {
+      return boatNotReady(sandbox);
+    }
+
+    if (name === "boat_do") {
+      const task = optionalString(args.task);
+      if (!task) {
+        return { output: { error: "Say what to do on the computer." } };
+      }
+      if (task.length > 4000) {
+        return { output: { error: "That task is too long." } };
+      }
+      const saved = args.fresh === true ? null : await savedBoatTask(context.projectId);
+      const result = await runBoatDesktopTask(sandbox.id, task, saved?.conversationId ?? null);
+      await rememberBoatTask(context.projectId, result.promptId, result.conversationId);
+      return {
+        card: boatCard(
+          sandbox,
+          result.done
+            ? "The desktop agent finished. Open the computer to review it."
+            : "The desktop agent is working. Open the computer to watch.",
+        ),
+        output: {
+          status: result.status,
+          done: result.done,
+          report: result.report || "Still working. No written report yet.",
+          shownToUser: result.done
+            ? "Summarize the report in one or two sentences. Do not add sends the report does not mention."
+            : "Say you started it and they can watch the computer. One or two sentences. Do not ask them to restate the sheet.",
+        },
+      };
+    }
+
+    if (name === "boat_start" || name === "boat_desktop") {
+      return {
+        card: boatCard(
+          sandbox,
+          "The computer is on. Open it to see the desktop and sign in to LinkedIn.",
+        ),
+        output: {
+          sandboxId: sandbox.id,
+          state: sandbox.state,
+          shownToUser:
+            "An Open computer card is under your reply. Tell the user to open it. Do not paste a URL.",
+        },
+      };
+    }
+
+    if (name === "boat_open_url") {
+      let url: URL;
+      try {
+        url = new URL(String(args.url ?? "").trim());
+      } catch {
+        return { output: { error: "Give a full http or https URL." } };
+      }
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return { output: { error: "Only http and https URLs can be opened." } };
+      }
+      const command = `if ! command -v google-chrome-stable >/dev/null; then echo chrome-missing; exit 1; fi; DISPLAY=:0 nohup google-chrome-stable --no-first-run --new-window ${shellQuote(url.toString())} >/tmp/boat-chrome.log 2>&1 & echo started`;
+      const result = await runBoatCommand(sandbox.id, command, 20);
+      return {
+        card: boatCard(sandbox, `Chrome is opening ${url.toString()}`),
+        output: {
+          sandboxId: sandbox.id,
+          state: sandbox.state,
+          url: url.toString(),
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          shownToUser:
+            "An Open computer card is under your reply so the user can watch Chrome. Do not paste a desktop URL.",
+        },
+      };
+    }
+
+    if (name === "boat_run") {
+      const command = optionalString(args.command);
+      if (!command) {
+        return { output: { error: "Give a command to run." } };
+      }
+      if (command.length > 4000) {
+        return { output: { error: "That command is too long." } };
+      }
+      const timeout = clampLimit(args.timeoutSeconds, 25, 90);
+      const current = await getBoatSandbox(sandbox.id);
+      if (!isBoatRunning(current.state)) {
+        return boatNotReady(current);
+      }
+      const result = await runBoatCommand(sandbox.id, command, timeout);
+      return {
+        output: {
+          sandboxId: sandbox.id,
+          state: current.state,
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        },
+      };
+    }
+
+    return { output: { error: `Unknown tool ${name}` } };
+  } catch (error) {
+    return { output: { error: error instanceof Error ? error.message : "Boat failed" } };
+  }
+}
+
 /** Runs a tool; `card` is set when the result should also render in the chat. */
 export async function runAssistantTool(
   context: AssistantToolContext,
@@ -1171,6 +1497,9 @@ export async function runAssistantTool(
   }
   if (name === "start_pitch_research") {
     return startPitchResearch(context, args);
+  }
+  if (name.startsWith("boat_")) {
+    return runBoatTool(context, name, args);
   }
   return { output: await runLookup(context, name, args) };
 }
