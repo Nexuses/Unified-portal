@@ -12,9 +12,9 @@ import {
   normalizeLeadStatus,
   type LeadStatus,
 } from "@/lib/lead-status";
+import { NEXUSES_LOGO_PROXY_PATH } from "@/lib/nexuses-logo";
 
 /** Same-origin proxy so PDF capture is not blocked by CDN CORS. */
-const NEXUSES_LOGO_SRC = "/api/brand/nexuses-logo";
 
 const STAGE_BADGE: Record<
   LeadStatus,
@@ -922,7 +922,7 @@ export async function downloadLeadReportPdf(
 
   const photoSrc =
     options?.photoSrc || resolveContactPhotoUrl(profile) || "";
-  const nexusesLogoSrc = options?.nexusesLogoSrc || NEXUSES_LOGO_SRC;
+  const nexusesLogoSrc = options?.nexusesLogoSrc || NEXUSES_LOGO_PROXY_PATH;
   const projectLogoSrc = options?.projectLogoSrc?.trim() || "";
   const [photoDataUrl, nexusesLogoDataUrl, projectLogoDataUrl] =
     await Promise.all([

@@ -33,6 +33,7 @@ import {
 } from "@/lib/drip-campaigns";
 import { formatSenderDisplayName } from "@/lib/mxtoolbox";
 import { PORTAL_ROUTES, campaignListRoute, portalCampaignRoute } from "@/lib/portal-nav";
+import { NEXUSES_LOGO_URL } from "@/lib/nexuses-logo";
 import {
   formatTimezoneLabel,
   listCampaignTimezones,
@@ -4116,7 +4117,7 @@ function CustomHtmlEditor({
         <div className="drip-html-editor-brand">
           <img
             className="drip-html-editor-logo"
-            src="https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png"
+            src={NEXUSES_LOGO_URL}
             alt="Nexuses"
           />
           <span className="drip-html-editor-name">{campaign.name}</span>

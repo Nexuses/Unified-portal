@@ -11,6 +11,7 @@ import {
   type PortalPageId,
 } from "@/lib/portal-nav";
 import { filterPortalNav } from "@/lib/portal-nav-access";
+import { NEXUSES_LOGO_URL, NEXUSES_MARK_URL } from "@/lib/nexuses-logo";
 import { getNavIcon, IconSidebarToggle } from "./PortalIcons";
 
 type PortalSidebarProps = {
@@ -146,13 +147,13 @@ export default function PortalSidebar({
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               className="brand-logo"
-              src="https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png"
+              src={NEXUSES_LOGO_URL}
               alt="Nexuses"
             />
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               className="brand-mark"
-              src="https://cdn-nexlink.s3.us-east-2.amazonaws.com/Group_15_b5d5ad17-292a-47a6-a4e1-636f541568ae.png"
+              src={NEXUSES_MARK_URL}
               alt="Nexuses"
             />
           </span>
@@ -165,7 +166,7 @@ export default function PortalSidebar({
               title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
               aria-expanded={!collapsed}
             >
-              <IconSidebarToggle className={collapsed ? "is-flipped" : undefined} />
+              <IconSidebarToggle collapsed={collapsed} />
             </button>
           ) : null}
         </div>

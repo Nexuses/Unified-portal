@@ -5,6 +5,7 @@ import type { ContactDetail } from "@/lib/crm";
 import { resolveContactPhotoUrl } from "@/lib/crm";
 import LeadReportOverview from "@/app/components/portal/crm/LeadReportOverview";
 import PublicLeadReportHeader from "@/app/components/portal/crm/PublicLeadReportHeader";
+import { NEXUSES_LOGO_PROXY_PATH } from "@/lib/nexuses-logo";
 
 type Branding = {
   name: string;
@@ -115,7 +116,7 @@ export default function SharedLeadReport({
           (token
             ? `/api/public/leads/${encodeURIComponent(token)}/project-logo`
             : ""),
-        nexusesLogoSrc: "/api/brand/nexuses-logo",
+        nexusesLogoSrc: NEXUSES_LOGO_PROXY_PATH,
       });
     } finally {
       setPdfBusy(false);

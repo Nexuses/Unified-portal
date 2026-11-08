@@ -14,6 +14,7 @@ import {
 import type { ContactDoc } from "@/lib/crm";
 import { getDb } from "@/lib/mongodb";
 import { sendCountsAsOpen } from "@/lib/open-pixel";
+import { NEXUSES_LOGO_URL } from "@/lib/nexuses-logo";
 
 export type {
   AllProjectsStatsDays,
@@ -26,9 +27,6 @@ export {
 } from "@/lib/all-projects-stats";
 
 const WEEKLY_REPORT_META = "weekly_report_meta";
-
-const NEXUSES_LOGO_URL =
-  "https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png";
 
 export type WeeklyReportPayload = {
   weekKey: string;
