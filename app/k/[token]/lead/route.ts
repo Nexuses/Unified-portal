@@ -5,7 +5,7 @@ import { requestOrigin } from "@/lib/campaign-blasts-server";
 import { ensureContactShareToken } from "@/lib/crm-contacts-server";
 import { type ContactDoc } from "@/lib/crm";
 import { getDb } from "@/lib/mongodb";
-import { publicContactPath } from "@/lib/portal-nav";
+import { publicContactPath, publicKanbanPath } from "@/lib/portal-nav";
 
 type RouteContext = { params: Promise<{ token: string }> };
 
@@ -53,6 +53,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
   }
 
   return NextResponse.redirect(
-    absolutePath(request, publicContactPath(contactToken)),
+    absolutePath(
+      request,
+      publicContactPath(contactToken, { from: publicKanbanPath(token) }),
+    ),
   );
 }

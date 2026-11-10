@@ -142,8 +142,26 @@ export function publicLeadReportPath(token: string) {
 }
 
 /** Public CRM contact detail (same tabs UI as portal, read-only). */
-export function publicContactPath(token: string) {
-  return `/c/${encodeURIComponent(token)}`;
+export function publicContactPath(
+  token: string,
+  options?: { from?: string },
+) {
+  const path = `/c/${encodeURIComponent(token)}`;
+  const from = options?.from?.trim() || "";
+  if (!from.startsWith("/k/") || from.startsWith("//")) {
+    return path;
+  }
+  const params = new URLSearchParams({ from });
+  return `${path}?${params.toString()}`;
+}
+
+/** Safe public return path for shared contact back links. */
+export function publicContactReturnPath(from: string | undefined) {
+  const value = (from || "").trim();
+  if (!value.startsWith("/k/") || value.startsWith("//") || value.includes("://")) {
+    return "";
+  }
+  return value;
 }
 
 /** Public share for the whole project lead-reports list. */
