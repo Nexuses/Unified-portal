@@ -58,6 +58,8 @@ export type KanbanPerson = {
   /** Primary brand logo URL (Clearbit). */
   companyLogoUrl?: string;
   contactId?: string;
+  /** Public boards only: contact exists in CRM (id itself is omitted). */
+  hasContact?: boolean;
   delivered: boolean;
   opened: boolean;
   clicked: boolean;

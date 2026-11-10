@@ -26,6 +26,11 @@ type PortalContactDetailPageProps = {
   from?: string;
 };
 
+type SharedContactDetailProps = {
+  contact: ContactDetail;
+  backHref?: string;
+};
+
 type DetailTab = "overview" | "activity" | "lists" | "preferences";
 
 function pct(part: number, total: number) {
@@ -171,9 +176,11 @@ function ContactAvatar({
 function ContactListsPanel({
   lists,
   folder,
+  readOnly = false,
 }: {
   lists: ContactListMembership[];
   folder: string;
+  readOnly?: boolean;
 }) {
   const [rowsPerPage, setRowsPerPage] = useState(20);
   const [page, setPage] = useState(1);
@@ -191,9 +198,11 @@ function ContactListsPanel({
 
   return (
     <div className="contact-lists-panel">
-      <Link href={PORTAL_ROUTES.lists} className="link-purple contact-manage-lists">
-        Manage lists
-      </Link>
+      {readOnly ? null : (
+        <Link href={PORTAL_ROUTES.lists} className="link-purple contact-manage-lists">
+          Manage lists
+        </Link>
+      )}
 
       <div className="data-table-wrap contact-lists-table-wrap">
         <table className="data-table contact-lists-table">
@@ -216,9 +225,15 @@ function ContactListsPanel({
               pageLists.map((list) => (
                 <tr key={list.id}>
                   <td>
-                    <Link href={portalListRoute(list.id)} className="name-link">
-                      {list.name}
-                    </Link>
+                    {readOnly ? (
+                      <span className="name-link" style={{ textDecoration: "none", color: "inherit", cursor: "default" }}>
+                        {list.name}
+                      </span>
+                    ) : (
+                      <Link href={portalListRoute(list.id)} className="name-link">
+                        {list.name}
+                      </Link>
+                    )}
                   </td>
                   <td className="id-cell">#{list.displayId}</td>
                   <td>{folder}</td>
@@ -338,14 +353,39 @@ export default function PortalContactDetailPage({
   return <ContactTabsDetail contactId={contactId} from={from} />;
 }
 
+/** Public CRM contact (same tabs UI as portal, read-only). */
+export function SharedContactDetail({
+  contact,
+  backHref,
+}: SharedContactDetailProps) {
+  return (
+    <ContactTabsDetail
+      contactId={contact.id}
+      sharedContact={contact}
+      backHref={backHref}
+      readOnly
+    />
+  );
+}
+
 function ContactTabsDetail({
   contactId,
   from,
-}: PortalContactDetailPageProps) {
+  sharedContact,
+  backHref: backHrefProp,
+  readOnly = false,
+}: PortalContactDetailPageProps & {
+  sharedContact?: ContactDetail;
+  backHref?: string;
+  readOnly?: boolean;
+}) {
   const router = useRouter();
-  const backHref = portalReturnPath(from, PORTAL_ROUTES.contacts);
-  const [contact, setContact] = useState<ContactDetail | null>(null);
-  const [loading, setLoading] = useState(true);
+  const backHref =
+    backHrefProp || portalReturnPath(from, PORTAL_ROUTES.contacts);
+  const [contact, setContact] = useState<ContactDetail | null>(
+    sharedContact ?? null,
+  );
+  const [loading, setLoading] = useState(!sharedContact);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<DetailTab>("overview");
 
@@ -354,6 +394,13 @@ function ContactTabsDetail({
   }, [contactId]);
 
   useEffect(() => {
+    if (sharedContact) {
+      setContact(sharedContact);
+      setLoading(false);
+      setError("");
+      return;
+    }
+
     async function loadContact() {
       if (!contactId) {
         setLoading(false);
@@ -377,7 +424,7 @@ function ContactTabsDetail({
     }
 
     void loadContact();
-  }, [contactId]);
+  }, [contactId, sharedContact]);
 
   const navigation = contact?.navigation;
 
@@ -452,7 +499,19 @@ function ContactTabsDetail({
             type="button"
             className="cd-back"
             aria-label="Back"
-            onClick={() => router.push(backHref)}
+            onClick={() => {
+              if (readOnly) {
+                if (typeof window !== "undefined" && window.history.length > 1) {
+                  router.back();
+                  return;
+                }
+                if (backHrefProp) {
+                  router.push(backHrefProp);
+                }
+                return;
+              }
+              router.push(backHref);
+            }}
           >
             <svg
               viewBox="0 0 24 24"
@@ -481,7 +540,7 @@ function ContactTabsDetail({
                 </span>
               ) : null}
               {contact.companyName ? (
-                contact.company?.id ? (
+                contact.company?.id && !readOnly ? (
                   <Link
                     href={portalCompanyRoute(contact.company.id)}
                     className="cd-subtitle-link"
@@ -527,60 +586,62 @@ function ContactTabsDetail({
           </div>
         </div>
 
-        <div className="cd-actions-bar">
-          <div className="cd-pager">
+        {readOnly ? null : (
+          <div className="cd-actions-bar">
+            <div className="cd-pager">
+              <button
+                type="button"
+                aria-label="Previous contact"
+                disabled={!navigation?.prevId}
+                onClick={() =>
+                  navigation?.prevId
+                    ? router.push(portalContactRoute(navigation.prevId, from))
+                    : undefined
+                }
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+              </button>
+              <span>{pagerLabel}</span>
+              <button
+                type="button"
+                aria-label="Next contact"
+                disabled={!navigation?.nextId}
+                onClick={() =>
+                  navigation?.nextId
+                    ? router.push(portalContactRoute(navigation.nextId, from))
+                    : undefined
+                }
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="m9 18 6-6-6-6" />
+                </svg>
+              </button>
+            </div>
             <button
               type="button"
-              aria-label="Previous contact"
-              disabled={!navigation?.prevId}
+              className="btn-dark"
               onClick={() =>
-                navigation?.prevId
-                  ? router.push(portalContactRoute(navigation.prevId, from))
-                  : undefined
+                router.push(
+                  portalContactRoute(contactId, from, { view: "lead-report" }),
+                )
               }
             >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path d="m15 18-6-6 6-6" />
-              </svg>
-            </button>
-            <span>{pagerLabel}</span>
-            <button
-              type="button"
-              aria-label="Next contact"
-              disabled={!navigation?.nextId}
-              onClick={() =>
-                navigation?.nextId
-                  ? router.push(portalContactRoute(navigation.nextId, from))
-                  : undefined
-              }
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path d="m9 18 6-6-6-6" />
-              </svg>
+              Lead Report
             </button>
           </div>
-          <button
-            type="button"
-            className="btn-dark"
-            onClick={() =>
-              router.push(
-                portalContactRoute(contactId, from, { view: "lead-report" }),
-              )
-            }
-          >
-            Lead Report
-          </button>
-        </div>
+        )}
       </div>
 
       <div className="cd-tabs">
@@ -622,12 +683,17 @@ function ContactTabsDetail({
           <ContactActivityPanel
             contact={contact}
             onContactChange={setContact}
+            readOnly={readOnly}
           />
         </div>
       ) : null}
 
       {tab === "lists" ? (
-        <ContactListsPanel lists={contact.lists} folder={contact.owner} />
+        <ContactListsPanel
+          lists={contact.lists}
+          folder={contact.owner}
+          readOnly={readOnly}
+        />
       ) : null}
 
       {tab === "preferences" ? (
@@ -701,7 +767,7 @@ function ContactTabsDetail({
                   {position || <span className="cd-info-muted">Not set</span>}
                 </InfoRow>
                 <InfoRow icon={<IconBuilding />} label="Company">
-                  {contact.company?.id ? (
+                  {contact.company?.id && !readOnly ? (
                     <Link
                       href={portalCompanyRoute(contact.company.id)}
                       className="cd-info-link"
@@ -775,12 +841,16 @@ function ContactTabsDetail({
                     <IconBuilding />
                   </span>
                   <div>
-                    <Link
-                      href={portalCompanyRoute(contact.company.id)}
-                      className="cd-company-name"
-                    >
-                      {contact.company.name}
-                    </Link>
+                    {readOnly ? (
+                      <span className="cd-company-name">{contact.company.name}</span>
+                    ) : (
+                      <Link
+                        href={portalCompanyRoute(contact.company.id)}
+                        className="cd-company-name"
+                      >
+                        {contact.company.name}
+                      </Link>
+                    )}
                     <p className="cd-company-meta">
                       {contact.company.contactCount} associated contact
                       {contact.company.contactCount === 1 ? "" : "s"}
@@ -796,6 +866,7 @@ function ContactTabsDetail({
               <ContactActivityPanel
                 contact={contact}
                 onContactChange={setContact}
+                readOnly={readOnly}
               />
             </div>
           </section>
