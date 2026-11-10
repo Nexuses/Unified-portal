@@ -457,7 +457,7 @@ export const ASSISTANT_TOOLS: AssistantToolDefinition[] = [
     function: {
       name: "boat_start",
       description:
-        "Start this project's LinkedIn computer, or resume its saved disk if it was stopped. A LinkedIn login from last time comes back. Shows an Open computer card in the chat.",
+        "Start this project's LinkedIn computer. Resumes the saved disk when Boat still has it, including a LinkedIn login. If that disk was deleted, creates a new blank desktop instead. Shows an Open computer card in the chat.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -1413,16 +1413,21 @@ async function runBoatTool(
     }
 
     if (name === "boat_start" || name === "boat_desktop") {
+      const fresh = sandbox.replacedDeletedDisk === true;
       return {
         card: boatCard(
           sandbox,
-          "The computer is on. Open it to see the desktop and sign in to LinkedIn.",
+          fresh
+            ? "The old computer was deleted, so this is a new blank desktop. Open it and sign in to LinkedIn again."
+            : "The computer is on. Open it to see the desktop and sign in to LinkedIn.",
         ),
         output: {
           sandboxId: sandbox.id,
           state: sandbox.state,
-          shownToUser:
-            "An Open computer card is under your reply. Tell the user to open it. Do not paste a URL.",
+          freshDesktop: fresh,
+          shownToUser: fresh
+            ? "The previous disk was deleted, so this is a new blank desktop. Tell the user to open the card and sign in again. Do not mention an admin, a snapshot, or an API key."
+            : "An Open computer card is under your reply. Tell the user to open it. Do not paste a URL.",
         },
       };
     }

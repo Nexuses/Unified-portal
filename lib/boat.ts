@@ -11,6 +11,8 @@ export type BoatSandbox = {
   name: string;
   state: string;
   error: string | null;
+  /** True when the saved disk was gone and this call created a blank desktop. */
+  replacedDeletedDisk?: boolean;
 };
 
 export type BoatCommandResult = {
@@ -53,6 +55,14 @@ function sleep(ms: number) {
 
 export function isBoatRunning(state: string) {
   return RUNNING_STATES.has(state);
+}
+
+/** Boat keeps a stopped disk for about 14 days, then resume fails while the id still exists. */
+function sandboxDiskGone(error: unknown) {
+  if (!(error instanceof BoatError)) return false;
+  if (error.status === 404 || error.code === "not_found") return true;
+  const text = `${error.code} ${error.message}`.toLowerCase();
+  return text.includes("data was deleted") || text.includes("deleted after");
 }
 
 async function boatFetch(path: string, init?: RequestInit) {
@@ -167,11 +177,14 @@ async function boatLinks() {
 
 async function reviveBoat(sandboxId: string) {
   const sandbox = await getBoatSandbox(sandboxId);
-  if (sandbox.state === "cancelled") {
-    throw new BoatError("This computer was removed", 404, "not_found");
-  }
   if (isBoatRunning(sandbox.state)) {
     return sandbox;
+  }
+  if (sandbox.state === "cancelled" || sandbox.state === "deleted") {
+    throw new BoatError("This computer was removed", 404, "not_found");
+  }
+  if (/data was deleted|deleted after/i.test(sandbox.error ?? "")) {
+    throw new BoatError(sandbox.error || "This sandbox's data was deleted.", 410, "sandbox_deleted");
   }
   if (sandbox.state === "archived" || sandbox.state === "error") {
     await resumeBoatSandbox(sandboxId);
@@ -179,17 +192,19 @@ async function reviveBoat(sandboxId: string) {
   return waitForBoat(sandboxId);
 }
 
-/** One Boat computer per project. Creates it, or resumes the saved disk. */
+/** One Boat computer per project. Resumes the saved disk, or creates a blank one when that disk is gone. */
 export async function ensureProjectBoat(projectId: ObjectId) {
   const collection = await boatLinks();
   const saved = await collection.findOne({ projectId });
+  let replacedDeletedDisk = false;
   if (saved?.sandboxId) {
     try {
       return await reviveBoat(saved.sandboxId);
     } catch (error) {
-      if (!(error instanceof BoatError) || error.status !== 404) {
+      if (!sandboxDiskGone(error)) {
         throw error;
       }
+      replacedDeletedDisk = true;
     }
   }
 
@@ -198,14 +213,13 @@ export async function ensureProjectBoat(projectId: ObjectId) {
     { projectId },
     {
       $set: { sandboxId: created.id, updatedAt: new Date() },
+      $unset: { promptId: "", conversationId: "" },
       $setOnInsert: { projectId, createdAt: new Date() },
     },
     { upsert: true },
   );
-  if (isBoatRunning(created.state)) {
-    return created;
-  }
-  return waitForBoat(created.id);
+  const ready = isBoatRunning(created.state) ? created : await waitForBoat(created.id);
+  return replacedDeletedDisk ? { ...ready, replacedDeletedDisk: true } : ready;
 }
 
 export async function projectBoatStatus(projectId: ObjectId) {
