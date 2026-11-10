@@ -280,28 +280,42 @@ function DeviceIcon({ device }: { device: EngagementDevice }) {
   );
 }
 
-function HistoryBody({ event }: { event: ContactHistoryEvent }) {
+function HistoryBody({
+  event,
+  readOnly = false,
+}: {
+  event: ContactHistoryEvent;
+  readOnly?: boolean;
+}) {
   if (event.type === "company_associated" && event.companyId) {
     return (
       <>
         Associated with{" "}
-        <Link
-          href={portalCompanyRoute(event.companyId)}
-          className="af-campaign-link"
-        >
-          {event.companyName || "Company"}
-        </Link>
+        {readOnly ? (
+          <strong>{event.companyName || "Company"}</strong>
+        ) : (
+          <Link
+            href={portalCompanyRoute(event.companyId)}
+            className="af-campaign-link"
+          >
+            {event.companyName || "Company"}
+          </Link>
+        )}
       </>
     );
   }
   if (event.type === "list_added" && event.listId) {
+    const listLabel = `${event.listDisplayId ? `(#${event.listDisplayId}) ` : ""}${event.listName}`;
     return (
       <>
         Added to list{" "}
-        <Link href={portalListRoute(event.listId)} className="af-campaign-link">
-          {event.listDisplayId ? `(#${event.listDisplayId}) ` : ""}
-          {event.listName}
-        </Link>
+        {readOnly ? (
+          <strong>{listLabel}</strong>
+        ) : (
+          <Link href={portalListRoute(event.listId)} className="af-campaign-link">
+            {listLabel}
+          </Link>
+        )}
         {event.actor ? ` by ${event.actor}` : ""}.
       </>
     );
@@ -443,12 +457,15 @@ type ContactActivityPanelProps = {
   contact: ContactDetail;
   onContactChange: (contact: ContactDetail) => void;
   compact?: boolean;
+  /** Public / shared views: hide logging and portal-only actions. */
+  readOnly?: boolean;
 };
 
 export default function ContactActivityPanel({
   contact,
   onContactChange,
   compact = false,
+  readOnly = false,
 }: ContactActivityPanelProps) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [logging, setLogging] = useState(false);
@@ -677,16 +694,18 @@ export default function ContactActivityPanel({
           <h3>Activity</h3>
           <p>Email engagement plus calls and messages you log.</p>
         </div>
-        <button
-          type="button"
-          className="cd-activity-add"
-          onClick={() => {
-            setLogging((open) => !open);
-            setSaveError("");
-          }}
-        >
-          {logging ? "Cancel" : "Log activity"}
-        </button>
+        {readOnly ? null : (
+          <button
+            type="button"
+            className="cd-activity-add"
+            onClick={() => {
+              setLogging((open) => !open);
+              setSaveError("");
+            }}
+          >
+            {logging ? "Cancel" : "Log activity"}
+          </button>
+        )}
       </div>
 
       <div className="cd-activity-filters" role="tablist" aria-label="Activity filters">
@@ -705,7 +724,7 @@ export default function ContactActivityPanel({
         ))}
       </div>
 
-      {logging ? (
+      {!readOnly && logging ? (
         <div className="cd-activity-composer">
           <div className="cd-activity-kind-row">
             {kindOptions.map((kind) => (
@@ -848,14 +867,16 @@ export default function ContactActivityPanel({
         <div className="cd-activity-empty">
           <p>
             {filter === "all"
-              ? "No activity yet. Log a call or message, or wait for email engagement."
+              ? readOnly
+                ? "No activity yet."
+                : "No activity yet. Log a call or message, or wait for email engagement."
               : filter === "email"
                 ? "No email activity for this contact yet."
                 : filter === "call"
                   ? "No calls logged yet."
                   : "No messages logged yet."}
           </p>
-          {!logging ? (
+          {!readOnly && !logging ? (
             <button
               type="button"
               className="btn-soft"
@@ -899,16 +920,18 @@ export default function ContactActivityPanel({
                     </span>
                   </div>
                   <p className="lr-tl-body">{entry.item.body || "—"}</p>
-                  <div className="lr-tl-actions">
-                    <button
-                      type="button"
-                      className="cd-activity-remove"
-                      disabled={saving}
-                      onClick={() => void removeManual(entry.id)}
-                    >
-                      Remove
-                    </button>
-                  </div>
+                  {readOnly ? null : (
+                    <div className="lr-tl-actions">
+                      <button
+                        type="button"
+                        className="cd-activity-remove"
+                        disabled={saving}
+                        onClick={() => void removeManual(entry.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             }
@@ -916,7 +939,7 @@ export default function ContactActivityPanel({
             const event = entry.event;
             const sendId = resolveHistorySendId(event);
             const showEmailPreview =
-              Boolean(sendId) && isCampaignEvent(event.type);
+              !readOnly && Boolean(sendId) && isCampaignEvent(event.type);
 
             return (
               <div className="lr-tl-item cd-activity-item" key={entry.id}>
@@ -939,7 +962,7 @@ export default function ContactActivityPanel({
                   </span>
                 </div>
                 <p className="lr-tl-body">
-                  <HistoryBody event={event} />
+                  <HistoryBody event={event} readOnly={readOnly} />
                 </p>
                 {event.openTag ||
                 event.clickTag ||
@@ -974,7 +997,7 @@ export default function ContactActivityPanel({
                     </div>
                   </div>
                 ) : null}
-                {showEmailPreview || event.campaignId ? (
+                {!readOnly && (showEmailPreview || event.campaignId) ? (
                   <div className="lr-tl-actions">
                     {showEmailPreview ? (
                       <button

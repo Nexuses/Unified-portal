@@ -26,8 +26,7 @@ import {
   type ProjectAssistantMessagePublic,
 } from "@/lib/project-assistant-types";
 
-const NEXUSES_LOGO =
-  "https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png";
+import { NEXUSES_LOGO_URL } from "@/lib/nexuses-logo";
 
 const SUGGESTIONS = [
   "Help me set up a new drip campaign",
@@ -715,7 +714,7 @@ export default function PortalProjectAssistantPage() {
           </button>
           <div className="pag-top-title">
             <Image
-              src={NEXUSES_LOGO}
+              src={NEXUSES_LOGO_URL}
               alt="Nexuses"
               width={108}
               height={24}
@@ -754,7 +753,7 @@ export default function PortalProjectAssistantPage() {
           ) : empty ? (
             <div className="pag-hero">
               <Image
-                src={NEXUSES_LOGO}
+                src={NEXUSES_LOGO_URL}
                 alt="Nexuses"
                 width={148}
                 height={32}

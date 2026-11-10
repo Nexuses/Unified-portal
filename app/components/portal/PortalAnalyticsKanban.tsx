@@ -34,7 +34,11 @@ import {
   type DripCampaign,
 } from "@/lib/drip-campaigns";
 import type { CrmList } from "@/lib/crm";
-import { PORTAL_ROUTES, portalContactRoute } from "@/lib/portal-nav";
+import {
+  PORTAL_ROUTES,
+  portalContactRoute,
+  publicKanbanLeadPath,
+} from "@/lib/portal-nav";
 import { formatAnalyticsExpiry } from "@/lib/analytics";
 import PipelineFunnelChart from "@/app/components/portal/PipelineFunnelChart";
 
@@ -1856,7 +1860,16 @@ export default function PortalAnalyticsKanban({
                                 <path d="M4 20c0-4 4-6 8-6s8 2 8 6" />
                               </svg>
                             </span>
-                            {person.contactId ? (
+                            {shareToken && person.hasContact ? (
+                              <Link
+                                className="an-kanban-card-name is-link"
+                                href={publicKanbanLeadPath(shareToken, email)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                {name}
+                              </Link>
+                            ) : person.contactId ? (
                               <Link
                                 className="an-kanban-card-name is-link"
                                 href={portalContactRoute(

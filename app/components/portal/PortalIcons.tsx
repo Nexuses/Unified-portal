@@ -241,12 +241,31 @@ export function IconChevronRight({ className }: IconProps) {
   );
 }
 
-export function IconSidebarToggle({ className }: IconProps) {
+export function IconSidebarToggle({
+  className,
+  collapsed,
+}: IconProps & { collapsed?: boolean }) {
+  const bar = {
+    fill: "none" as const,
+    stroke: "currentColor",
+    strokeWidth: 1.75,
+    strokeLinecap: "butt" as const,
+    strokeLinejoin: "miter" as const,
+  };
+
+  if (collapsed) {
+    return (
+      <svg className={className} viewBox="0 0 24 24" aria-hidden>
+        <path {...bar} d="M3 8h11M3 12h7M3 16h11" />
+        <path {...bar} d="M17 7.5 13.5 12 17 16.5" />
+      </svg>
+    );
+  }
+
   return (
-    <svg className={className} viewBox="0 0 24 24" {...stroke}>
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
-      <path d="M9 4.5v15" />
-      <path d="m14.5 9.5 2.5 2.5-2.5 2.5" />
+    <svg className={className} viewBox="0 0 24 24" aria-hidden>
+      <path {...bar} d="M5 7.5 8.5 12 5 16.5" />
+      <path {...bar} d="M12 8h9M12 12h6M12 16h9" />
     </svg>
   );
 }

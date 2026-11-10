@@ -131,8 +131,19 @@ export function publicKanbanPath(token: string) {
   return `/k/${token}`;
 }
 
+/** Opens a CRM contact from a public pipeline board (creates share token on demand). */
+export function publicKanbanLeadPath(boardToken: string, email: string) {
+  const params = new URLSearchParams({ email: email.trim().toLowerCase() });
+  return `/k/${encodeURIComponent(boardToken)}/lead?${params.toString()}`;
+}
+
 export function publicLeadReportPath(token: string) {
   return `/l/${encodeURIComponent(token)}`;
+}
+
+/** Public CRM contact detail (same tabs UI as portal, read-only). */
+export function publicContactPath(token: string) {
+  return `/c/${encodeURIComponent(token)}`;
 }
 
 /** Public share for the whole project lead-reports list. */

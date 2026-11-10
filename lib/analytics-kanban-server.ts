@@ -1164,7 +1164,10 @@ export function kanbanShareExpiresAt(share: KanbanShareDoc) {
   return resolveAnalyticsShareExpiry(share);
 }
 
-/** Board for a public link, without contact ids so the page never links into the portal. */
+/**
+ * Board for a public link. Strips portal contact ids; keeps `hasContact` so cards
+ * can open lead reports via the lazy `/k/.../lead` redirect (no token fan-out on load).
+ */
 export async function getSharedKanbanBoard(share: KanbanShareDoc): Promise<KanbanBoard | null> {
   if (isAnalyticsShareExpired(share)) {
     return null;
@@ -1175,7 +1178,11 @@ export async function getSharedKanbanBoard(share: KanbanShareDoc): Promise<Kanba
   }
   return {
     ...board,
-    people: board.people.map((person) => ({ ...person, contactId: undefined })),
+    people: board.people.map((person) => ({
+      ...person,
+      contactId: undefined,
+      hasContact: Boolean(person.contactId),
+    })),
   };
 }
 

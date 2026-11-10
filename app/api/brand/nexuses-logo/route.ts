@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
+import { NEXUSES_LOGO_URL } from "@/lib/nexuses-logo";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const NEXUSES_LOGO_URL =
-  "https://cdn-nexlink.s3.us-east-2.amazonaws.com/Nexuses-full-logo-dark_8d412ea3-bf11-4fc6-af9c-bee7e51ef494.png";
 
 export async function GET() {
   try {
@@ -16,7 +14,8 @@ export async function GET() {
       return new NextResponse(null, { status: 404 });
     }
     const buffer = await response.arrayBuffer();
-    const contentType = response.headers.get("content-type") || "image/png";
+    const contentType =
+      response.headers.get("content-type") || "image/svg+xml";
     return new NextResponse(new Uint8Array(buffer), {
       status: 200,
       headers: {
