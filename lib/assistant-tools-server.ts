@@ -35,6 +35,7 @@ import {
   stopBoatSandbox,
   type BoatSandbox,
 } from "@/lib/boat";
+import { getBoatDesktopLock } from "@/lib/cloud-campaigns-server";
 import { createPitchResearchJob, normalizeCompanyInputs } from "@/lib/pitch-research-server";
 import { PITCH_RESEARCH_MAX_COMPANIES, type AssistantPitchResearchCard } from "@/lib/pitch-research";
 import { searchWeb } from "@/lib/web-search-server";
@@ -1310,6 +1311,17 @@ async function runBoatTool(
     };
   }
   try {
+    if (name !== "boat_status") {
+      const lock = await getBoatDesktopLock(context.projectId);
+      if (lock) {
+        return {
+          output: {
+            error: `The LinkedIn computer is busy with cloud campaign "${lock.campaignName}". Pause or finish that campaign first.`,
+            lockedByCampaignId: lock.campaignId,
+          },
+        };
+      }
+    }
     if (name === "boat_status") {
       const status = await projectBoatStatus(context.projectId);
       return {

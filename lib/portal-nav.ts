@@ -11,6 +11,7 @@ export type PortalPageId =
   | "automation"
   | "automation-history"
   | "personalise"
+  | "cloud"
   | "edm"
   | "analytics"
   | "analytics-kanban"
@@ -61,6 +62,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   automation: "/portal/marketing/automation",
   "automation-history": "/portal/marketing/automation-history",
   personalise: "/portal/marketing/personalise",
+  cloud: "/portal/marketing/cloud",
   edm: "/portal/marketing/edm",
   analytics: "/portal/analytics",
   "analytics-kanban": "/portal/analytics/kanban",
@@ -251,6 +253,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
       { id: "drip", label: "Drip Campaign", href: PORTAL_ROUTES.drip },
       { id: "oneone", label: "1-1 Campaign", href: PORTAL_ROUTES.oneone },
       { id: "personalise", label: "Personalise Campaign", href: PORTAL_ROUTES.personalise },
+      { id: "cloud", label: "Cloud Campaign", href: PORTAL_ROUTES.cloud },
       { id: "automation", label: "Automation", href: PORTAL_ROUTES.automation },
       { id: "edm", label: "EDM generation", href: PORTAL_ROUTES.edm },
     ],
@@ -301,6 +304,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   drip: "Drip Campaign",
   oneone: "1-1 Campaign",
   personalise: "Personalise Campaign",
+  cloud: "Cloud Campaign",
   automation: "Automation",
   "automation-history": "Automation history",
   edm: "EDM generation",
@@ -341,6 +345,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/marketing/drip")) return "drip";
   if (pathname.startsWith("/portal/marketing/one-one")) return "oneone";
   if (pathname.startsWith("/portal/marketing/personalise")) return "personalise";
+  if (pathname.startsWith("/portal/marketing/cloud")) return "cloud";
   if (pathname.startsWith("/portal/marketing/edm")) return "edm";
   if (pathname.startsWith("/portal/marketing/automation-history")) {
     return "automation-history";
@@ -378,6 +383,7 @@ export function getPageTitleFromPathname(pathname: string): string {
   if (pathname.startsWith("/portal/crm/companies/")) return DETAIL_TITLES.company;
   if (pathname.startsWith("/portal/crm/contacts/")) return DETAIL_TITLES.contact;
   if (pathname.startsWith("/portal/marketing/one-one/")) return DETAIL_TITLES.campaign;
+  if (pathname.startsWith("/portal/marketing/cloud/")) return DETAIL_TITLES.campaign;
   if (pathname.startsWith("/portal/marketing/campaigns/")) {
     return DETAIL_TITLES.campaign;
   }
