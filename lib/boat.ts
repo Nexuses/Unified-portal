@@ -472,3 +472,102 @@ export async function openBoatDesktop(sandboxId: string) {
   }
   return url;
 }
+
+export type BoatAiUsageTotals = {
+  requests: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
+export type BoatAiUsageRow = BoatAiUsageTotals & {
+  day: string;
+  credential: string;
+  model: string;
+};
+
+export type BoatAiUsage = {
+  sandboxId: string;
+  blocked: boolean;
+  proxied: boolean;
+  since: string;
+  usage: BoatAiUsageRow[];
+  totals: BoatAiUsageTotals;
+  /** Boat proxy fee for the window ($1 / 1k proxied requests), not Anthropic token $ */
+  proxyDollars: number;
+};
+
+export type BoatMachineUsage = {
+  sandboxId: string;
+  since: string;
+  until: string;
+  seconds: number;
+  dollars: number;
+  running: boolean;
+};
+
+function readAiTotals(value: unknown): BoatAiUsageTotals {
+  const record = (value ?? {}) as Record<string, unknown>;
+  return {
+    requests: Math.max(0, Number(record.requests) || 0),
+    errors: Math.max(0, Number(record.errors) || 0),
+    inputTokens: Math.max(0, Number(record.inputTokens) || 0),
+    outputTokens: Math.max(0, Number(record.outputTokens) || 0),
+    cacheReadTokens: Math.max(0, Number(record.cacheReadTokens) || 0),
+    cacheWriteTokens: Math.max(0, Number(record.cacheWriteTokens) || 0),
+  };
+}
+
+export async function getBoatAiUsage(sandboxId: string, days = 30): Promise<BoatAiUsage> {
+  const safeDays = Math.max(1, Math.min(365, Math.floor(days) || 30));
+  const data = await boatFetch(
+    `/sandboxes/${encodeURIComponent(sandboxId)}/ai-usage?days=${safeDays}`,
+  );
+  const record = (data ?? {}) as Record<string, unknown>;
+  const usageRaw = Array.isArray(record.usage) ? record.usage : [];
+  const usage: BoatAiUsageRow[] = usageRaw
+    .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object")
+    .map((row) => ({
+      day: typeof row.day === "string" ? row.day : "",
+      credential: typeof row.credential === "string" ? row.credential : "",
+      model: typeof row.model === "string" ? row.model : "",
+      ...readAiTotals(row),
+    }));
+  return {
+    sandboxId: typeof record.sandboxId === "string" ? record.sandboxId : sandboxId,
+    blocked: record.blocked === true,
+    proxied: record.proxied === true,
+    since: typeof record.since === "string" ? record.since : "",
+    usage,
+    totals: readAiTotals(record.totals),
+    proxyDollars: Math.max(0, Number(record.dollars) || 0),
+  };
+}
+
+export async function getBoatMachineUsage(
+  sandboxId: string,
+  sinceIso?: string,
+): Promise<BoatMachineUsage> {
+  const query = sinceIso ? `?since=${encodeURIComponent(sinceIso)}` : "";
+  const data = await boatFetch(
+    `/sandboxes/${encodeURIComponent(sandboxId)}/usage${query}`,
+  );
+  const record = (data ?? {}) as Record<string, unknown>;
+  return {
+    sandboxId: typeof record.sandboxId === "string" ? record.sandboxId : sandboxId,
+    since: typeof record.since === "string" ? record.since : "",
+    until: typeof record.until === "string" ? record.until : "",
+    seconds: Math.max(0, Number(record.seconds) || 0),
+    dollars: Math.max(0, Number(record.dollars) || 0),
+    running: record.running === true,
+  };
+}
+
+/** Return the linked sandbox id without starting/creating a computer. */
+export async function getSavedBoatSandboxId(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  return saved?.sandboxId || null;
+}
