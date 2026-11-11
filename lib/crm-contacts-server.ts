@@ -755,20 +755,28 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
       ...(emailPreview ? { emailPreview } : {}),
     };
 
-    if (send.status === "sent" || send.status === "failed") {
+    // Only real outbound sends. Skipped steps (Replied / Unsubscribed / Suppressed)
+    // are stored as failed with no sentAt — do not show them as "SENT" (and never
+    // fall back to Date.now(), which made cancelled steps look brand new).
+    const skippedWithoutSend = ["Replied", "Unsubscribed", "Suppressed"].includes(
+      send.error ?? "",
+    );
+    if (send.status === "sent" || (send.status === "failed" && send.sentAt && !skippedWithoutSend)) {
       stats.sent += 1;
-      events.push({
-        id: `campaign-sent-${sendId}`,
-        type: "campaign_sent",
-        title: "Email campaign sent",
-        description: `Campaign ${label} was sent to this contact.`,
-        at: toIso(send.sentAt),
-        actor,
-        campaignId: send.campaignId,
-        campaignKind,
-        campaignName,
-        ...emailMeta,
-      });
+      if (send.sentAt) {
+        events.push({
+          id: `campaign-sent-${sendId}`,
+          type: "campaign_sent",
+          title: "Email campaign sent",
+          description: `Campaign ${label} was sent to this contact.`,
+          at: toIso(send.sentAt),
+          actor,
+          campaignId: send.campaignId,
+          campaignKind,
+          campaignName,
+          ...emailMeta,
+        });
+      }
     }
 
     // Count delivery for stats only — do not emit a separate history row.
