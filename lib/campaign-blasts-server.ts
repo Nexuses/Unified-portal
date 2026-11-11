@@ -1476,8 +1476,10 @@ async function sendPendingBatch(
       const stoppedByReply = await db.collection<CampaignSendDoc>("campaign_sends").findOne({
         blastId: blast._id,
         email: send.email,
-        status: "failed",
-        error: "Replied",
+        $or: [
+          { status: "failed", error: "Replied" },
+          { repliedAt: { $exists: true } },
+        ],
       });
       if (stoppedByReply) {
         await db.collection<CampaignSendDoc>("campaign_sends").updateOne(

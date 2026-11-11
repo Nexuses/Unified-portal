@@ -305,19 +305,45 @@ function extractAddress(
 async function matchOutboundSend(
   projectId: ObjectId,
   referenceIds: string[],
+  options?: { fromEmail?: string },
 ) {
   const normalized = referenceIds.map(normalizeMessageId).filter(Boolean);
-  if (normalized.length === 0) {
-    return null;
+  const db = await getDb();
+  const sends = db.collection<CampaignSendDoc>("campaign_sends");
+
+  if (normalized.length > 0) {
+    // Prefer the latest sequence when References includes multiple outbound ids.
+    const byId = await sends
+      .find({
+        projectId,
+        status: "sent",
+        messageIdNorm: { $in: normalized },
+      })
+      .sort({ sequenceIndex: -1, sentAt: -1 })
+      .limit(1)
+      .toArray();
+    if (byId[0]) {
+      return byId[0];
+    }
   }
 
-  const db = await getDb();
-  const send = await db.collection<CampaignSendDoc>("campaign_sends").findOne({
-    projectId,
-    status: "sent",
-    messageIdNorm: { $in: normalized },
-  });
-  return send;
+  // SES (and some relays) rewrite Message-ID to @email.amazonses.com, so
+  // In-Reply-To often won't match our stored @unified.nexuses.xyz id. Fall back
+  // to the contact's most recent sent campaign email so 1-1 follow-ups still stop.
+  const fromEmail = String(options?.fromEmail ?? "")
+    .trim()
+    .toLowerCase();
+  if (!fromEmail || !fromEmail.includes("@")) {
+    return null;
+  }
+  return sends.findOne(
+    {
+      projectId,
+      status: "sent",
+      email: fromEmail,
+    },
+    { sort: { sentAt: -1, sequenceIndex: -1 } },
+  );
 }
 
 /** Cancel later 1-1 sequence steps after a contact replies. */
@@ -566,10 +592,11 @@ async function syncGmailSender(
         .map((item) => normalizeMessageId(item))
         .filter(Boolean);
 
-      const related = await matchOutboundSend(projectId, [
-        inReplyTo,
-        ...references,
-      ]);
+      const related = await matchOutboundSend(
+        projectId,
+        [inReplyTo, ...references],
+        { fromEmail: from.email },
+      );
 
       const isBounce = isBounceOrDeliveryNotice({
         fromEmail: from.email,
@@ -587,6 +614,7 @@ async function syncGmailSender(
       }
 
       // Only keep human replies that match a campaign send from this project
+      // (Message-ID and/or from-email fallback for SES-rewritten ids).
       if (!related?._id) {
         skipped += 1;
         continue;
@@ -727,25 +755,48 @@ export async function syncProjectGmailInbox(
 }
 
 /**
- * Pull new replies for one Gmail sender so 1-1 follow-ups can stop before they go out.
- * Skips when the inbox was synced within `maxAgeMs`. Never throws.
+ * Resolve a Gmail inbox sender for reply sync.
+ * Campaigns often send via SES (noInbox) while replies land in a same-address Gmail inbox.
+ */
+async function resolveGmailInboxSender(
+  projectId: ObjectId,
+  senderId: string,
+): Promise<SenderDoc | null> {
+  if (!ObjectId.isValid(senderId)) {
+    return null;
+  }
+  const db = await getDb();
+  const senders = db.collection<SenderDoc>("smtp_senders");
+  const primary = await senders.findOne({ _id: new ObjectId(senderId), projectId });
+  if (primary?.provider === "gmail" && primary.noInbox !== true) {
+    return primary;
+  }
+  const fromEmail = String(primary?.fromEmail ?? "")
+    .trim()
+    .toLowerCase();
+  if (!fromEmail) {
+    return null;
+  }
+  return senders.findOne({
+    projectId,
+    provider: "gmail",
+    noInbox: { $ne: true },
+    fromEmail,
+  });
+}
+
+/**
+ * Pull new replies for the campaign sender's Gmail inbox so 1-1 follow-ups
+ * can stop before they go out. Works when the blast sender is SES/no-inbox but
+ * the same from-address has a Gmail inbox sender. Never throws.
  */
 export async function refreshSenderRepliesIfStale(
   projectId: ObjectId,
   senderId: string,
   maxAgeMs = 2 * 60 * 1000,
 ) {
-  if (!ObjectId.isValid(senderId)) {
-    return;
-  }
   try {
-    const db = await getDb();
-    const sender = await db.collection<SenderDoc>("smtp_senders").findOne({
-      _id: new ObjectId(senderId),
-      projectId,
-      provider: "gmail",
-      noInbox: { $ne: true },
-    });
+    const sender = await resolveGmailInboxSender(projectId, senderId);
     if (!sender) {
       return;
     }
