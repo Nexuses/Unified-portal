@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAnalyticsShareExpired } from "@/lib/analytics";
 import { findKanbanShareByToken } from "@/lib/analytics-kanban-server";
+import { requestOrigin } from "@/lib/campaign-blasts-server";
 import { ensureContactShareToken } from "@/lib/crm-contacts-server";
 import { type ContactDoc } from "@/lib/crm";
 import { getDb } from "@/lib/mongodb";
-import { publicContactPath } from "@/lib/portal-nav";
+import { publicContactPath, publicKanbanPath } from "@/lib/portal-nav";
 
 type RouteContext = { params: Promise<{ token: string }> };
+
+function absolutePath(request: NextRequest, path: string) {
+  return `${requestOrigin(request.url, request.headers)}${path}`;
+}
 
 /** Lazily creates a contact share token and redirects to the public CRM contact. */
 export async function GET(request: NextRequest, context: RouteContext) {
@@ -15,12 +20,16 @@ export async function GET(request: NextRequest, context: RouteContext) {
     .trim()
     .toLowerCase();
   if (!email || email.length > 320) {
-    return NextResponse.redirect(new URL(`/k/${encodeURIComponent(token)}`, request.url));
+    return NextResponse.redirect(
+      absolutePath(request, `/k/${encodeURIComponent(token)}`),
+    );
   }
 
   const share = await findKanbanShareByToken(token);
   if (!share || isAnalyticsShareExpired(share)) {
-    return NextResponse.redirect(new URL(`/k/${encodeURIComponent(token)}`, request.url));
+    return NextResponse.redirect(
+      absolutePath(request, `/k/${encodeURIComponent(token)}`),
+    );
   }
 
   const db = await getDb();
@@ -43,5 +52,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
     });
   }
 
-  return NextResponse.redirect(new URL(publicContactPath(contactToken), request.url));
+  return NextResponse.redirect(
+    absolutePath(
+      request,
+      publicContactPath(contactToken, { from: publicKanbanPath(token) }),
+    ),
+  );
 }

@@ -495,33 +495,31 @@ function ContactTabsDetail({
     <>
       <div className="cd-top cd-top-pro">
         <div className="cd-identity">
-          <button
-            type="button"
-            className="cd-back"
-            aria-label="Back"
-            onClick={() => {
-              if (readOnly) {
-                if (typeof window !== "undefined" && window.history.length > 1) {
-                  router.back();
+          {readOnly && !backHrefProp ? null : (
+            <button
+              type="button"
+              className="cd-back"
+              aria-label="Back"
+              onClick={() => {
+                if (readOnly && backHrefProp) {
+                  // Prefer explicit from=/k/... — history.back() lands on the
+                  // /lead redirect and loops back to this contact page.
+                  router.push(backHrefProp);
                   return;
                 }
-                if (backHrefProp) {
-                  router.push(backHrefProp);
-                }
-                return;
-              }
-              router.push(backHref);
-            }}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
+                router.push(backHref);
+              }}
             >
-              <path d="m15 18-6-6 6-6" />
-            </svg>
-          </button>
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </button>
+          )}
           <ContactAvatar name={contact.fullName} photoUrl={photoUrl} size="lg" />
           <div className="cd-identity-copy">
             <div className="cd-name-row">
