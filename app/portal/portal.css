@@ -9533,6 +9533,7 @@ a.an-kanban-card-name.is-link:hover{
 .edm-mic:hover{background:rgba(0,0,0,.06);}
 .edm-mic:disabled{opacity:.45;cursor:not-allowed;}
 .edm-mic.is-listening{background:#fdecec;color:#dc2626;box-shadow:0 0 0 0 rgba(220,38,38,.35);animation:edm-mic-pulse 1.4s ease-out infinite;}
+.edm-mic.is-transcribing{background:#eef2ff;color:#4338ca;animation:edm-mic-pulse-indigo 1.4s ease-out infinite;}
 .edm-mic-wave{display:flex;align-items:center;gap:2px;height:16px;}
 .edm-mic-wave i{width:3px;height:6px;border-radius:2px;background:currentColor;animation:edm-mic-bar .9s ease-in-out infinite;}
 .edm-mic-wave i:nth-child(2){animation-delay:.15s;}
@@ -9543,8 +9544,13 @@ a.an-kanban-card-name.is-link:hover{
   0%{box-shadow:0 0 0 0 rgba(220,38,38,.35);}
   100%{box-shadow:0 0 0 10px rgba(220,38,38,0);}
 }
+@keyframes edm-mic-pulse-indigo{
+  0%{box-shadow:0 0 0 0 rgba(67,56,202,.35);}
+  100%{box-shadow:0 0 0 10px rgba(67,56,202,0);}
+}
 .portal-route[data-theme="dark"] .edm-mic:hover{background:rgba(255,255,255,.08);}
 .portal-route[data-theme="dark"] .edm-mic.is-listening{background:rgba(220,38,38,.18);color:#f87171;}
+.portal-route[data-theme="dark"] .edm-mic.is-transcribing{background:rgba(99,102,241,.2);color:#a5b4fc;}
 .edm-mic + .edm-send{margin-left:4px;}
 .edm-send{
   margin-left:auto;width:34px;height:34px;border:0;border-radius:50%;

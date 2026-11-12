@@ -13,9 +13,10 @@ import {
   type SmtpProviderId,
 } from "@/lib/smtp-senders";
 import {
-  DEFAULT_TRACKING_HOST,
+  isTrackingHubHost,
   normalizeTrackingDomain,
   trackingDnsRecords,
+  trackingHubHostsLabel,
   verifyTrackingDomain,
 } from "@/lib/campaign-tracking";
 import { runInApiCredit } from "@/lib/api-credits-server";
@@ -268,7 +269,7 @@ export async function startSenderTrackingDomain(
   }
 
   const now = new Date();
-  if (domain === DEFAULT_TRACKING_HOST) {
+  if (isTrackingHubHost(domain)) {
     await db.collection<SenderDoc>("smtp_senders").updateOne(
       { _id: senderId, projectId },
       {
@@ -295,7 +296,7 @@ export async function startSenderTrackingDomain(
             domain,
             verified: false,
             checkedAt: now.toISOString(),
-            detail: `Add a CNAME from ${domain} to ${DEFAULT_TRACKING_HOST}, then verify.`,
+            detail: `Add a CNAME from ${domain} to ${trackingHubHostsLabel()}, then verify.`,
           },
           updatedAt: now,
         },

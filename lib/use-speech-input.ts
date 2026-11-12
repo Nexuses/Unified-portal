@@ -2,39 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type SpeechAlternative = { transcript: string };
-type SpeechResult = { isFinal: boolean; 0: SpeechAlternative; length: number };
-type SpeechResultEvent = {
-  resultIndex: number;
-  results: { length: number; [index: number]: SpeechResult };
-};
-type SpeechErrorEvent = { error: string };
-
-type SpeechRecognitionLike = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  onresult: ((event: SpeechResultEvent) => void) | null;
-  onerror: ((event: SpeechErrorEvent) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-};
-
-type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
-
-function speechCtor(): SpeechRecognitionCtor | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const scope = window as unknown as {
-    SpeechRecognition?: SpeechRecognitionCtor;
-    webkitSpeechRecognition?: SpeechRecognitionCtor;
-  };
-  return scope.SpeechRecognition ?? scope.webkitSpeechRecognition ?? null;
-}
-
 function joinText(base: string, spoken: string) {
   const left = base.replace(/\s+$/, "");
   const right = spoken.trim();
@@ -44,105 +11,258 @@ function joinText(base: string, spoken: string) {
   return left ? `${left} ${right}` : right;
 }
 
-const ERROR_TEXT: Record<string, string> = {
-  "not-allowed": "Microphone access is blocked. Allow it in the browser to speak.",
-  "service-not-allowed": "Microphone access is blocked. Allow it in the browser to speak.",
-  "audio-capture": "No microphone was found.",
-  network: "Speech needs an internet connection.",
-};
+function pickRecorderMimeType() {
+  if (typeof MediaRecorder === "undefined") {
+    return "";
+  }
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/ogg;codecs=opus",
+  ];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
 
-/** Browser speech-to-text that writes into a text field as you talk. */
+function extensionForMime(mime: string) {
+  if (mime.includes("mp4")) return "mp4";
+  if (mime.includes("ogg")) return "ogg";
+  return "webm";
+}
+
+/**
+ * Push-to-talk speech-to-text via OpenAI Whisper (server).
+ * Click mic to start recording; click again to stop and transcribe.
+ */
 export function useSpeechInput({
   value,
   onChange,
   lang = "en-US",
+  prompt = "",
 }: {
   value: string;
   onChange: (next: string) => void;
   lang?: string;
+  /** Optional hint for Whisper (product terms, names, etc.). */
+  prompt?: string;
 }) {
   const [supported, setSupported] = useState(false);
-  const [listening, setListening] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState("");
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const baseRef = useRef("");
-  const finalRef = useRef("");
+
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
+  const promptRef = useRef(prompt);
+  const langRef = useRef(lang);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+  const startingRef = useRef(false);
+  const cancelledRef = useRef(false);
+
   valueRef.current = value;
   onChangeRef.current = onChange;
+  promptRef.current = prompt;
+  langRef.current = lang;
 
   useEffect(() => {
-    setSupported(Boolean(speechCtor()));
+    const ok =
+      typeof window !== "undefined" &&
+      typeof navigator !== "undefined" &&
+      Boolean(navigator.mediaDevices?.getUserMedia) &&
+      typeof MediaRecorder !== "undefined";
+    setSupported(ok);
     return () => {
-      recognitionRef.current?.abort();
-      recognitionRef.current = null;
+      cancelledRef.current = true;
+      try {
+        recorderRef.current?.stop();
+      } catch {
+        /* ignore */
+      }
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      recorderRef.current = null;
     };
+  }, []);
+
+  const releaseMic = useCallback(() => {
+    try {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.stop();
+      }
+    } catch {
+      /* ignore */
+    }
+    recorderRef.current = null;
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    chunksRef.current = [];
+  }, []);
+
+  const transcribeBlob = useCallback(async (blob: Blob) => {
+    if (blob.size < 800) {
+      setError("Didn't catch that. Hold the mic a moment longer and speak clearly.");
+      return;
+    }
+
+    setTranscribing(true);
+    setError("");
+    try {
+      const mime = blob.type || "audio/webm";
+      const file = new File([blob], `speech.${extensionForMime(mime)}`, {
+        type: mime,
+      });
+      const body = new FormData();
+      body.append("audio", file);
+      body.append("language", langRef.current || "en-US");
+      if (promptRef.current.trim()) {
+        body.append("prompt", promptRef.current.trim());
+      }
+
+      const response = await fetch("/api/speech/transcribe", {
+        method: "POST",
+        body,
+      });
+      const data = (await response.json().catch(() => null)) as {
+        text?: string;
+        error?: string;
+      } | null;
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Could not transcribe speech.");
+      }
+
+      const spoken = String(data?.text || "").trim();
+      if (!spoken) {
+        setError("Could not hear that. Try again.");
+        return;
+      }
+
+      onChangeRef.current(joinText(valueRef.current, spoken));
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Could not transcribe speech.";
+      if (/Not authenticated|401/i.test(message)) {
+        setError("Sign in again to use the microphone.");
+      } else if (/not configured|OPENAI/i.test(message)) {
+        setError("Speech transcription is not configured on the server.");
+      } else {
+        setError(message);
+      }
+    } finally {
+      setTranscribing(false);
+    }
   }, []);
 
   const stop = useCallback(() => {
-    recognitionRef.current?.stop();
-  }, []);
-
-  const start = useCallback(() => {
-    const Ctor = speechCtor();
-    if (!Ctor) {
-      setError("Speaking is not supported in this browser. Try Chrome, Edge, or Safari.");
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state === "inactive") {
+      releaseMic();
+      setRecording(false);
       return;
     }
-    recognitionRef.current?.abort();
-    const recognition = new Ctor();
-    recognition.lang = lang;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    baseRef.current = valueRef.current;
-    finalRef.current = "";
 
-    recognition.onresult = (event) => {
-      let interim = "";
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const text = result[0]?.transcript ?? "";
-        if (result.isFinal) {
-          finalRef.current = joinText(finalRef.current, text);
-        } else {
-          interim = joinText(interim, text);
-        }
-      }
-      onChangeRef.current(
-        joinText(baseRef.current, joinText(finalRef.current, interim)),
-      );
-    };
-    recognition.onerror = (event) => {
-      if (event.error !== "aborted" && event.error !== "no-speech") {
-        setError(ERROR_TEXT[event.error] ?? "Could not hear that. Try again.");
-      }
-    };
-    recognition.onend = () => {
-      setListening(false);
-      if (recognitionRef.current === recognition) {
-        recognitionRef.current = null;
+    recorder.onstop = () => {
+      const mime = recorder.mimeType || pickRecorderMimeType() || "audio/webm";
+      const blob = new Blob(chunksRef.current, { type: mime });
+      chunksRef.current = [];
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      recorderRef.current = null;
+      setRecording(false);
+      if (!cancelledRef.current) {
+        void transcribeBlob(blob);
       }
     };
 
-    recognitionRef.current = recognition;
-    setError("");
     try {
-      recognition.start();
-      setListening(true);
+      recorder.stop();
     } catch {
-      setListening(false);
-      setError("Could not start the microphone.");
+      releaseMic();
+      setRecording(false);
     }
-  }, [lang]);
+  }, [releaseMic, transcribeBlob]);
+
+  const start = useCallback(async () => {
+    if (startingRef.current || recording || transcribing) {
+      return;
+    }
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === "undefined"
+    ) {
+      setError("Speaking needs a modern browser with microphone access.");
+      return;
+    }
+
+    startingRef.current = true;
+    setError("");
+    cancelledRef.current = false;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      mediaStreamRef.current = stream;
+      const mime = pickRecorderMimeType();
+      const recorder = mime
+        ? new MediaRecorder(stream, { mimeType: mime })
+        : new MediaRecorder(stream);
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+      recorder.onerror = () => {
+        setError("Microphone recording failed. Try again.");
+        releaseMic();
+        setRecording(false);
+      };
+      recorderRef.current = recorder;
+      recorder.start(250);
+      setRecording(true);
+    } catch (err) {
+      releaseMic();
+      setRecording(false);
+      const name = err instanceof DOMException ? err.name : "";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        setError("Microphone access is blocked. Allow it in the browser to speak.");
+      } else if (name === "NotFoundError") {
+        setError("No microphone was found.");
+      } else {
+        setError("Could not start the microphone.");
+      }
+    } finally {
+      startingRef.current = false;
+    }
+  }, [recording, releaseMic, transcribing]);
 
   const toggle = useCallback(() => {
-    if (recognitionRef.current) {
+    if (transcribing) {
+      return;
+    }
+    if (recording || recorderRef.current) {
       stop();
     } else {
-      start();
+      void start();
     }
-  }, [start, stop]);
+  }, [recording, start, stop, transcribing]);
 
-  return { supported, listening, error, start, stop, toggle };
+  return {
+    supported,
+    /** True while recording or waiting on Whisper (keeps existing mic pulse UIs working). */
+    listening: recording || transcribing,
+    recording,
+    transcribing,
+    error,
+    start,
+    stop,
+    toggle,
+  };
 }
