@@ -223,6 +223,12 @@ export const PORTAL_NAV: PortalNavItem[] = [
   },
   {
     type: "item",
+    id: "aircall",
+    label: "Calling",
+    href: PORTAL_ROUTES.aircall,
+  },
+  {
+    type: "item",
     id: "analytics-kanban",
     label: "Pipeline",
     href: PORTAL_ROUTES["analytics-kanban"],
@@ -284,7 +290,6 @@ export const PORTAL_NAV: PortalNavItem[] = [
         label: "Sender health",
         href: PORTAL_ROUTES["smtp-health"],
       },
-      { id: "aircall", label: "Calling", href: PORTAL_ROUTES.aircall },
     ],
   },
   { type: "item", id: "unsub", label: "Suppression List", href: PORTAL_ROUTES.unsub },
@@ -378,9 +383,7 @@ export function getOpenGroupsFromPathname(
   return {
     crm: pathname.startsWith("/portal/crm"),
     marketing: pathname.startsWith("/portal/marketing"),
-    smtp:
-      pathname.startsWith("/portal/smtp") ||
-      pathname.startsWith("/portal/aircall"),
+    smtp: pathname.startsWith("/portal/smtp"),
   };
 }
 

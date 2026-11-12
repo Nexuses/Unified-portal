@@ -17,7 +17,26 @@ type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
-export async function GET(_request: NextRequest, context: RouteContext) {
+function parseRange(header: string | null, size: number) {
+  if (!header || !header.startsWith("bytes=") || size <= 0) {
+    return null;
+  }
+  const [startRaw, endRaw] = header.slice("bytes=".length).split("-", 2);
+  const start = startRaw ? Number(startRaw) : 0;
+  const end = endRaw ? Number(endRaw) : size - 1;
+  if (
+    !Number.isFinite(start) ||
+    !Number.isFinite(end) ||
+    start < 0 ||
+    end < start ||
+    start >= size
+  ) {
+    return null;
+  }
+  return { start, end: Math.min(end, size - 1) };
+}
+
+export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) {
@@ -41,20 +60,43 @@ export async function GET(_request: NextRequest, context: RouteContext) {
 
     const remoteUrl = await getFreshAircallRecordingUrl(aircallCallId);
     const audio = await fetch(remoteUrl, { cache: "no-store" });
-    if (!audio.ok || !audio.body) {
+    if (!audio.ok) {
       return NextResponse.json(
         { error: `Could not download recording (${audio.status})` },
         { status: 502 },
       );
     }
 
+    // Buffer so we can send Content-Length + byte ranges (needed for scrub/seek).
+    const buffer = Buffer.from(await audio.arrayBuffer());
+    const size = buffer.byteLength;
     const contentType = audio.headers.get("content-type") || "audio/mpeg";
-    return new NextResponse(audio.body, {
+    const range = parseRange(request.headers.get("range"), size);
+    const commonHeaders: Record<string, string> = {
+      "Content-Type": contentType,
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "private, max-age=60",
+      "Content-Disposition": `inline; filename="aircall-${aircallCallId}.mp3"`,
+    };
+
+    if (range) {
+      const { start, end } = range;
+      const chunk = buffer.subarray(start, end + 1);
+      return new NextResponse(chunk, {
+        status: 206,
+        headers: {
+          ...commonHeaders,
+          "Content-Length": String(chunk.byteLength),
+          "Content-Range": `bytes ${start}-${end}/${size}`,
+        },
+      });
+    }
+
+    return new NextResponse(buffer, {
       status: 200,
       headers: {
-        "Content-Type": contentType,
-        "Cache-Control": "private, max-age=60",
-        "Content-Disposition": `inline; filename="aircall-${aircallCallId}.mp3"`,
+        ...commonHeaders,
+        "Content-Length": String(size),
       },
     });
   } catch (error) {

@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AircallAudioPlayer from "@/app/components/portal/AircallAudioPlayer";
 import {
@@ -23,6 +23,111 @@ const AircallWorkspaceDialer = dynamic(
   },
 );
 
+type CallGroup = {
+  key: string;
+  calls: AircallCallRow[];
+};
+
+function callGroupKey(call: AircallCallRow) {
+  if (call.contactId) {
+    return `contact:${call.contactId}`;
+  }
+  const digits = String(call.phoneDigits || "").trim();
+  if (digits) {
+    return `phone:${digits}`;
+  }
+  return `call:${call.id}`;
+}
+
+function groupCalls(calls: AircallCallRow[]): CallGroup[] {
+  const map = new Map<string, AircallCallRow[]>();
+  for (const call of calls) {
+    const key = callGroupKey(call);
+    const bucket = map.get(key);
+    if (bucket) {
+      bucket.push(call);
+    } else {
+      map.set(key, [call]);
+    }
+  }
+  return [...map.entries()].map(([key, groupCalls]) => ({
+    key,
+    calls: groupCalls,
+  }));
+}
+
+function CallCells({
+  call,
+  showContact,
+  nested,
+}: {
+  call: AircallCallRow;
+  showContact: boolean;
+  nested?: boolean;
+}) {
+  const contactLabelRow =
+    call.contactName || call.contactEmail || "CRM contact";
+
+  return (
+    <>
+      <td>
+        {showContact ? (
+          call.contactId ? (
+            <div className="aircall-contact-cell">
+              <Link
+                className="aircall-contact-link"
+                href={portalContactRoute(call.contactId, "/portal/aircall")}
+                title={`Open ${contactLabelRow} in CRM`}
+                onClick={(event) => event.stopPropagation()}
+              >
+                {contactLabelRow}
+              </Link>
+              {call.contactEmail &&
+              call.contactName &&
+              call.contactEmail !== call.contactName ? (
+                <div className="aircall-muted">{call.contactEmail}</div>
+              ) : null}
+            </div>
+          ) : (
+            <span className="aircall-muted">No CRM contact for this number</span>
+          )
+        ) : (
+          <span className="aircall-nested-label">
+            {nested ? "Earlier call" : ""}
+          </span>
+        )}
+      </td>
+      <td>
+        <div className="aircall-when">
+          {formatCallWhen(call.startedAt || call.endedAt)}
+        </div>
+      </td>
+      <td>
+        <span className={`aircall-pill is-${call.direction || "unknown"}`}>
+          {call.direction || "—"}
+        </span>
+      </td>
+      <td>
+        <code className="aircall-phone">{call.phone || "—"}</code>
+      </td>
+      <td>
+        <div>{call.userName || "—"}</div>
+        {call.numberName ? (
+          <div className="aircall-muted">{call.numberName}</div>
+        ) : null}
+      </td>
+      <td>{formatCallDuration(call.durationSec)}</td>
+      <td onClick={(event) => event.stopPropagation()}>
+        {call.recordingProxyUrl ? (
+          <AircallAudioPlayer src={call.recordingProxyUrl} />
+        ) : (
+          <span className="aircall-muted">—</span>
+        )}
+      </td>
+    </>
+  );
+}
+
 export default function PortalAircallPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -38,6 +143,12 @@ export default function PortalAircallPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [pendingDial, setPendingDial] = useState<string | null>(null);
+  const [dialerOpen, setDialerOpen] = useState(() =>
+    Boolean(toE164Phone(dialParam)),
+  );
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   const contactLabel = useMemo(() => {
     const name = String(nameParam || "").trim();
@@ -46,11 +157,14 @@ export default function PortalAircallPage() {
     return dial || undefined;
   }, [nameParam, dialParam, pendingDial]);
 
+  const callGroups = useMemo(() => groupCalls(calls), [calls]);
+
   useEffect(() => {
     const to = toE164Phone(dialParam);
     if (!to) {
       return;
     }
+    setDialerOpen(true);
     setPendingDial(to);
     setNotice(
       nameParam
@@ -95,6 +209,26 @@ export default function PortalAircallPage() {
     void load();
   }, [load]);
 
+  // Keep the call log fresh while the page is open (server also syncs every 10m).
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void load();
+    }, 10 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  function toggleGroup(key: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
   async function syncNow() {
     if (syncing) {
       return;
@@ -128,18 +262,30 @@ export default function PortalAircallPage() {
           <h2>Calling</h2>
           <p className="desc">
             Dial from here with the embedded phone workspace
-            {projectName ? ` · ${projectName}` : ""}. Matched CRM calls land in
-            the log below and on the contact timeline with recordings.
+            {projectName ? ` · ${projectName}` : ""}. Calls sync from Aircall
+            automatically every 10 minutes (or use Sync now).
+            <br />
+            Matched CRM calls land in the log below and on the contact timeline
+            with recordings.
           </p>
         </div>
         <div className="aircall-head-actions">
+          {configured ? (
+            <button
+              type="button"
+              className={dialerOpen ? "btn-soft" : "btn-dark"}
+              onClick={() => setDialerOpen((open) => !open)}
+            >
+              {dialerOpen ? "Close dialer" : "Open dialer"}
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn-dark"
             disabled={syncing || !configured}
             onClick={() => void syncNow()}
           >
-            {syncing ? "Syncing…" : "Sync from Aircall"}
+            {syncing ? "Syncing…" : "Sync now"}
           </button>
         </div>
       </div>
@@ -168,19 +314,24 @@ export default function PortalAircallPage() {
         </p>
       ) : null}
 
-      <AircallWorkspaceDialer
-        pendingDial={pendingDial}
-        contactLabel={contactLabel}
-        onPendingDialConsumed={() => {
-          setPendingDial(null);
-          clearDialQuery();
-          setNotice("");
-        }}
-      />
+      {dialerOpen ? (
+        <AircallWorkspaceDialer
+          pendingDial={pendingDial}
+          contactLabel={contactLabel}
+          onPendingDialConsumed={() => {
+            setPendingDial(null);
+            clearDialQuery();
+            setNotice("");
+          }}
+        />
+      ) : null}
 
       <div className="aircall-log-head">
         <h3>Project call log</h3>
-        <p>Only numbers that match a CRM contact in this project are listed.</p>
+        <p>
+          Only numbers that match a CRM contact in this project are listed.
+          Contacts with multiple calls expand like an accordion.
+        </p>
       </div>
 
       {loading ? (
@@ -189,8 +340,8 @@ export default function PortalAircallPage() {
         <div className="aircall-empty-card">
           <h3>No calls in this project yet</h3>
           <p>
-            Place a call from the dialer above, then click{" "}
-            <strong>Sync from Aircall</strong> to pull it into this log.
+            Place a call from the dialer, then wait for the 10-minute sync — or
+            click <strong>Sync now</strong> to pull it into this log.
           </p>
         </div>
       ) : (
@@ -205,79 +356,131 @@ export default function PortalAircallPage() {
                 <th>Agent</th>
                 <th>Duration</th>
                 <th>Recording</th>
-                <th>Timeline</th>
               </tr>
             </thead>
             <tbody>
-              {calls.map((call) => {
+              {callGroups.map((group) => {
+                const latest = group.calls[0];
+                const extras = group.calls.slice(1);
+                const hasMany = extras.length > 0;
+                const expanded = expandedGroups.has(group.key);
                 const contactLabelRow =
-                  call.contactName || call.contactEmail || "CRM contact";
+                  latest.contactName ||
+                  latest.contactEmail ||
+                  "CRM contact";
+
                 return (
-                  <tr key={call.id}>
-                    <td>
-                      {call.contactId ? (
-                        <div className="aircall-contact-cell">
-                          <Link
-                            className="aircall-contact-link"
-                            href={portalContactRoute(
-                              call.contactId,
-                              "/portal/aircall",
+                  <Fragment key={group.key}>
+                    <tr
+                      className={`aircall-group-row${hasMany ? " is-expandable" : ""}${expanded ? " is-expanded" : ""}`}
+                      onClick={
+                        hasMany ? () => toggleGroup(group.key) : undefined
+                      }
+                      aria-expanded={hasMany ? expanded : undefined}
+                    >
+                      <td>
+                        <div className="aircall-group-contact">
+                          {hasMany ? (
+                            <span
+                              className={`aircall-group-chevron${expanded ? " is-open" : ""}`}
+                              aria-hidden
+                            >
+                              ›
+                            </span>
+                          ) : (
+                            <span className="aircall-group-chevron is-spacer" />
+                          )}
+                          <div className="aircall-contact-cell">
+                            {latest.contactId ? (
+                              <>
+                                <Link
+                                  className="aircall-contact-link"
+                                  href={portalContactRoute(
+                                    latest.contactId,
+                                    "/portal/aircall",
+                                  )}
+                                  title={`Open ${contactLabelRow} in CRM`}
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  {contactLabelRow}
+                                </Link>
+                                {latest.contactEmail &&
+                                latest.contactName &&
+                                latest.contactEmail !== latest.contactName ? (
+                                  <div className="aircall-muted">
+                                    {latest.contactEmail}
+                                  </div>
+                                ) : null}
+                              </>
+                            ) : (
+                              <span className="aircall-muted">
+                                No CRM contact for this number
+                              </span>
                             )}
-                            title={`Open ${contactLabelRow} in CRM`}
-                          >
-                            {contactLabelRow}
-                          </Link>
-                          {call.contactEmail &&
-                          call.contactName &&
-                          call.contactEmail !== call.contactName ? (
-                            <div className="aircall-muted">
-                              {call.contactEmail}
-                            </div>
-                          ) : null}
+                            {hasMany ? (
+                              <span className="aircall-call-count">
+                                {group.calls.length} calls
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
-                      ) : (
-                        <span className="aircall-muted">
-                          No CRM contact for this number
+                      </td>
+                      <td>
+                        <div className="aircall-when">
+                          {formatCallWhen(latest.startedAt || latest.endedAt)}
+                        </div>
+                        {hasMany && !expanded ? (
+                          <div className="aircall-muted">
+                            Latest · click to show {extras.length} more
+                          </div>
+                        ) : null}
+                      </td>
+                      <td>
+                        <span
+                          className={`aircall-pill is-${latest.direction || "unknown"}`}
+                        >
+                          {latest.direction || "—"}
                         </span>
-                      )}
-                    </td>
-                    <td>
-                      <div className="aircall-when">
-                        {formatCallWhen(call.startedAt || call.endedAt)}
-                      </div>
-                    </td>
-                    <td>
-                      <span
-                        className={`aircall-pill is-${call.direction || "unknown"}`}
-                      >
-                        {call.direction || "—"}
-                      </span>
-                    </td>
-                    <td>
-                      <code className="aircall-phone">{call.phone || "—"}</code>
-                    </td>
-                    <td>
-                      <div>{call.userName || "—"}</div>
-                      {call.numberName ? (
-                        <div className="aircall-muted">{call.numberName}</div>
-                      ) : null}
-                    </td>
-                    <td>{formatCallDuration(call.durationSec)}</td>
-                    <td>
-                      {call.recordingProxyUrl ? (
-                        <AircallAudioPlayer src={call.recordingProxyUrl} />
-                      ) : (
-                        <span className="aircall-muted">—</span>
-                      )}
-                    </td>
-                    <td>
-                      {call.timelineLogged ? (
-                        <span className="aircall-pill is-ok">Logged</span>
-                      ) : (
-                        <span className="aircall-muted">—</span>
-                      )}
-                    </td>
-                  </tr>
+                      </td>
+                      <td>
+                        <code className="aircall-phone">
+                          {latest.phone || "—"}
+                        </code>
+                      </td>
+                      <td>
+                        <div>{latest.userName || "—"}</div>
+                        {latest.numberName ? (
+                          <div className="aircall-muted">
+                            {latest.numberName}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td>{formatCallDuration(latest.durationSec)}</td>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        {latest.recordingProxyUrl ? (
+                          <AircallAudioPlayer
+                            src={latest.recordingProxyUrl}
+                          />
+                        ) : (
+                          <span className="aircall-muted">—</span>
+                        )}
+                      </td>
+                    </tr>
+                    {expanded
+                      ? extras.map((call) => (
+                          <tr
+                            key={`${group.key}-${call.id}`}
+                            className="aircall-nested-row"
+                          >
+                            <CallCells
+                              call={call}
+                              showContact={false}
+                              nested
+                            />
+                          </tr>
+                        ))
+                      : null}
+                  </Fragment>
                 );
               })}
             </tbody>

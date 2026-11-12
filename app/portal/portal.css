@@ -258,6 +258,9 @@ a.sub-item{
   width:24px;height:24px;flex-shrink:0;
   color:#111827;
 }
+.nav-item[data-page="aircall"] svg{
+  width:21px;height:21px;
+}
 .nav-item svg [fill="none"],
 .nav-item svg:not([fill]){
   fill:none;
@@ -2658,13 +2661,31 @@ a.cd-quick-btn.is-linkedin:visited,
 button.cd-quick-btn{
   font:inherit;cursor:pointer;
 }
+.cd-quick-btn.is-call,
+a.cd-quick-btn.is-call,
+.portal-route a.cd-quick-btn.is-call,
 .cd-quick-btn.is-aircall{
-  background:#f5f3ff;border-color:#ddd6fe;color:#5b21b6;
+  background:#34c759;border-color:#34c759;color:#fff;
+  box-shadow:0 1px 2px rgba(52,199,89,.28);
 }
-.cd-quick-btn.is-aircall:hover{background:#ede9fe;border-color:#c4b5fd;color:#4c1d95;}
-.cd-quick-btn.is-aircall:disabled{opacity:.55;cursor:wait;}
+.cd-quick-btn.is-call:hover,
+a.cd-quick-btn.is-call:hover,
+.portal-route a.cd-quick-btn.is-call:hover,
+.cd-quick-btn.is-aircall:hover{
+  background:#2db84f;border-color:#2db84f;color:#fff;
+}
+.cd-quick-btn.is-call:visited,
+a.cd-quick-btn.is-call:visited,
+.portal-route a.cd-quick-btn.is-call:visited{
+  color:#fff;
+}
+.cd-quick-btn.is-call svg,
+.cd-quick-btn.is-aircall svg{
+  width:15px;height:15px;color:#fff;fill:currentColor;
+}
+.cd-quick-btn.is-aircall:disabled{opacity:.55;cursor:wait;box-shadow:none;}
 .cd-call-notice{
-  margin:8px 0 0;font-size:12.5px;color:#5b21b6;font-weight:600;max-width:420px;
+  margin:8px 0 0;font-size:12.5px;color:#15803d;font-weight:600;max-width:420px;
 }
 .cd-role{
   display:inline-block;background:#f3f4f6;color:#4b5563;border-radius:999px;
@@ -3962,6 +3983,11 @@ a.lr-tl-email-btn.lr-tl-campaign-link:hover,
 }
 .cd-activity-remove:hover{color:#b42318;}
 .cd-activity-item .lr-tl-body{white-space:pre-wrap;}
+.cd-activity-call-card{
+  margin-top:10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:10px 12px;border:1px solid #e5e7eb;border-radius:12px;background:#f8fafc;
+}
+.cd-activity-call-card .cd-activity-remove{margin:0;}
 .cd-activity-more{
   display:flex;justify-content:center;padding:6px 0 2px;
 }
@@ -4576,9 +4602,15 @@ select.filter{
 .unsub-pagination{padding:12px 4px 8px;}
 .unsub-section-head{
   display:flex;align-items:center;justify-content:space-between;gap:12px;
-  margin:8px 0 12px;
+  margin:8px 0 0;
 }
 .unsub-section-head .drip-report-audience-title{margin:0;}
+.unsub-toolbar{
+  padding:12px 0 12px;margin:0;
+}
+.unsub-search{
+  flex:1;min-width:0;max-width:none;width:100%;
+}
 .crm-summary{
   padding:12px 14px;border-radius:10px;background:#f0fdf4;color:#166534;
   font-size:14px;line-height:1.5;
@@ -8807,6 +8839,9 @@ select.filter{
 .an-range{
   display:flex;align-items:flex-end;gap:12px;margin-left:auto;
 }
+.an-bot-toggle{
+  flex:0 0 auto;align-self:flex-end;margin:0 0 2px;
+}
 .an-filters label{
   display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:600;color:#6b7280;
 }
@@ -11736,109 +11771,227 @@ a.an-kanban-card-name.is-link:hover{
   color:#6b7280;font-size:14px;text-align:center;background:#fafafa;
 }
 .aircall-dialer{margin:0 0 22px;}
-.aircall-live{
-  display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
-  padding:16px 18px;border-radius:16px;border:1px solid #e5e7eb;background:#fff;margin-bottom:14px;
+.aircall-login-gate{
+  display:flex;flex-direction:column;gap:14px;
+  margin:0 0 18px;padding:18px 20px;border:1px solid #e5e7eb;border-radius:14px;
+  background:#fbfbfa;
 }
-.aircall-live.is-live{
-  border-color:#c4b5fd;background:linear-gradient(180deg,#faf5ff,#fff);
-  box-shadow:0 0 0 1px rgba(109,40,217,.08);
-}
-.aircall-live.is-starting{
-  border-color:#fcd34d;background:linear-gradient(180deg,#fffbeb,#fff);
-}
-.aircall-live.is-ended{border-color:#d1d5db;background:#f9fafb;}
-.aircall-signin-banner{
-  display:flex;flex-direction:column;gap:4px;margin:0 0 14px;padding:12px 14px;
-  border-radius:12px;border:1px solid #fde68a;background:#fffbeb;color:#92400e;
-  font-size:13px;line-height:1.45;
-}
-.aircall-signin-banner strong{font-size:12.5px;letter-spacing:.02em;text-transform:uppercase;}
-.aircall-signin-banner code{font-size:12px;background:rgba(0,0,0,.06);padding:1px 5px;border-radius:4px;}
-.aircall-live-kicker{
-  font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#7c3aed;
-}
-.aircall-live.is-ended .aircall-live-kicker{color:#6b7280;}
-.aircall-live-title{margin-top:4px;font-size:18px;font-weight:750;color:#111827;}
-.aircall-live-meta{
-  margin-top:6px;display:flex;flex-wrap:wrap;gap:8px 12px;font-size:12.5px;color:#6b7280;
-}
-.aircall-live-timer{
-  min-width:110px;text-align:right;font-variant-numeric:tabular-nums;
-  font-size:28px;font-weight:750;line-height:1;color:#111827;
-}
-.aircall-live.is-live .aircall-live-timer{color:#5b21b6;}
-.aircall-live-timer-sub{
-  display:block;margin-top:6px;font-size:11px;font-weight:650;letter-spacing:.04em;
-  text-transform:uppercase;color:#9ca3af;
-}
-.aircall-dialer-grid{
-  display:grid;grid-template-columns:minmax(320px,400px) minmax(240px,1fr);
-  gap:14px;align-items:start;
-}
-@media (max-width:900px){
-  .aircall-dialer-grid{grid-template-columns:1fr;}
-}
-.aircall-workspace-card,.aircall-dial-pad-card{
-  border:1px solid #e5e7eb;border-radius:16px;background:#fff;overflow:hidden;
-}
-.aircall-workspace-head,.aircall-dial-pad-card{padding:14px 16px;}
-.aircall-workspace-head{
-  display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
-  border-bottom:1px solid #f3f4f6;
-}
-.aircall-workspace-head strong{display:block;font-size:14px;color:#111827;}
-.aircall-workspace-head p{margin:4px 0 0;font-size:12.5px;color:#6b7280;line-height:1.4;}
-.aircall-agent-pill{
-  flex-shrink:0;font-size:11px;font-weight:700;padding:4px 8px;border-radius:999px;
-  border:1px solid #e5e7eb;background:#f9fafb;color:#6b7280;
-}
-.aircall-agent-pill.is-on{background:#ecfdf5;border-color:#a7f3d0;color:#047857;}
-.aircall-agent-pill.is-off{background:#fff7ed;border-color:#fed7aa;color:#c2410c;}
-.aircall-workspace-frame{
-  width:376px;max-width:100%;height:666px;margin:0 auto;background:#0b0c10;
-}
-.aircall-workspace-frame iframe{border:0;display:block;width:100%;height:100%;}
-.aircall-dial-label{
-  display:block;font-size:12px;font-weight:700;color:#374151;margin-bottom:6px;
-}
-.aircall-dial-input{
-  width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;
-  padding:11px 12px;font-size:15px;font-weight:600;color:#111827;background:#fff;
-}
-.aircall-dial-input:focus{outline:2px solid #c4b5fd;border-color:#a78bfa;}
-.aircall-dial-input:disabled{opacity:.6;background:#f9fafb;}
-.aircall-dial-actions{
-  margin-top:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;
-}
-.aircall-dial-call{
-  appearance:none;border:0;border-radius:10px;padding:11px 18px;font:inherit;
-  font-weight:700;color:#fff;background:#5b21b6;cursor:pointer;
-}
-.aircall-dial-call:hover{background:#4c1d95;}
-.aircall-dial-call:disabled{opacity:.5;cursor:not-allowed;}
-.aircall-dial-end-hint{
-  appearance:none;border:0;background:transparent;padding:0;cursor:pointer;
-  font:inherit;font-size:13px;font-weight:650;color:#b91c1c;text-decoration:none;
-}
-.aircall-dial-end-hint:hover{text-decoration:underline;}
-.aircall-dial-error{margin:10px 0 0;font-size:13px;color:#b91c1c;font-weight:600;}
+.aircall-login-copy strong{display:block;font-size:15px;font-weight:700;color:#111827;}
+.aircall-login-copy p{margin:6px 0 0;font-size:13px;line-height:1.45;color:#6b7280;max-width:40rem;}
+.aircall-login-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
 .aircall-dial-help{margin:14px 0 0;font-size:12.5px;color:#6b7280;line-height:1.45;}
+.aircall-dial-error{margin:10px 0 0;font-size:13px;color:#b91c1c;font-weight:600;}
+
+/* One iPhone simulator */
+.phone-sim-stage{
+  display:flex;justify-content:center;align-items:flex-start;
+  padding:12px 0 20px;
+}
+.phone-sim-stage.is-gated{
+  position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;pointer-events:none;
+}
+.phone-sim-iphone{
+  position:relative;width:390px;max-width:100%;
+  filter:drop-shadow(0 22px 48px rgba(15,23,42,.18));
+}
+.phone-sim-side{
+  position:absolute;background:#c7c7cc;z-index:2;
+}
+.phone-sim-silent{left:-3px;top:118px;width:3px;height:28px;border-radius:2px 0 0 2px;}
+.phone-sim-vol-up{left:-3px;top:168px;width:3px;height:52px;border-radius:2px 0 0 2px;}
+.phone-sim-vol-down{left:-3px;top:230px;width:3px;height:52px;border-radius:2px 0 0 2px;}
+.phone-sim-power{right:-3px;top:198px;width:3px;height:88px;border-radius:0 2px 2px 0;}
+.phone-sim-bezel{
+  border-radius:54px;padding:11px;
+  background:
+    linear-gradient(145deg,rgba(255,255,255,.7),rgba(255,255,255,0) 34%),
+    linear-gradient(160deg,#f2f2f7 0%,#d1d1d6 38%,#aeaeb2 100%);
+  box-shadow:
+    inset 0 0 0 1.5px rgba(255,255,255,.85),
+    inset 0 0 0 5px #1c1c1e,
+    0 0 0 1px rgba(0,0,0,.08);
+}
+.phone-sim-screen{
+  position:relative;border-radius:44px;overflow:hidden;
+  background:#f2f2f7;color:#1c1c1e;
+  height:750px;display:flex;flex-direction:column;
+}
+.phone-sim-island{
+  position:absolute;top:11px;left:50%;transform:translateX(-50%);
+  width:126px;height:37px;border-radius:19px;background:#000;
+  box-shadow:0 1px 2px rgba(0,0,0,.12);
+  z-index:8;pointer-events:none;
+  display:flex;align-items:center;justify-content:flex-end;
+  padding:0 12px;box-sizing:border-box;
+  transition:width .22s ease,padding .22s ease;
+}
+.phone-sim-island-cam{
+  width:11px;height:11px;border-radius:50%;
+  background:
+    radial-gradient(circle at 38% 32%,#4a5d78 0 14%,#152033 36%,#070b12 68%,#000 100%);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.14), 0 0 0 1.5px #050505;
+}
+.phone-sim-island-sensor{
+  position:absolute;left:22px;top:50%;transform:translateY(-50%);
+  width:6px;height:6px;border-radius:50%;
+  background:#0a0a0a;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);
+}
+.phone-sim-iphone:has(.phone-sim-call-banner.is-live) .phone-sim-island{
+  width:170px;padding:0 14px;
+}
+.phone-sim-layer{
+  position:absolute;inset:0 0 22px 0;display:flex;flex-direction:column;
+  opacity:0;pointer-events:none;transform:translateY(8px);
+  transition:opacity .18s ease,transform .18s ease;
+}
+.phone-sim-layer.is-active{
+  opacity:1;pointer-events:auto;transform:none;z-index:3;
+}
+.phone-sim-layer-keypad{background:#f2f2f7;}
+.phone-sim-layer-workspace{background:#fff;z-index:2;}
+.phone-sim-layer-workspace.is-active{z-index:4;}
+.phone-sim-topbar{
+  position:relative;z-index:7;
+  display:flex;justify-content:space-between;align-items:center;
+  height:59px;padding:0 28px;
+  box-sizing:border-box;color:#000;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+}
+.phone-sim-time{
+  font-size:16px;font-weight:600;letter-spacing:-.02em;line-height:1;
+  min-width:54px;
+}
+.phone-sim-topbar-right{
+  display:flex;align-items:center;gap:7px;color:#000;height:12px;
+}
+.phone-sim-signal,.phone-sim-wifi{
+  display:block;flex-shrink:0;
+}
+.phone-sim-battery{
+  display:block;position:relative;width:25px;height:12px;flex-shrink:0;
+  border:1.4px solid currentColor;border-radius:3.2px;opacity:.92;
+  box-sizing:border-box;
+}
+.phone-sim-battery::after{
+  content:"";position:absolute;right:-3.5px;top:3px;width:1.6px;height:4.5px;
+  background:currentColor;border-radius:0 1px 1px 0;opacity:.5;
+}
+.phone-sim-battery-level{
+  position:absolute;inset:1.5px;right:3px;background:currentColor;border-radius:1.2px;
+}
+.phone-sim-call-banner{
+  margin:18px 20px 8px;padding:18px 12px 10px;border-radius:16px;text-align:center;
+}
+.phone-sim-call-banner.is-live{background:transparent;}
+.phone-sim-call-name{
+  font-size:28px;font-weight:600;letter-spacing:-.03em;color:#1c1c1e;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.phone-sim-call-sub{
+  margin-top:8px;font-size:16px;font-weight:500;color:#8e8e93;
+  font-variant-numeric:tabular-nums;
+}
+.phone-sim-number-row{
+  display:flex;align-items:center;gap:4px;padding:28px 16px 12px;min-height:72px;
+}
+.phone-sim-number{
+  flex:1;min-width:0;border:0;outline:none;background:transparent;text-align:center;
+  font:inherit;font-size:34px;font-weight:400;letter-spacing:.01em;color:#1c1c1e;
+  font-variant-numeric:tabular-nums;padding:4px 0;
+}
+.phone-sim-number:disabled{opacity:.7;}
+.phone-sim-delete{
+  appearance:none;border:0;background:transparent;color:#8e8e93;
+  font-size:22px;cursor:pointer;padding:8px 10px;border-radius:12px;
+}
+.phone-sim-delete:hover{background:rgba(0,0,0,.05);color:#1c1c1e;}
+.phone-sim-keypad{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:16px 22px;
+  padding:10px 36px 4px;margin-top:auto;
+}
+.phone-sim-key{
+  appearance:none;border:0;cursor:pointer;
+  width:78px;height:78px;margin:0 auto;border-radius:999px;
+  background:#fff;color:#1c1c1e;
+  box-shadow:0 1px 0 rgba(0,0,0,.04);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+  transition:background .12s ease,transform .08s ease;
+  user-select:none;-webkit-user-select:none;touch-action:manipulation;
+}
+.phone-sim-key:hover{background:#ebebf0;}
+.phone-sim-key:active{transform:scale(.96);background:#d1d1d6;}
+.phone-sim-key:disabled{opacity:.4;cursor:not-allowed;transform:none;}
+.phone-sim-key-digit{font-size:32px;font-weight:400;line-height:1;color:#1c1c1e;}
+.phone-sim-key-letters{
+  font-size:9px;font-weight:700;letter-spacing:.16em;color:#8e8e93;
+}
+.phone-sim-key-letters.is-blank{visibility:hidden;}
+.phone-sim-actions{
+  display:flex;justify-content:center;padding:22px 0 10px;
+}
+.phone-sim-call-btn,.phone-sim-end-btn{
+  appearance:none;border:0;cursor:pointer;
+  width:78px;height:78px;border-radius:999px;color:#fff;
+  display:grid;place-items:center;
+  transition:transform .08s ease,filter .12s ease;
+}
+.phone-sim-call-btn{
+  background:#30d158;
+  box-shadow:0 8px 22px rgba(48,209,88,.3);
+}
+.phone-sim-end-btn{
+  background:#ff3b30;
+  box-shadow:0 8px 22px rgba(255,59,48,.3);
+}
+.phone-sim-call-icon{
+  width:34px;height:34px;display:block;
+  overflow:visible;
+}
+.phone-sim-call-btn:hover,.phone-sim-end-btn:hover{filter:brightness(1.04);}
+.phone-sim-call-btn:active,.phone-sim-end-btn:active{transform:scale(.96);}
+.phone-sim-call-btn:disabled{opacity:.35;cursor:not-allowed;box-shadow:none;}
+.phone-sim-call-btn.is-busy{background:#ff9f0a;box-shadow:0 8px 22px rgba(255,159,10,.25);}
+.phone-sim-error{
+  margin:0 20px 2px;text-align:center;font-size:12.5px;font-weight:600;color:#ff3b30;
+}
+.phone-sim-hint{
+  margin:0 20px 2px;text-align:center;font-size:11.5px;line-height:1.35;color:#8e8e93;
+}
+.phone-sim-home{
+  position:absolute;left:50%;bottom:8px;transform:translateX(-50%);
+  width:134px;height:5px;border-radius:99px;background:rgba(0,0,0,.22);
+  z-index:9;
+}
+.phone-sim-workspace-bar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:54px 16px 8px;color:#1c1c1e;font-size:13px;font-weight:650;
+}
+.phone-sim-back-keypad{
+  appearance:none;border:0;background:rgba(0,0,0,.06);color:#1c1c1e;
+  border-radius:999px;padding:6px 12px;font:inherit;font-size:12.5px;font-weight:650;
+  cursor:pointer;
+}
+.phone-sim-back-keypad:hover{background:rgba(0,0,0,.1);}
+.aircall-workspace-frame{
+  flex:1;width:100%;min-height:0;background:#f2f2f7;display:flex;justify-content:center;
+}
+.aircall-workspace-frame iframe{
+  border:0;display:block;width:376px !important;max-width:100%;height:610px !important;
+}
+@media (max-width:430px){
+  .phone-sim-iphone{width:min(390px,100%);}
+  .phone-sim-screen{height:min(750px,90vh);}
+  .phone-sim-key,.phone-sim-call-btn,.phone-sim-end-btn{width:70px;height:70px;}
+  .phone-sim-keypad{padding:8px 24px 4px;gap:12px 14px;}
+}
 .aircall-log-head{margin:8px 0 12px;}
 .aircall-log-head h3{margin:0 0 4px;font-size:16px;font-weight:750;color:#111827;}
 .aircall-log-head p{margin:0;font-size:13px;color:#6b7280;}
-.portal-route[data-theme="dark"] .aircall-live,
-.portal-route[data-theme="dark"] .aircall-workspace-card,
-.portal-route[data-theme="dark"] .aircall-dial-pad-card{
-  background:#12141a;border-color:#2a2f3a;
-}
-.portal-route[data-theme="dark"] .aircall-live.is-live{background:linear-gradient(180deg,#1a1326,#12141a);}
-.portal-route[data-theme="dark"] .aircall-live-title,
-.portal-route[data-theme="dark"] .aircall-live-timer,
-.portal-route[data-theme="dark"] .aircall-workspace-head strong,
 .portal-route[data-theme="dark"] .aircall-log-head h3{color:#f3f4f6;}
-.portal-route[data-theme="dark"] .aircall-dial-input{
-  background:#171a22;border-color:#2a2f3a;color:#f3f4f6;
+.portal-route[data-theme="dark"] .aircall-login-gate{
+  background:#12141a;border-color:#2a2f3a;
 }
 .aircall-notice{
   margin:0 0 14px;padding:10px 12px;border-radius:10px;
@@ -11861,7 +12014,35 @@ a.an-kanban-card-name.is-link:hover{
   background:#f9fafb;font-weight:650;
 }
 .aircall-table tr:last-child td{border-bottom:0;}
+.aircall-group-row.is-expandable{cursor:pointer;}
+.aircall-group-row.is-expandable:hover td{background:#faf9ff;}
+.aircall-group-row.is-expanded td{background:#f8f7ff;}
+.aircall-group-contact{
+  display:flex;align-items:flex-start;gap:8px;min-width:0;
+}
+.aircall-group-chevron{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:18px;height:18px;margin-top:2px;flex-shrink:0;
+  color:#6b7280;font-size:16px;line-height:1;
+  transition:transform .15s ease;
+}
+.aircall-group-chevron.is-open{transform:rotate(90deg);color:#5b21b6;}
+.aircall-group-chevron.is-spacer{visibility:hidden;}
+.aircall-call-count{
+  display:inline-flex;align-items:center;margin-top:4px;
+  padding:2px 8px;border-radius:999px;background:#ede9fe;color:#5b21b6;
+  font-size:11.5px;font-weight:700;width:fit-content;
+}
+.aircall-nested-row td{background:#fbfbfe;}
+.aircall-nested-row:hover td{background:#f5f3ff;}
+.aircall-nested-label{
+  display:inline-block;padding-left:26px;color:#6b7280;font-size:12.5px;font-weight:600;
+}
 .aircall-when{white-space:nowrap;font-weight:550;color:#111827;}
+.portal-route[data-theme="dark"] .aircall-group-row.is-expandable:hover td,
+.portal-route[data-theme="dark"] .aircall-group-row.is-expanded td{background:#171a22;}
+.portal-route[data-theme="dark"] .aircall-nested-row td{background:#14171f;}
+.portal-route[data-theme="dark"] .aircall-call-count{background:#2a2150;color:#c4b5fd;}
 .aircall-phone{font-size:12.5px;background:#f3f4f6;padding:2px 6px;border-radius:6px;}
 .aircall-muted{color:#9ca3af;font-size:12.5px;}
 .aircall-contact-link{color:#1d4ed8;font-weight:600;text-decoration:none;}
@@ -11894,7 +12075,30 @@ a.an-kanban-card-name.is-link:hover{
 .aircall-player-btn.is-playing svg{margin-left:0;}
 .aircall-player-btn-lg{width:56px;height:56px;box-shadow:0 10px 24px rgba(109,40,217,.4);}
 .aircall-player-btn-lg svg{width:22px;height:22px;}
-.cd-activity-audio{width:min(280px,100%);margin-top:10px;}
+.cd-activity-audio{width:auto;margin:0;flex:1;min-width:0;}
+.aircall-player-chip{
+  appearance:none;border:0;cursor:pointer;display:inline-flex;align-items:center;gap:10px;
+  padding:0;background:transparent;font:inherit;text-align:left;max-width:100%;
+}
+.aircall-player-chip-icon{
+  width:36px;height:36px;border-radius:50%;flex-shrink:0;
+  background:#6d28d9;color:#fff;display:grid;place-items:center;
+  box-shadow:0 6px 14px rgba(109,40,217,.28);
+  transition:transform .12s ease,background .12s ease;
+}
+.aircall-player-chip:hover .aircall-player-chip-icon{
+  background:#5b21b6;transform:scale(1.04);
+}
+.aircall-player-chip-icon svg{width:16px;height:16px;display:block;margin-left:1px;}
+.aircall-player-chip-copy{
+  display:flex;flex-direction:column;gap:1px;min-width:0;
+}
+.aircall-player-chip-copy strong{
+  font-size:13.5px;font-weight:700;color:#111827;line-height:1.25;
+}
+.aircall-player-chip-copy em{
+  font-style:normal;font-size:12px;font-weight:500;color:#6b7280;line-height:1.25;
+}
 .aircall-player-modal-backdrop{
   position:fixed;inset:0;z-index:1200;background:rgba(15,23,42,.55);
   display:grid;place-items:center;padding:20px;
@@ -11917,11 +12121,16 @@ a.an-kanban-card-name.is-link:hover{
 }
 .aircall-player-modal-close:hover{background:#e5e7eb;}
 .aircall-player-modal-scrub{
-  height:10px;border-radius:999px;background:#e5e7eb;cursor:pointer;overflow:hidden;
+  position:relative;height:12px;border-radius:999px;background:#e5e7eb;cursor:pointer;
+  overflow:hidden;touch-action:none;user-select:none;
   box-shadow:inset 0 0 0 1px rgba(15,23,42,.04);
+}
+.aircall-player-modal-scrub:focus-visible{
+  outline:2px solid #8b5cf6;outline-offset:2px;
 }
 .aircall-player-modal-scrub-fill{
   display:block;height:100%;background:linear-gradient(90deg,#7c3aed,#8b5cf6);border-radius:999px;
+  pointer-events:none;min-width:0;transition:width .05s linear;
 }
 .aircall-player-modal-times{
   display:flex;justify-content:space-between;margin:8px 0 16px;

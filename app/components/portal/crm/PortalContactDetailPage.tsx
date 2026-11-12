@@ -69,6 +69,13 @@ function IconPhone() {
     </svg>
   );
 }
+function IconCall() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M6.62 10.79a15.15 15.15 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.01-.24c1.12.37 2.33.57 3.58.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.4 21 3 13.6 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.58a1 1 0 0 1-.25 1.02l-2.2 2.19z" />
+    </svg>
+  );
+}
 function IconLinkedIn() {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
@@ -696,30 +703,30 @@ function ContactTabsDetail({
               {phone ? (
                 readOnly ? (
                   <a
-                    className="cd-quick-btn"
+                    className="cd-quick-btn is-call"
                     href={`tel:${phone.replace(/\s+/g, "")}`}
                   >
-                    <IconPhone />
+                    <IconCall />
                     Call
                   </a>
                 ) : (
                   <button
                     type="button"
-                    className="cd-quick-btn is-aircall"
+                    className="cd-quick-btn is-call is-aircall"
                     disabled={calling}
                     onClick={() => callWithAircall()}
                     title={`Open Aircall dialer for ${phone}`}
                   >
-                    <IconPhone />
+                    <IconCall />
                     {calling ? "Opening…" : "Call"}
                   </button>
                 )
               ) : (
                 <span
-                  className="cd-quick-btn is-disabled"
+                  className="cd-quick-btn is-call is-disabled"
                   title="Add a phone number to enable calling"
                 >
-                  <IconPhone />
+                  <IconCall />
                   Call
                 </span>
               )}

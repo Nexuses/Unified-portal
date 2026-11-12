@@ -142,15 +142,29 @@ export default function PortalUnsubPage() {
   const [removingId, setRemovingId] = useState("");
   const [listPage, setListPage] = useState(1);
   const [exporting, setExporting] = useState(false);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async (page = 1) => {
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
+    }, 280);
+    return () => window.clearTimeout(id);
+  }, [search]);
+
+  const load = useCallback(async (page = 1, q = debouncedSearch) => {
     setLoading(true);
     setError("");
     const fetchPage = async (target: number) => {
-      const response = await fetch(
-        `/api/crm/suppression?page=${target}&pageSize=${PAGE_SIZE}`,
-      );
+      const params = new URLSearchParams({
+        page: String(target),
+        pageSize: String(PAGE_SIZE),
+      });
+      if (q) {
+        params.set("q", q);
+      }
+      const response = await fetch(`/api/crm/suppression?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || "Failed to load suppression list");
@@ -175,11 +189,11 @@ export default function PortalUnsubPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [debouncedSearch]);
 
   useEffect(() => {
-    void load(1);
-  }, [load]);
+    void load(1, debouncedSearch);
+  }, [load, debouncedSearch]);
 
   const combined = useMemo<CombinedEntry[]>(() => {
     const domainRows: CombinedEntry[] = domains.map((entry) => ({
@@ -456,6 +470,21 @@ export default function PortalUnsubPage() {
           {exporting ? "Exporting…" : "Export CSV"}
         </button>
       </div>
+      <div className="drip-toolbar unsub-toolbar">
+        <label className="drip-search unsub-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+          <input
+            type="search"
+            placeholder="Search by email, name, or domain"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            aria-label="Search suppression list"
+          />
+        </label>
+      </div>
       <div className="data-table-wrap">
         <table className="data-table">
           <thead>
@@ -477,7 +506,9 @@ export default function PortalUnsubPage() {
             ) : combined.length === 0 ? (
               <tr>
                 <td colSpan={5} className="crm-empty-cell">
-                  No emails or domains on the unsubscribe list yet.
+                  {debouncedSearch
+                    ? "No emails or domains match this search."
+                    : "No emails or domains on the unsubscribe list yet."}
                 </td>
               </tr>
             ) : (
@@ -504,10 +535,10 @@ export default function PortalUnsubPage() {
         </table>
       </div>
       <TablePager
-        total={emailTotal}
+        total={listTotal}
         page={listPage}
         pageSize={PAGE_SIZE}
-        onPage={(next) => void load(next)}
+        onPage={(next) => void load(next, debouncedSearch)}
       />
 
       {uploadKind ? (

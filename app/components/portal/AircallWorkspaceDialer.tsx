@@ -173,13 +173,39 @@ export default function AircallWorkspaceDialer({
   const [hint, setHint] = useState(
     "Sign in once in the left Aircall dialer (browser). Portal login is not enough.",
   );
-  const [manualNumber, setManualNumber] = useState("");
+    const [manualNumber, setManualNumber] = useState("");
   const [dialBusy, setDialBusy] = useState(false);
+  const [workspaceKey, setWorkspaceKey] = useState(0);
+  const [checkingLogin, setCheckingLogin] = useState(false);
+  const [phoneView, setPhoneView] = useState<"keypad" | "workspace">("keypad");
+  const awaitingReturnRef = useRef(false);
+  const zeroLongPressRef = useRef<{
+    timer: number | null;
+    fired: boolean;
+  }>({ timer: null, fired: false });
 
   const setPhaseSafe = useCallback((next: DialerPhase) => {
     phaseRef.current = next;
     setPhase(next);
   }, []);
+
+  const AIRCALL_LOGIN_URL = "https://workspace.aircall.io";
+
+  const openAircallLogin = useCallback(() => {
+    awaitingReturnRef.current = true;
+    window.open(AIRCALL_LOGIN_URL, "_blank", "noopener,noreferrer");
+    setHint("Sign in on the Aircall tab, then come back here.");
+  }, []);
+
+  const recheckLogin = useCallback(() => {
+    awaitingReturnRef.current = false;
+    setCheckingLogin(true);
+    setError("");
+    setHint("Checking Aircall sign-in…");
+    setPhaseSafe("loading");
+    agentReadyRef.current = false;
+    setWorkspaceKey((key) => key + 1);
+  }, [setPhaseSafe]);
 
   const clearCallWatch = useCallback(() => {
     if (callWatchRef.current != null) {
@@ -299,6 +325,7 @@ export default function AircallWorkspaceDialer({
       host.innerHTML = "";
     }
 
+    setPhaseSafe("loading");
     const workspace = new AircallWorkspace({
       domToLoadWorkspace: `#${mountId}`,
       // Official docs: "big" is recommended; "auto" is not.
@@ -307,6 +334,7 @@ export default function AircallWorkspaceDialer({
       onLogin: (settings) => {
         if (cancelled) return;
         agentReadyRef.current = true;
+        setCheckingLogin(false);
         const user = settings?.user;
         const name = [user?.first_name, user?.last_name]
           .filter(Boolean)
@@ -329,15 +357,22 @@ export default function AircallWorkspaceDialer({
       onLogout: () => {
         if (cancelled) return;
         agentReadyRef.current = false;
+        setCheckingLogin(false);
         setPhaseSafe("logged_out");
         setAgentLabel("");
         startedForRef.current = null;
-        setHint(
-          "Sign in once in the left Aircall dialer (browser). Use the same Aircall user as AIRCALL_USER_ID.",
-        );
+        setHint("Sign in to Aircall, then come back here to use the dialer.");
       },
     });
     workspaceRef.current = workspace;
+
+    // If the embed never logs in (already signed out), surface the login gate.
+    const loginTimeout = window.setTimeout(() => {
+      if (cancelled || agentReadyRef.current) return;
+      setCheckingLogin(false);
+      setPhaseSafe("logged_out");
+      setHint("Sign in to Aircall, then come back here to use the dialer.");
+    }, 4500);
 
     workspace.on("outgoing_call", (info) => {
       clearCallWatch();
@@ -358,8 +393,9 @@ export default function AircallWorkspaceDialer({
       setLastDurationSec(null);
       setPhaseSafe("ringing");
       setError("");
-      setHint("Calling… use End in the left dialer to hang up.");
+      setHint("Calling… use End on the phone to hang up.");
       setDialBusy(false);
+      setPhoneView("workspace");
     });
 
     workspace.on("outgoing_answered", (info) => {
@@ -415,6 +451,7 @@ export default function AircallWorkspaceDialer({
       setPhaseSafe("ended");
       setDialBusy(false);
       setHint("Call ended. Sync below to pull the recording into CRM.");
+      setPhoneView("keypad");
     });
 
     workspace.on("external_dial", (info) => {
@@ -429,6 +466,7 @@ export default function AircallWorkspaceDialer({
 
     return () => {
       cancelled = true;
+      window.clearTimeout(loginTimeout);
       clearCallWatch();
       agentReadyRef.current = false;
       workspaceRef.current = null;
@@ -437,7 +475,7 @@ export default function AircallWorkspaceDialer({
         el.innerHTML = "";
       }
     };
-  }, [clearCallWatch, mountId, setPhaseSafe]);
+  }, [clearCallWatch, mountId, setPhaseSafe, workspaceKey]);
 
   useEffect(() => {
     if (!pendingDial) {
@@ -449,6 +487,17 @@ export default function AircallWorkspaceDialer({
       setActiveTo(to);
     }
   }, [pendingDial]);
+
+  // After opening Aircall login, re-check once when the user returns to this tab.
+  useEffect(() => {
+    function onFocus() {
+      if (!awaitingReturnRef.current) return;
+      if (phaseRef.current !== "logged_out" || checkingLogin) return;
+      recheckLogin();
+    }
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [checkingLogin, recheckLogin]);
 
   useEffect(() => {
     if (!pendingDial) {
@@ -494,117 +543,301 @@ export default function AircallWorkspaceDialer({
 
   const inCall = phase === "ringing" || phase === "connected";
   const busy = dialBusy || phase === "starting";
+  const signedIn = phase !== "loading" && phase !== "logged_out";
+  const showLoginGate = !signedIn;
+
+  const keypadKeys = [
+    { digit: "1", letters: "" },
+    { digit: "2", letters: "ABC" },
+    { digit: "3", letters: "DEF" },
+    { digit: "4", letters: "GHI" },
+    { digit: "5", letters: "JKL" },
+    { digit: "6", letters: "MNO" },
+    { digit: "7", letters: "PQRS" },
+    { digit: "8", letters: "TUV" },
+    { digit: "9", letters: "WXYZ" },
+    { digit: "*", letters: "" },
+    { digit: "0", letters: "+" },
+    { digit: "#", letters: "" },
+  ] as const;
+
+  function pressKey(digit: string) {
+    if (inCall || busy) return;
+    setManualNumber((current) => `${current}${digit}`);
+  }
+
+  function clearZeroLongPress() {
+    if (zeroLongPressRef.current.timer != null) {
+      window.clearTimeout(zeroLongPressRef.current.timer);
+      zeroLongPressRef.current.timer = null;
+    }
+  }
+
+  function onZeroPointerDown() {
+    if (inCall || busy) return;
+    clearZeroLongPress();
+    zeroLongPressRef.current.fired = false;
+    zeroLongPressRef.current.timer = window.setTimeout(() => {
+      zeroLongPressRef.current.fired = true;
+      zeroLongPressRef.current.timer = null;
+      pressKey("+");
+    }, 450);
+  }
+
+  function onZeroPointerEnd() {
+    clearZeroLongPress();
+  }
+
+  function onKeyClick(digit: string) {
+    if (digit === "0" && zeroLongPressRef.current.fired) {
+      zeroLongPressRef.current.fired = false;
+      return;
+    }
+    pressKey(digit);
+  }
+
+  function deleteKey() {
+    if (inCall || busy) return;
+    setManualNumber((current) => current.slice(0, -1));
+  }
+
+  const timerLabel =
+    phase === "ended" && lastDurationSec != null
+      ? formatClock(lastDurationSec)
+      : inCall
+        ? formatClock(elapsedSec)
+        : "";
 
   return (
     <div className="aircall-dialer">
-      <div
-        className={`aircall-live ${inCall ? "is-live" : ""} ${phase === "ended" ? "is-ended" : ""} ${phase === "starting" ? "is-starting" : ""}`}
-      >
-        <div className="aircall-live-main">
-          <div className="aircall-live-kicker">{phaseLabel(phase)}</div>
-          <div className="aircall-live-title">
-            {contactLabel || activeTo || "Aircall dialer"}
+      {showLoginGate ? (
+        <div className="aircall-login-gate">
+          <div className="aircall-login-copy">
+            <strong>
+              {phase === "loading" || checkingLogin
+                ? "Checking Aircall…"
+                : "Sign in to Aircall"}
+            </strong>
+            <p>
+              {phase === "loading" || checkingLogin
+                ? "Looking for an Aircall session in this browser."
+                : "Log in to Aircall in a new tab, then come back here and continue."}
+            </p>
           </div>
-          <div className="aircall-live-meta">
-            {activeTo ? <span>{activeTo}</span> : null}
-            {activeFrom ? <span>via {activeFrom}</span> : null}
-            {agentLabel ? <span>{agentLabel}</span> : null}
-            {callId ? <span>#{callId}</span> : null}
-          </div>
-        </div>
-        <div className="aircall-live-timer" aria-live="polite">
-          {phase === "ended" && lastDurationSec != null
-            ? formatClock(lastDurationSec)
-            : inCall
-              ? formatClock(elapsedSec)
-              : "00:00"}
-          <span className="aircall-live-timer-sub">
-            {phase === "ended" && lastDurationSec != null
-              ? formatCallDuration(lastDurationSec)
-              : phase === "connected"
-                ? "talk time"
-                : inCall
-                  ? "elapsed"
-                  : phase === "starting"
-                    ? "waiting"
-                    : "ready"}
-          </span>
-        </div>
-      </div>
-
-      <div className="aircall-signin-banner">
-        <strong>Do I need to sign in?</strong>
-        <span>
-          Yes — once in the <em>left</em> Aircall dialer in this browser
-          (Neeraj / same as <code>AIRCALL_USER_ID</code>). That is separate from
-          portal login. After that, Call copies the number into To and starts
-          the call; the timer starts when Aircall actually dials.
-        </span>
-      </div>
-
-      <div className="aircall-dialer-grid">
-        <div className="aircall-workspace-card">
-          <div className="aircall-workspace-head">
-            <div>
-              <strong>Dialer</strong>
-              <p>Sign in here once. Mute / End stay in this panel.</p>
-            </div>
-            <span
-              className={`aircall-agent-pill ${phase === "logged_out" || phase === "loading" ? "is-off" : "is-on"}`}
-            >
-              {phase === "loading"
-                ? "Loading"
-                : phase === "logged_out"
-                  ? "Signed out"
-                  : "Signed in"}
-            </span>
-          </div>
-          <div id={mountId} className="aircall-workspace-frame" />
-        </div>
-
-        <div className="aircall-dial-pad-card">
-          <label className="aircall-dial-label" htmlFor={`${mountId}-number`}>
-            Number to call
-          </label>
-          <input
-            id={`${mountId}-number`}
-            className="aircall-dial-input"
-            type="tel"
-            inputMode="tel"
-            placeholder="+1 240…"
-            value={manualNumber}
-            onChange={(e) => setManualNumber(e.target.value)}
-            disabled={inCall || busy}
-          />
-          <div className="aircall-dial-actions">
+          <div className="aircall-login-actions">
             <button
               type="button"
-              className="aircall-dial-call"
-              disabled={
-                busy ||
-                inCall ||
-                phase === "loading" ||
-                phase === "logged_out" ||
-                !manualNumber.trim()
-              }
-              onClick={() => void startCall(manualNumber)}
+              className="btn-dark"
+              onClick={openAircallLogin}
             >
-              {busy ? "Calling…" : "Call"}
+              Login to Aircall
             </button>
             <button
               type="button"
-              className="aircall-dial-end-hint"
-              onClick={() => {
-                document
-                  .getElementById(mountId)
-                  ?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
+              className="btn-soft"
+              onClick={recheckLogin}
+              disabled={checkingLogin || phase === "loading"}
             >
-              End call in dialer →
+              {checkingLogin || phase === "loading"
+                ? "Checking…"
+                : "I’m signed in — continue"}
             </button>
           </div>
-          {error ? <p className="aircall-dial-error">{error}</p> : null}
           {hint ? <p className="aircall-dial-help">{hint}</p> : null}
+          {error ? <p className="aircall-dial-error">{error}</p> : null}
+        </div>
+      ) : null}
+
+      <div
+        className={`phone-sim-stage${showLoginGate ? " is-gated" : ""}`}
+        aria-hidden={showLoginGate}
+      >
+        <div className="phone-sim phone-sim-iphone">
+          <div className="phone-sim-side phone-sim-silent" aria-hidden />
+          <div className="phone-sim-side phone-sim-vol-up" aria-hidden />
+          <div className="phone-sim-side phone-sim-vol-down" aria-hidden />
+          <div className="phone-sim-side phone-sim-power" aria-hidden />
+          <div className="phone-sim-bezel">
+            <div className="phone-sim-screen">
+              <div className="phone-sim-island" aria-hidden>
+                <span className="phone-sim-island-cam" />
+                <span className="phone-sim-island-sensor" />
+              </div>
+
+              <div
+                className={`phone-sim-layer phone-sim-layer-keypad${
+                  phoneView === "keypad" ? " is-active" : ""
+                }`}
+              >
+                <div className="phone-sim-topbar">
+                  <span className="phone-sim-time">9:41</span>
+                  <span className="phone-sim-topbar-right" aria-hidden>
+                    <svg className="phone-sim-signal" viewBox="0 0 17 12" width="17" height="12" fill="currentColor">
+                      <rect x="0" y="9" width="3" height="3" rx="0.6" />
+                      <rect x="4.5" y="6" width="3" height="6" rx="0.6" />
+                      <rect x="9" y="3" width="3" height="9" rx="0.6" />
+                      <rect x="13.5" y="0" width="3" height="12" rx="0.6" />
+                    </svg>
+                    <svg className="phone-sim-wifi" viewBox="0 0 16 12" width="16" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                      <path d="M1.2 4.2a9.2 9.2 0 0 1 13.6 0" />
+                      <path d="M3.6 6.8a5.6 5.6 0 0 1 8.8 0" />
+                      <path d="M6.2 9.3a2.2 2.2 0 0 1 3.6 0" />
+                      <circle cx="8" cy="11.2" r="0.9" fill="currentColor" stroke="none" />
+                    </svg>
+                    <span className="phone-sim-battery">
+                      <span className="phone-sim-battery-level" />
+                    </span>
+                  </span>
+                </div>
+
+                {inCall || busy ? (
+                  <div
+                    className={`phone-sim-call-banner${inCall ? " is-live" : ""}`}
+                  >
+                    <div className="phone-sim-call-name">
+                      {contactLabel &&
+                      contactLabel !== manualNumber &&
+                      contactLabel !== activeTo
+                        ? contactLabel
+                        : manualNumber || activeTo || "Calling"}
+                    </div>
+                    <div className="phone-sim-call-sub">
+                      {timerLabel || phaseLabel(phase)}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="phone-sim-number-row">
+                    <input
+                      id={`${mountId}-number`}
+                      className="phone-sim-number"
+                      type="tel"
+                      inputMode="tel"
+                      aria-label="Number to call"
+                      placeholder=""
+                      value={manualNumber}
+                      onChange={(e) => setManualNumber(e.target.value)}
+                    />
+                    {manualNumber ? (
+                      <button
+                        type="button"
+                        className="phone-sim-delete"
+                        aria-label="Delete"
+                        onClick={deleteKey}
+                      >
+                        ⌫
+                      </button>
+                    ) : null}
+                  </div>
+                )}
+
+                <div className="phone-sim-keypad" role="group" aria-label="Keypad">
+                  {keypadKeys.map((key) => (
+                    <button
+                      key={key.digit}
+                      type="button"
+                      className="phone-sim-key"
+                      disabled={inCall || busy}
+                      onClick={() => onKeyClick(key.digit)}
+                      onPointerDown={
+                        key.digit === "0" ? onZeroPointerDown : undefined
+                      }
+                      onPointerUp={
+                        key.digit === "0" ? onZeroPointerEnd : undefined
+                      }
+                      onPointerLeave={
+                        key.digit === "0" ? onZeroPointerEnd : undefined
+                      }
+                      onPointerCancel={
+                        key.digit === "0" ? onZeroPointerEnd : undefined
+                      }
+                      onContextMenu={
+                        key.digit === "0"
+                          ? (e) => e.preventDefault()
+                          : undefined
+                      }
+                      aria-label={
+                        key.digit === "0" ? "0, long-press for +" : undefined
+                      }
+                    >
+                      <span className="phone-sim-key-digit">{key.digit}</span>
+                      {key.letters ? (
+                        <span className="phone-sim-key-letters">{key.letters}</span>
+                      ) : (
+                        <span className="phone-sim-key-letters is-blank"> </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="phone-sim-actions">
+                  {inCall ? (
+                    <button
+                      type="button"
+                      className="phone-sim-end-btn"
+                      aria-label="End call"
+                      onClick={() => setPhoneView("workspace")}
+                    >
+                      {/* Classic handset pointing down (hang up) */}
+                      <svg
+                        className="phone-sim-call-icon"
+                        viewBox="0 0 512 512"
+                        aria-hidden
+                      >
+                        <path
+                          fill="currentColor"
+                          transform="rotate(135 256 256)"
+                          d="M164.9 24.6c-7.7-18.6-28-28.5-47.4-23.2l-88 24C12.1 30.2 0 46 0 64C0 311.4 200.6 512 448 512c18 0 33.8-12.1 38.6-29.5l24-88c5.3-19.4-4.6-39.7-23.2-47.4l-96-40c-16.3-6.8-35.2-2.1-46.3 11.6L304.7 368C234.3 334.7 177.3 277.7 144 207.3L193.3 167c13.7-11.2 18.4-30 11.6-46.3l-40-96z"
+                        />
+                      </svg>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className={`phone-sim-call-btn${busy ? " is-busy" : ""}`}
+                      disabled={busy || !manualNumber.trim()}
+                      aria-label={busy ? "Calling" : "Call"}
+                      onClick={() => void startCall(manualNumber)}
+                    >
+                      {/* Classic handset — same orientation as iOS Phone.app call */}
+                      <svg
+                        className="phone-sim-call-icon"
+                        viewBox="0 0 512 512"
+                        aria-hidden
+                      >
+                        <path
+                          fill="currentColor"
+                          d="M164.9 24.6c-7.7-18.6-28-28.5-47.4-23.2l-88 24C12.1 30.2 0 46 0 64C0 311.4 200.6 512 448 512c18 0 33.8-12.1 38.6-29.5l24-88c5.3-19.4-4.6-39.7-23.2-47.4l-96-40c-16.3-6.8-35.2-2.1-46.3 11.6L304.7 368C234.3 334.7 177.3 277.7 144 207.3L193.3 167c13.7-11.2 18.4-30 11.6-46.3l-40-96z"
+                        />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+
+                {error ? <p className="phone-sim-error">{error}</p> : null}
+                {hint && !error ? <p className="phone-sim-hint">{hint}</p> : null}
+              </div>
+
+              <div
+                className={`phone-sim-layer phone-sim-layer-workspace${
+                  phoneView === "workspace" ? " is-active" : ""
+                }`}
+              >
+                <div className="phone-sim-workspace-bar">
+                  <button
+                    type="button"
+                    className="phone-sim-back-keypad"
+                    onClick={() => setPhoneView("keypad")}
+                  >
+                    ← Keypad
+                  </button>
+                  <span>{inCall ? timerLabel || "In call" : "Aircall"}</span>
+                </div>
+                <div id={mountId} className="aircall-workspace-frame" />
+              </div>
+
+              <div className="phone-sim-home" aria-hidden />
+            </div>
+          </div>
         </div>
       </div>
     </div>

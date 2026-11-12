@@ -922,12 +922,24 @@ export default function ContactActivityPanel({
                   </div>
                   <p className="lr-tl-body">{entry.item.body || "—"}</p>
                   {entry.item.recordingUrl ? (
-                    <AircallAudioPlayer
-                      className="cd-activity-audio"
-                      src={entry.item.recordingUrl}
-                    />
-                  ) : null}
-                  {readOnly ? null : (
+                    <div className="cd-activity-call-card">
+                      <AircallAudioPlayer
+                        className="cd-activity-audio"
+                        src={entry.item.recordingUrl}
+                        label="Play recording"
+                      />
+                      {readOnly ? null : (
+                        <button
+                          type="button"
+                          className="cd-activity-remove"
+                          disabled={saving}
+                          onClick={() => void removeManual(entry.id)}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  ) : readOnly ? null : (
                     <div className="lr-tl-actions">
                       <button
                         type="button"

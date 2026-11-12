@@ -23,9 +23,11 @@ export async function GET(request: NextRequest) {
 
     const page = Number(request.nextUrl.searchParams.get("page") ?? "1");
     const pageSize = Number(request.nextUrl.searchParams.get("pageSize") ?? "50");
+    const q = String(request.nextUrl.searchParams.get("q") ?? "").trim();
     const data = await getUnsubscribeListEntries(new ObjectId(session.projectId), {
       page: Number.isFinite(page) ? page : 1,
       pageSize: Number.isFinite(pageSize) ? pageSize : 50,
+      q,
     });
     return NextResponse.json(data);
   } catch (error) {
