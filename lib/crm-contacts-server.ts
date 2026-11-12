@@ -391,12 +391,16 @@ export async function updateProjectContact(
     $set.companyName = patch.companyName.trim();
   }
   if (patch.attributes && typeof patch.attributes === "object") {
-    $set.attributes = Object.fromEntries(
-      Object.entries(patch.attributes).map(([key, value]) => [
-        key,
-        String(value ?? "").trim(),
-      ]),
-    );
+    const nextAttributes = { ...(existing.attributes || {}) };
+    for (const [key, value] of Object.entries(patch.attributes)) {
+      const trimmed = String(value ?? "").trim();
+      if (trimmed) {
+        nextAttributes[key] = trimmed;
+      } else {
+        delete nextAttributes[key];
+      }
+    }
+    $set.attributes = nextAttributes;
   }
   if (typeof patch.subscribed === "boolean") {
     $set.subscribed = patch.subscribed;
@@ -405,7 +409,31 @@ export async function updateProjectContact(
     $set.blocklisted = patch.blocklisted;
   }
   if (patch.profile && typeof patch.profile === "object") {
-    $set.profile = patch.profile;
+    const existingProfile = existing.profile || {};
+    const incoming = patch.profile;
+    $set.profile = {
+      ...existingProfile,
+      ...incoming,
+      company: {
+        ...(existingProfile.company || {}),
+        ...(incoming.company || {}),
+      },
+      qualification: {
+        ...(existingProfile.qualification || {}),
+        ...(incoming.qualification || {}),
+      },
+      meeting: {
+        ...(existingProfile.meeting || {}),
+        ...(incoming.meeting || {}),
+      },
+      brief: {
+        ...(existingProfile.brief || {}),
+        ...(incoming.brief || {}),
+      },
+      apollo: existingProfile.apollo,
+      notes: incoming.notes ?? existingProfile.notes,
+      timeline: incoming.timeline ?? existingProfile.timeline,
+    };
   }
 
   await db.collection<ContactDoc>("contacts").updateOne(

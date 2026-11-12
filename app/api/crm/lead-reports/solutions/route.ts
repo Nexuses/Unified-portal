@@ -1,12 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
-import { updateLeadReportSolutions } from "@/lib/crm-lead-reports-server";
+import {
+  removeLeadReportSolutionOption,
+  updateLeadReportSolutions,
+} from "@/lib/crm-lead-reports-server";
 import {
   isSessionError,
   requirePortalSession,
 } from "@/lib/require-portal-session";
 
 const MAX_NAME_LENGTH = 120;
+
+/** Remove a solution option from every lead report in the project. */
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await requirePortalSession();
+    if (isSessionError(session)) {
+      return session;
+    }
+
+    const body = (await request.json().catch(() => null)) as {
+      solution?: unknown;
+    } | null;
+    const name = String(body?.solution ?? "")
+      .trim()
+      .slice(0, MAX_NAME_LENGTH);
+    if (!name) {
+      return NextResponse.json(
+        { error: "solution is required" },
+        { status: 400 },
+      );
+    }
+
+    const result = await removeLeadReportSolutionOption(
+      new ObjectId(session.projectId),
+      name,
+    );
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error("Failed to remove lead report solution option:", error);
+    return NextResponse.json(
+      { error: "Failed to remove solution option" },
+      { status: 500 },
+    );
+  }
+}
 
 export async function PATCH(request: NextRequest) {
   try {

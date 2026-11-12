@@ -68,6 +68,15 @@ export function IconSmtp({ className }: IconProps) {
   );
 }
 
+/** Phone handset — used for Calling. */
+export function IconCalling({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" {...stroke}>
+      <path d="M8.2 3.8c.6-.6 1.6-.6 2.1 0l1.4 1.4c.5.5.6 1.3.2 1.9l-.9 1.4c-.3.4-.2 1 .2 1.4l2.9 2.9c.4.4 1 .5 1.4.2l1.4-.9c.6-.4 1.4-.3 1.9.2l1.4 1.4c.6.6.6 1.5 0 2.1l-1.1 1.1c-.6.6-1.4.9-2.3.8-2.2-.3-4.7-1.8-7.1-4.2S5.6 9.3 5.3 7.1c-.1-.9.2-1.7.8-2.3l1.1-1z" />
+    </svg>
+  );
+}
+
 export function IconBrand({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
@@ -287,6 +296,8 @@ export function getNavIcon(pageId: string) {
     case "smtp":
     case "smtp-health":
       return IconSmtp;
+    case "aircall":
+      return IconCalling;
     case "branding":
       return IconBrand;
     case "knowledge":

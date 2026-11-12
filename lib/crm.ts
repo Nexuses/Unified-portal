@@ -239,6 +239,11 @@ export type ContactProfileTimelineItem = {
   body: string;
   /** Manual activity channel: call | whatsapp | message | note */
   kind?: string;
+  /** Durable proxy path or direct URL for call recording (Aircall). */
+  recordingUrl?: string;
+  aircallCallId?: number | string;
+  direction?: string;
+  durationSec?: number;
 };
 
 export type ContactProfile = {

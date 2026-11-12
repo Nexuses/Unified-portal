@@ -388,10 +388,140 @@ function ContactTabsDetail({
   const [loading, setLoading] = useState(!sharedContact);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<DetailTab>("overview");
+  const [editingInfo, setEditingInfo] = useState(false);
+  const [savingInfo, setSavingInfo] = useState(false);
+  const [infoError, setInfoError] = useState("");
+  const [calling, setCalling] = useState(false);
+  const [callNotice, setCallNotice] = useState("");
+  const [infoDraft, setInfoDraft] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    position: "",
+    companyName: "",
+    location: "",
+    website: "",
+    industry: "",
+    linkedinUrl: "",
+  });
 
   useEffect(() => {
     setTab("overview");
+    setEditingInfo(false);
+    setInfoError("");
   }, [contactId]);
+
+  function beginEditInfo() {
+    if (!contact || readOnly) {
+      return;
+    }
+    const profile = contact.profile;
+    setInfoDraft({
+      firstName: contact.firstName || "",
+      lastName: contact.lastName || "",
+      email: contact.email || "",
+      phone:
+        profile.phone?.trim() ||
+        contact.attributes?.phoneNumber?.trim() ||
+        "",
+      position:
+        profile.title?.trim() || contact.attributes?.position?.trim() || "",
+      companyName: contact.companyName || "",
+      location:
+        profile.location?.trim() ||
+        contact.attributes?.personLocation?.trim() ||
+        "",
+      website: contact.attributes?.website?.trim() || "",
+      industry:
+        profile.company?.industry?.trim() ||
+        contact.attributes?.industry?.trim() ||
+        "",
+      linkedinUrl:
+        profile.linkedinUrl?.trim() ||
+        contact.attributes?.personalLinkedIn?.trim() ||
+        "",
+    });
+    setInfoError("");
+    setEditingInfo(true);
+  }
+
+  function callWithAircall() {
+    if (!contact || calling || readOnly) {
+      return;
+    }
+    const number =
+      contact.profile.phone?.trim() ||
+      contact.attributes?.phoneNumber?.trim() ||
+      "";
+    if (!number) {
+      setCallNotice("Add a phone number before calling.");
+      return;
+    }
+    setCalling(true);
+    setCallNotice("");
+    const params = new URLSearchParams({
+      dial: number,
+      contactId: contact.id,
+      name: contact.fullName || contact.email || "Contact",
+    });
+    router.push(`/portal/aircall?${params.toString()}`);
+  }
+
+  async function saveInfo() {
+    if (!contact || savingInfo || readOnly) {
+      return;
+    }
+    setSavingInfo(true);
+    setInfoError("");
+    try {
+      const response = await fetch(
+        `/api/crm/contacts/${encodeURIComponent(contact.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            firstName: infoDraft.firstName,
+            lastName: infoDraft.lastName,
+            email: infoDraft.email,
+            companyName: infoDraft.companyName,
+            attributes: {
+              phoneNumber: infoDraft.phone,
+              position: infoDraft.position,
+              personLocation: infoDraft.location,
+              website: infoDraft.website,
+              industry: infoDraft.industry,
+              personalLinkedIn: infoDraft.linkedinUrl,
+            },
+            profile: {
+              phone: infoDraft.phone.trim(),
+              title: infoDraft.position.trim(),
+              location: infoDraft.location.trim(),
+              linkedinUrl: infoDraft.linkedinUrl.trim(),
+              company: {
+                ...(contact.profile.company || {}),
+                industry: infoDraft.industry.trim(),
+                website: infoDraft.website.trim(),
+                location: infoDraft.location.trim(),
+              },
+            },
+          }),
+        },
+      );
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.error === "string" ? data.error : "Failed to save",
+        );
+      }
+      setContact(data as ContactDetail);
+      setEditingInfo(false);
+    } catch (err) {
+      setInfoError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSavingInfo(false);
+    }
+  }
 
   useEffect(() => {
     if (sharedContact) {
@@ -480,12 +610,17 @@ function ContactTabsDetail({
     contact.attributes?.personLocation?.trim() ||
     "";
   const website = ensureHttp(contact.attributes?.website);
+  const industry =
+    profile.company?.industry?.trim() ||
+    contact.attributes?.industry?.trim() ||
+    "";
   const knownAttrKeys = new Set([
     "position",
     "phoneNumber",
     "personalLinkedIn",
     "personLocation",
     "website",
+    "industry",
   ]);
   const extraAttributes = Object.entries(contact.attributes ?? {}).filter(
     ([key, value]) => !knownAttrKeys.has(key) && String(value ?? "").trim(),
@@ -559,11 +694,35 @@ function ContactTabsDetail({
                 Email
               </a>
               {phone ? (
-                <a className="cd-quick-btn" href={`tel:${phone.replace(/\s+/g, "")}`}>
+                readOnly ? (
+                  <a
+                    className="cd-quick-btn"
+                    href={`tel:${phone.replace(/\s+/g, "")}`}
+                  >
+                    <IconPhone />
+                    Call
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    className="cd-quick-btn is-aircall"
+                    disabled={calling}
+                    onClick={() => callWithAircall()}
+                    title={`Open Aircall dialer for ${phone}`}
+                  >
+                    <IconPhone />
+                    {calling ? "Opening…" : "Call"}
+                  </button>
+                )
+              ) : (
+                <span
+                  className="cd-quick-btn is-disabled"
+                  title="Add a phone number to enable calling"
+                >
                   <IconPhone />
                   Call
-                </a>
-              ) : null}
+                </span>
+              )}
               {linkedinUrl ? (
                 <a
                   className="cd-quick-btn is-linkedin"
@@ -581,6 +740,9 @@ function ContactTabsDetail({
                 </span>
               )}
             </div>
+            {callNotice ? (
+              <p className="cd-call-notice">{callNotice}</p>
+            ) : null}
           </div>
         </div>
 
@@ -627,17 +789,6 @@ function ContactTabsDetail({
                 </svg>
               </button>
             </div>
-            <button
-              type="button"
-              className="btn-dark"
-              onClick={() =>
-                router.push(
-                  portalContactRoute(contactId, from, { view: "lead-report" }),
-                )
-              }
-            >
-              Lead Report
-            </button>
           </div>
         )}
       </div>
@@ -736,88 +887,272 @@ function ContactTabsDetail({
             <div className="cd-card cd-info-card">
               <div className="cd-card-head">
                 <h3>Information</h3>
+                {readOnly ? null : editingInfo ? (
+                  <div className="cd-info-edit-actions">
+                    <button
+                      type="button"
+                      className="btn-soft cd-info-edit-btn"
+                      disabled={savingInfo}
+                      onClick={() => {
+                        setEditingInfo(false);
+                        setInfoError("");
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-dark cd-info-edit-btn"
+                      disabled={savingInfo}
+                      onClick={() => void saveInfo()}
+                    >
+                      {savingInfo ? "Saving…" : "Save"}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="cd-icon-btn"
+                    aria-label="Edit information"
+                    title="Edit information"
+                    onClick={beginEditInfo}
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      aria-hidden
+                    >
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                    </svg>
+                  </button>
+                )}
               </div>
 
-              <div className="cd-info-stack">
-                <InfoRow icon={<IconUser />} label="Name">
-                  {[contact.firstName, contact.lastName]
-                    .filter(Boolean)
-                    .join(" ") || "—"}
-                </InfoRow>
-                <InfoRow icon={<IconMail />} label="Email">
-                  <a className="cd-info-link" href={`mailto:${contact.email}`}>
-                    {contact.email}
-                  </a>
-                </InfoRow>
-                <InfoRow icon={<IconPhone />} label="Phone">
-                  {phone ? (
-                    <a
-                      className="cd-info-link"
-                      href={`tel:${phone.replace(/\s+/g, "")}`}
-                    >
-                      {phone}
+              {infoError ? <div className="crm-error">{infoError}</div> : null}
+
+              {editingInfo ? (
+                <div className="cd-info-edit-form">
+                  <label className="cd-info-edit-field">
+                    <span>First name</span>
+                    <input
+                      value={infoDraft.firstName}
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          firstName: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="cd-info-edit-field">
+                    <span>Last name</span>
+                    <input
+                      value={infoDraft.lastName}
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          lastName: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="cd-info-edit-field">
+                    <span>Email</span>
+                    <input
+                      type="email"
+                      value={infoDraft.email}
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          email: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="cd-info-edit-field">
+                    <span>Phone</span>
+                    <input
+                      value={infoDraft.phone}
+                      placeholder="+91…"
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          phone: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="cd-info-edit-field">
+                    <span>Position</span>
+                    <input
+                      value={infoDraft.position}
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          position: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="cd-info-edit-field">
+                    <span>Company</span>
+                    <input
+                      value={infoDraft.companyName}
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          companyName: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="cd-info-edit-field">
+                    <span>Location</span>
+                    <input
+                      value={infoDraft.location}
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          location: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="cd-info-edit-field">
+                    <span>Website</span>
+                    <input
+                      value={infoDraft.website}
+                      placeholder="https://"
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          website: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="cd-info-edit-field">
+                    <span>Industry</span>
+                    <input
+                      value={infoDraft.industry}
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          industry: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="cd-info-edit-field">
+                    <span>LinkedIn</span>
+                    <input
+                      value={infoDraft.linkedinUrl}
+                      placeholder="https://linkedin.com/in/…"
+                      onChange={(event) =>
+                        setInfoDraft((draft) => ({
+                          ...draft,
+                          linkedinUrl: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              ) : (
+                <div className="cd-info-stack">
+                  <InfoRow icon={<IconUser />} label="Name">
+                    {[contact.firstName, contact.lastName]
+                      .filter(Boolean)
+                      .join(" ") || "—"}
+                  </InfoRow>
+                  <InfoRow icon={<IconMail />} label="Email">
+                    <a className="cd-info-link" href={`mailto:${contact.email}`}>
+                      {contact.email}
                     </a>
-                  ) : (
-                    <span className="cd-info-muted">Not set</span>
-                  )}
-                </InfoRow>
-                <InfoRow icon={<IconBriefcase />} label="Position">
-                  {position || <span className="cd-info-muted">Not set</span>}
-                </InfoRow>
-                <InfoRow icon={<IconBuilding />} label="Company">
-                  {contact.company?.id && !readOnly ? (
-                    <Link
-                      href={portalCompanyRoute(contact.company.id)}
-                      className="cd-info-link"
-                    >
-                      {contact.companyName}
-                    </Link>
-                  ) : (
-                    contact.companyName || (
+                  </InfoRow>
+                  <InfoRow icon={<IconPhone />} label="Phone">
+                    {phone ? (
+                      <a
+                        className="cd-info-link"
+                        href={`tel:${phone.replace(/\s+/g, "")}`}
+                      >
+                        {phone}
+                      </a>
+                    ) : (
                       <span className="cd-info-muted">Not set</span>
-                    )
-                  )}
-                </InfoRow>
-                <InfoRow icon={<IconMapPin />} label="Location">
-                  {location || <span className="cd-info-muted">Not set</span>}
-                </InfoRow>
-                {website ? (
+                    )}
+                  </InfoRow>
+                  <InfoRow icon={<IconBriefcase />} label="Position">
+                    {position || <span className="cd-info-muted">Not set</span>}
+                  </InfoRow>
+                  <InfoRow icon={<IconBuilding />} label="Company">
+                    {contact.company?.id && !readOnly ? (
+                      <Link
+                        href={portalCompanyRoute(contact.company.id)}
+                        className="cd-info-link"
+                      >
+                        {contact.companyName}
+                      </Link>
+                    ) : (
+                      contact.companyName || (
+                        <span className="cd-info-muted">Not set</span>
+                      )
+                    )}
+                  </InfoRow>
+                  <InfoRow icon={<IconMapPin />} label="Location">
+                    {location || <span className="cd-info-muted">Not set</span>}
+                  </InfoRow>
                   <InfoRow icon={<IconGlobe />} label="Website">
+                    {website ? (
+                      <a
+                        className="cd-info-link"
+                        href={website}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {contact.attributes?.website}
+                      </a>
+                    ) : (
+                      <span className="cd-info-muted">Not set</span>
+                    )}
+                  </InfoRow>
+                  <InfoRow icon={<IconTag />} label="Industry">
+                    {industry || <span className="cd-info-muted">Not set</span>}
+                  </InfoRow>
+                  {extraAttributes.map(([key, value]) => (
+                    <InfoRow
+                      key={key}
+                      icon={<IconTag />}
+                      label={CONTACT_ATTRIBUTE_LABELS[key] ?? key}
+                    >
+                      {value}
+                    </InfoRow>
+                  ))}
+                </div>
+              )}
+
+              {editingInfo ? null : (
+                <div className="cd-info-actions">
+                  {linkedinUrl ? (
                     <a
-                      className="cd-info-link"
-                      href={website}
+                      className="cd-linkedin-btn"
+                      href={linkedinUrl}
                       target="_blank"
                       rel="noreferrer"
                     >
-                      {contact.attributes?.website}
+                      <IconLinkedIn />
+                      View LinkedIn profile
                     </a>
-                  </InfoRow>
-                ) : null}
-                {extraAttributes.map(([key, value]) => (
-                  <InfoRow key={key} icon={<IconTag />} label={CONTACT_ATTRIBUTE_LABELS[key] ?? key}>
-                    {value}
-                  </InfoRow>
-                ))}
-              </div>
-
-              <div className="cd-info-actions">
-                {linkedinUrl ? (
-                  <a
-                    className="cd-linkedin-btn"
-                    href={linkedinUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <IconLinkedIn />
-                    View LinkedIn profile
-                  </a>
-                ) : (
-                  <span className="cd-linkedin-btn is-disabled">
-                    <IconLinkedIn />
-                    LinkedIn not added
-                  </span>
-                )}
-              </div>
+                  ) : (
+                    <span className="cd-linkedin-btn is-disabled">
+                      <IconLinkedIn />
+                      LinkedIn not added
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="cd-card cd-stats-card">

@@ -22,6 +22,7 @@ export type PortalPageId =
   | "knowledge"
   | "inbox"
   | "activity"
+  | "aircall"
   | "files"
   | "unsub"
   | "integrations";
@@ -73,6 +74,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   knowledge: "/portal/knowledge-base",
   inbox: "/portal/inbox",
   activity: "/portal/activity",
+  aircall: "/portal/aircall",
   files: "/portal/file-manager",
   unsub: "/portal/unsub",
   integrations: "/portal/integrations",
@@ -282,6 +284,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
         label: "Sender health",
         href: PORTAL_ROUTES["smtp-health"],
       },
+      { id: "aircall", label: "Calling", href: PORTAL_ROUTES.aircall },
     ],
   },
   { type: "item", id: "unsub", label: "Suppression List", href: PORTAL_ROUTES.unsub },
@@ -317,6 +320,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   knowledge: "Knowledge Base",
   inbox: "Master Inbox",
   activity: "Activity Feed",
+  aircall: "Calling",
   files: "File Manager",
   unsub: "Suppression List",
   integrations: "Integrations",
@@ -361,6 +365,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/knowledge-base")) return "knowledge";
   if (pathname.startsWith("/portal/inbox")) return "inbox";
   if (pathname.startsWith("/portal/activity")) return "activity";
+  if (pathname.startsWith("/portal/aircall")) return "aircall";
   if (pathname.startsWith("/portal/file-manager")) return "files";
   if (pathname.startsWith("/portal/unsub")) return "unsub";
   if (pathname.startsWith("/portal/integrations")) return "integrations";
@@ -373,7 +378,9 @@ export function getOpenGroupsFromPathname(
   return {
     crm: pathname.startsWith("/portal/crm"),
     marketing: pathname.startsWith("/portal/marketing"),
-    smtp: pathname.startsWith("/portal/smtp"),
+    smtp:
+      pathname.startsWith("/portal/smtp") ||
+      pathname.startsWith("/portal/aircall"),
   };
 }
 

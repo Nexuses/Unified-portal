@@ -4,7 +4,6 @@ export const LEAD_REPORT_COLUMN_OPTIONS = [
   { id: "company", label: "Company" },
   { id: "position", label: "Position" },
   { id: "solution", label: "Solution" },
-  { id: "lists", label: "Lists" },
   { id: "stage", label: "Stage" },
   { id: "date", label: "Date" },
 ] as const;
@@ -22,7 +21,6 @@ export function defaultLeadReportColumnVisibility(): LeadReportColumnVisibility 
     company: true,
     position: true,
     solution: true,
-    lists: true,
     stage: true,
     date: true,
   };

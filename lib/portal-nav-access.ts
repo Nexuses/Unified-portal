@@ -98,11 +98,19 @@ export function resolvePortalAccessPageId(
   pathname: string,
   searchParams?: { get(name: string): string | null } | null,
 ): PortalPageId {
-  if (
-    /^\/portal\/crm\/contacts\/[^/]+$/.test(pathname) &&
-    searchParams?.get("view") === "lead-report"
-  ) {
-    return "lead-reports";
+  if (/^\/portal\/crm\/contacts\/[^/]+$/.test(pathname)) {
+    if (searchParams?.get("view") === "lead-report") {
+      return "lead-reports";
+    }
+    // Pipeline (Kanban) deep-links into contact detail with ?from=/portal/analytics/kanban…
+    // Client-share users often have Pipeline but not Contacts — treat that as Pipeline access.
+    const from = searchParams?.get("from")?.trim() || "";
+    if (
+      from.startsWith("/portal/analytics/kanban") &&
+      !from.startsWith("//")
+    ) {
+      return "analytics-kanban";
+    }
   }
   return getHighlightPageFromPathnameForAccess(pathname);
 }
@@ -136,6 +144,7 @@ function getHighlightPageFromPathnameForAccess(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/knowledge-base")) return "knowledge";
   if (pathname.startsWith("/portal/inbox")) return "inbox";
   if (pathname.startsWith("/portal/activity")) return "activity";
+  if (pathname.startsWith("/portal/aircall")) return "aircall";
   if (pathname.startsWith("/portal/file-manager")) return "files";
   if (pathname.startsWith("/portal/unsub")) return "unsub";
   if (pathname.startsWith("/portal/integrations")) return "integrations";

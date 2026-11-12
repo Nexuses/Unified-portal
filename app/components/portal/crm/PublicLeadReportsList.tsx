@@ -63,8 +63,6 @@ function cellValue(item: PublicLeadItem, columnId: LeadReportColumnId) {
       return item.position || "";
     case "solution":
       return (item.solutions || []).join(", ");
-    case "lists":
-      return (item.lists || []).map((list) => list.name).join(", ");
     case "stage":
       return item.leadStageLabel || item.leadStage || "";
     case "date":
