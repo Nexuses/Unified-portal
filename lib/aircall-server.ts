@@ -1,5 +1,6 @@
 import { ObjectId } from "mongodb";
 import {
+  aircallConnectionStatus,
   digitsOnlyPhone,
   phoneMatchKey,
   phonesLikelyMatch,
@@ -21,6 +22,7 @@ export type AircallCallDoc = {
   status: string;
   startedAt: Date | null;
   endedAt: Date | null;
+  answeredAt?: Date | null;
   durationSec: number;
   phone: string;
   phoneDigits: string;
@@ -28,6 +30,9 @@ export type AircallCallDoc = {
   numberName: string;
   missedCallReason: string | null;
   recordingUrl: string | null;
+  recordingSummary?: string | null;
+  recordingSummaryError?: string | null;
+  recordingInterest?: "interested" | "not_interested" | "normal" | null;
   assetUrl: string | null;
   contactId: ObjectId | null;
   contactName: string | null;
@@ -281,25 +286,56 @@ async function findContactsAcrossProjectsByPhone(phone: string) {
   );
 }
 
+function answeredAtFromDoc(doc: AircallCallDoc) {
+  if (doc.answeredAt) {
+    return doc.answeredAt;
+  }
+  const unix = Number(doc.raw?.answered_at);
+  if (Number.isFinite(unix) && unix > 0) {
+    return new Date(unix * 1000);
+  }
+  return null;
+}
+
 function mapCallRow(doc: AircallCallDoc): AircallCallRow {
   const id = doc._id.toString();
+  const answeredAt = answeredAtFromDoc(doc);
+  const recordingSummary = String(doc.recordingSummary || "").trim() || null;
+  const recordingSummaryError = String(doc.recordingSummaryError || "").trim() || null;
+  const interest = String(doc.recordingInterest || "").trim();
+  const recordingInterest =
+    interest === "interested" || interest === "not_interested" || interest === "normal"
+      ? interest
+      : null;
+  const hasRecording = Boolean(doc.recordingUrl || doc.assetUrl);
   return {
     id,
     aircallCallId: doc.aircallCallId,
     direction: doc.direction,
     status: doc.status,
+    connectionStatus: aircallConnectionStatus({
+      status: doc.status,
+      durationSec: doc.durationSec,
+      missedCallReason: doc.missedCallReason,
+      answeredAt,
+    }),
     startedAt: doc.startedAt?.toISOString() ?? null,
     endedAt: doc.endedAt?.toISOString() ?? null,
+    answeredAt: answeredAt?.toISOString() ?? null,
     durationSec: doc.durationSec || 0,
     phone: doc.phone,
     phoneDigits: doc.phoneDigits,
     userName: doc.userName,
     numberName: doc.numberName,
     missedCallReason: doc.missedCallReason,
-    hasRecording: Boolean(doc.recordingUrl || doc.assetUrl),
+    hasRecording,
     recordingProxyUrl: doc.recordingUrl
       ? `/api/aircall/calls/${doc.aircallCallId}/recording`
       : null,
+    recordingSummary,
+    recordingSummaryError,
+    recordingInterest,
+    summaryPending: Boolean(doc.recordingUrl) && !recordingSummary && !recordingSummaryError,
     assetUrl: doc.assetUrl,
     contactId: doc.contactId?.toString() ?? null,
     contactName: doc.contactName,
@@ -429,6 +465,7 @@ function parseAircallCall(raw: AircallApiCall) {
     status: String(raw.status || ""),
     startedAt: unixToDate(raw.started_at),
     endedAt: unixToDate(raw.ended_at),
+    answeredAt: unixToDate(raw.answered_at),
     durationSec: Number(raw.duration) || 0,
     phone,
     phoneDigits: digitsOnlyPhone(phone),
@@ -496,6 +533,7 @@ export async function upsertAircallCallForProject(
         status: parsed.status,
         startedAt: parsed.startedAt,
         endedAt: parsed.endedAt,
+        answeredAt: parsed.answeredAt,
         durationSec: parsed.durationSec,
         phone: parsed.phone,
         phoneDigits: parsed.phoneDigits,

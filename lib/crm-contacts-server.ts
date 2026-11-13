@@ -34,7 +34,10 @@ import {
 } from "@/lib/open-pixel";
 import { BOT_OPEN_TAG, sendIsBotOpen } from "@/lib/bot-open";
 import { BOT_CLICK_TAG, clickEventIsBot } from "@/lib/bot-click";
-import { countDistinctCompaniesForList } from "@/lib/crm-list-stats";
+import {
+  countDistinctCompaniesForList,
+  ensureListMembershipIndexes,
+} from "@/lib/crm-list-stats";
 
 export async function getProjectContacts(projectId: ObjectId) {
   const db = await getDb();
@@ -137,6 +140,7 @@ async function listMembershipContactIds(
   projectId: ObjectId,
   listId: ObjectId,
 ) {
+  await ensureListMembershipIndexes();
   const db = await getDb();
   const memberships = await db
     .collection<ListMembershipDoc>("list_memberships")
@@ -255,6 +259,7 @@ export async function getProjectContactDetail(
 
   const contact = mapContact(doc);
 
+  await ensureListMembershipIndexes();
   const memberships = await db
     .collection<ListMembershipDoc>("list_memberships")
     .find({ projectId, contactId })

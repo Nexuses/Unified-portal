@@ -4322,6 +4322,30 @@ select.filter{
   display:flex;justify-content:flex-end;gap:10px;
   padding:16px 24px 22px;border-top:1px solid #f0f0f0;
 }
+.crm-list-picker{position:relative;}
+.crm-list-picker-trigger{
+  width:100%;height:42px;border:1px solid #d1d5db;border-radius:10px;
+  padding:0 12px;font-size:15px;color:#111827;background:#fff;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  cursor:pointer;text-align:left;
+}
+.crm-list-picker-trigger.is-open{border-color:#7c3aed;box-shadow:0 0 0 3px rgba(124,58,237,.15);}
+.crm-list-picker-trigger span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.crm-list-picker-menu{
+  position:absolute;z-index:5;left:0;right:0;top:calc(100% + 4px);
+  max-height:220px;overflow:auto;background:#fff;border:1px solid #e5e7eb;
+  border-radius:12px;box-shadow:0 12px 28px rgba(16,24,40,.14);padding:6px;
+}
+.crm-list-picker-menu button{
+  width:100%;border:0;background:transparent;border-radius:8px;
+  padding:8px 10px;font-size:14px;color:#111827;cursor:pointer;text-align:left;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+.crm-list-picker-menu button:hover{background:#f5f3ff;}
+.crm-list-picker-menu button.is-selected{background:#ede9fe;}
+.crm-list-picker-menu button span:last-child{color:#6b7280;font-size:12px;}
+.crm-list-picker-create{color:#6d28d9;font-weight:650;border-top:1px solid #f3f4f6;margin-top:4px;}
+.crm-list-picker-empty{margin:0;padding:8px 10px;color:#6b7280;font-size:14px;}
 .crm-field{display:flex;flex-direction:column;gap:6px;}
 .crm-field label{font-size:14px;font-weight:600;color:#374151;}
 .crm-field input,.crm-field select{
@@ -11761,8 +11785,11 @@ a.an-kanban-card-name.is-link:hover{
 
 /* —— Aircall calling —— */
 .aircall-page{padding:0 0 40px;}
-.aircall-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px;}
-.aircall-head-actions{display:flex;gap:8px;align-items:center;}
+.aircall-head{display:flex;align-items:center;justify-content:space-between;gap:12px 16px;flex-wrap:wrap;margin-bottom:18px;}
+.aircall-head .desc{flex:1 0 100%;max-width:none;margin-top:4px;}
+.aircall-desc{display:flex;flex-direction:column;gap:2px;}
+.aircall-desc span{display:block;}
+.aircall-head-actions{display:flex;gap:8px;align-items:center;flex-shrink:0;}
 .aircall-banner{margin-bottom:14px;}
 .aircall-banner code{font-size:12px;}
 .aircall-from-contact{margin:0 0 12px;font-size:13px;color:#4b5563;}
@@ -12004,7 +12031,7 @@ a.an-kanban-card-name.is-link:hover{
 .aircall-empty-card h3{margin:0 0 8px;font-size:18px;}
 .aircall-empty-card p{margin:0;color:#6b7280;font-size:14px;line-height:1.5;max-width:560px;}
 .aircall-table-wrap{overflow:auto;border:1px solid #e5e7eb;border-radius:14px;background:#fff;}
-.aircall-table{width:100%;border-collapse:collapse;min-width:920px;}
+.aircall-table{width:100%;border-collapse:collapse;min-width:860px;}
 .aircall-table th,.aircall-table td{
   padding:12px 14px;text-align:left;border-bottom:1px solid #f3f4f6;
   font-size:13.5px;vertical-align:middle;
@@ -12054,6 +12081,49 @@ a.an-kanban-card-name.is-link:hover{
 .aircall-pill.is-inbound{background:#eff6ff;color:#1d4ed8;}
 .aircall-pill.is-outbound{background:#f5f3ff;color:#5b21b6;}
 .aircall-pill.is-ok{background:#ecfdf5;color:#047857;}
+.aircall-pill.is-connected{background:#ecfdf5;color:#047857;text-transform:none;}
+.aircall-status-head{display:inline-flex;align-items:center;gap:6px;text-transform:uppercase;}
+.aircall-status-help{
+  position:relative;width:15px;height:15px;color:#9ca3af;
+  display:inline-flex;align-items:center;justify-content:center;cursor:help;outline:none;
+}
+.aircall-status-help svg{width:15px;height:15px;display:block;}
+.aircall-status-help:hover,.aircall-status-help:focus-visible{color:#4b5563;z-index:6;}
+.aircall-status-tip{
+  position:absolute;left:50%;top:calc(100% + 8px);transform:translateX(-50%) translateY(-4px);
+  z-index:40;width:max-content;max-width:260px;padding:8px 10px;border-radius:8px;
+  background:#1f2937;color:#fff;font-size:12.5px;font-weight:500;line-height:1.35;
+  letter-spacing:0;text-transform:none;text-align:left;white-space:normal;
+  opacity:0;visibility:hidden;pointer-events:none;
+  box-shadow:0 8px 20px rgba(15,23,42,.18);
+}
+.aircall-status-tip::after{
+  content:"";position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
+  border:6px solid transparent;border-bottom-color:#1f2937;
+}
+.aircall-status-tip span{display:block;}
+.aircall-status-tip span + span{margin-top:6px;}
+.aircall-status-tip strong{display:block;font-weight:650;}
+.aircall-status-help:hover .aircall-status-tip,
+.aircall-status-help:focus-visible .aircall-status-tip{
+  opacity:1;visibility:visible;transform:translateX(-50%) translateY(0);
+}
+.aircall-table th:has(.aircall-status-help:hover),
+.aircall-table th:has(.aircall-status-help:focus-visible){position:relative;z-index:4;overflow:visible;}
+.aircall-pill.is-not-answered{background:#f1f5f9;color:#475569;text-transform:none;}
+.aircall-pill.is-not-connected{background:#fef2f2;color:#b91c1c;text-transform:none;}
+.aircall-pill.is-interested{background:#dcfce7;color:#166534;text-transform:none;}
+.aircall-pill.is-not-interested{background:#fff7ed;color:#c2410c;text-transform:none;}
+.aircall-note-btn{
+  width:32px;height:32px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;
+  color:#5b21b6;display:inline-grid;place-items:center;cursor:pointer;
+}
+.aircall-note-btn:hover{background:#f5f3ff;border-color:#ddd6fe;}
+.aircall-note-modal{max-width:480px;}
+.aircall-note-modal .crm-modal-head p{margin:4px 0 0;color:#6b7280;font-size:13px;}
+.aircall-note-body{margin:0;font-size:15px;line-height:1.55;color:#1f2937;}
+.portal-route[data-theme="dark"] .aircall-note-btn{background:#171a22;border-color:#2a2f3a;color:#c4b5fd;}
+.portal-route[data-theme="dark"] .aircall-note-body{color:#e5e7eb;}
 .aircall-player{
   position:relative;width:min(220px,100%);height:40px;
   display:flex;align-items:center;justify-content:center;

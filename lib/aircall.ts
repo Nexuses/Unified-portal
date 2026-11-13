@@ -2,13 +2,26 @@
 
 export type AircallCallDirection = "inbound" | "outbound";
 
+export type AircallConnectionStatus = "connected" | "not_connected";
+
+export type AircallCallInterest = "interested" | "not_interested" | "normal";
+
+export type AircallLogStatus =
+  | "connected"
+  | "not_answered"
+  | "not_connected"
+  | "interested"
+  | "not_interested";
+
 export type AircallCallRow = {
   id: string;
   aircallCallId: number;
   direction: AircallCallDirection | string;
   status: string;
+  connectionStatus: AircallConnectionStatus;
   startedAt: string | null;
   endedAt: string | null;
+  answeredAt: string | null;
   durationSec: number;
   phone: string;
   phoneDigits: string;
@@ -17,6 +30,10 @@ export type AircallCallRow = {
   missedCallReason: string | null;
   hasRecording: boolean;
   recordingProxyUrl: string | null;
+  recordingSummary: string | null;
+  recordingSummaryError: string | null;
+  recordingInterest: AircallCallInterest | null;
+  summaryPending: boolean;
   assetUrl: string | null;
   contactId: string | null;
   contactName: string | null;
@@ -24,6 +41,66 @@ export type AircallCallRow = {
   timelineLogged: boolean;
   syncedAt: string;
 };
+
+/** Connected when someone answered. Missed, abandoned, or very short calls are not connected. */
+export function aircallConnectionStatus(input: {
+  status?: string | null;
+  durationSec?: number | null;
+  missedCallReason?: string | null;
+  answeredAt?: string | Date | null;
+}): AircallConnectionStatus {
+  if (String(input.missedCallReason || "").trim()) {
+    return "not_connected";
+  }
+  if (input.answeredAt) {
+    return "connected";
+  }
+  const status = String(input.status || "").toLowerCase();
+  if (status === "answered") {
+    return "connected";
+  }
+  if ((input.durationSec || 0) >= 5) {
+    return "connected";
+  }
+  return "not_connected";
+}
+
+const LOG_STATUS_LABEL: Record<AircallLogStatus, string> = {
+  connected: "Connected",
+  not_answered: "Not answered",
+  not_connected: "Not connected",
+  interested: "Interested",
+  not_interested: "Not interested",
+};
+
+export function aircallLogStatusLabel(status: AircallLogStatus) {
+  return LOG_STATUS_LABEL[status];
+}
+
+/**
+ * A picked-up call is Connected, or Interested / Not interested when the note says so.
+ * A call that rang and nobody picked up is Not answered.
+ * A call that never went through is Not connected.
+ */
+export function aircallLogStatus(input: {
+  answeredAt?: string | Date | null;
+  durationSec?: number | null;
+  recordingInterest?: AircallCallInterest | null;
+}): AircallLogStatus {
+  if (input.answeredAt) {
+    if (input.recordingInterest === "interested") {
+      return "interested";
+    }
+    if (input.recordingInterest === "not_interested") {
+      return "not_interested";
+    }
+    return "connected";
+  }
+  if ((input.durationSec || 0) > 0) {
+    return "not_answered";
+  }
+  return "not_connected";
+}
 
 export function digitsOnlyPhone(value: string | undefined | null) {
   return String(value ?? "").replace(/\D+/g, "");

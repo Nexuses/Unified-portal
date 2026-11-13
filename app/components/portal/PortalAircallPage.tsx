@@ -2,10 +2,13 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { FileText } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AircallAudioPlayer from "@/app/components/portal/AircallAudioPlayer";
 import {
+  aircallLogStatus,
+  aircallLogStatusLabel,
   formatCallDuration,
   formatCallWhen,
   toE164Phone,
@@ -60,10 +63,12 @@ function CallCells({
   call,
   showContact,
   nested,
+  onOpenNotes,
 }: {
   call: AircallCallRow;
   showContact: boolean;
   nested?: boolean;
+  onOpenNotes: (call: AircallCallRow) => void;
 }) {
   const contactLabelRow =
     call.contactName || call.contactEmail || "CRM contact";
@@ -103,20 +108,12 @@ function CallCells({
         </div>
       </td>
       <td>
-        <span className={`aircall-pill is-${call.direction || "unknown"}`}>
-          {call.direction || "—"}
-        </span>
-      </td>
-      <td>
         <code className="aircall-phone">{call.phone || "—"}</code>
       </td>
-      <td>
-        <div>{call.userName || "—"}</div>
-        {call.numberName ? (
-          <div className="aircall-muted">{call.numberName}</div>
-        ) : null}
-      </td>
       <td>{formatCallDuration(call.durationSec)}</td>
+      <td>
+        <CallStatus call={call} />
+      </td>
       <td onClick={(event) => event.stopPropagation()}>
         {call.recordingProxyUrl ? (
           <AircallAudioPlayer src={call.recordingProxyUrl} />
@@ -124,7 +121,117 @@ function CallCells({
           <span className="aircall-muted">—</span>
         )}
       </td>
+      <td onClick={(event) => event.stopPropagation()}>
+        <CallNotes call={call} onOpen={onOpenNotes} />
+      </td>
     </>
+  );
+}
+
+const STATUS_HELP = [
+  ["Connected", "They picked up."],
+  ["Not answered", "It rang and nobody picked up."],
+  ["Not connected", "The call never went through."],
+  ["Interested", "They want to continue."],
+  ["Not interested", "They declined."],
+] as const;
+
+function StatusHelp() {
+  return (
+    <span className="aircall-status-help" tabIndex={0} aria-label="What each status means">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M9.6 9.4a2.4 2.4 0 1 1 3.3 2.2c-.7.4-1.1.8-1.1 1.6" />
+        <circle cx="12" cy="16.6" r="0.85" fill="currentColor" stroke="none" />
+      </svg>
+      <span className="aircall-status-tip" role="tooltip">
+        {STATUS_HELP.map(([label, detail]) => (
+          <span key={label}>
+            <strong>{label}</strong>
+            {detail}
+          </span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+function CallStatus({ call }: { call: AircallCallRow }) {
+  const status = aircallLogStatus(call);
+  return (
+    <span className={`aircall-pill is-${status.replaceAll("_", "-")}`}>
+      {aircallLogStatusLabel(status)}
+    </span>
+  );
+}
+
+function CallNotes({
+  call,
+  onOpen,
+}: {
+  call: AircallCallRow;
+  onOpen: (call: AircallCallRow) => void;
+}) {
+  if (!call.recordingSummary) {
+    if (call.summaryPending) {
+      return <span className="aircall-muted">…</span>;
+    }
+    return <span className="aircall-muted">—</span>;
+  }
+
+  const who = call.contactName || call.contactEmail || "this call";
+  return (
+    <button
+      type="button"
+      className="aircall-note-btn"
+      aria-label={`View notes for ${who}`}
+      title="View notes"
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen(call);
+      }}
+    >
+      <FileText size={16} strokeWidth={2} />
+    </button>
+  );
+}
+
+function CallNoteModal({
+  call,
+  onClose,
+}: {
+  call: AircallCallRow;
+  onClose: () => void;
+}) {
+  const who = call.contactName || call.contactEmail || "Call notes";
+  return (
+    <div className="crm-modal-backdrop" onClick={onClose}>
+      <div
+        className="crm-modal aircall-note-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="aircall-note-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="crm-modal-head">
+          <div>
+            <h3 id="aircall-note-title">{who}</h3>
+            <p>{formatCallWhen(call.startedAt || call.endedAt)}</p>
+          </div>
+          <button
+            type="button"
+            className="crm-modal-close"
+            aria-label="Close"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+        <div className="crm-modal-body">
+          <p className="aircall-note-body">{call.recordingSummary}</p>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -149,6 +256,7 @@ export default function PortalAircallPage() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
     () => new Set(),
   );
+  const [noteCall, setNoteCall] = useState<AircallCallRow | null>(null);
 
   const contactLabel = useMemo(() => {
     const name = String(nameParam || "").trim();
@@ -206,6 +314,31 @@ export default function PortalAircallPage() {
   }, []);
 
   useEffect(() => {
+    if (loading) return;
+    let stop = false;
+    void (async () => {
+      for (let step = 0; step < 40 && !stop; step += 1) {
+        const response = await fetch("/api/aircall/calls/summaries", {
+          method: "POST",
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || stop) break;
+        const updated = data?.call;
+        if (updated && typeof updated.id === "string") {
+          setCalls((current) =>
+            current.map((call) => (call.id === updated.id ? updated : call)),
+          );
+        }
+        if (!data?.remaining) break;
+      }
+    })();
+
+    return () => {
+      stop = true;
+    };
+  }, [loading]);
+
+  useEffect(() => {
     void load();
   }, [load]);
 
@@ -258,17 +391,7 @@ export default function PortalAircallPage() {
   return (
     <div className="aircall-page">
       <div className="crm-page-head aircall-head">
-        <div>
-          <h2>Calling</h2>
-          <p className="desc">
-            Dial from here with the embedded phone workspace
-            {projectName ? ` · ${projectName}` : ""}. Calls sync from Aircall
-            automatically every 10 minutes (or use Sync now).
-            <br />
-            Matched CRM calls land in the log below and on the contact timeline
-            with recordings.
-          </p>
-        </div>
+        <h2>Calling</h2>
         <div className="aircall-head-actions">
           {configured ? (
             <button
@@ -288,6 +411,17 @@ export default function PortalAircallPage() {
             {syncing ? "Syncing…" : "Sync now"}
           </button>
         </div>
+        <p className="desc aircall-desc">
+          <span>
+            Dial from here with the embedded phone workspace
+            {projectName ? ` · ${projectName}` : ""}. Calls sync from Aircall
+            automatically every 10 minutes (or use Sync now).
+          </span>
+          <span>
+            Matched CRM calls land in the log below and on the contact timeline
+            with recordings.
+          </span>
+        </p>
       </div>
 
       {!configured ? (
@@ -351,11 +485,16 @@ export default function PortalAircallPage() {
               <tr>
                 <th>Contact called</th>
                 <th>When</th>
-                <th>Direction</th>
                 <th>Phone</th>
-                <th>Agent</th>
                 <th>Duration</th>
+                <th>
+                  <span className="aircall-status-head">
+                    Status
+                    <StatusHelp />
+                  </span>
+                </th>
                 <th>Recording</th>
+                <th>Notes</th>
               </tr>
             </thead>
             <tbody>
@@ -436,26 +575,14 @@ export default function PortalAircallPage() {
                         ) : null}
                       </td>
                       <td>
-                        <span
-                          className={`aircall-pill is-${latest.direction || "unknown"}`}
-                        >
-                          {latest.direction || "—"}
-                        </span>
-                      </td>
-                      <td>
                         <code className="aircall-phone">
                           {latest.phone || "—"}
                         </code>
                       </td>
-                      <td>
-                        <div>{latest.userName || "—"}</div>
-                        {latest.numberName ? (
-                          <div className="aircall-muted">
-                            {latest.numberName}
-                          </div>
-                        ) : null}
-                      </td>
                       <td>{formatCallDuration(latest.durationSec)}</td>
+                      <td>
+                        <CallStatus call={latest} />
+                      </td>
                       <td onClick={(event) => event.stopPropagation()}>
                         {latest.recordingProxyUrl ? (
                           <AircallAudioPlayer
@@ -464,6 +591,9 @@ export default function PortalAircallPage() {
                         ) : (
                           <span className="aircall-muted">—</span>
                         )}
+                      </td>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <CallNotes call={latest} onOpen={setNoteCall} />
                       </td>
                     </tr>
                     {expanded
@@ -476,6 +606,7 @@ export default function PortalAircallPage() {
                               call={call}
                               showContact={false}
                               nested
+                              onOpenNotes={setNoteCall}
                             />
                           </tr>
                         ))
@@ -487,6 +618,9 @@ export default function PortalAircallPage() {
           </table>
         </div>
       )}
+      {noteCall?.recordingSummary ? (
+        <CallNoteModal call={noteCall} onClose={() => setNoteCall(null)} />
+      ) : null}
     </div>
   );
 }
