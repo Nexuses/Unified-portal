@@ -396,6 +396,8 @@ export async function runBoatCommand(
   sandboxId: string,
   command: string,
   timeoutSeconds = 25,
+  /** Raise for commands that return data (e.g. a file read back in chunks). */
+  stdoutMax = 6000,
 ) {
   const data = await boatFetch(`/sandboxes/${encodeURIComponent(sandboxId)}/commands`, {
     method: "POST",
@@ -417,7 +419,7 @@ export async function runBoatCommand(
   }
   return {
     exitCode: typeof record.exitCode === "number" ? record.exitCode : null,
-    stdout: clip(typeof record.stdout === "string" ? record.stdout : ""),
+    stdout: clip(typeof record.stdout === "string" ? record.stdout : "", stdoutMax),
     stderr: clip(typeof record.stderr === "string" ? record.stderr : "", 2000),
     timedOut: record.timedOut === true,
     detached: false,

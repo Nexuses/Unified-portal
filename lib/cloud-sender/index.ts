@@ -113,7 +113,7 @@ export async function ensureSenderChrome(
 /** Run one sender script command and parse its single NXS_RESULT line. */
 export async function runSenderScript(
   sandboxId: string,
-  command: "version" | "check" | "send" | "find_sent",
+  command: "version" | "check" | "send" | "find_sent" | "read_sheet" | "probe_outlook",
   args: Record<string, unknown>,
   timeoutSeconds = 85,
 ): Promise<SenderResult> {
@@ -154,23 +154,31 @@ export async function runSenderScript(
 }
 
 /** Install toolkit, start the sender Chrome, and report sign-in state. No AI. */
+export type SenderProvider = "gmail" | "outlook";
+
+export function senderInboxUrl(provider: SenderProvider = "gmail") {
+  return provider === "outlook" ? "https://outlook.office.com/mail/" : "https://mail.google.com/mail/u/0/#inbox";
+}
+
 export async function prepareAndCheckSender(
   sandboxId: string,
   directoryName: string,
+  provider: SenderProvider = "gmail",
 ): Promise<SenderResult & { stage: string; port?: number; chromeStarted?: boolean }> {
   const toolkit = await ensureSenderToolkit(sandboxId);
   if (!toolkit.ok) {
     return { ok: false, stage: "toolkit", code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail };
   }
-  const chrome = await ensureSenderChrome(sandboxId, directoryName);
+  const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl(provider));
   if (!chrome.ok) {
     return { ok: false, stage: "chrome", code: "CHROME_START_FAILED", message: chrome.detail };
   }
-  const check = await runSenderScript(sandboxId, "check", { port: chrome.port }, 85);
+  const check = await runSenderScript(sandboxId, "check", { port: chrome.port, provider }, 85);
   return { ...check, stage: "check", port: chrome.port, chromeStarted: chrome.started };
 }
 
 export type ScriptSendInput = {
+  provider?: SenderProvider;
   to: string;
   subject: string;
   html: string;
@@ -182,6 +190,8 @@ export type ScriptSendInput = {
   /** Search Sent first and skip if this row already went out (retries/resumes). */
   dupCheck?: boolean;
   dryRun?: boolean;
+  /** Outlook: label to pick when the org requires a sensitivity label. */
+  sensitivityLabel?: string;
 };
 
 /** Text fragments the body must contain after insertion (first lines of the pitch). */
@@ -206,7 +216,7 @@ export async function sendViaScript(
   if (!toolkit.ok) {
     return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail, sendPressed: false };
   }
-  const chrome = await ensureSenderChrome(sandboxId, directoryName);
+  const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl(input.provider));
   if (!chrome.ok) {
     return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail, sendPressed: false };
   }
@@ -216,6 +226,7 @@ export async function sendViaScript(
     "send",
     {
       port: chrome.port,
+      provider: input.provider || "gmail",
       to: input.to,
       subject: input.subject,
       html: input.html,
@@ -223,6 +234,7 @@ export async function sendViaScript(
       expectedEmail: input.expectedEmail,
       replaceSignature: input.replaceSignature,
       dupCheck: Boolean(input.dupCheck),
+      sensitivityLabel: input.sensitivityLabel || "",
       dryRun: Boolean(input.dryRun),
       expectText,
       expectStrong,
@@ -238,10 +250,76 @@ export async function findInSentViaScript(
   to: string,
   subject: string,
   days = 7,
+  provider: SenderProvider = "gmail",
 ) {
+  const toolkit = await ensureSenderToolkit(sandboxId);
+  if (!toolkit.ok) return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail };
+  const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl(provider));
+  if (!chrome.ok) return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail };
+  return runSenderScript(sandboxId, "find_sent", { port: chrome.port, to, subject, days, provider }, 70);
+}
+
+/** Read a VM file back in base64 chunks (command output is size-limited). */
+async function readVmFile(sandboxId: string, path: string, maxBytes = 2_000_000) {
+  const sizeResult = await runBoatCommand(sandboxId, `wc -c < ${shellQuote(path)}`, 15);
+  const size = Number(sizeResult.stdout.trim()) || 0;
+  if (size <= 0) return "";
+  if (size > maxBytes) throw new Error(`The sheet is larger than ${Math.round(maxBytes / 1e6)} MB`);
+  const chunk = 120_000;
+  const parts: Buffer[] = [];
+  for (let offset = 0; offset < size; offset += chunk) {
+    const result = await runBoatCommand(
+      sandboxId,
+      `tail -c +${offset + 1} ${shellQuote(path)} | head -c ${chunk} | base64 -w0`,
+      30,
+      chunk * 2,
+    );
+    const b64 = result.stdout.trim();
+    if (!b64 || /truncated/.test(b64)) throw new Error("Could not read the sheet back from the computer");
+    parts.push(Buffer.from(b64, "base64"));
+  }
+  const buffer = Buffer.concat(parts);
+  if (buffer.length !== size) throw new Error("Sheet read back incompletely; try again");
+  return buffer.toString("utf8");
+}
+
+/**
+ * Read a (possibly private) Google Sheet as CSV through the sender's signed-in Chrome. No AI.
+ * Returns the CSV text, or a coded failure (e.g. SHEET_ACCESS_DENIED, LOGIN_REQUIRED).
+ */
+export async function readSheetViaScript(
+  sandboxId: string,
+  directoryName: string,
+  sheetUrl: string,
+): Promise<{ ok: true; csv: string; how: string } | { ok: false; code: string; message?: string }> {
   const toolkit = await ensureSenderToolkit(sandboxId);
   if (!toolkit.ok) return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail };
   const chrome = await ensureSenderChrome(sandboxId, directoryName);
   if (!chrome.ok) return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail };
-  return runSenderScript(sandboxId, "find_sent", { port: chrome.port, to, subject, days }, 70);
+  const outPath = `/tmp/nexuses-sheet-${Date.now()}.csv`;
+  const result = await runSenderScript(sandboxId, "read_sheet", { port: chrome.port, sheetUrl, outPath }, 85);
+  if (!result.ok) {
+    return { ok: false, code: String(result.code || "SHEET_READ_FAILED"), message: result.message };
+  }
+  try {
+    const csv = await readVmFile(sandboxId, outPath);
+    return { ok: true, csv, how: String(result.how || "") };
+  } catch (error) {
+    return {
+      ok: false,
+      code: "SHEET_READ_BACK_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    await runBoatCommand(sandboxId, `rm -f ${shellQuote(outPath)}`, 10).catch(() => undefined);
+  }
+}
+
+/** Diagnostics: list Outlook compose controls (no send). */
+export async function probeOutlookViaScript(sandboxId: string, directoryName: string, to: string) {
+  const toolkit = await ensureSenderToolkit(sandboxId);
+  if (!toolkit.ok) return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail };
+  const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl("outlook"));
+  if (!chrome.ok) return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail };
+  return runSenderScript(sandboxId, "probe_outlook", { port: chrome.port, to }, 85);
 }

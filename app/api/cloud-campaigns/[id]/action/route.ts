@@ -13,6 +13,8 @@ import {
   submitChromeProfileAuthCode,
   clearCloudSendLog,
   checkScriptSender,
+  probeOutlookSender,
+  readSheetThroughSender,
   testScriptSend,
   verifyCloudCsv,
   verifyCloudSheet,
@@ -83,6 +85,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (action === "sender_test_send" || action === "sender_dry_run") {
       const result = await testScriptSend(projectId, id, {
         dryRun: action === "sender_dry_run",
+        to: String(body?.email ?? "").trim() || undefined,
       });
       return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
     }
@@ -229,6 +232,16 @@ export async function POST(request: NextRequest, { params }: Params) {
         desktopUrl: login.desktopUrl,
         profile: login.email ? { ...profile, gmail: login.email } : profile,
       });
+    }
+
+    if (action === "sender_probe_outlook") {
+      const result = await probeOutlookSender(projectId, id, String(body?.email ?? ""));
+      return NextResponse.json({ probe: result });
+    }
+
+    if (action === "sender_read_sheet") {
+      const result = await readSheetThroughSender(projectId, id, String(body?.sheetUrl ?? ""));
+      return NextResponse.json({ sheet: result });
     }
 
     if (action === "verify_csv") {

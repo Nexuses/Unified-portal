@@ -58,6 +58,12 @@ export type CloudChromeProfileDoc = {
   gmail: string;
   directoryName: string;
   verifiedAt?: Date;
+  /** Account signed in to this sender's dedicated script Chrome (no-AI sender). */
+  scriptEmail?: string;
+  scriptCheckedAt?: Date;
+  /** Outlook orgs that require a sensitivity label: the one to apply, and what Outlook offered. */
+  sensitivityLabel?: string;
+  sensitivityLabels?: string[];
   createdAt: Date;
   updatedAt: Date;
 };
@@ -170,6 +176,10 @@ function mapProfile(doc: WithId<CloudChromeProfileDoc>): CloudChromeProfile {
     gmail: doc.gmail,
     directoryName: doc.directoryName,
     verifiedAt: iso(doc.verifiedAt),
+    scriptEmail: doc.scriptEmail || undefined,
+    scriptCheckedAt: iso(doc.scriptCheckedAt),
+    sensitivityLabel: doc.sensitivityLabel || undefined,
+    sensitivityLabels: Array.isArray(doc.sensitivityLabels) ? doc.sensitivityLabels : undefined,
     createdAt: iso(doc.createdAt) || new Date().toISOString(),
   };
 }
@@ -408,6 +418,48 @@ export async function createChromeProfile(
   return mapProfile(doc as WithId<CloudChromeProfileDoc>);
 }
 
+/** Record (or clear) which account the sender's dedicated script Chrome is signed in to. */
+export async function markChromeProfileScriptState(
+  projectId: ObjectId,
+  profileId: string,
+  scriptEmail: string | null,
+) {
+  const { profiles } = await collections();
+  const now = new Date();
+  const update = scriptEmail
+    ? { $set: { scriptEmail: scriptEmail.trim().toLowerCase(), scriptCheckedAt: now, updatedAt: now } }
+    : { $set: { scriptCheckedAt: now, updatedAt: now }, $unset: { scriptEmail: "" as const } };
+  const result = await profiles.findOneAndUpdate({ projectId, profileId }, update, {
+    returnDocument: "after",
+  });
+  return result ? mapProfile(result) : null;
+}
+
+/** Save the chosen Outlook sensitivity label and/or the labels Outlook offered. */
+export async function setChromeProfileSensitivity(
+  projectId: ObjectId,
+  profileId: string,
+  input: { label?: string | null; labels?: string[] },
+) {
+  const { profiles } = await collections();
+  const $set: Record<string, unknown> = { updatedAt: new Date() };
+  const $unset: Record<string, ""> = {};
+  if (input.label !== undefined) {
+    const label = String(input.label || "").trim().slice(0, 80);
+    if (label) $set.sensitivityLabel = label;
+    else $unset.sensitivityLabel = "";
+  }
+  if (Array.isArray(input.labels)) {
+    $set.sensitivityLabels = input.labels.map((l) => String(l).trim().slice(0, 80)).filter(Boolean).slice(0, 30);
+  }
+  const update: Record<string, unknown> = { $set };
+  if (Object.keys($unset).length) update.$unset = $unset;
+  const result = await profiles.findOneAndUpdate({ projectId, profileId }, update, {
+    returnDocument: "after",
+  });
+  return result ? mapProfile(result) : null;
+}
+
 export async function markChromeProfileVerified(
   projectId: ObjectId,
   profileId: string,
@@ -551,7 +603,7 @@ export function campaignIsReady(campaign: CloudCampaign) {
       campaign.signatureReady &&
       campaign.sheetVerifiedAt &&
       (campaign.sheetRowCount ?? 0) > 0 &&
-      Boolean(campaign.sheetUrl?.trim()) &&
+      (Boolean(campaign.sheetUrl?.trim()) || campaign.sheetSource === "csv") &&
       campaign.customPromptReady,
   );
 }

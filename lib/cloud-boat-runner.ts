@@ -31,13 +31,21 @@ import {
   resolveCloudRowFields,
 } from "@/lib/cloud-sheet-csv";
 import { applyContactVariables } from "@/lib/email-variables";
-import { prepareAndCheckSender, sendViaScript, type SenderResult } from "@/lib/cloud-sender";
+import {
+  prepareAndCheckSender,
+  probeOutlookViaScript,
+  readSheetViaScript,
+  sendViaScript,
+  type SenderResult,
+} from "@/lib/cloud-sender";
 import {
   getBoatDesktopLock,
   getChromeProfile,
   getCloudCampaignDoc,
   lockBoatDesktop,
+  markChromeProfileScriptState,
   markChromeProfileVerified,
+  setChromeProfileSensitivity,
   patchCloudCampaignDoc,
   unlockBoatDesktop,
   type CloudCampaignDoc,
@@ -465,10 +473,22 @@ export async function checkScriptSender(projectId: ObjectId, campaignId: string)
   if (!doc) throw new Error("Campaign not found");
   if (!doc.profileDirectory) throw new Error("Pick a sender profile first");
   const sandbox = await readySandbox(projectId, campaignId);
-  const result = await prepareAndCheckSender(sandbox.id, doc.profileDirectory);
+  const result = await prepareAndCheckSender(
+    sandbox.id,
+    doc.profileDirectory,
+    resolveSenderProvider(doc.profileProvider),
+  );
   const expected = String(doc.profileGmail || "").trim().toLowerCase();
   const email = String(result.email || "").toLowerCase();
-  const matches = Boolean(expected && email && expected === email);
+  // First sign-in on a brand-new sender has no expected address yet: accept what Gmail shows.
+  const matches = Boolean(email && (!expected || expected === email));
+  if (doc.profileId && result.ok && result.status === "ready" && matches) {
+    await markChromeProfileScriptState(projectId, doc.profileId, email);
+    await markChromeProfileVerified(projectId, doc.profileId, email);
+    if (!expected) await patchCloudCampaignDoc(projectId, campaignId, { profileGmail: email });
+  } else if (doc.profileId && result.ok && result.status === "login_required") {
+    await markChromeProfileScriptState(projectId, doc.profileId, null);
+  }
   const desktopUrl = await openBoatDesktop(sandbox.id).catch(() => "");
   return {
     ...result,
@@ -494,15 +514,19 @@ function scriptFailureMessage(result: SenderResult, email: string, sender: strin
   const detail = result.message ? ` (${String(result.message).slice(0, 160)})` : "";
   switch (result.code) {
     case "LOGIN_REQUIRED":
-      return `Gmail is signed out in the sender Chrome. Take control, sign in as ${sender || "the sender"}, then Resume. Nothing was sent.`;
+      return `The sender Chrome is signed out. Take control, sign in as ${sender || "the sender"}, then Resume. Nothing was sent.`;
     case "WRONG_ACCOUNT":
-      return `The sender Chrome is signed in to a different Gmail account${detail}. Sign in as ${sender}, then Resume. Nothing was sent.`;
+      return `The sender Chrome is signed in to a different account${detail}. Sign in as ${sender}, then Resume. Nothing was sent.`;
     case "RECIPIENT_MISMATCH":
     case "SUBJECT_MISMATCH":
-      return `Gmail didn't fill the recipient/subject for ${email} correctly${detail}. Nothing was sent; Resume to retry.`;
+      return `The recipient/subject for ${email} didn't fill in correctly${detail}. Nothing was sent; Resume to retry.`;
     case "BODY_VERIFY_FAILED":
     case "BODY_INSERT_FAILED":
       return `The formatted email didn't paste correctly for ${email}${detail}. Nothing was sent; Resume to retry.`;
+    case "SENSITIVITY_LABEL_REQUIRED":
+      return `Your Outlook organisation requires a sensitivity label on every email. Pick one for this sender in step 2, then Resume. Nothing was sent.`;
+    case "SENSITIVITY_LABEL_NOT_FOUND":
+      return `The sensitivity label saved for this sender isn't offered by Outlook any more. Pick another in step 2, then Resume. Nothing was sent.`;
     case "TOOLKIT_INSTALL_FAILED":
       return `Could not set up the sender on the computer${detail}. Nothing was sent; Resume to retry.`;
     default:
@@ -530,12 +554,15 @@ async function sendRowWithScript(input: {
   phase: (text: string) => Promise<unknown>;
 }) {
   const { projectId, campaignId, doc, sandbox, nextRow, total, to } = input;
+  const mailName = cloudMailProductName(resolveSenderProvider(doc.profileProvider));
   const sender = String(doc.profileGmail || "").trim().toLowerCase();
   const dupCheck = doc.inflightRow === nextRow;
+  const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
   await patchCloudCampaignDoc(projectId, campaignId, { inflightRow: nextRow });
 
   const attempt = (withDupCheck: boolean) =>
     sendViaScript(sandbox.id, doc.profileDirectory || "", {
+      provider: resolveSenderProvider(doc.profileProvider),
       to,
       subject: input.subject,
       html: input.html,
@@ -543,12 +570,13 @@ async function sendRowWithScript(input: {
       expectedEmail: sender || undefined,
       replaceSignature: input.replaceSignature,
       dupCheck: withDupCheck,
+      sensitivityLabel: profile?.sensitivityLabel,
     });
 
   await input.phase(
     dupCheck
-      ? `checking Gmail Sent for ${to} before retrying, then sending…`
-      : `sending to ${to} in Gmail (no AI)…`,
+      ? `checking ${mailName} Sent for ${to} before retrying, then sending…`
+      : `sending to ${to} in ${mailName} (no AI)…`,
   );
   let result = await attempt(dupCheck);
   if (!result.ok && !result.sendPressed && SCRIPT_RETRYABLE.has(String(result.code))) {
@@ -571,12 +599,15 @@ async function sendRowWithScript(input: {
     };
   }
 
+  if (Array.isArray(result.labels) && doc.profileId) {
+    await setChromeProfileSensitivity(projectId, doc.profileId, { labels: result.labels as string[] });
+  }
   const definitive = result.ok && (result.status === "sent" || result.status === "already_sent");
   if (!definitive) {
     // sendPressed (or unknown because the command died) => possibly sent: keep in-flight.
     const maybeSent = result.sendPressed === true || result.code === "COMMAND_TIMEOUT" || result.code === "NO_RESULT" || result.code === "COMMAND_FAILED";
     const lastError = maybeSent
-      ? `Send to ${to} may or may not have gone out (${result.code || "unconfirmed"}). Resume checks Gmail Sent first and will not send it twice.`
+      ? `Send to ${to} may or may not have gone out (${result.code || "unconfirmed"}). Resume checks ${mailName} Sent first and will not send it twice.`
       : scriptFailureMessage(result, to, sender);
     const campaign = await patchCloudCampaignDoc(projectId, campaignId, {
       status: "paused",
@@ -603,8 +634,8 @@ async function sendRowWithScript(input: {
     email: to,
     status: "sent" as const,
     message: alreadySent
-      ? "Already in Gmail Sent; not sent again."
-      : `Sent via Gmail${result.inSent === true ? " · confirmed in Sent" : ""}.`,
+      ? `Already in ${mailName} Sent; not sent again.`
+      : `Sent via ${mailName}${result.inSent === true ? " · confirmed in Sent" : ""}.`,
     at: new Date().toISOString(),
   };
   const sendLog = [...(fresh.sendLog ?? []), entry].slice(-500);
@@ -637,6 +668,25 @@ async function sendRowWithScript(input: {
   };
 }
 
+/** Diagnostics: list Outlook compose controls for this campaign's sender (no send). */
+export async function probeOutlookSender(projectId: ObjectId, campaignId: string, to: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc?.profileDirectory) throw new Error("Pick a sender first");
+  const sandbox = await readySandbox(projectId, campaignId);
+  return probeOutlookViaScript(sandbox.id, doc.profileDirectory, to);
+}
+
+/** Diagnostics: read a sheet through the sender Chrome without storing anything. */
+export async function readSheetThroughSender(projectId: ObjectId, campaignId: string, sheetUrl: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc?.profileDirectory) throw new Error("Pick a sender first");
+  const sandbox = await readySandbox(projectId, campaignId);
+  const read = await readSheetViaScript(sandbox.id, doc.profileDirectory, sheetUrl);
+  if (!read.ok) return read;
+  const parsed = parseCloudCsvText(read.csv);
+  return { ok: true as const, how: read.how, rowCount: parsed.rowCount, headers: parsed.headers };
+}
+
 /** Build the exact HTML/plain body the campaign would send for a row. */
 function buildRowEmail(rowCells: Record<string, string>, signatureHtml: string) {
   const fields = resolveCloudRowFields(rowCells);
@@ -662,27 +712,38 @@ function buildRowEmail(rowCells: Record<string, string>, signatureHtml: string) 
 export async function testScriptSend(
   projectId: ObjectId,
   campaignId: string,
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; to?: string } = {},
 ) {
   const doc = await getCloudCampaignDoc(projectId, campaignId);
   if (!doc) throw new Error("Campaign not found");
   if (!doc.profileDirectory) throw new Error("Pick a sender profile first");
-  const self = String(doc.profileGmail || "").trim().toLowerCase();
-  if (!self.includes("@")) throw new Error("Confirm the sender inbox first");
+  const sender = String(doc.profileGmail || "").trim().toLowerCase();
+  if (!sender.includes("@")) throw new Error("Confirm the sender inbox first");
+  const requested = String(options.to || "").trim().toLowerCase();
+  if (requested && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(requested)) {
+    throw new Error("Enter a valid email address for the test.");
+  }
+  const self = requested || sender;
   const rowCells = Array.isArray(doc.sheetRows) ? doc.sheetRows.find((r) => r?.cells)?.cells : null;
   if (!rowCells) throw new Error("No stored people rows to build a test email from");
   const signatureHtml = String(doc.signatureHtml || "").trim();
   const { fields, html, plain } = buildRowEmail(rowCells, signatureHtml);
   const sandbox = await readySandbox(projectId, campaignId);
+  const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
   const result = await sendViaScript(sandbox.id, doc.profileDirectory, {
+    sensitivityLabel: profile?.sensitivityLabel,
+    provider: resolveSenderProvider(doc.profileProvider),
     to: self,
     subject: `[Test] ${fields.subject || "Cloud campaign test"}`,
     html,
     plain,
-    expectedEmail: self,
+    expectedEmail: sender,
     replaceSignature: Boolean(signatureHtml),
     dryRun: Boolean(options.dryRun),
   });
+  if (Array.isArray(result.labels) && doc.profileId) {
+    await setChromeProfileSensitivity(projectId, doc.profileId, { labels: result.labels as string[] });
+  }
   const desktopUrl = await openBoatDesktop(sandbox.id).catch(() => "");
   return { ...result, to: self, desktopUrl: desktopUrl || undefined };
 }
@@ -921,6 +982,9 @@ export async function verifyCloudCsv(
     sheetRows: parsed.rows,
     sheetVerifiedAt: new Date(),
     nextRow: 0,
+    sentCount: 0,
+    failedCount: 0,
+    inflightRow: undefined,
     lastReport: report,
     lastError: undefined,
     status: doc.status === "sending" ? doc.status : "ready",
@@ -953,8 +1017,51 @@ export async function verifyCloudSheet(
     throw new Error("Pick a sender profile before verifying the sheet");
   }
 
-  // Link-shared sheets: read headers and rows server-side. Free, instant, no agent turn.
-  const exported = await tryFetchSheetCsv(url);
+  // 1) Link-shared sheets: read server-side. Free, instant.
+  // 2) Private sheets: read through the sender's signed-in Chrome as CSV (no AI).
+  let exported = await tryFetchSheetCsv(url);
+  if (!exported && process.env.CLOUD_SENDER !== "agent") {
+    const sandbox = await readySandbox(projectId, campaignId);
+    const read = await readSheetViaScript(sandbox.id, doc.profileDirectory, url);
+    const sender = String(doc.profileGmail || "the sender").trim();
+    if (!read.ok) {
+      const lastError =
+        read.code === "LOGIN_REQUIRED"
+          ? `The sender Chrome isn't signed in to Google. Sign in (step 2), then verify again — or upload a CSV.`
+          : read.code === "SHEET_ACCESS_DENIED"
+            ? `${sender} can't open this sheet. Share it with ${sender} (or set "anyone with the link can view"), then verify again — or upload a CSV.`
+            : `Couldn't read the sheet (${read.code}${read.message ? `: ${String(read.message).slice(0, 120)}` : ""}). Try again, or upload a CSV.`;
+      await patchCloudCampaignDoc(projectId, campaignId, { lastError, lastReport: lastError });
+      return {
+        ok: false as const,
+        needsLogin: false,
+        needsOtp: false,
+        needsUserInput: false,
+        headers: [] as string[],
+        rowCount: 0,
+        samples: [] as CloudSheetSample[],
+        report: lastError,
+        sheetUrl: url,
+      };
+    }
+    const parsed = parseCloudCsvText(read.csv);
+    if (parsed.rowCount <= 0) {
+      const lastError = "The sheet has no people rows (only a header, or empty).";
+      await patchCloudCampaignDoc(projectId, campaignId, { lastError, lastReport: lastError });
+      return {
+        ok: false as const,
+        needsLogin: false,
+        needsOtp: false,
+        needsUserInput: false,
+        headers: parsed.headers,
+        rowCount: 0,
+        samples: [] as CloudSheetSample[],
+        report: lastError,
+        sheetUrl: url,
+      };
+    }
+    exported = parsed;
+  }
   if (exported) {
     const summary = `Sheet verified: ${exported.rowCount} rows · columns ${exported.headers.join(", ")}`;
     await patchCloudCampaignDoc(projectId, campaignId, {
@@ -967,6 +1074,9 @@ export async function verifyCloudSheet(
       sheetRows: exported.rows,
       sheetVerifiedAt: new Date(),
       nextRow: 0,
+      sentCount: 0,
+      failedCount: 0,
+      inflightRow: undefined,
       lastReport: summary,
       lastError: undefined,
       status: doc.status === "sending" ? doc.status : "ready",
@@ -1263,7 +1373,67 @@ export async function sendNextCloudRow(
     }
   }
 
-  // Sheet campaigns: dump the next row as text first (no compose in that turn).
+  // Private sheet: refresh rows through the sender's signed-in Chrome (no AI).
+  if (!rowCells && sheetUrl && doc.sheetSource !== "csv" && process.env.CLOUD_SENDER !== "agent") {
+    await phase("re-reading the sheet through the sender Chrome…");
+    const read = await readSheetViaScript(sandbox.id, doc.profileDirectory, sheetUrl);
+    if (read.ok) {
+      const parsed = parseCloudCsvText(read.csv);
+      if (parsed.rowCount > 0) {
+        await patchCloudCampaignDoc(projectId, campaignId, {
+          sheetRows: parsed.rows,
+          sheetRowCount: parsed.rowCount,
+        });
+        const cells = parsed.rows[nextRow]?.cells;
+        if (cells) {
+          const preview = resolveCloudRowFields(cells);
+          if (preview.email.includes("@") && pitchUsable(preview.pitch)) rowCells = { ...cells };
+        }
+      }
+    }
+  }
+
+  // Still no usable row: skip it with a reason instead of stopping the whole campaign.
+  if (!rowCells && process.env.CLOUD_SENDER !== "agent") {
+    const cells = Array.isArray(doc.sheetRows) ? doc.sheetRows[nextRow]?.cells : undefined;
+    const preview = cells ? resolveCloudRowFields(cells) : null;
+    const reason = !preview
+      ? "Row could not be read."
+      : !preview.email.includes("@")
+        ? "No valid email address in this row."
+        : "Pitch is empty or only a greeting.";
+    const entry = {
+      row: nextRow,
+      email: preview?.email || "",
+      status: "skipped" as const,
+      message: reason,
+      at: new Date().toISOString(),
+    };
+    const advanced = nextRow + 1;
+    const finished = total > 0 && advanced >= total;
+    const campaign = await patchCloudCampaignDoc(projectId, campaignId, {
+      nextRow: advanced,
+      sendLog: [...(doc.sendLog ?? []), entry].slice(-500),
+      lastReport: `Row ${nextRow + 1}${total ? ` of ${total}` : ""}: skipped — ${reason}`,
+      lastError: undefined,
+      ...(finished ? { status: "sent" as const } : {}),
+    });
+    if (finished) {
+      await unlockBoatDesktop(projectId, campaignId);
+      await stopBoatAfterCampaignWork(projectId);
+    }
+    return {
+      campaign,
+      sandbox,
+      done: finished,
+      needsLogin: false,
+      needsOtp: false,
+      needsUserInput: false,
+      report: entry.message,
+    };
+  }
+
+  // Agent mode only: dump the next row as text first (no compose in that turn).
   if (!rowCells) {
     if (!sheetUrl) {
       throw new Error(`Row ${nextRow + 1} has no usable email, or its pitch is empty or only a greeting. Check which column is mapped to the pitch (Outreach Pitch / Body / Message).`);
@@ -1386,7 +1556,7 @@ REPORT: one short sentence`;
 
   // Gmail: deterministic script sender (no AI). Outlook, or CLOUD_SENDER=agent, keeps the
   // desktop-agent path below.
-  if (provider === "gmail" && process.env.CLOUD_SENDER !== "agent") {
+  if (process.env.CLOUD_SENDER !== "agent") {
     return sendRowWithScript({
       projectId,
       campaignId,
@@ -1641,7 +1811,35 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
     throw new Error("Save the extra prompt step first (you can leave it empty)");
   }
   await assertBoatUnlocked(projectId, campaignId);
-  await readySandbox(projectId, campaignId);
+  const sandbox = await readySandbox(projectId, campaignId);
+  // No-AI Gmail sender: make sure its dedicated Chrome is up and signed in as the sender
+  // before any row runs, so a campaign never starts into a guaranteed failure.
+  if (process.env.CLOUD_SENDER !== "agent") {
+    const check = await prepareAndCheckSender(
+      sandbox.id,
+      doc.profileDirectory,
+      resolveSenderProvider(doc.profileProvider),
+    );
+    const expected = String(doc.profileGmail || "").trim().toLowerCase();
+    if (check.ok && check.status === "login_required") {
+      if (doc.profileId) await markChromeProfileScriptState(projectId, doc.profileId, null);
+      throw new Error(
+        `The sender Chrome isn't signed in. In step 2, open it, sign in as ${expected}, click Check sign-in, then start again.`,
+      );
+    }
+    if (!check.ok || check.status !== "ready") {
+      throw new Error(
+        `Couldn't check the sender Chrome (${check.code || "error"}${check.message ? `: ${String(check.message).slice(0, 120)}` : ""}). Try again in a moment.`,
+      );
+    }
+    const email = String(check.email || "").toLowerCase();
+    if (email !== expected) {
+      throw new Error(
+        `The sender Chrome is signed in as ${email}, not ${expected}. Sign in as ${expected} in step 2, then start again.`,
+      );
+    }
+    if (doc.profileId) await markChromeProfileScriptState(projectId, doc.profileId, email);
+  }
   await lockBoatDesktop(projectId, campaignId, doc.name);
   return patchCloudCampaignDoc(projectId, campaignId, {
     status: "sending",
