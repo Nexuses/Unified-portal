@@ -10,6 +10,7 @@ import CloudColumnMapPanel, {
   type CloudRowPreview,
 } from "@/app/components/portal/CloudColumnMapPanel";
 import { CLOUD_REQUIRED_FIELDS, type CloudColumnMap } from "@/lib/cloud-sheet-csv";
+import { useConfirmDialog } from "@/app/components/portal/useConfirmDialog";
 import CloudDesktopViewer, {
   type CloudDesktopLayout,
 } from "@/app/components/portal/CloudDesktopViewer";
@@ -85,6 +86,7 @@ export default function PortalCloudCampaignDetailPage({
   const [showPasswordAssist, setShowPasswordAssist] = useState(false);
   const [renamingProfileId, setRenamingProfileId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [confirm, confirmDialog] = useConfirmDialog();
   const tickBusy = useRef(false);
   // Bumped after restart/resume so the send loop starts again even if status stayed "sending".
   const [tickEpoch, setTickEpoch] = useState(0);
@@ -729,13 +731,11 @@ export default function PortalCloudCampaignDetailPage({
     const label =
       profile.gmail ||
       `${formatCloudSenderProvider(profile.provider)}${profile.label ? ` · ${profile.label}` : ""}`;
-    if (
-      !window.confirm(
-        `Delete sender "${label}"?\n\nCampaigns using this profile will need a new sender. This cannot be undone.`,
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm(
+      `Campaigns using “${label}” will need a new sender. This can't be undone.`,
+      { title: "Delete sender?", confirmLabel: "Delete", danger: true },
+    );
+    if (!ok) return;
     await withBusy("Deleting sender…", async () => {
       await deleteCloudProfile(profile.id);
       const refreshed = await fetchCloudProfiles();
@@ -793,13 +793,11 @@ export default function PortalCloudCampaignDetailPage({
   }
 
   async function restartSending() {
-    if (
-      !window.confirm(
-        "Restart from the first people row? Sent/failed counts and the send log will be cleared.",
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm("Sent/failed counts and the send log will be cleared, and sending starts again from row 1.", {
+      title: "Restart from row 1?",
+      confirmLabel: "Restart",
+    });
+    if (!ok) return;
     await withBusy("Restarting send…", async () => {
       const data = await runCloudCampaignAction(campaignId, "restart");
       if (data.campaign) {
@@ -823,9 +821,11 @@ export default function PortalCloudCampaignDetailPage({
   }
 
   async function clearSendLog() {
-    if (!window.confirm("Clear the Recent sends list? Send progress (next row) is kept.")) {
-      return;
-    }
+    const ok = await confirm("Send progress (next row) is kept.", {
+      title: "Clear recent sends?",
+      confirmLabel: "Clear",
+    });
+    if (!ok) return;
     await withBusy("Clearing send history…", async () => {
       const data = await runCloudCampaignAction(campaignId, "clear_send_log");
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
@@ -1536,6 +1536,7 @@ export default function PortalCloudCampaignDetailPage({
         </div>
       </div>
 
+      {confirmDialog}
       {desktopUrl ? (
         <CloudDesktopViewer
           desktopUrl={desktopUrl}

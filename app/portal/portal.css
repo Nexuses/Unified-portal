@@ -12537,3 +12537,11 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-map-preview dt{color:#6b7280;}
 .cloud-map-preview dd{margin:0;color:#111827;font-weight:600;min-width:0;overflow-wrap:anywhere;}
 .cloud-map-preview iframe{width:100%;height:360px;border:1px solid #eef0f2;border-radius:10px;background:#fff;}
+/* In-page confirm dialog (replaces window.confirm) */
+.confirm-overlay{position:fixed;inset:0;z-index:120;background:rgba(17,24,39,.35);display:flex;align-items:center;justify-content:center;padding:16px;}
+.confirm-dialog{width:min(420px,100%);background:#fff;border-radius:16px;padding:20px;box-shadow:0 20px 50px rgba(17,24,39,.25);display:flex;flex-direction:column;gap:10px;}
+.confirm-dialog strong{font-size:16px;color:#111827;}
+.confirm-dialog p{margin:0;font-size:13.5px;line-height:1.5;color:#4b5563;}
+.confirm-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:6px;}
+.btn-dark.is-danger{background:#dc2626;}
+.btn-dark.is-danger:hover{background:#b91c1c;}
