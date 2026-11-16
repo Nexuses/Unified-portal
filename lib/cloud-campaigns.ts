@@ -66,6 +66,9 @@ export type CloudCampaign = {
   customPrompt?: string;
   customPromptReady?: boolean;
   sheetUrl?: string;
+  /** How people rows were loaded — sheet (Boat read) or csv upload. */
+  sheetSource?: "csv" | "sheet";
+  sheetFileName?: string;
   sheetHeaders?: string[];
   sheetRowCount?: number;
   sheetSamples?: CloudSheetSample[];
@@ -148,6 +151,20 @@ export async function createCloudCampaign(name: string): Promise<CloudCampaign> 
     | null;
   if (!response.ok || !data?.campaign) {
     throw new Error(data?.error || "Could not create the campaign");
+  }
+  return data.campaign;
+}
+
+export async function duplicateCloudCampaign(id: string): Promise<CloudCampaign> {
+  const response = await fetch(
+    `/api/cloud-campaigns/${encodeURIComponent(id)}/duplicate`,
+    { method: "POST" },
+  );
+  const data = (await response.json().catch(() => null)) as
+    | { campaign?: CloudCampaign; error?: string }
+    | null;
+  if (!response.ok || !data?.campaign) {
+    throw new Error(data?.error || "Could not duplicate the campaign");
   }
   return data.campaign;
 }
@@ -289,7 +306,10 @@ export async function runCloudCampaignAction(
     | "submit_auth_code"
     | "start"
     | "pause"
+    | "stop"
     | "resume"
+    | "restart"
+    | "clear_send_log"
     | "tick",
   body?: Record<string, unknown>,
 ) {

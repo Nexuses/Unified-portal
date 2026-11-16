@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   createCloudCampaign,
   deleteCloudCampaign,
+  duplicateCloudCampaign,
   fetchCloudCampaigns,
   formatCloudCampaignStatus,
   type CloudCampaign,
@@ -175,6 +176,20 @@ export default function PortalCloudCampaignPage() {
       router.push(campaignPath(campaign.id));
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : "Failed to create campaign");
+    }
+  }
+
+  async function handleDuplicate(campaign: CloudCampaign) {
+    setDeletingId(`dup-${campaign.id}`);
+    setOpenMenuId(null);
+    try {
+      const copy = await duplicateCloudCampaign(campaign.id);
+      setCampaigns((current) => [copy, ...current]);
+      router.push(campaignPath(copy.id));
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Failed to duplicate campaign");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -462,6 +477,16 @@ export default function PortalCloudCampaignPage() {
                           </button>
                           {openMenuId === campaign.id ? (
                             <div className="drip-more-menu" role="menu">
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={deletingId !== null}
+                                onClick={() => void handleDuplicate(campaign)}
+                              >
+                                {deletingId === `dup-${campaign.id}`
+                                  ? "Duplicating…"
+                                  : "Duplicate campaign"}
+                              </button>
                               <button
                                 type="button"
                                 role="menuitem"

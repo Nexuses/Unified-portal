@@ -35,6 +35,10 @@ import {
   stopBoatSandbox,
   type BoatSandbox,
 } from "@/lib/boat";
+import {
+  formatBoatMemoryBlock,
+  getProjectBoatMemory,
+} from "@/lib/boat-memory";
 import { getBoatDesktopLock } from "@/lib/cloud-campaigns-server";
 import { createPitchResearchJob, normalizeCompanyInputs } from "@/lib/pitch-research-server";
 import { PITCH_RESEARCH_MAX_COMPANIES, type AssistantPitchResearchCard } from "@/lib/pitch-research";
@@ -1403,8 +1407,17 @@ async function runBoatTool(
       if (task.length > 4000) {
         return { output: { error: "That task is too long." } };
       }
+      const memory = await getProjectBoatMemory(context.projectId).catch(() => null);
+      const memoryBlock = memory ? formatBoatMemoryBlock(memory) : "";
+      const fullTask = memoryBlock ? `${memoryBlock}\n${task}` : task;
       const saved = args.fresh === true ? null : await savedBoatTask(context.projectId);
-      const result = await runBoatDesktopTask(sandbox.id, task, saved?.conversationId ?? null);
+      const result = await runBoatDesktopTask(
+        sandbox.id,
+        fullTask,
+        saved?.conversationId ?? null,
+        undefined,
+        context.projectId,
+      );
       await rememberBoatTask(context.projectId, result.promptId, result.conversationId);
       return {
         card: boatCard(

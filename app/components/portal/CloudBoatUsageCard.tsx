@@ -56,6 +56,13 @@ export default function CloudBoatUsageCard({ days = 30 }: { days?: number }) {
     );
   }
 
+  const running = usage.machineRunning === true;
+  const stateLabel = running
+    ? "Running"
+    : usage.machineState === "none"
+      ? "Not linked"
+      : "Stopped";
+
   return (
     <div className="cloud-usage-card">
       <button
@@ -66,7 +73,11 @@ export default function CloudBoatUsageCard({ days = 30 }: { days?: number }) {
       >
         <span className="cloud-usage-label">
           <strong>Computer cost</strong>
-          <small>Last {usage.days} days · estimated</small>
+          <small>
+            <span className={`cloud-machine-pill${running ? " is-on" : ""}`}>{stateLabel}</span>
+            {" · "}
+            Last {usage.days} days · estimated
+          </small>
         </span>
         <span className="cloud-usage-total">{formatUsd(usage.totalEstimatedUsd)}</span>
       </button>
@@ -96,8 +107,15 @@ export default function CloudBoatUsageCard({ days = 30 }: { days?: number }) {
             {usage.models.length ? ` · ${usage.models.join(", ")}` : ""}
           </p>
           <p className="cloud-muted">
+            {running
+              ? "Machine billing is active while the computer is running."
+              : "Machine billing pauses when the computer is stopped. Start the computer (or send/verify) to resume the same disk."}
+            {" "}
+            Idle computers stop after about 30 minutes with no work (unless a campaign holds the lock).
+          </p>
+          <p className="cloud-muted">
             Claude $ is estimated from Boat-reported tokens (list prices). Exact Anthropic billing
-            stays on your Claude account. Boat proxy/machine amounts come from Boat.
+            stays on your Claude account.
           </p>
         </div>
       ) : null}

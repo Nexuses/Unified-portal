@@ -11229,6 +11229,25 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-usage-detail li{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;color:#4b5563;}
 .cloud-usage-detail li strong{color:#111827;font-variant-numeric:tabular-nums;}
 .cloud-usage-detail .cloud-muted{margin:0 0 4px;}
+.cloud-machine-pill{
+  display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:700;
+  background:#e5e7eb;color:#374151;vertical-align:middle;
+}
+.cloud-machine-pill.is-on{background:#dcfce7;color:#166534;}
+.cloud-memory-card .cloud-memory-summary{
+  max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:12px;font-weight:600;color:#4b5563;
+}
+.cloud-memory-card .crm-field{margin:8px 0;}
+.cloud-memory-card textarea{
+  width:100%;min-height:88px;resize:vertical;font:inherit;font-size:13px;
+  border:1px solid #e5e7eb;border-radius:10px;padding:8px 10px;
+}
+.cloud-memory-card .cloud-provider-toggle{margin:8px 0;flex-wrap:wrap;}
+.drip-detail-actions{flex-wrap:wrap;align-items:flex-start;gap:8px;}
+.cloud-step-body input[type="file"]{
+  display:block;width:100%;font:inherit;font-size:13px;padding:8px 0;
+}
 .cloud-notice,.cloud-busy{
   margin:0;padding:10px 12px;border-radius:10px;font-size:13.5px;line-height:1.4;
 }
@@ -11332,6 +11351,7 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-review-list span{color:#111827;overflow-wrap:anywhere;}
 .cloud-gap-field{max-width:220px;}
 .cloud-log{display:flex;flex-direction:column;gap:8px;}
+.cloud-log-head{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .cloud-log strong{font-size:13px;}
 .cloud-log ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;}
 .cloud-log li{
@@ -11339,6 +11359,10 @@ a.an-kanban-card-name.is-link:hover{
   border-radius:10px;background:#f9fafb;border:1px solid #eef2f7;font-size:12.5px;
 }
 .cloud-log small{flex-basis:100%;color:#6b7280;}
+.cloud-log-pager{
+  display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;
+  font-size:12px;color:#6b7280;
+}
 .cloud-log-status{
   font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
   border-radius:999px;padding:2px 7px;
@@ -11349,8 +11373,8 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-desktop.is-floating{
   position:fixed;right:16px;bottom:16px;z-index:85;
   display:flex;flex-direction:column;
-  width:min(340px,calc(100vw - 24px));height:min(240px,calc(100vh - 32px));
-  min-width:240px;min-height:180px;border-radius:14px;overflow:hidden;
+  width:min(420px,calc(100vw - 24px));height:min(280px,calc(100vh - 32px));
+  min-width:300px;min-height:210px;border-radius:14px;overflow:hidden;
   background:#16181d;color:#f9fafb;border:1px solid #2a2d36;
   box-shadow:0 18px 48px rgba(17,24,39,.38);
 }
@@ -11380,6 +11404,22 @@ a.an-kanban-card-name.is-link:hover{
   border:1px solid #2a2d36;background:#111;
 }
 .cloud-desktop-frame{width:100%;height:100%;border:0;background:#111;display:block;}
+.cloud-desktop-resize{position:absolute;z-index:6;touch-action:none;background:transparent;}
+.cloud-desktop-resize-e{top:14px;right:0;bottom:22px;width:8px;cursor:ew-resize;}
+.cloud-desktop-resize-s{left:14px;right:22px;bottom:0;height:8px;cursor:ns-resize;}
+.cloud-desktop-resize-se{
+  right:0;bottom:0;width:22px;height:22px;cursor:nwse-resize;
+  background:linear-gradient(135deg,transparent 50%,rgba(255,255,255,.6) 50%,rgba(255,255,255,.6) 58%,transparent 58%,transparent 72%,rgba(255,255,255,.6) 72%,rgba(255,255,255,.6) 80%,transparent 80%);
+}
+.cloud-desktop-viewonly{
+  position:absolute;inset:0;z-index:3;display:flex;align-items:flex-end;justify-content:center;
+  padding-bottom:22px;background:transparent;cursor:default;
+}
+.cloud-desktop-viewonly .btn-dark{
+  background:#fff;color:#111827;border-color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.35);
+}
+.cloud-desktop-actions .cloud-desktop-control{background:#fff;color:#111827;border-color:#fff;}
+.cloud-desktop-actions .cloud-desktop-control.is-on{background:#dc2626;border-color:#dc2626;color:#fff;}
 .cloud-desktop-preview-hit{
   position:absolute;inset:0;z-index:2;border:0;padding:0;margin:0;
   background:transparent;cursor:zoom-in;
@@ -11420,6 +11460,6 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-detail-page.has-computer{flex-direction:column;}
 .cloud-detail-page.has-computer .cloud-detail-main{border-right:0;padding-right:0;}
 @media (max-width:980px){
-  .cloud-desktop.is-floating{width:min(100vw - 20px,300px);height:min(220px,38vh);}
+  .cloud-desktop.is-floating:not(.is-maximized):not(.is-minimized){width:min(100vw - 20px,340px);height:min(240px,40vh);}
   .cloud-desktop.is-minimized{height:140px;}
 }

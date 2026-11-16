@@ -87,4 +87,8 @@ export type BoatUsageSummary = {
   models: string[];
   proxied: boolean;
   blocked: boolean;
+  machineRunning?: boolean;
+  machineState?: string;
+  lastBoatActivityAt?: string | null;
+  lockedByCampaign?: boolean;
 };

@@ -31,7 +31,12 @@ type BoatLinkDoc = {
   updatedAt: Date;
   promptId?: string;
   conversationId?: string | null;
+  /** Last ensure/run/tick — used to idle-stop after BOAT_IDLE_STOP_MS. */
+  lastBoatActivityAt?: Date;
 };
+
+/** Stop running VMs with no activity for this long (when not campaign-locked). */
+export const BOAT_IDLE_STOP_MS = 30 * 60 * 1000;
 
 export class BoatError extends Error {
   status: number;
@@ -151,10 +156,23 @@ export async function stopBoatSandbox(sandboxId: string) {
   });
 }
 
-export async function waitForBoat(sandboxId: string, attempts = 8) {
+/** States where we should keep polling after resume/start (not terminal failure). */
+const WAITING_STATES = new Set([
+  ...STARTING_STATES,
+  "archiving",
+  "archived",
+  "stopping",
+  "stopped",
+  "resuming",
+  "starting",
+  "unknown",
+]);
+
+export async function waitForBoat(sandboxId: string, attempts = 20) {
   let sandbox = await getBoatSandbox(sandboxId);
   for (let attempt = 0; attempt < attempts && !isBoatRunning(sandbox.state); attempt += 1) {
-    if (!STARTING_STATES.has(sandbox.state) && sandbox.state !== "archiving") {
+    // Permanent failures — stop waiting. Otherwise keep polling through resume-from-archive.
+    if (!WAITING_STATES.has(sandbox.state)) {
       break;
     }
     await sleep(2000);
@@ -186,10 +204,101 @@ async function reviveBoat(sandboxId: string) {
   if (/data was deleted|deleted after/i.test(sandbox.error ?? "")) {
     throw new BoatError(sandbox.error || "This sandbox's data was deleted.", 410, "sandbox_deleted");
   }
-  if (sandbox.state === "archived" || sandbox.state === "error") {
+  if (
+    sandbox.state === "archived" ||
+    sandbox.state === "error" ||
+    sandbox.state === "stopped" ||
+    sandbox.state === "stopping"
+  ) {
     await resumeBoatSandbox(sandboxId);
   }
   return waitForBoat(sandboxId);
+}
+
+export async function stampBoatActivity(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const now = new Date();
+  await collection.updateOne(
+    { projectId },
+    { $set: { lastBoatActivityAt: now, updatedAt: now } },
+  );
+}
+
+/** Stop this project's VM if it is currently running (disk is kept). */
+export async function stopProjectBoat(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  if (!saved?.sandboxId) {
+    return { stopped: false as const, reason: "none" as const };
+  }
+  try {
+    const sandbox = await getBoatSandbox(saved.sandboxId);
+    if (
+      sandbox.state === "archived" ||
+      sandbox.state === "archiving" ||
+      sandbox.state === "stopped" ||
+      sandbox.state === "stopping" ||
+      sandbox.state === "cancelled" ||
+      sandbox.state === "deleted"
+    ) {
+      return {
+        stopped: false as const,
+        reason: "already_stopped" as const,
+        sandboxId: sandbox.id,
+        state: sandbox.state,
+      };
+    }
+    if (!isBoatRunning(sandbox.state) && !STARTING_STATES.has(sandbox.state)) {
+      return {
+        stopped: false as const,
+        reason: "not_running" as const,
+        sandboxId: sandbox.id,
+        state: sandbox.state,
+      };
+    }
+    await stopBoatSandbox(sandbox.id);
+    return {
+      stopped: true as const,
+      sandboxId: sandbox.id,
+      state: "archiving" as const,
+    };
+  } catch (error) {
+    if (error instanceof BoatError && (error.status === 404 || sandboxDiskGone(error))) {
+      return { stopped: false as const, reason: "gone" as const };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Stop if last activity is older than BOAT_IDLE_STOP_MS.
+ * Caller must skip when a campaign holds boat_desktop_locks.
+ */
+export async function maybeStopIdleProjectBoat(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  if (!saved?.sandboxId) {
+    return { stopped: false as const, reason: "none" as const };
+  }
+  const last = saved.lastBoatActivityAt;
+  if (!last) {
+    return { stopped: false as const, reason: "no_activity" as const };
+  }
+  if (Date.now() - last.getTime() < BOAT_IDLE_STOP_MS) {
+    return { stopped: false as const, reason: "active" as const };
+  }
+  return stopProjectBoat(projectId);
+}
+
+export async function getBoatActivityMeta(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  return {
+    sandboxId: saved?.sandboxId || null,
+    lastBoatActivityAt: saved?.lastBoatActivityAt
+      ? saved.lastBoatActivityAt.toISOString()
+      : null,
+  };
 }
 
 /** One Boat computer per project. Resumes the saved disk, or creates a blank one when that disk is gone. */
@@ -199,7 +308,9 @@ export async function ensureProjectBoat(projectId: ObjectId) {
   let replacedDeletedDisk = false;
   if (saved?.sandboxId) {
     try {
-      return await reviveBoat(saved.sandboxId);
+      const sandbox = await reviveBoat(saved.sandboxId);
+      await stampBoatActivity(projectId);
+      return sandbox;
     } catch (error) {
       if (!sandboxDiskGone(error)) {
         throw error;
@@ -209,12 +320,17 @@ export async function ensureProjectBoat(projectId: ObjectId) {
   }
 
   const created = await createBoatSandbox();
+  const now = new Date();
   await collection.updateOne(
     { projectId },
     {
-      $set: { sandboxId: created.id, updatedAt: new Date() },
+      $set: {
+        sandboxId: created.id,
+        updatedAt: now,
+        lastBoatActivityAt: now,
+      },
       $unset: { promptId: "", conversationId: "" },
-      $setOnInsert: { projectId, createdAt: new Date() },
+      $setOnInsert: { projectId, createdAt: now },
     },
     { upsert: true },
   );
@@ -291,6 +407,26 @@ Do not ask the user for columns, subjects, or account names that are already vis
 Task:
 `;
 
+/** Used for automated runner tasks that define their own reply format. */
+/** Automated runner tasks: the task text carries everything, so no extra preface. */
+const STRICT_TASK_PREFACE = "";
+
+export type BoatTaskOptions = {
+  /** Task defines its own reply format: no generic suffix, tighter preface. */
+  strict?: boolean;
+  /** When the watch window ends before the turn finishes, interrupt it. */
+  interruptOnTimeout?: boolean;
+};
+
+function agentModelOptions() {
+  const model = process.env.BOAT_AGENT_MODEL?.trim();
+  const reasoningEffort = process.env.BOAT_AGENT_EFFORT?.trim();
+  return {
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
+}
+
 function agentProviders() {
   const chosen = process.env.BOAT_AGENT_PROVIDER?.trim();
   if (chosen) return [chosen];
@@ -330,8 +466,11 @@ async function queueBoatPrompt(
   sandboxId: string,
   task: string,
   conversationId: string | null,
+  strict = false,
 ) {
-  const prompt = `${DESKTOP_TASK_PREFACE}${task.trim()}\n\nWhen you finish, report the rows you read, who you emailed, and any row that failed.`;
+  const prompt = strict
+    ? `${STRICT_TASK_PREFACE}${task.trim()}`
+    : `${DESKTOP_TASK_PREFACE}${task.trim()}\n\nWhen you finish, report the rows you read, who you emailed, and any row that failed.`;
   let lastError: unknown;
   for (const provider of agentProviders()) {
     try {
@@ -340,6 +479,7 @@ async function queueBoatPrompt(
         body: JSON.stringify({
           provider,
           prompt,
+          ...agentModelOptions(),
           ...(conversationId ? { conversationId } : { new: true }),
         }),
       });
@@ -367,8 +507,16 @@ export async function getBoatPrompt(sandboxId: string, promptId: string) {
   return readPromptRun(data, promptId);
 }
 
-async function latestAgentReport(sandboxId: string, conversationId: string | null) {
-  const params = new URLSearchParams({ sort: "asc" });
+/** What the agent actually did (tool calls), for diagnosing turns that never produced text. */
+export type BoatAgentActivity = { responses: number; toolCalls: number; lastTool: string };
+
+async function latestAgentReport(
+  sandboxId: string,
+  conversationId: string | null,
+  activity?: BoatAgentActivity,
+) {
+  // Only agent text: "prompt" events echo our own task (and its "STATUS: sent OR failed" template).
+  const params = new URLSearchParams({ sort: "asc", type: "response" });
   if (conversationId) params.set("conversation", conversationId);
   const data = await boatFetch(`/sandboxes/${encodeURIComponent(sandboxId)}/events?${params}`);
   const record = (data ?? {}) as Record<string, unknown>;
@@ -382,14 +530,42 @@ async function latestAgentReport(sandboxId: string, conversationId: string | nul
   let report = "";
   for (const event of events) {
     if (!event || typeof event !== "object") continue;
+    const eventType = (event as { type?: unknown }).type;
+    if (typeof eventType === "string" && eventType !== "response") continue;
     const payload = (event as { data?: unknown }).data;
     const body =
       payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+    if (activity && body) {
+      activity.responses += 1;
+      const tools = Array.isArray(body.tools) ? body.tools : [];
+      for (const tool of tools) {
+        if (!tool || typeof tool !== "object") continue;
+        const record = tool as Record<string, unknown>;
+        const name = String(record.name ?? record.tool ?? record.tool_name ?? "");
+        if (record.type === "tool_use" || name) {
+          activity.toolCalls += 1;
+          if (name) activity.lastTool = name;
+        }
+      }
+    }
     if (!body || body.is_streaming === true) continue;
     const content = typeof body.content === "string" ? body.content.trim() : "";
     if (content) report = content;
   }
   return clip(report, 4000);
+}
+
+/** Stop a running agent turn (one conversation, or everything when null). */
+export async function interruptBoatAgent(
+  sandboxId: string,
+  conversationId: string | null,
+) {
+  const query = conversationId
+    ? `?conversation=${encodeURIComponent(conversationId)}`
+    : "";
+  await boatFetch(`/sandboxes/${encodeURIComponent(sandboxId)}/interrupt${query}`, {
+    method: "POST",
+  });
 }
 
 /** Queue the desktop agent, then wait for it to finish or for the watch window to end. */
@@ -398,30 +574,56 @@ export async function runBoatDesktopTask(
   task: string,
   conversationId: string | null,
   watchMs = 90_000,
+  projectId?: ObjectId,
+  options: BoatTaskOptions = {},
 ) {
+  if (projectId) {
+    await stampBoatActivity(projectId).catch(() => undefined);
+  }
   let queued: Awaited<ReturnType<typeof queueBoatPrompt>>;
   try {
-    queued = await queueBoatPrompt(sandboxId, task, conversationId);
+    queued = await queueBoatPrompt(sandboxId, task, conversationId, options.strict);
   } catch (error) {
     if (conversationId && error instanceof BoatError && error.status === 404) {
-      return runBoatDesktopTask(sandboxId, task, null, watchMs);
+      return runBoatDesktopTask(sandboxId, task, null, watchMs, projectId, options);
     }
     throw error;
   }
   const started = Date.now();
   let current = queued;
-  let report = "";
-  while (Date.now() - started < watchMs) {
-    await sleep(3000);
+  let timedOut = false;
+  while (true) {
+    if (Date.now() - started >= watchMs) {
+      timedOut = true;
+      break;
+    }
+    await sleep(2500);
     try {
       current = await getBoatPrompt(sandboxId, queued.promptId);
     } catch {
+      timedOut = true;
       break;
     }
-    report = await latestAgentReport(sandboxId, current.conversationId).catch(() => report);
     if (current.done) break;
   }
-  return { ...current, report };
+  let interrupted = false;
+  if (timedOut && !current.done && options.interruptOnTimeout) {
+    // Never leave an orphaned agent burning credits (and racing the next prompt).
+    await interruptBoatAgent(sandboxId, current.conversationId ?? queued.conversationId).then(
+      () => {
+        interrupted = true;
+      },
+      () => undefined,
+    );
+  }
+  // Only read events once (the final answer) instead of on every poll.
+  const activity: BoatAgentActivity = { responses: 0, toolCalls: 0, lastTool: "" };
+  const report = await latestAgentReport(
+    sandboxId,
+    current.conversationId ?? queued.conversationId,
+    activity,
+  ).catch(() => "");
+  return { ...current, report, timedOut, interrupted, activity };
 }
 
 export async function rememberBoatTask(

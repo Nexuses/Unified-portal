@@ -3,14 +3,18 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   pauseCloudSending,
   prepareChromeProfileLogin,
+  restartCloudSending,
   resumeCloudSending,
   sendNextCloudRow,
   signInChromeProfileOnBoat,
   startCloudComputer,
   startCloudSending,
+  stopCloudSending,
   submitChromeProfileAuthCode,
+  clearCloudSendLog,
   verifyCloudSheet,
 } from "@/lib/cloud-boat-runner";
+import { learnBoatMemoryFromSender } from "@/lib/boat-memory";
 import {
   getChromeProfile,
   getCloudCampaign,
@@ -20,6 +24,21 @@ import {
 } from "@/lib/cloud-campaigns-server";
 import { openBoatDesktop } from "@/lib/boat";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
+
+async function maybeLearnSenderMemory(
+  projectId: ObjectId,
+  profile: { id: string; provider?: string; gmail?: string },
+  email: string,
+  updatedBy?: string,
+) {
+  if (!email.includes("@")) return;
+  await learnBoatMemoryFromSender(projectId, {
+    provider: profile.provider === "outlook" ? "outlook" : "gmail",
+    profileId: profile.id,
+    email,
+    updatedBy,
+  }).catch(() => undefined);
+}
 
 export const maxDuration = 300;
 
@@ -85,6 +104,7 @@ export async function POST(request: NextRequest, { params }: Params) {
 
       // Already-known inbox address: accept without forcing another Boat login probe.
       if (knownEmail && (profile.verifiedAt || profile.gmail?.includes("@"))) {
+        await maybeLearnSenderMemory(projectId, profile, knownEmail, session.email);
         const campaign = await getCloudCampaign(projectId, id);
         return NextResponse.json({
           campaign,
@@ -103,6 +123,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         await patchCloudCampaignDoc(projectId, id, {
           profileGmail: confirmedEmail,
         });
+        await maybeLearnSenderMemory(projectId, profile, confirmedEmail, session.email);
       }
       const campaign = await getCloudCampaign(projectId, id);
       return NextResponse.json({
@@ -147,6 +168,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         await patchCloudCampaignDoc(projectId, id, {
           profileGmail: login.email,
         });
+        await maybeLearnSenderMemory(projectId, profile, login.email, session.email);
       }
       const campaign = await getCloudCampaign(projectId, id);
       return NextResponse.json({
@@ -178,6 +200,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         await patchCloudCampaignDoc(projectId, id, {
           profileGmail: login.email,
         });
+        await maybeLearnSenderMemory(projectId, profile, login.email, session.email);
       }
       const campaign = await getCloudCampaign(projectId, id);
       return NextResponse.json({
@@ -192,18 +215,12 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     if (action === "verify_sheet") {
-      const sheetUrl = String(body?.sheetUrl || existing.sheetUrl || "").trim();
+      const sheetUrl = String(body?.sheetUrl ?? "").trim();
       if (!sheetUrl) {
-        return NextResponse.json({ error: "Paste a Google Sheet link" }, { status: 400 });
-      }
-      let url: URL;
-      try {
-        url = new URL(sheetUrl);
-      } catch {
-        return NextResponse.json({ error: "That sheet link is not a valid URL" }, { status: 400 });
-      }
-      if (url.protocol !== "http:" && url.protocol !== "https:") {
-        return NextResponse.json({ error: "Use an http(s) Google Sheet link" }, { status: 400 });
+        return NextResponse.json(
+          { error: "Paste a Google Sheet link first." },
+          { status: 400 },
+        );
       }
       const verified = await verifyCloudSheet(projectId, id, sheetUrl);
       const campaign = await getCloudCampaign(projectId, id);
@@ -218,13 +235,26 @@ export async function POST(request: NextRequest, { params }: Params) {
       return NextResponse.json({ campaign });
     }
 
-    if (action === "pause") {
-      const campaign = await pauseCloudSending(projectId, id);
+    if (action === "pause" || action === "stop") {
+      const campaign =
+        action === "stop"
+          ? await stopCloudSending(projectId, id)
+          : await pauseCloudSending(projectId, id);
       return NextResponse.json({ campaign });
     }
 
     if (action === "resume") {
       const campaign = await resumeCloudSending(projectId, id);
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "restart") {
+      const campaign = await restartCloudSending(projectId, id);
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "clear_send_log") {
+      const campaign = await clearCloudSendLog(projectId, id);
       return NextResponse.json({ campaign });
     }
 

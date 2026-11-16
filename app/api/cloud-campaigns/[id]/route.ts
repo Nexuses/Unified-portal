@@ -52,7 +52,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       patch.sheetVerifiedAt = undefined;
       patch.sheetHeaders = [];
       patch.sheetSamples = [];
+      patch.sheetRows = [];
       patch.sheetRowCount = 0;
+      patch.sheetSource = undefined;
+      patch.sheetFileName = undefined;
     }
     if (body.gapMinutes !== undefined) {
       const gap = Math.max(0, Math.min(120, Number(body.gapMinutes) || 0));

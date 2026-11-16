@@ -25,9 +25,13 @@ export type CloudCampaignDoc = {
   customPrompt?: string;
   customPromptReady?: boolean;
   sheetUrl?: string;
+  sheetSource?: "csv" | "sheet";
+  sheetFileName?: string;
   sheetHeaders?: string[];
   sheetRowCount?: number;
   sheetSamples?: CloudSheetSample[];
+  /** Full people rows from CSV (server-only; not mapped to client). */
+  sheetRows?: CloudSheetSample[];
   sheetVerifiedAt?: Date;
   computerReady?: boolean;
   gapMinutes: number;
@@ -132,12 +136,19 @@ function mapCampaign(doc: WithId<CloudCampaignDoc>): CloudCampaign {
     customPrompt: doc.customPrompt || "",
     customPromptReady: doc.customPromptReady === true,
     sheetUrl: doc.sheetUrl,
+    sheetSource: doc.sheetSource === "csv" ? "csv" : doc.sheetSource === "sheet" ? "sheet" : undefined,
+    sheetFileName: doc.sheetFileName,
     sheetHeaders: doc.sheetHeaders,
     sheetRowCount: doc.sheetRowCount,
     sheetSamples: normalizeSheetSamples(doc.sheetSamples),
     sheetVerifiedAt: iso(doc.sheetVerifiedAt),
     computerReady: doc.computerReady === true,
-    gapMinutes: Math.max(0, Number(doc.gapMinutes) || 3),
+    // Preserve 0 — `Number(x) || 3` incorrectly turns a 0-minute gap into 3.
+    gapMinutes: (() => {
+      const raw = Number(doc.gapMinutes);
+      if (!Number.isFinite(raw)) return 3;
+      return Math.max(0, Math.min(120, Math.round(raw)));
+    })(),
     nextRow: Math.max(0, Number(doc.nextRow) || 0),
     sentCount: Math.max(0, Number(doc.sentCount) || 0),
     failedCount: Math.max(0, Number(doc.failedCount) || 0),
@@ -210,6 +221,91 @@ export async function createCloudCampaign(projectId: ObjectId, name: string) {
     createdAt: now,
     updatedAt: now,
   };
+  await campaigns.insertOne(doc);
+  return mapCampaign(doc as WithId<CloudCampaignDoc>);
+}
+
+async function nextDuplicateCloudName(projectId: ObjectId, baseName: string) {
+  const { campaigns } = await collections();
+  const root = baseName.replace(/\s*\(copy(?:\s+\d+)?\)\s*$/i, "").trim() || baseName;
+  const existing = await campaigns
+    .find({ projectId }, { projection: { name: 1 } })
+    .toArray();
+  const names = new Set(existing.map((item) => String(item.name || "").trim().toLowerCase()));
+  let candidate = `${root} (copy)`;
+  let index = 2;
+  while (names.has(candidate.toLowerCase())) {
+    candidate = `${root} (copy ${index})`;
+    index += 1;
+  }
+  return candidate;
+}
+
+/** Copy setup (sender, signature, sheet, prompt, gap). Fresh send progress. */
+export async function duplicateCloudCampaign(projectId: ObjectId, campaignId: string) {
+  const existing = await getCloudCampaignDoc(projectId, campaignId);
+  if (!existing) {
+    throw new Error("Campaign not found");
+  }
+  const { campaigns } = await collections();
+  const now = new Date();
+  const newId = await nextCampaignId(projectId);
+  const name = await nextDuplicateCloudName(projectId, existing.name);
+
+  const gapRaw = Number(existing.gapMinutes);
+  const gapMinutes = Number.isFinite(gapRaw)
+    ? Math.max(0, Math.min(120, Math.round(gapRaw)))
+    : 3;
+
+  const doc: CloudCampaignDoc = {
+    _id: new ObjectId(),
+    projectId,
+    campaignId: newId,
+    name,
+    status: "draft",
+    profileId: existing.profileId,
+    profileProvider: existing.profileProvider,
+    profileGmail: existing.profileGmail,
+    profileDirectory: existing.profileDirectory,
+    signatureHtml: existing.signatureHtml,
+    signatureReady: existing.signatureReady === true,
+    customPrompt: existing.customPrompt,
+    customPromptReady: existing.customPromptReady === true,
+    sheetUrl: existing.sheetUrl,
+    sheetSource: existing.sheetSource,
+    sheetFileName: existing.sheetFileName,
+    sheetHeaders: Array.isArray(existing.sheetHeaders)
+      ? [...existing.sheetHeaders]
+      : undefined,
+    sheetRowCount: existing.sheetRowCount,
+    sheetSamples: Array.isArray(existing.sheetSamples)
+      ? existing.sheetSamples.map((sample) => ({
+          cells: { ...(sample.cells || {}) },
+        }))
+      : undefined,
+    sheetRows: Array.isArray(existing.sheetRows)
+      ? existing.sheetRows.map((row) => ({
+          cells: { ...(row.cells || {}) },
+        }))
+      : undefined,
+    sheetVerifiedAt: existing.sheetVerifiedAt,
+    computerReady: existing.computerReady === true,
+    gapMinutes,
+    nextRow: 0,
+    sentCount: 0,
+    failedCount: 0,
+    sendLog: [],
+    lastError: undefined,
+    lastReport: `Duplicated from “${existing.name}”.`,
+    lockPromptId: undefined,
+    lockConversationId: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const mappedPreview = mapCampaign(doc as WithId<CloudCampaignDoc>);
+  doc.status = campaignIsReady(mappedPreview) ? "ready" : "draft";
+
   await campaigns.insertOne(doc);
   return mapCampaign(doc as WithId<CloudCampaignDoc>);
 }
@@ -451,9 +547,9 @@ export function campaignIsReady(campaign: CloudCampaign) {
       campaign.profileGmail &&
       campaign.profileGmail.includes("@") &&
       campaign.signatureReady &&
-      campaign.sheetUrl &&
       campaign.sheetVerifiedAt &&
       (campaign.sheetRowCount ?? 0) > 0 &&
+      Boolean(campaign.sheetUrl?.trim()) &&
       campaign.customPromptReady,
   );
 }
