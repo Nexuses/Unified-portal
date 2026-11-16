@@ -3,11 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   deleteCloudCampaign,
   getChromeProfile,
+  getChromeProfileDefaults,
   getCloudCampaign,
+  getCloudCampaignDoc,
   markChromeProfileVerified,
   patchCloudCampaignDoc,
   resolveChromeProfileEmail,
+  saveChromeProfileDefaults,
 } from "@/lib/cloud-campaigns-server";
+import { columnMapStats, reconcileColumnMap } from "@/lib/cloud-sheet-csv";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
@@ -52,7 +56,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       patch.sheetVerifiedAt = undefined;
       patch.sheetHeaders = [];
       patch.sheetSamples = [];
+      patch.sheetRows = [];
       patch.sheetRowCount = 0;
+      patch.sheetSource = undefined;
+      patch.sheetFileName = undefined;
     }
     if (body.gapMinutes !== undefined) {
       const gap = Math.max(0, Math.min(120, Number(body.gapMinutes) || 0));
@@ -71,6 +78,25 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       patch.profileProvider = profile.provider;
       patch.profileGmail = email || profile.gmail || "";
       patch.profileDirectory = profile.directoryName;
+      // Fill this campaign from what the sender remembers (only where it's still unset).
+      const existing = await getCloudCampaignDoc(projectId, id);
+      const defaults = await getChromeProfileDefaults(projectId, profile.id);
+      if (existing && defaults) {
+        if (!existing.signatureReady && defaults.signatureSet && typeof body.signatureHtml !== "string") {
+          patch.signatureHtml = defaults.signatureHtml || "";
+          patch.signatureReady = true;
+        }
+        if (typeof defaults.gapMinutes === "number" && body.gapMinutes === undefined && existing.gapMinutes === undefined) {
+          patch.gapMinutes = defaults.gapMinutes;
+        }
+        const headers = Array.isArray(existing.sheetHeaders) ? existing.sheetHeaders.map(String) : [];
+        const rows = Array.isArray(existing.sheetRows) ? existing.sheetRows : [];
+        if (!existing.columnMap && defaults.columnMap && headers.length) {
+          const columnMap = reconcileColumnMap(defaults.columnMap, headers, rows);
+          patch.columnMap = columnMap;
+          patch.columnStats = columnMapStats(rows, columnMap);
+        }
+      }
     }
     if (typeof body.signatureHtml === "string") {
       patch.signatureHtml = cleanSignatureHtml(body.signatureHtml);
@@ -103,6 +129,18 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const campaign = await patchCloudCampaignDoc(projectId, id, patch);
     if (!campaign) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
+    }
+    // Remember the sender's signature and gap for its next campaign.
+    if (campaign.profileId && typeof body.profileId !== "string") {
+      if (body.signatureReady === true) {
+        await saveChromeProfileDefaults(projectId, campaign.profileId, {
+          signatureHtml: campaign.signatureHtml || "",
+          signatureSet: true,
+        });
+      }
+      if (body.gapMinutes !== undefined) {
+        await saveChromeProfileDefaults(projectId, campaign.profileId, { gapMinutes: campaign.gapMinutes });
+      }
     }
     return NextResponse.json({ campaign });
   } catch (error) {

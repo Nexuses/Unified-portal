@@ -6,6 +6,7 @@ import {
   deleteChromeProfile,
   listChromeProfiles,
   renameChromeProfile,
+  setChromeProfileSensitivity,
 } from "@/lib/cloud-campaigns-server";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
@@ -39,7 +40,8 @@ export async function POST(request: NextRequest) {
       label: body?.label,
       provider,
     });
-    if (body?.openLogin === false) {
+    // Senders sign in to their own dedicated Chrome (no AI); the page drives that.
+    if (body?.openLogin === false || provider === "gmail" || provider === "outlook") {
       return NextResponse.json({ profile, needsLogin: true });
     }
     const login = await prepareChromeProfileLogin(
@@ -69,12 +71,23 @@ export async function PATCH(request: NextRequest) {
     const session = await requirePortalSession();
     if (isSessionError(session)) return session;
     const body = (await request.json().catch(() => null)) as
-      | { profileId?: string; label?: string }
+      | { profileId?: string; label?: string; sensitivityLabel?: string }
       | null;
     const profileId = String(body?.profileId ?? "").trim();
     const label = String(body?.label ?? "");
     if (!profileId) {
       return NextResponse.json({ error: "profileId is required" }, { status: 400 });
+    }
+    if (typeof body?.sensitivityLabel === "string") {
+      const updated = await setChromeProfileSensitivity(
+        new ObjectId(session.projectId),
+        profileId,
+        { label: body.sensitivityLabel },
+      );
+      if (!updated) {
+        return NextResponse.json({ error: "Sender profile not found" }, { status: 404 });
+      }
+      return NextResponse.json({ profile: updated });
     }
     const profile = await renameChromeProfile(
       new ObjectId(session.projectId),

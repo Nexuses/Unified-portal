@@ -2,14 +2,19 @@ import { ObjectId } from "mongodb";
 import { NextRequest, NextResponse } from "next/server";
 import {
   boatConfigured,
+  getBoatActivityMeta,
   getBoatAiUsage,
   getBoatMachineUsage,
+  getBoatSandbox,
   getSavedBoatSandboxId,
+  isBoatRunning,
+  maybeStopIdleProjectBoat,
 } from "@/lib/boat";
 import {
   estimateClaudeCostUsd,
   type BoatUsageSummary,
 } from "@/lib/boat-usage";
+import { getBoatDesktopLock } from "@/lib/cloud-campaigns-server";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
 export async function GET(request: NextRequest) {
@@ -30,8 +35,17 @@ export async function GET(request: NextRequest) {
     if (!sandboxId) {
       return NextResponse.json({
         usage: null,
+        machineState: "none",
+        machineRunning: false,
         message: "No computer linked yet. Start the computer once to begin tracking.",
       });
+    }
+
+    const lock = await getBoatDesktopLock(projectId);
+    let idleStopped = false;
+    if (!lock) {
+      const idle = await maybeStopIdleProjectBoat(projectId).catch(() => null);
+      idleStopped = idle?.stopped === true;
     }
 
     const since = new Date();
@@ -39,9 +53,11 @@ export async function GET(request: NextRequest) {
     since.setUTCHours(0, 0, 0, 0);
     const sinceIso = since.toISOString();
 
-    const [ai, machine] = await Promise.all([
+    const [ai, machine, sandbox, activity] = await Promise.all([
       getBoatAiUsage(sandboxId, days),
       getBoatMachineUsage(sandboxId, sinceIso).catch(() => null),
+      getBoatSandbox(sandboxId).catch(() => null),
+      getBoatActivityMeta(projectId),
     ]);
 
     const claudeEstimatedUsd = estimateClaudeCostUsd(ai.usage);
@@ -54,6 +70,9 @@ export async function GET(request: NextRequest) {
           .filter(Boolean),
       ),
     ];
+
+    const state = sandbox?.state || (idleStopped ? "archiving" : "unknown");
+    const machineRunning = sandbox ? isBoatRunning(sandbox.state) : machine?.running === true;
 
     const usage: BoatUsageSummary = {
       sandboxId,
@@ -72,9 +91,21 @@ export async function GET(request: NextRequest) {
       models,
       proxied: ai.proxied,
       blocked: ai.blocked,
+      machineRunning,
+      machineState: state,
+      lastBoatActivityAt: activity.lastBoatActivityAt,
+      lockedByCampaign: Boolean(lock),
     };
 
-    return NextResponse.json({ usage });
+    return NextResponse.json({
+      usage,
+      machineState: state,
+      machineRunning,
+      idleStopped,
+      message: machineRunning
+        ? "Computer is running — machine time is billing."
+        : "Computer is stopped — machine billing pauses. Start the computer to resume the same disk.",
+    });
   } catch (error) {
     console.error("Boat usage failed:", error instanceof Error ? error.message : error);
     return NextResponse.json(

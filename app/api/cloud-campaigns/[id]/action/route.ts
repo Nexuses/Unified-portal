@@ -3,14 +3,25 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   pauseCloudSending,
   prepareChromeProfileLogin,
+  restartCloudSending,
   resumeCloudSending,
   sendNextCloudRow,
   signInChromeProfileOnBoat,
   startCloudComputer,
   startCloudSending,
+  stopCloudSending,
   submitChromeProfileAuthCode,
+  clearCloudSendLog,
+  checkScriptSender,
+  previewCloudRow,
+  saveCloudColumnMap,
+  probeOutlookSender,
+  readSheetThroughSender,
+  testScriptSend,
+  verifyCloudCsv,
   verifyCloudSheet,
 } from "@/lib/cloud-boat-runner";
+import { learnBoatMemoryFromSender } from "@/lib/boat-memory";
 import {
   getChromeProfile,
   getCloudCampaign,
@@ -20,6 +31,21 @@ import {
 } from "@/lib/cloud-campaigns-server";
 import { openBoatDesktop } from "@/lib/boat";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
+
+async function maybeLearnSenderMemory(
+  projectId: ObjectId,
+  profile: { id: string; provider?: string; gmail?: string },
+  email: string,
+  updatedBy?: string,
+) {
+  if (!email.includes("@")) return;
+  await learnBoatMemoryFromSender(projectId, {
+    provider: profile.provider === "outlook" ? "outlook" : "gmail",
+    profileId: profile.id,
+    email,
+    updatedBy,
+  }).catch(() => undefined);
+}
 
 export const maxDuration = 300;
 
@@ -32,6 +58,10 @@ type ActionBody = {
   email?: string;
   password?: string;
   code?: string;
+  csvText?: string;
+  fileName?: string;
+  columnMap?: Record<string, unknown>;
+  row?: number;
 };
 
 function isValidEmail(value: string) {
@@ -51,6 +81,19 @@ export async function POST(request: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
 
+    if (action === "sender_check") {
+      const result = await checkScriptSender(projectId, id);
+      return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
+    }
+
+    if (action === "sender_test_send" || action === "sender_dry_run") {
+      const result = await testScriptSend(projectId, id, {
+        dryRun: action === "sender_dry_run",
+        to: String(body?.email ?? "").trim() || undefined,
+      });
+      return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
+    }
+
     if (action === "start_computer") {
       const result = await startCloudComputer(projectId, id);
       const campaign = await getCloudCampaign(projectId, id);
@@ -60,6 +103,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         sandboxId: result.sandbox.id,
         state: result.sandbox.state,
         replacedDeletedDisk: result.replacedDeletedDisk,
+        restoredFromSnapshot: result.restoredFromSnapshot,
       });
     }
 
@@ -85,6 +129,7 @@ export async function POST(request: NextRequest, { params }: Params) {
 
       // Already-known inbox address: accept without forcing another Boat login probe.
       if (knownEmail && (profile.verifiedAt || profile.gmail?.includes("@"))) {
+        await maybeLearnSenderMemory(projectId, profile, knownEmail, session.email);
         const campaign = await getCloudCampaign(projectId, id);
         return NextResponse.json({
           campaign,
@@ -103,6 +148,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         await patchCloudCampaignDoc(projectId, id, {
           profileGmail: confirmedEmail,
         });
+        await maybeLearnSenderMemory(projectId, profile, confirmedEmail, session.email);
       }
       const campaign = await getCloudCampaign(projectId, id);
       return NextResponse.json({
@@ -147,6 +193,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         await patchCloudCampaignDoc(projectId, id, {
           profileGmail: login.email,
         });
+        await maybeLearnSenderMemory(projectId, profile, login.email, session.email);
       }
       const campaign = await getCloudCampaign(projectId, id);
       return NextResponse.json({
@@ -178,6 +225,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         await patchCloudCampaignDoc(projectId, id, {
           profileGmail: login.email,
         });
+        await maybeLearnSenderMemory(projectId, profile, login.email, session.email);
       }
       const campaign = await getCloudCampaign(projectId, id);
       return NextResponse.json({
@@ -191,19 +239,46 @@ export async function POST(request: NextRequest, { params }: Params) {
       });
     }
 
+    if (action === "sender_probe_outlook") {
+      const result = await probeOutlookSender(projectId, id, String(body?.email ?? ""));
+      return NextResponse.json({ probe: result });
+    }
+
+    if (action === "sender_read_sheet") {
+      const result = await readSheetThroughSender(projectId, id, String(body?.sheetUrl ?? ""));
+      return NextResponse.json({ sheet: result });
+    }
+
+    if (action === "save_column_map") {
+      const campaign = await saveCloudColumnMap(projectId, id, body?.columnMap ?? {});
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "preview_row") {
+      const preview = await previewCloudRow(projectId, id, typeof body?.row === "number" ? body.row : undefined);
+      return NextResponse.json({ preview });
+    }
+
+    if (action === "verify_csv") {
+      const csvText = String(body?.csvText ?? "");
+      if (!csvText.trim()) {
+        return NextResponse.json({ error: "Upload a CSV file first." }, { status: 400 });
+      }
+      const verified = await verifyCloudCsv(projectId, id, {
+        csvText,
+        fileName: String(body?.fileName ?? ""),
+      });
+      const campaign = await getCloudCampaign(projectId, id);
+      return NextResponse.json({ campaign, ...verified });
+    }
+
     if (action === "verify_sheet") {
-      const sheetUrl = String(body?.sheetUrl || existing.sheetUrl || "").trim();
+      const sheetUrl = String(body?.sheetUrl ?? "").trim();
       if (!sheetUrl) {
-        return NextResponse.json({ error: "Paste a Google Sheet link" }, { status: 400 });
-      }
-      let url: URL;
-      try {
-        url = new URL(sheetUrl);
-      } catch {
-        return NextResponse.json({ error: "That sheet link is not a valid URL" }, { status: 400 });
-      }
-      if (url.protocol !== "http:" && url.protocol !== "https:") {
-        return NextResponse.json({ error: "Use an http(s) Google Sheet link" }, { status: 400 });
+        return NextResponse.json(
+          { error: "Paste a Google Sheet link first." },
+          { status: 400 },
+        );
       }
       const verified = await verifyCloudSheet(projectId, id, sheetUrl);
       const campaign = await getCloudCampaign(projectId, id);
@@ -218,13 +293,26 @@ export async function POST(request: NextRequest, { params }: Params) {
       return NextResponse.json({ campaign });
     }
 
-    if (action === "pause") {
-      const campaign = await pauseCloudSending(projectId, id);
+    if (action === "pause" || action === "stop") {
+      const campaign =
+        action === "stop"
+          ? await stopCloudSending(projectId, id)
+          : await pauseCloudSending(projectId, id);
       return NextResponse.json({ campaign });
     }
 
     if (action === "resume") {
       const campaign = await resumeCloudSending(projectId, id);
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "restart") {
+      const campaign = await restartCloudSending(projectId, id);
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "clear_send_log") {
+      const campaign = await clearCloudSendLog(projectId, id);
       return NextResponse.json({ campaign });
     }
 

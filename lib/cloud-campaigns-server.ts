@@ -1,5 +1,6 @@
 import { ObjectId, type WithId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
+import type { CloudColumnMap, CloudColumnStats } from "@/lib/cloud-sheet-csv";
 import type {
   CloudCampaign,
   CloudCampaignStatus,
@@ -25,9 +26,13 @@ export type CloudCampaignDoc = {
   customPrompt?: string;
   customPromptReady?: boolean;
   sheetUrl?: string;
+  sheetSource?: "csv" | "sheet";
+  sheetFileName?: string;
   sheetHeaders?: string[];
   sheetRowCount?: number;
   sheetSamples?: CloudSheetSample[];
+  /** Full people rows from CSV (server-only; not mapped to client). */
+  sheetRows?: CloudSheetSample[];
   sheetVerifiedAt?: Date;
   computerReady?: boolean;
   gapMinutes: number;
@@ -39,6 +44,11 @@ export type CloudCampaignDoc = {
   sendLog: CloudSendLogEntry[];
   lockPromptId?: string;
   lockConversationId?: string | null;
+  /** Row whose script send started but has no definitive outcome yet (duplicate guard). */
+  inflightRow?: number;
+  /** Which people-list column feeds each email field (user-confirmed). */
+  columnMap?: CloudColumnMap;
+  columnStats?: CloudColumnStats;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -52,8 +62,24 @@ export type CloudChromeProfileDoc = {
   gmail: string;
   directoryName: string;
   verifiedAt?: Date;
+  /** Account signed in to this sender's dedicated script Chrome (no-AI sender). */
+  scriptEmail?: string;
+  scriptCheckedAt?: Date;
+  /** Outlook orgs that require a sensitivity label: the one to apply, and what Outlook offered. */
+  sensitivityLabel?: string;
+  sensitivityLabels?: string[];
+  /** Remembered per sender so a new campaign only needs a people list. */
+  defaults?: CloudSenderDefaults;
   createdAt: Date;
   updatedAt: Date;
+};
+
+export type CloudSenderDefaults = {
+  signatureHtml?: string;
+  /** True once a signature (possibly empty) was saved with this sender. */
+  signatureSet?: boolean;
+  gapMinutes?: number;
+  columnMap?: CloudColumnMap;
 };
 
 export type BoatDesktopLockDoc = {
@@ -132,12 +158,21 @@ function mapCampaign(doc: WithId<CloudCampaignDoc>): CloudCampaign {
     customPrompt: doc.customPrompt || "",
     customPromptReady: doc.customPromptReady === true,
     sheetUrl: doc.sheetUrl,
+    sheetSource: doc.sheetSource === "csv" ? "csv" : doc.sheetSource === "sheet" ? "sheet" : undefined,
+    sheetFileName: doc.sheetFileName,
     sheetHeaders: doc.sheetHeaders,
+    columnMap: doc.columnMap,
+    columnStats: doc.columnStats,
     sheetRowCount: doc.sheetRowCount,
     sheetSamples: normalizeSheetSamples(doc.sheetSamples),
     sheetVerifiedAt: iso(doc.sheetVerifiedAt),
     computerReady: doc.computerReady === true,
-    gapMinutes: Math.max(0, Number(doc.gapMinutes) || 3),
+    // Preserve 0 — `Number(x) || 3` incorrectly turns a 0-minute gap into 3.
+    gapMinutes: (() => {
+      const raw = Number(doc.gapMinutes);
+      if (!Number.isFinite(raw)) return 3;
+      return Math.max(0, Math.min(120, Math.round(raw)));
+    })(),
     nextRow: Math.max(0, Number(doc.nextRow) || 0),
     sentCount: Math.max(0, Number(doc.sentCount) || 0),
     failedCount: Math.max(0, Number(doc.failedCount) || 0),
@@ -157,6 +192,11 @@ function mapProfile(doc: WithId<CloudChromeProfileDoc>): CloudChromeProfile {
     gmail: doc.gmail,
     directoryName: doc.directoryName,
     verifiedAt: iso(doc.verifiedAt),
+    scriptEmail: doc.scriptEmail || undefined,
+    scriptCheckedAt: iso(doc.scriptCheckedAt),
+    sensitivityLabel: doc.sensitivityLabel || undefined,
+    hasDefaults: Boolean(doc.defaults && (doc.defaults.signatureSet || doc.defaults.columnMap)),
+    sensitivityLabels: Array.isArray(doc.sensitivityLabels) ? doc.sensitivityLabels : undefined,
     createdAt: iso(doc.createdAt) || new Date().toISOString(),
   };
 }
@@ -210,6 +250,111 @@ export async function createCloudCampaign(projectId: ObjectId, name: string) {
     createdAt: now,
     updatedAt: now,
   };
+  // Start from the project's most recently used sender and what it remembers, so a repeat
+  // campaign usually only needs a new people list.
+  const lastUsed = await campaigns.findOne(
+    { projectId, profileId: { $exists: true, $ne: "" } },
+    { sort: { updatedAt: -1 }, projection: { profileId: 1 } },
+  );
+  const { profiles } = await collections();
+  const sender = lastUsed?.profileId ? await profiles.findOne({ projectId, profileId: lastUsed.profileId }) : null;
+  if (sender) {
+    const email = resolveChromeProfileEmail(mapProfile(sender));
+    doc.profileId = sender.profileId;
+    doc.profileProvider = sender.provider === "outlook" ? "outlook" : "gmail";
+    doc.profileGmail = email || sender.gmail || "";
+    doc.profileDirectory = sender.directoryName;
+    if (sender.defaults?.signatureSet) {
+      doc.signatureHtml = sender.defaults.signatureHtml || "";
+      doc.signatureReady = true;
+    }
+    if (typeof sender.defaults?.gapMinutes === "number") doc.gapMinutes = sender.defaults.gapMinutes;
+  }
+  await campaigns.insertOne(doc);
+  return mapCampaign(doc as WithId<CloudCampaignDoc>);
+}
+
+async function nextDuplicateCloudName(projectId: ObjectId, baseName: string) {
+  const { campaigns } = await collections();
+  const root = baseName.replace(/\s*\(copy(?:\s+\d+)?\)\s*$/i, "").trim() || baseName;
+  const existing = await campaigns
+    .find({ projectId }, { projection: { name: 1 } })
+    .toArray();
+  const names = new Set(existing.map((item) => String(item.name || "").trim().toLowerCase()));
+  let candidate = `${root} (copy)`;
+  let index = 2;
+  while (names.has(candidate.toLowerCase())) {
+    candidate = `${root} (copy ${index})`;
+    index += 1;
+  }
+  return candidate;
+}
+
+/** Copy setup (sender, signature, sheet, prompt, gap). Fresh send progress. */
+export async function duplicateCloudCampaign(projectId: ObjectId, campaignId: string) {
+  const existing = await getCloudCampaignDoc(projectId, campaignId);
+  if (!existing) {
+    throw new Error("Campaign not found");
+  }
+  const { campaigns } = await collections();
+  const now = new Date();
+  const newId = await nextCampaignId(projectId);
+  const name = await nextDuplicateCloudName(projectId, existing.name);
+
+  const gapRaw = Number(existing.gapMinutes);
+  const gapMinutes = Number.isFinite(gapRaw)
+    ? Math.max(0, Math.min(120, Math.round(gapRaw)))
+    : 3;
+
+  const doc: CloudCampaignDoc = {
+    _id: new ObjectId(),
+    projectId,
+    campaignId: newId,
+    name,
+    status: "draft",
+    profileId: existing.profileId,
+    profileProvider: existing.profileProvider,
+    profileGmail: existing.profileGmail,
+    profileDirectory: existing.profileDirectory,
+    signatureHtml: existing.signatureHtml,
+    signatureReady: existing.signatureReady === true,
+    customPrompt: existing.customPrompt,
+    customPromptReady: existing.customPromptReady === true,
+    sheetUrl: existing.sheetUrl,
+    sheetSource: existing.sheetSource,
+    sheetFileName: existing.sheetFileName,
+    sheetHeaders: Array.isArray(existing.sheetHeaders)
+      ? [...existing.sheetHeaders]
+      : undefined,
+    sheetRowCount: existing.sheetRowCount,
+    sheetSamples: Array.isArray(existing.sheetSamples)
+      ? existing.sheetSamples.map((sample) => ({
+          cells: { ...(sample.cells || {}) },
+        }))
+      : undefined,
+    sheetRows: Array.isArray(existing.sheetRows)
+      ? existing.sheetRows.map((row) => ({
+          cells: { ...(row.cells || {}) },
+        }))
+      : undefined,
+    sheetVerifiedAt: existing.sheetVerifiedAt,
+    computerReady: existing.computerReady === true,
+    gapMinutes,
+    nextRow: 0,
+    sentCount: 0,
+    failedCount: 0,
+    sendLog: [],
+    lastError: undefined,
+    lastReport: `Duplicated from “${existing.name}”.`,
+    lockPromptId: undefined,
+    lockConversationId: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const mappedPreview = mapCampaign(doc as WithId<CloudCampaignDoc>);
+  doc.status = campaignIsReady(mappedPreview) ? "ready" : "draft";
+
   await campaigns.insertOne(doc);
   return mapCampaign(doc as WithId<CloudCampaignDoc>);
 }
@@ -308,6 +453,69 @@ export async function createChromeProfile(
   };
   await profiles.insertOne(doc);
   return mapProfile(doc as WithId<CloudChromeProfileDoc>);
+}
+
+/** Record (or clear) which account the sender's dedicated script Chrome is signed in to. */
+export async function markChromeProfileScriptState(
+  projectId: ObjectId,
+  profileId: string,
+  scriptEmail: string | null,
+) {
+  const { profiles } = await collections();
+  const now = new Date();
+  const update = scriptEmail
+    ? { $set: { scriptEmail: scriptEmail.trim().toLowerCase(), scriptCheckedAt: now, updatedAt: now } }
+    : { $set: { scriptCheckedAt: now, updatedAt: now }, $unset: { scriptEmail: "" as const } };
+  const result = await profiles.findOneAndUpdate({ projectId, profileId }, update, {
+    returnDocument: "after",
+  });
+  return result ? mapProfile(result) : null;
+}
+
+/** Merge remembered defaults (signature, gap, column mapping) into a sender profile. */
+export async function saveChromeProfileDefaults(
+  projectId: ObjectId,
+  profileId: string,
+  defaults: CloudSenderDefaults,
+) {
+  const { profiles } = await collections();
+  const $set: Record<string, unknown> = { updatedAt: new Date() };
+  for (const [key, value] of Object.entries(defaults)) {
+    if (value !== undefined) $set[`defaults.${key}`] = value;
+  }
+  await profiles.updateOne({ projectId, profileId }, { $set });
+}
+
+export async function getChromeProfileDefaults(projectId: ObjectId, profileId?: string) {
+  if (!profileId) return undefined;
+  const { profiles } = await collections();
+  const doc = await profiles.findOne({ projectId, profileId }, { projection: { defaults: 1 } });
+  return doc?.defaults;
+}
+
+/** Save the chosen Outlook sensitivity label and/or the labels Outlook offered. */
+export async function setChromeProfileSensitivity(
+  projectId: ObjectId,
+  profileId: string,
+  input: { label?: string | null; labels?: string[] },
+) {
+  const { profiles } = await collections();
+  const $set: Record<string, unknown> = { updatedAt: new Date() };
+  const $unset: Record<string, ""> = {};
+  if (input.label !== undefined) {
+    const label = String(input.label || "").trim().slice(0, 80);
+    if (label) $set.sensitivityLabel = label;
+    else $unset.sensitivityLabel = "";
+  }
+  if (Array.isArray(input.labels)) {
+    $set.sensitivityLabels = input.labels.map((l) => String(l).trim().slice(0, 80)).filter(Boolean).slice(0, 30);
+  }
+  const update: Record<string, unknown> = { $set };
+  if (Object.keys($unset).length) update.$unset = $unset;
+  const result = await profiles.findOneAndUpdate({ projectId, profileId }, update, {
+    returnDocument: "after",
+  });
+  return result ? mapProfile(result) : null;
 }
 
 export async function markChromeProfileVerified(
@@ -451,9 +659,8 @@ export function campaignIsReady(campaign: CloudCampaign) {
       campaign.profileGmail &&
       campaign.profileGmail.includes("@") &&
       campaign.signatureReady &&
-      campaign.sheetUrl &&
       campaign.sheetVerifiedAt &&
       (campaign.sheetRowCount ?? 0) > 0 &&
-      campaign.customPromptReady,
+      (Boolean(campaign.sheetUrl?.trim()) || campaign.sheetSource === "csv"),
   );
 }
