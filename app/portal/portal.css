@@ -10343,6 +10343,24 @@ a.an-kanban-card-name.is-link:hover{
   resize:vertical;
 }
 .pz-step-edit-field textarea{min-height:220px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;}
+.pz-format-tools{
+  display:inline-flex;align-items:center;gap:2px;padding:3px;
+  border:1px solid #e5e7eb;border-radius:10px;background:#fff;
+}
+.pz-format-tools button{
+  width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;
+  border:none;border-radius:8px;background:transparent;color:#1a1a1a;cursor:pointer;padding:0;
+}
+.pz-format-tools button:hover{background:#f3f4f6;}
+.pz-format-tools button.is-on{background:var(--purple-soft);color:var(--purple);}
+.pz-format-editor{
+  min-height:220px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;
+  font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#222;
+}
+.pz-format-editor:focus{outline:none;border-color:var(--purple);box-shadow:0 0 0 3px var(--purple-soft);}
+.pz-format-editor p{margin:0 0 14px;}
+.pz-format-editor ul{margin:0 0 14px;padding-left:24px;}
+.pz-format-editor li{margin:0 0 6px;}
 .pz-step-edit-field input:focus,
 .pz-step-edit-field textarea:focus{outline:none;border-color:var(--purple);box-shadow:0 0 0 3px var(--purple-soft);}
 .pz-step-edit .personalise-hint code{
@@ -10371,6 +10389,8 @@ a.an-kanban-card-name.is-link:hover{
 .pz-pitch li{display:list-item;margin:0 0 6px;padding-left:4px;}
 .pz-pitch li::marker{color:var(--purple);}
 .pz-pitch strong{font-weight:700;color:var(--ink);}
+.pz-pitch em,.pz-format-editor em{font-style:italic;}
+.pz-pitch u,.pz-format-editor u{text-decoration:underline;}
 .pz-pitch .pz-signoff{margin:14px 0 0;color:#4b5563;}
 
 .personalise-actions{

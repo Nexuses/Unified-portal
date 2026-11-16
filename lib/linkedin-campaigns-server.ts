@@ -1,7 +1,7 @@
 import { ObjectId } from "mongodb";
 import {
   boatConfigured,
-  ensureProjectBoat,
+  ensureLinkedinBoat,
   isBoatRunning,
   openBoatDesktop,
   runBoatCommand,
@@ -22,13 +22,17 @@ import {
 
 const LINKEDIN_PROFILE = "LinkedIn";
 
-async function assertLinkedinComputerFree(projectId: ObjectId) {
-  const db = await getDb();
-  const lock = await db.collection<{ campaignName?: string }>("boat_desktop_locks").findOne({ projectId });
-  if (!lock?.campaignName) return;
-  throw new Error(
-    `The LinkedIn computer is busy with cloud campaign "${lock.campaignName}". Pause or finish that campaign first.`,
-  );
+/** LinkedIn desktop. A new computer is blank, so a login from the email computer does not carry over. */
+async function linkedinComputer(projectId: ObjectId) {
+  const sandbox = await ensureLinkedinBoat(projectId);
+  if (sandbox.replacedDeletedDisk) {
+    const collection = await sessions();
+    await collection.updateOne(
+      { projectId },
+      { $set: { connected: false, updatedAt: new Date() }, $unset: { connectedAt: "" } },
+    );
+  }
+  return sandbox;
 }
 
 /** LinkedIn's own Chrome window. Fills the 1920×1080 desktop so the view is not a small window on a blank screen. */
@@ -153,8 +157,7 @@ export async function openLinkedinComputer(projectId: ObjectId) {
   if (!boatConfigured()) {
     throw new Error("The virtual machine is not set up yet.");
   }
-  await assertLinkedinComputerFree(projectId);
-  const sandbox = await ensureProjectBoat(projectId);
+  const sandbox = await linkedinComputer(projectId);
   if (!isBoatRunning(sandbox.state)) {
     throw new Error(`The computer is ${sandbox.state}. Try again in a few seconds.`);
   }
@@ -181,7 +184,7 @@ export async function watchLinkedinComputer(projectId: ObjectId) {
   if (!boatConfigured()) {
     throw new Error("The virtual machine is not set up yet.");
   }
-  const sandbox = await ensureProjectBoat(projectId);
+  const sandbox = await linkedinComputer(projectId);
   if (!isBoatRunning(sandbox.state)) {
     throw new Error(`The computer is ${sandbox.state}. Try again in a few seconds.`);
   }
@@ -386,7 +389,7 @@ export async function startLinkedinCampaign(
   if (!doc) throw new Error("Campaign was not saved.");
 
   const opened = await openLinkedinComputer(projectId).catch(() => null);
-  if (opened?.desktopUrl) {
+  if (opened?.desktopUrl && opened.session.connected) {
     const requests = preview.people.filter((person) => !person.alreadyConnected).slice(0, 80);
     const already = preview.people.filter((person) => person.alreadyConnected).slice(0, 40);
     const requestLines = requests
@@ -395,7 +398,7 @@ export async function startLinkedinCampaign(
     const alreadyLines = already
       .map((person, index) => `${index + 1}. ${person.name} — ${person.linkedinUrl}`)
       .join("\n");
-    const sandbox = await ensureProjectBoat(projectId).catch(() => null);
+    const sandbox = await linkedinComputer(projectId).catch(() => null);
     if (sandbox && (requestLines || alreadyLines)) {
       const task = `Chrome profile directory "${LINKEDIN_PROFILE}" is already signed in to LinkedIn. The browser language is English.
 Send a connection request only to people who are not already connected. Open the profile, click Connect, and send it with no note.
@@ -742,8 +745,23 @@ async function runLinkedinFollowUps(now = new Date()) {
       );
       doc.status = statusNow;
     }
-    const sandbox = await ensureProjectBoat(doc.projectId).catch(() => null);
+    const sandbox = await linkedinComputer(doc.projectId).catch(() => null);
     if (!sandbox || !isBoatRunning(sandbox.state)) continue;
+    if (sandbox.replacedDeletedDisk) {
+      if (doc.activePromptId) {
+        await db.collection<CampaignDoc>("linkedin_campaigns").updateOne(
+          { _id: doc._id },
+          { $unset: { activePromptId: "", activePromptAt: "", activeTargets: "" }, $set: { updatedAt: now } },
+        );
+        doc.activePromptId = undefined;
+      }
+      continue;
+    }
+    const signedIn = await db.collection<SessionDoc>("linkedin_sessions").findOne({
+      projectId: doc.projectId,
+      connected: true,
+    });
+    if (!signedIn) continue;
 
     if (doc.activePromptId) {
       const age = now.getTime() - (doc.activePromptAt?.getTime() || 0);

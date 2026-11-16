@@ -7,6 +7,8 @@ export type PersonaliseStep = {
   /** Empty when this step stays on the previous thread. */
   subject: string;
   body: string;
+  /** After Edit format, only **bold** the user left in the body stays bold. */
+  formatLocked?: boolean;
 };
 
 export type PersonaliseContact = {
@@ -233,7 +235,12 @@ export function applyStepGaps(contacts: PersonaliseContact[], gaps: number[]) {
   });
 }
 
-export type PitchInline = { text: string; bold?: boolean };
+export type PitchInline = {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+};
 
 export type PitchBullet = { label?: string; text: PitchInline[] };
 
@@ -384,7 +391,7 @@ function isImportantLabel(label: string) {
 }
 
 function stripBoldMarkers(text: string) {
-  return text.replace(/\*\*(.+?)\*\*/g, "$1");
+  return text.replace(/\*\*(.+?)\*\*/g, "$1").replace(/<\/?(?:i|u)>/gi, "");
 }
 
 /** Pointers / bullets always start with a capital letter in the rendered email. */
@@ -487,22 +494,44 @@ function isLikelyProductName(name: string) {
   );
 }
 
-function inlineMarks(text: string): PitchInline[] {
+function inlineMarks(text: string, inherited: Pick<PitchInline, "bold" | "italic" | "underline"> = {}): PitchInline[] {
   const parts: PitchInline[] = [];
-  const pattern = /\*\*(.+?)\*\*/g;
-  let last = 0;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text))) {
-    if (match.index > last) {
-      parts.push({ text: text.slice(last, match.index) });
+  let buffer = "";
+  let index = 0;
+
+  const flush = () => {
+    if (!buffer) return;
+    parts.push({ text: buffer, ...inherited });
+    buffer = "";
+  };
+
+  while (index < text.length) {
+    const rest = text.slice(index);
+    const openers: Array<{ token: string; close: string; mark: Partial<PitchInline> }> = [
+      { token: "**", close: "**", mark: { bold: true } },
+      { token: "<i>", close: "</i>", mark: { italic: true } },
+      { token: "<u>", close: "</u>", mark: { underline: true } },
+    ];
+    const opener = openers.find((item) => rest.startsWith(item.token));
+    if (opener) {
+      const end = text.indexOf(opener.close, index + opener.token.length);
+      if (end > index + opener.token.length) {
+        flush();
+        parts.push(
+          ...inlineMarks(text.slice(index + opener.token.length, end), {
+            ...inherited,
+            ...opener.mark,
+          }),
+        );
+        index = end + opener.close.length;
+        continue;
+      }
     }
-    parts.push({ text: match[1], bold: true });
-    last = match.index + match[0].length;
+    buffer += text[index];
+    index += 1;
   }
-  if (last < text.length) {
-    parts.push({ text: text.slice(last) });
-  }
-  return parts.length > 0 ? parts : [{ text }];
+  flush();
+  return parts.length > 0 ? parts : [{ text, ...inherited }];
 }
 
 function hasWordBoundary(text: string, index: number, length: number) {
@@ -556,14 +585,15 @@ function emphasizeInline(parts: PitchInline[], terms: string[]): PitchInline[] {
           from = index + 1;
         }
       }
+      const kept = { italic: part.italic, underline: part.underline };
       if (earliest < 0 || !hit) {
-        next.push({ text: remaining });
+        next.push({ text: remaining, ...kept });
         break;
       }
       if (earliest > 0) {
-        next.push({ text: remaining.slice(0, earliest) });
+        next.push({ text: remaining.slice(0, earliest), ...kept });
       }
-      next.push({ text: hit, bold: true });
+      next.push({ text: hit, bold: true, ...kept });
       remaining = remaining.slice(earliest + hit.length);
     }
   }
@@ -578,10 +608,14 @@ function renderPitchInline(
   text: string,
   emphasize: string[],
   kind: "paragraph" | "bullet",
+  explicitBold = false,
 ): PitchInline[] {
   const raw = String(text ?? "");
   if (!raw.trim()) {
     return [{ text: raw }];
+  }
+  if (explicitBold) {
+    return inlineMarks(raw);
   }
 
   // Author already used **bold** — keep that and only layer term emphasis.
@@ -624,7 +658,7 @@ function renderPitchInline(
   return emphasizeInline(inlineMarks(raw), emphasize);
 }
 
-function labelBullet(line: string): PitchBullet | null {
+function labelBullet(line: string, explicitBold = false): PitchBullet | null {
   const match = line.match(LABEL_RE);
   if (!match) {
     return null;
@@ -634,8 +668,8 @@ function labelBullet(line: string): PitchBullet | null {
     return null;
   }
   const value = match[2].trim();
-  // Solution / product / company values stay bold; other labels stay plain.
-  if (isImportantLabel(label)) {
+  // Solution / product / company values stay bold until the user edits format.
+  if (!explicitBold && isImportantLabel(label)) {
     return {
       label,
       text: [{ text: stripBoldMarkers(value), bold: true }],
@@ -662,6 +696,8 @@ function splitSignoff(lines: string[]) {
 export type PitchRenderOptions = {
   /** Names to bold in the body (company, solution, etc.). */
   emphasize?: string[];
+  /** Keep only **markdown** bold. Do not auto-bold sentences, labels, or names. */
+  explicitBold?: boolean;
 };
 
 /** Turns plain pitch text into paragraphs, bullet lists, and a sign-off. */
@@ -669,7 +705,8 @@ export function pitchBlocks(
   body: string,
   options?: PitchRenderOptions,
 ): PitchBlock[] {
-  const emphasize = options?.emphasize ?? [];
+  const emphasize = options?.explicitBold ? [] : options?.emphasize ?? [];
+  const explicitBold = options?.explicitBold === true;
   const lines = splitSignoff(
     expandCollapsedPitch(body)
       .replace(/\r\n?/g, "\n")
@@ -701,7 +738,7 @@ export function pitchBlocks(
     if (marked) {
       list = list ?? [];
       const pointer = capitalizePointer(marked[1]);
-      const labelled = labelBullet(pointer);
+      const labelled = labelBullet(pointer, explicitBold);
       if (labelled) {
         list.push({
           ...labelled,
@@ -709,14 +746,14 @@ export function pitchBlocks(
         });
       } else {
         list.push({
-          text: renderPitchInline(pointer, emphasize, "bullet"),
+          text: renderPitchInline(pointer, emphasize, "bullet", explicitBold),
         });
       }
       continue;
     }
 
-    const labelled = labelBullet(line);
-    const nextLabelled = index + 1 < lines.length && labelBullet(lines[index + 1]);
+    const labelled = labelBullet(line, explicitBold);
+    const nextLabelled = index + 1 < lines.length && labelBullet(lines[index + 1], explicitBold);
     if (labelled && (list || listIntro || nextLabelled)) {
       list = list ?? [];
       list.push({
@@ -729,13 +766,49 @@ export function pitchBlocks(
     closeList();
     blocks.push({
       type: "paragraph",
-      text: renderPitchInline(line, emphasize, "paragraph"),
+      text: renderPitchInline(line, emphasize, "paragraph", explicitBold),
     });
     listIntro = /:\s*$/.test(line);
   }
 
   closeList();
   return blocks;
+}
+
+function inlinesToMarkdown(parts: PitchInline[]) {
+  return parts
+    .map((part) => {
+      let text = part.text ?? "";
+      if (!text) return "";
+      if (part.underline) text = `<u>${text}</u>`;
+      if (part.italic) text = `<i>${text}</i>`;
+      if (part.bold) text = `**${text}**`;
+      return text;
+    })
+    .join("");
+}
+
+/** Write the preview's bold into **markers** so Edit format keeps it. */
+export function materializePitchBold(body: string, emphasize: string[] = []) {
+  const expanded = expandCollapsedPitch(body).replace(/\r\n?/g, "\n");
+  return expanded
+    .split("\n")
+    .map((line) => {
+      if (!line.trim()) {
+        return line;
+      }
+      const bullet = line.match(/^(\s*(?:[-•*▪●◦]|\d{1,2}[.)])\s+)([\s\S]*)$/);
+      const prefix = bullet?.[1] ?? "";
+      const content = (bullet?.[2] ?? line).trimEnd();
+      const labelled = labelBullet(content);
+      if (labelled) {
+        const text = emphasizeInline(labelled.text, emphasize);
+        return `${prefix}${labelled.label}: ${inlinesToMarkdown(text)}`.trimEnd();
+      }
+      const rendered = renderPitchInline(content, emphasize, bullet ? "bullet" : "paragraph");
+      return `${prefix}${inlinesToMarkdown(rendered)}`;
+    })
+    .join("\n");
 }
 
 function escapeHtml(value: string) {
@@ -748,9 +821,13 @@ function escapeHtml(value: string) {
 
 function inlineHtml(parts: PitchInline[]) {
   return parts
-    .map((part) =>
-      part.bold ? `<strong>${escapeHtml(part.text)}</strong>` : escapeHtml(part.text),
-    )
+    .map((part) => {
+      let html = escapeHtml(part.text);
+      if (part.underline) html = `<u>${html}</u>`;
+      if (part.italic) html = `<em>${html}</em>`;
+      if (part.bold) html = `<strong>${html}</strong>`;
+      return html;
+    })
     .join("");
 }
 
@@ -953,6 +1030,7 @@ export function normalizePersonalisePlan(
         day: steps.length === 0 ? 0 : cleanDay(step.day),
         subject: asText(step.subject),
         body,
+        ...(step.formatLocked === true ? { formatLocked: true } : {}),
       });
       if (steps.length >= MAX_STEPS) {
         break;
