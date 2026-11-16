@@ -26,6 +26,12 @@ import {
 } from "@/lib/cloud-campaigns";
 import {
   buildCloudPitchHtml,
+  CLOUD_FIELDS,
+  CLOUD_REQUIRED_FIELDS,
+  columnMapStats,
+  reconcileColumnMap,
+  rowIssue,
+  type CloudColumnMap,
   CLOUD_CSV_MAX_CHARS,
   parseCloudCsvText,
   resolveCloudRowFields,
@@ -318,15 +324,6 @@ export async function openChromeProfile(
     `fi`,
   ].join(" ");
   return runBoatCommand(sandboxId, command, 20);
-}
-
-/** Stored rows: reject empty or greeting-only pitches ("Hi Anubhav,") so we never send a blank email. */
-function pitchUsable(pitch: string) {
-  const text = String(pitch || "").trim();
-  if (!text) return false;
-  if (/cut off on screen|truncated|layout shifted/i.test(text)) return false;
-  if (/^(hi|hello|hey|dear)\b[^.\n]{0,40},?\s*$/i.test(text)) return false;
-  return true;
 }
 
 /** True when a sheet dump looks like a real pitch, not a truncated greeting. */
@@ -687,10 +684,54 @@ export async function readSheetThroughSender(projectId: ObjectId, campaignId: st
   return { ok: true as const, how: read.how, rowCount: parsed.rowCount, headers: parsed.headers };
 }
 
+/** Save the user's column mapping and recount which rows are ready. */
+export async function saveCloudColumnMap(
+  projectId: ObjectId,
+  campaignId: string,
+  input: Record<string, unknown>,
+) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  const headers = Array.isArray(doc.sheetHeaders) ? doc.sheetHeaders.map(String) : [];
+  const rows = Array.isArray(doc.sheetRows) ? doc.sheetRows : [];
+  const columnMap: CloudColumnMap = {};
+  for (const field of CLOUD_FIELDS) {
+    const header = typeof input[field] === "string" ? String(input[field]).trim() : "";
+    if (!header) continue;
+    if (!headers.includes(header)) throw new Error(`Column "${header}" isn't in the people list.`);
+    columnMap[field] = header;
+  }
+  return patchCloudCampaignDoc(projectId, campaignId, {
+    columnMap,
+    columnStats: columnMapStats(rows, columnMap),
+  });
+}
+
+/** Render one row exactly as it would be sent (subject + HTML), or say why it can't be. */
+export async function previewCloudRow(projectId: ObjectId, campaignId: string, rowIndex?: number) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  const rows = Array.isArray(doc.sheetRows) ? doc.sheetRows : [];
+  if (!rows.length) throw new Error("Add people first");
+  const columnMap: CloudColumnMap = doc.columnMap || {};
+  const index =
+    typeof rowIndex === "number" && rowIndex >= 0 && rowIndex < rows.length
+      ? rowIndex
+      : Math.max(0, rows.findIndex((r) => r?.cells && !rowIssue(r.cells, columnMap)));
+  const cells = rows[index]?.cells || {};
+  const issue = rowIssue(cells, columnMap);
+  const { fields, html } = buildRowEmail(cells, String(doc.signatureHtml || "").trim(), columnMap);
+  return { row: index, total: rows.length, to: fields.email, subject: fields.subject, html, issue };
+}
+
 /** Build the exact HTML/plain body the campaign would send for a row. */
-function buildRowEmail(rowCells: Record<string, string>, signatureHtml: string) {
-  const fields = resolveCloudRowFields(rowCells);
-  const html = buildCloudPitchHtml(rowCells, signatureHtml);
+function buildRowEmail(
+  rowCells: Record<string, string>,
+  signatureHtml: string,
+  columnMap: CloudColumnMap = {},
+) {
+  const fields = resolveCloudRowFields(rowCells, columnMap);
+  const html = buildCloudPitchHtml(rowCells, signatureHtml, columnMap);
   const plain = applyContactVariables(
     fields.pitch,
     {
@@ -724,10 +765,13 @@ export async function testScriptSend(
     throw new Error("Enter a valid email address for the test.");
   }
   const self = requested || sender;
-  const rowCells = Array.isArray(doc.sheetRows) ? doc.sheetRows.find((r) => r?.cells)?.cells : null;
-  if (!rowCells) throw new Error("No stored people rows to build a test email from");
+  const columnMap: CloudColumnMap = doc.columnMap || {};
+  const rowCells = Array.isArray(doc.sheetRows)
+    ? doc.sheetRows.find((r) => r?.cells && !rowIssue(r.cells, columnMap))?.cells
+    : null;
+  if (!rowCells) throw new Error("No ready people row to build a test email from — check the column mapping (step 4).");
   const signatureHtml = String(doc.signatureHtml || "").trim();
-  const { fields, html, plain } = buildRowEmail(rowCells, signatureHtml);
+  const { fields, html, plain } = buildRowEmail(rowCells, signatureHtml, columnMap);
   const sandbox = await readySandbox(projectId, campaignId);
   const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
   const result = await sendViaScript(sandbox.id, doc.profileDirectory, {
@@ -977,6 +1021,10 @@ export async function verifyCloudCsv(
     sheetFileName: fileName,
     sheetUrl: undefined,
     sheetHeaders: parsed.headers,
+    ...(() => {
+      const columnMap = reconcileColumnMap(doc.columnMap, parsed.headers, parsed.rows);
+      return { columnMap, columnStats: columnMapStats(parsed.rows, columnMap) };
+    })(),
     sheetRowCount: parsed.rowCount,
     sheetSamples: parsed.samples,
     sheetRows: parsed.rows,
@@ -1069,6 +1117,10 @@ export async function verifyCloudSheet(
       sheetUrl: url,
       sheetFileName: undefined,
       sheetHeaders: exported.headers,
+      ...(() => {
+        const columnMap = reconcileColumnMap(doc.columnMap, exported.headers, exported.rows);
+        return { columnMap, columnStats: columnMapStats(exported.rows, columnMap) };
+      })(),
       sheetRowCount: exported.rowCount,
       sheetSamples: exported.samples,
       sheetRows: exported.rows,
@@ -1344,21 +1396,17 @@ export async function sendNextCloudRow(
 
   const signatureHtml = String(doc.signatureHtml || "").trim();
   const customPrompt = String(doc.customPrompt || "").trim();
+  // The user-confirmed column mapping (falls back to header-name matching for old campaigns).
+  const columnMap: CloudColumnMap = doc.columnMap || {};
+  const storedCells =
+    Array.isArray(doc.sheetRows) && doc.sheetRows[nextRow]?.cells ? doc.sheetRows[nextRow]!.cells : null;
 
-  // Stored rows (CSV upload, free sheet export, or an earlier validated read) are complete.
+  // Stored rows (CSV upload, free sheet export, or an earlier read) are complete.
   let rowCells: Record<string, string> | null =
-    Array.isArray(doc.sheetRows) && doc.sheetRows[nextRow]?.cells
-      ? { ...doc.sheetRows[nextRow]!.cells }
-      : null;
-  if (rowCells) {
-    const preview = resolveCloudRowFields(rowCells);
-    if (!preview.email.includes("@") || !pitchUsable(preview.pitch)) {
-      rowCells = null;
-    }
-  }
+    storedCells && !rowIssue(storedCells, columnMap) ? { ...storedCells } : null;
 
-  // Shared sheets can be read server-side for free: no agent turn, and every later row is cached.
-  if (!rowCells && sheetUrl && doc.sheetSource !== "csv") {
+  // Row not stored at all (e.g. sheet changed size): re-read the shared sheet for free.
+  if (!rowCells && !storedCells && sheetUrl && doc.sheetSource !== "csv") {
     const parsed = await tryFetchSheetCsv(sheetUrl);
     const cells = parsed?.rows[nextRow]?.cells;
     if (parsed && cells) {
@@ -1366,15 +1414,12 @@ export async function sendNextCloudRow(
         sheetRows: parsed.rows,
         sheetRowCount: parsed.rowCount,
       });
-      const preview = resolveCloudRowFields(cells);
-      if (preview.email.includes("@") && pitchUsable(preview.pitch)) {
-        rowCells = { ...cells };
-      }
+      if (!rowIssue(cells, columnMap)) rowCells = { ...cells };
     }
   }
 
   // Private sheet: refresh rows through the sender's signed-in Chrome (no AI).
-  if (!rowCells && sheetUrl && doc.sheetSource !== "csv" && process.env.CLOUD_SENDER !== "agent") {
+  if (!rowCells && !storedCells && sheetUrl && doc.sheetSource !== "csv" && process.env.CLOUD_SENDER !== "agent") {
     await phase("re-reading the sheet through the sender Chrome…");
     const read = await readSheetViaScript(sandbox.id, doc.profileDirectory, sheetUrl);
     if (read.ok) {
@@ -1385,23 +1430,16 @@ export async function sendNextCloudRow(
           sheetRowCount: parsed.rowCount,
         });
         const cells = parsed.rows[nextRow]?.cells;
-        if (cells) {
-          const preview = resolveCloudRowFields(cells);
-          if (preview.email.includes("@") && pitchUsable(preview.pitch)) rowCells = { ...cells };
-        }
+        if (cells && !rowIssue(cells, columnMap)) rowCells = { ...cells };
       }
     }
   }
 
   // Still no usable row: skip it with a reason instead of stopping the whole campaign.
   if (!rowCells && process.env.CLOUD_SENDER !== "agent") {
-    const cells = Array.isArray(doc.sheetRows) ? doc.sheetRows[nextRow]?.cells : undefined;
-    const preview = cells ? resolveCloudRowFields(cells) : null;
-    const reason = !preview
-      ? "Row could not be read."
-      : !preview.email.includes("@")
-        ? "No valid email address in this row."
-        : "Pitch is empty or only a greeting.";
+    const cells = storedCells || undefined;
+    const preview = cells ? resolveCloudRowFields(cells, columnMap) : null;
+    const reason = !cells ? "Row could not be read." : rowIssue(cells, columnMap) || "Row could not be read.";
     const entry = {
       row: nextRow,
       email: preview?.email || "",
@@ -1536,7 +1574,7 @@ REPORT: one short sentence`;
     await patchCloudCampaignDoc(projectId, campaignId, { sheetRows: rows });
   }
 
-  const fields = resolveCloudRowFields(rowCells);
+  const fields = resolveCloudRowFields(rowCells, columnMap);
   const bodyPlain = applyContactVariables(
     fields.pitch,
     {
@@ -1552,7 +1590,7 @@ REPORT: one short sentence`;
   // Formatting: the pitch goes through the same pitchToHtml path as Personalise (paragraphs,
   // bold company/product terms, bullet lists, sign-off + signature) and is pasted as rich HTML.
   // To + Subject come from the compose URL (never typed into Gmail's To chips).
-  const bodyHtml = buildCloudPitchHtml(rowCells, signatureHtml);
+  const bodyHtml = buildCloudPitchHtml(rowCells, signatureHtml, columnMap);
 
   // Gmail: deterministic script sender (no AI). Outlook, or CLOUD_SENDER=agent, keeps the
   // desktop-agent path below.
@@ -1799,16 +1837,27 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
     throw new Error("Pick a sender profile first");
   }
   if (!doc.profileGmail || !doc.profileGmail.includes("@")) {
-    throw new Error("Confirm the inbox sign-in before starting (I’ve signed in — check inbox)");
+    throw new Error("Sign in the sender and click Check sign-in (step 2) before starting.");
   }
   if (!doc.signatureReady) {
     throw new Error("Save the email signature step first (you can leave it empty)");
   }
   if (!campaignHasPeopleList(doc)) {
-    throw new Error("Verify the Google Sheet first");
+    throw new Error("Add people with a CSV or Google Sheet first (step 4).");
   }
-  if (!doc.customPromptReady) {
-    throw new Error("Save the extra prompt step first (you can leave it empty)");
+  if (process.env.CLOUD_SENDER !== "agent") {
+    const headers = Array.isArray(doc.sheetHeaders) ? doc.sheetHeaders.map(String) : [];
+    const rows = Array.isArray(doc.sheetRows) ? doc.sheetRows : [];
+    const columnMap = doc.columnMap || reconcileColumnMap(undefined, headers, rows);
+    const missing = CLOUD_REQUIRED_FIELDS.filter((field) => !columnMap[field]);
+    if (missing.length) {
+      throw new Error(`Map the ${missing.join(", ")} column${missing.length > 1 ? "s" : ""} in step 4 before starting.`);
+    }
+    const stats = columnMapStats(rows, columnMap);
+    if (stats.ready === 0) throw new Error("No people rows are ready to send — check step 4.");
+    if (!doc.columnMap) {
+      await patchCloudCampaignDoc(projectId, campaignId, { columnMap, columnStats: stats });
+    }
   }
   await assertBoatUnlocked(projectId, campaignId);
   const sandbox = await readySandbox(projectId, campaignId);

@@ -1,3 +1,4 @@
+import type { CloudColumnMap, CloudColumnStats } from "@/lib/cloud-sheet-csv";
 /** Cloud campaigns send from Gmail or Outlook on the project's Boat desktop. */
 
 export type CloudSenderProvider = "gmail" | "outlook";
@@ -83,6 +84,9 @@ export type CloudCampaign = {
   sheetHeaders?: string[];
   sheetRowCount?: number;
   sheetSamples?: CloudSheetSample[];
+  /** Which people-list column feeds each email field, and how many rows are ready. */
+  columnMap?: CloudColumnMap;
+  columnStats?: CloudColumnStats;
   sheetVerifiedAt?: string;
   computerReady?: boolean;
   gapMinutes: number;
@@ -342,6 +346,8 @@ export async function runCloudCampaignAction(
     | "sender_check"
     | "sender_test_send"
     | "verify_csv"
+    | "save_column_map"
+    | "preview_row"
     | "tick",
   body?: Record<string, unknown>,
 ) {

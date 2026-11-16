@@ -1,5 +1,6 @@
 import { ObjectId, type WithId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
+import type { CloudColumnMap, CloudColumnStats } from "@/lib/cloud-sheet-csv";
 import type {
   CloudCampaign,
   CloudCampaignStatus,
@@ -45,6 +46,9 @@ export type CloudCampaignDoc = {
   lockConversationId?: string | null;
   /** Row whose script send started but has no definitive outcome yet (duplicate guard). */
   inflightRow?: number;
+  /** Which people-list column feeds each email field (user-confirmed). */
+  columnMap?: CloudColumnMap;
+  columnStats?: CloudColumnStats;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -147,6 +151,8 @@ function mapCampaign(doc: WithId<CloudCampaignDoc>): CloudCampaign {
     sheetSource: doc.sheetSource === "csv" ? "csv" : doc.sheetSource === "sheet" ? "sheet" : undefined,
     sheetFileName: doc.sheetFileName,
     sheetHeaders: doc.sheetHeaders,
+    columnMap: doc.columnMap,
+    columnStats: doc.columnStats,
     sheetRowCount: doc.sheetRowCount,
     sheetSamples: normalizeSheetSamples(doc.sheetSamples),
     sheetVerifiedAt: iso(doc.sheetVerifiedAt),
@@ -603,7 +609,6 @@ export function campaignIsReady(campaign: CloudCampaign) {
       campaign.signatureReady &&
       campaign.sheetVerifiedAt &&
       (campaign.sheetRowCount ?? 0) > 0 &&
-      (Boolean(campaign.sheetUrl?.trim()) || campaign.sheetSource === "csv") &&
-      campaign.customPromptReady,
+      (Boolean(campaign.sheetUrl?.trim()) || campaign.sheetSource === "csv"),
   );
 }

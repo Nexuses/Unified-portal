@@ -13,6 +13,8 @@ import {
   submitChromeProfileAuthCode,
   clearCloudSendLog,
   checkScriptSender,
+  previewCloudRow,
+  saveCloudColumnMap,
   probeOutlookSender,
   readSheetThroughSender,
   testScriptSend,
@@ -58,6 +60,8 @@ type ActionBody = {
   code?: string;
   csvText?: string;
   fileName?: string;
+  columnMap?: Record<string, unknown>;
+  row?: number;
 };
 
 function isValidEmail(value: string) {
@@ -242,6 +246,16 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (action === "sender_read_sheet") {
       const result = await readSheetThroughSender(projectId, id, String(body?.sheetUrl ?? ""));
       return NextResponse.json({ sheet: result });
+    }
+
+    if (action === "save_column_map") {
+      const campaign = await saveCloudColumnMap(projectId, id, body?.columnMap ?? {});
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "preview_row") {
+      const preview = await previewCloudRow(projectId, id, typeof body?.row === "number" ? body.row : undefined);
+      return NextResponse.json({ preview });
     }
 
     if (action === "verify_csv") {

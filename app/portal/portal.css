@@ -12514,3 +12514,26 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-toggle-label{font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;}
 .cloud-sensitivity span small{font-weight:400;color:#9ca3af;}
 .cloud-sensitivity select,.cloud-sensitivity input{max-width:360px;}
+/* Cloud: column mapping */
+.cloud-map{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid #eef0f2;border-radius:12px;background:#fafbfc;}
+.cloud-map-head{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.cloud-map-head strong{font-size:14px;color:#111827;}
+.cloud-map-ready{font-size:12px;font-weight:650;border-radius:999px;padding:3px 10px;background:#f3f4f6;color:#374151;}
+.cloud-map-ready.is-ok{background:#dcfce7;color:#166534;}
+.cloud-map-ready.is-warn{background:#fef3c7;color:#92400e;}
+.cloud-map code{font-size:12px;background:#eef0f2;border-radius:4px;padding:1px 4px;}
+.cloud-map-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;}
+.cloud-map-field{display:flex;flex-direction:column;gap:4px;min-width:0;}
+.cloud-map-field > span{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#374151;}
+.cloud-map-field em{font-style:normal;font-size:10.5px;font-weight:700;color:#6b7280;background:#eef0f2;border-radius:999px;padding:1px 6px;}
+.cloud-map-field select{height:36px;padding:0 10px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;font:inherit;font-size:13px;min-width:0;}
+.cloud-map-field.is-missing select{border-color:#f59e0b;background:#fffbeb;}
+.cloud-map-field select:focus{outline:none;border-color:#9ca3af;box-shadow:0 0 0 3px rgba(17,24,39,.06);}
+.cloud-map-problems{margin:0;padding:8px 10px;border-radius:10px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-size:12.5px;line-height:1.45;}
+.cloud-map-preview-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.cloud-map-preview{display:flex;flex-direction:column;gap:8px;border:1px solid #e5e7eb;border-radius:12px;background:#fff;padding:12px;}
+.cloud-map-preview dl{margin:0;display:grid;gap:4px;}
+.cloud-map-preview dl div{display:grid;grid-template-columns:64px 1fr;gap:8px;font-size:13px;}
+.cloud-map-preview dt{color:#6b7280;}
+.cloud-map-preview dd{margin:0;color:#111827;font-weight:600;min-width:0;overflow-wrap:anywhere;}
+.cloud-map-preview iframe{width:100%;height:360px;border:1px solid #eef0f2;border-radius:10px;background:#fff;}

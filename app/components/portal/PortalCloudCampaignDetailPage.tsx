@@ -6,6 +6,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CloudBoatMemoryCard from "@/app/components/portal/CloudBoatMemoryCard";
 import CloudBoatUsageCard from "@/app/components/portal/CloudBoatUsageCard";
 import CloudCampaignRunPanel from "@/app/components/portal/CloudCampaignRunPanel";
+import CloudColumnMapPanel, {
+  type CloudRowPreview,
+} from "@/app/components/portal/CloudColumnMapPanel";
+import { CLOUD_REQUIRED_FIELDS, type CloudColumnMap } from "@/lib/cloud-sheet-csv";
 import CloudDesktopViewer, {
   type CloudDesktopLayout,
 } from "@/app/components/portal/CloudDesktopViewer";
@@ -34,9 +38,8 @@ import { cleanSignatureHtml } from "@/lib/personalise-types";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
 import { useRouter } from "next/navigation";
 
-type StepId = "computer" | "sender" | "signature" | "prompt" | "sheet" | "review";
+type StepId = "computer" | "sender" | "signature" | "sheet" | "review";
 
-const MAX_CUSTOM_PROMPT = 4000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -72,7 +75,6 @@ export default function PortalCloudCampaignDetailPage({
   const [sheetUrl, setSheetUrl] = useState("");
   const [signatureHtml, setSignatureHtml] = useState("");
   const [signatureTab, setSignatureTab] = useState<"code" | "preview">("code");
-  const [customPrompt, setCustomPrompt] = useState("");
   const [gapMinutes, setGapMinutes] = useState(3);
   const [openStep, setOpenStep] = useState<StepId>("computer");
   const [newSenderProvider, setNewSenderProvider] = useState<CloudSenderProvider>("gmail");
@@ -103,7 +105,6 @@ export default function PortalCloudCampaignDetailPage({
     setProfiles(nextProfiles);
     setSheetUrl(nextCampaign.sheetUrl || "");
     setSignatureHtml(nextCampaign.signatureHtml || "");
-    setCustomPrompt(nextCampaign.customPrompt || "");
     setGapMinutes(nextCampaign.gapMinutes ?? 3);
     return nextCampaign;
   }, [campaignId]);
@@ -144,7 +145,6 @@ export default function PortalCloudCampaignDetailPage({
         senderVerified: false,
         signature: false,
         sheet: false,
-        prompt: false,
         review: false,
       };
     }
@@ -159,20 +159,21 @@ export default function PortalCloudCampaignDetailPage({
         (!scriptSender || profile?.scriptEmail === selectedProfileEmail),
     );
     const signature = campaign.signatureReady === true;
+    const columnsMapped = CLOUD_REQUIRED_FIELDS.every((field) => campaign.columnMap?.[field]);
     const sheet = Boolean(
       campaign.sheetVerifiedAt &&
         (campaign.sheetRowCount ?? 0) > 0 &&
-        (campaign.sheetUrl?.trim() || campaign.sheetSource === "csv"),
+        (campaign.sheetUrl?.trim() || campaign.sheetSource === "csv") &&
+        // Older campaigns without a saved mapping still count; new ones need the required columns.
+        (!campaign.columnMap || (columnsMapped && (campaign.columnStats?.ready ?? 1) > 0)),
     );
-    const prompt = campaign.customPromptReady === true;
     return {
       computer,
       sender,
       senderVerified,
       signature,
       sheet,
-      prompt,
-      review: computer && senderVerified && signature && sheet && prompt,
+      review: computer && senderVerified && signature && sheet,
     };
   }, [campaign, profiles, selectedProfileEmail]);
 
@@ -536,6 +537,27 @@ export default function PortalCloudCampaignDetailPage({
     });
   }
 
+  async function saveColumnMap(map: CloudColumnMap) {
+    await withBusy("Saving column mapping…", async () => {
+      const data = await runCloudCampaignAction(campaignId, "save_column_map", { columnMap: map });
+      if (data.campaign) setCampaign(data.campaign as CloudCampaign);
+    });
+  }
+
+  async function previewRow(row?: number): Promise<CloudRowPreview | null> {
+    try {
+      const data = await runCloudCampaignAction(
+        campaignId,
+        "preview_row",
+        typeof row === "number" ? { row } : undefined,
+      );
+      return (data.preview as CloudRowPreview) || null;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not build the preview");
+      return null;
+    }
+  }
+
   async function saveSensitivityLabel(label: string) {
     if (!campaign?.profileId) return;
     await withBusy("Saving sensitivity label…", async () => {
@@ -605,7 +627,7 @@ export default function PortalCloudCampaignDetailPage({
           Array.isArray(data.headers) ? (data.headers as string[]).join(", ") : ""
         }${missing.length ? `. Missing recommended: ${missing.join(", ")}` : ""}.`,
       );
-      setOpenStep("prompt");
+      setOpenStep("sheet");
     });
   }
 
@@ -627,23 +649,7 @@ export default function PortalCloudCampaignDetailPage({
     });
   }
 
-  async function saveCustomPrompt(continueNext: boolean) {
-    await withBusy("Saving extra prompt…", async () => {
-      const cleaned = customPrompt.trim().slice(0, MAX_CUSTOM_PROMPT);
-      const next = await patchCloudCampaign(campaignId, {
-        customPrompt: cleaned,
-        customPromptReady: true,
-      });
-      setCampaign(next);
-      setCustomPrompt(next.customPrompt || cleaned);
-      setNotice(
-        cleaned
-          ? "Extra prompt saved. The computer will follow it when composing."
-          : "No extra prompt. Emails will use the sheet columns.",
-      );
-      if (continueNext) setOpenStep("review");
-    });
-  }
+
 
   async function verifySheet() {
     const url = sheetUrl.trim();
@@ -680,7 +686,7 @@ export default function PortalCloudCampaignDetailPage({
             Array.isArray(data.headers) ? (data.headers as string[]).join(", ") : "discovered"
           }.`,
         );
-        setOpenStep("prompt");
+        setOpenStep("sheet");
       } else {
         setNotice(
           typeof data.report === "string" && data.report
@@ -845,7 +851,6 @@ export default function PortalCloudCampaignDetailPage({
     stepsDone.senderVerified,
     stepsDone.signature,
     stepsDone.sheet,
-    stepsDone.prompt,
   ].filter(Boolean).length;
   const blockedReason = !stepsDone.computer
     ? "start the computer (step 1)."
@@ -854,10 +859,10 @@ export default function PortalCloudCampaignDetailPage({
       : !stepsDone.signature
         ? "save the signature step — it can be empty (step 3)."
         : !stepsDone.sheet
-          ? "add people with a CSV or Google Sheet (step 4)."
-          : !stepsDone.prompt
-            ? "save the extra prompt step — it can be empty (step 5)."
-            : undefined;
+          ? campaign.sheetVerifiedAt
+            ? "check the column mapping — email, subject and body must be mapped (step 4)."
+            : "add people with a CSV or Google Sheet (step 4)."
+          : undefined;
   const signaturePreview = cleanSignatureHtml(signatureHtml);
   const sheetHeaders = campaign.sheetHeaders ?? [];
 
@@ -929,12 +934,12 @@ export default function PortalCloudCampaignDetailPage({
             <div className="drip-setup-intro-copy">
               <strong>Set up this cloud campaign</strong>
               <span>
-                Six quick steps, then start from the panel above. Recommended people columns:{" "}
+                Five quick steps, then start from the panel above. Recommended people columns:{" "}
                 {CLOUD_SHEET_COLUMNS.join(", ")}.
               </span>
             </div>
             <div className="drip-setup-intro-meter" aria-hidden="true">
-              {[0, 1, 2, 3, 4].map((index) => (
+              {[0, 1, 2, 3].map((index) => (
                 <span key={index} className={index < requiredDone ? "done" : ""} />
               ))}
             </div>
@@ -1389,8 +1394,12 @@ export default function PortalCloudCampaignDetailPage({
                   {!stepsDone.sender || !stepsDone.signature
                     ? "Locked until earlier steps done"
                     : stepsDone.sheet
-                      ? `${campaign.sheetRowCount} rows`
-                      : "Verify sheet"}
+                      ? campaign.columnStats
+                        ? `${campaign.columnStats.ready}/${campaign.columnStats.total} ready`
+                        : `${campaign.sheetRowCount} rows`
+                      : campaign.sheetVerifiedAt
+                        ? "Map columns"
+                        : "Add people"}
                 </em>
               </button>
               {openStep === "sheet" && stepsDone.sender && stepsDone.signature ? (
@@ -1439,130 +1448,27 @@ export default function PortalCloudCampaignDetailPage({
                       Verify sheet
                     </button>
                   </div>
-                  {sheetHeaders.length ? (
-                    <p className="cloud-muted">Columns: {sheetHeaders.join(", ")}</p>
+                  {campaign.sheetVerifiedAt && sheetHeaders.length ? (
+                    <CloudColumnMapPanel
+                      headers={sheetHeaders}
+                      columnMap={campaign.columnMap || {}}
+                      stats={campaign.columnStats}
+                      busy={Boolean(busy)}
+                      onSave={(map) => void saveColumnMap(map)}
+                      onPreview={previewRow}
+                    />
                   ) : (
                     <p className="cloud-muted">
-                      Recommended (optional): {CLOUD_SHEET_COLUMNS.join(", ")}
+                      Recommended columns: {CLOUD_SHEET_COLUMNS.join(", ")}. Other names are
+                      detected too, and you can confirm the mapping after loading.
                     </p>
                   )}
-                  {campaign.sheetSamples?.length ? (
-                    <div className="cloud-samples">
-                      {campaign.sheetSamples.map((sample, index) => (
-                        <div key={index} className="cloud-sample">
-                          {Object.entries(sample.cells || {}).map(([key, value]) => (
-                            <span key={key}>
-                              <em>{key}</em>: {value || "—"}
-                            </span>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
                 </div>
               ) : null}
             </section>
-
-            <section
-              className={`cloud-step${openStep === "prompt" ? " open" : ""}${stepsDone.prompt ? " done" : ""}`}
-            >
-              <button
-                type="button"
-                className="cloud-step-head"
-                onClick={() => {
-                  if (!stepsDone.sender) {
-                    setNotice("Pick a sender first, then continue.");
-                    setOpenStep("sender");
-                    return;
-                  }
-                  if (!stepsDone.signature) {
-                    setNotice("Save the signature step first (you can leave it empty).");
-                    setOpenStep("signature");
-                    return;
-                  }
-                  if (!stepsDone.sheet) {
-                    setNotice("Verify the Google Sheet first so the prompt can use its columns.");
-                    setOpenStep("sheet");
-                    return;
-                  }
-                  setOpenStep("prompt");
-                }}
-              >
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.prompt ? "✓" : "5"}</i>Extra prompt</span>
-                <em>
-                  {!stepsDone.sheet
-                    ? "Locked until sheet verified"
-                    : stepsDone.prompt
-                      ? customPrompt.trim()
-                        ? "Custom"
-                        : "None"
-                      : "Optional"}
-                </em>
-              </button>
-              {openStep === "prompt" && stepsDone.sheet ? (
-                <div className="cloud-step-body">
-                  <p>
-                    Optional instructions the computer follows when composing — tone, language,
-                    which sheet columns to emphasize, or what never to say. Leave empty and
-                    continue to use the people-row values as-is.
-                  </p>
-                  {sheetHeaders.length ? (
-                    <div className="cloud-prompt-context">
-                      <strong>People list context</strong>
-                      <p className="cloud-muted">
-                        Columns: {sheetHeaders.join(", ")} · {campaign.sheetRowCount ?? 0} people
-                      </p>
-                      {campaign.sheetSamples?.length ? (
-                        <div className="cloud-samples">
-                          {campaign.sheetSamples.map((sample, index) => (
-                            <div key={index} className="cloud-sample">
-                              {Object.entries(sample.cells || {}).map(([key, value]) => (
-                                <span key={key}>
-                                  <em>{key}</em>: {value || "—"}
-                                </span>
-                              ))}
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  <textarea
-                    className="cloud-prompt-input"
-                    value={customPrompt}
-                    maxLength={MAX_CUSTOM_PROMPT}
-                    onChange={(event) => setCustomPrompt(event.target.value)}
-                    placeholder="Example: Keep a warm, short tone. Mention the company column. Never promise pricing."
-                    rows={8}
-                  />
-                  <p className="cloud-muted">
-                    {customPrompt.trim().length}/{MAX_CUSTOM_PROMPT}
-                  </p>
-                  <div className="cloud-step-actions">
-                    <button
-                      type="button"
-                      className="btn-soft"
-                      disabled={Boolean(busy)}
-                      onClick={() => void saveCustomPrompt(false)}
-                    >
-                      Save prompt
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-dark"
-                      disabled={Boolean(busy)}
-                      onClick={() => void saveCustomPrompt(true)}
-                    >
-                      Save &amp; continue
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </section>
-
             <section className={`cloud-step${openStep === "review" ? " open" : ""}${stepsDone.review ? " done" : ""}`}>
               <button type="button" className="cloud-step-head" onClick={() => setOpenStep("review")}>
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review ? "✓" : "6"}</i>Review &amp; start</span>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review ? "✓" : "5"}</i>Review &amp; start</span>
                 <em>
                   {stepsDone.review
                     ? "Ready"
@@ -1612,16 +1518,6 @@ export default function PortalCloudCampaignDetailPage({
                           ? `${campaign.sheetSource === "csv" ? `CSV ${campaign.sheetFileName || ""} · ` : "Sheet · "}${campaign.sheetRowCount ?? 0} rows${
                               sheetHeaders.length ? ` · ${sheetHeaders.join(", ")}` : ""
                             }`
-                          : "—"}
-                      </span>
-                    </li>
-                    <li>
-                      <strong>Extra prompt</strong>
-                      <span>
-                        {campaign.customPromptReady
-                          ? campaign.customPrompt?.trim()
-                            ? "Custom"
-                            : "None"
                           : "—"}
                       </span>
                     </li>
