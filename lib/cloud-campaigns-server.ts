@@ -46,6 +46,14 @@ export type CloudCampaignDoc = {
   lockConversationId?: string | null;
   /** Row whose script send started but has no definitive outcome yet (duplicate guard). */
   inflightRow?: number;
+  /** Report tracking: open pixel (default on), click links (default off), unsubscribe footer (off). */
+  trackOpens?: boolean;
+  trackClicks?: boolean;
+  unsubscribeFooter?: boolean;
+  /** Last inbox check for replies/bounces. */
+  inboxCheckedAt?: Date;
+  /** Last confirmed send (drives the 7-day reply-check window). */
+  lastSentAt?: Date;
   /** Which people-list column feeds each email field (user-confirmed). */
   columnMap?: CloudColumnMap;
   columnStats?: CloudColumnStats;
@@ -163,6 +171,10 @@ function mapCampaign(doc: WithId<CloudCampaignDoc>): CloudCampaign {
     sheetHeaders: doc.sheetHeaders,
     columnMap: doc.columnMap,
     columnStats: doc.columnStats,
+    trackOpens: doc.trackOpens !== false,
+    trackClicks: doc.trackClicks === true,
+    unsubscribeFooter: doc.unsubscribeFooter === true,
+    inboxCheckedAt: doc.inboxCheckedAt ? doc.inboxCheckedAt.toISOString() : undefined,
     sheetRowCount: doc.sheetRowCount,
     sheetSamples: normalizeSheetSamples(doc.sheetSamples),
     sheetVerifiedAt: iso(doc.sheetVerifiedAt),

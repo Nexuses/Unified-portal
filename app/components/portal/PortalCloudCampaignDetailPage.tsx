@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CloudSendersCard from "@/app/components/portal/CloudSendersCard";
 import CloudBoatUsageCard from "@/app/components/portal/CloudBoatUsageCard";
 import CloudCampaignRunPanel from "@/app/components/portal/CloudCampaignRunPanel";
+import CloudCampaignReport from "@/app/components/portal/CloudCampaignReport";
 import CloudColumnMapPanel, {
   type CloudRowPreview,
 } from "@/app/components/portal/CloudColumnMapPanel";
@@ -87,6 +88,7 @@ export default function PortalCloudCampaignDetailPage({
   const [renamingProfileId, setRenamingProfileId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [confirm, confirmDialog] = useConfirmDialog();
+  const [view, setView] = useState<"setup" | "report">("setup");
   const tickBusy = useRef(false);
   // Bumped after restart/resume so the send loop starts again even if status stayed "sending".
   const [tickEpoch, setTickEpoch] = useState(0);
@@ -543,6 +545,19 @@ export default function PortalCloudCampaignDetailPage({
     });
   }
 
+  async function checkInboxNow(): Promise<string> {
+    const data = await runCloudCampaignAction(campaignId, "check_inbox");
+    if (data.campaign) setCampaign(data.campaign as CloudCampaign);
+    const inbox = (data.inbox || {}) as { checked?: number; newReplies?: number; newBounces?: number };
+    const checked = inbox.checked ?? 0;
+    return `Checked ${checked} address${checked === 1 ? "" : "es"}: ${inbox.newReplies ?? 0} new repl${inbox.newReplies === 1 ? "y" : "ies"}, ${inbox.newBounces ?? 0} new bounce${inbox.newBounces === 1 ? "" : "s"}.`;
+  }
+
+  async function saveTracking(patch: { trackOpens?: boolean; trackClicks?: boolean; unsubscribeFooter?: boolean }) {
+    const next = await patchCloudCampaign(campaignId, patch);
+    setCampaign(next);
+  }
+
   async function saveColumnMap(map: CloudColumnMap) {
     await withBusy("Saving column mapping…", async () => {
       const data = await runCloudCampaignAction(campaignId, "save_column_map", { columnMap: map });
@@ -906,6 +921,28 @@ export default function PortalCloudCampaignDetailPage({
         {notice ? <div className="cloud-notice">{notice}</div> : null}
         {busy ? <div className="cloud-busy">{busy}</div> : null}
 
+        <div className="cloud-view-tabs" role="tablist" aria-label="Campaign view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "setup"}
+            className={view === "setup" ? "is-active" : ""}
+            onClick={() => setView("setup")}
+          >
+            Setup
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "report"}
+            className={view === "report" ? "is-active" : ""}
+            onClick={() => setView("report")}
+          >
+            Report
+            {campaign.sentCount > 0 ? <span>{campaign.sentCount}</span> : null}
+          </button>
+        </div>
+
         <CloudCampaignRunPanel
           campaign={campaign}
           busy={Boolean(busy)}
@@ -933,6 +970,15 @@ export default function PortalCloudCampaignDetailPage({
           canTest={stepsDone.senderVerified && stepsDone.sheet}
         />
 
+        {view === "report" ? (
+          <CloudCampaignReport
+            campaignId={campaignId}
+            campaignName={campaign.name}
+            sending={campaign.status === "sending"}
+            onCheckInbox={checkInboxNow}
+            onTrackingChange={saveTracking}
+          />
+        ) : (
         <div className="drip-setup-card drip-setup-card-active">
           <div className="drip-setup-intro">
             <div className="drip-setup-intro-copy">
@@ -1538,6 +1584,7 @@ export default function PortalCloudCampaignDetailPage({
             </section>
           </div>
         </div>
+        )}
       </div>
 
       {confirmDialog}

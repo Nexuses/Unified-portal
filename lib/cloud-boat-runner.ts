@@ -39,9 +39,19 @@ import {
 } from "@/lib/cloud-sheet-csv";
 import { applyContactVariables } from "@/lib/email-variables";
 import {
+  cloudSentEmails,
+  deleteCloudSends,
+  discardCloudSend,
+  recordCloudInboxEvents,
+  markCloudSendSent,
+  prepareCloudSend,
+  trackCloudHtml,
+} from "@/lib/cloud-campaign-tracking";
+import {
   prepareAndCheckSender,
   probeOutlookViaScript,
   readSheetViaScript,
+  scanInboxViaScript,
   sendViaScript,
   type SenderResult,
 } from "@/lib/cloud-sender";
@@ -556,6 +566,7 @@ async function sendRowWithScript(input: {
   html: string;
   plain: string;
   replaceSignature: boolean;
+  contact: { firstname: string; lastname: string; company: string; position: string };
   phase: (text: string) => Promise<unknown>;
 }) {
   const { projectId, campaignId, doc, sandbox, nextRow, total, to } = input;
@@ -565,12 +576,36 @@ async function sendRowWithScript(input: {
   const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
   await patchCloudCampaignDoc(projectId, campaignId, { inflightRow: nextRow });
 
+  // Tracking record for the Report tab (reused if this row is being retried).
+  const record = await prepareCloudSend({
+    projectId,
+    campaignObjectId: doc._id,
+    campaignId,
+    row: nextRow,
+    email: to,
+    firstName: input.contact.firstname,
+    lastName: input.contact.lastname,
+    companyName: input.contact.company,
+    position: input.contact.position,
+    subject: input.subject,
+  });
+  const trackedHtml = await trackCloudHtml(
+    input.html,
+    record.token,
+    {
+      trackOpens: doc.trackOpens !== false,
+      trackClicks: doc.trackClicks === true,
+      unsubscribeFooter: doc.unsubscribeFooter === true,
+    },
+    doc.name,
+  );
+
   const attempt = (withDupCheck: boolean) =>
     sendViaScript(sandbox.id, doc.profileDirectory || "", {
       provider: resolveSenderProvider(doc.profileProvider),
       to,
       subject: input.subject,
-      html: input.html,
+      html: trackedHtml,
       plain: input.plain,
       expectedEmail: sender || undefined,
       replaceSignature: input.replaceSignature,
@@ -588,6 +623,16 @@ async function sendRowWithScript(input: {
     await input.phase(`retrying ${to} once (${result.code})…`);
     result = await attempt(dupCheck);
   }
+
+  // Keep the tracking record in step with what really happened.
+  const sentForSure = result.ok && (result.status === "sent" || result.status === "already_sent");
+  const possiblySent =
+    result.sendPressed === true ||
+    result.code === "COMMAND_TIMEOUT" ||
+    result.code === "NO_RESULT" ||
+    result.code === "COMMAND_FAILED";
+  if (sentForSure) await markCloudSendSent(record.sendId);
+  else if (!possiblySent) await discardCloudSend(record.sendId);
 
   // Restart/pause while we were working: don't overwrite that state.
   const fresh = await getCloudCampaignDoc(projectId, campaignId);
@@ -610,7 +655,7 @@ async function sendRowWithScript(input: {
   const definitive = result.ok && (result.status === "sent" || result.status === "already_sent");
   if (!definitive) {
     // sendPressed (or unknown because the command died) => possibly sent: keep in-flight.
-    const maybeSent = result.sendPressed === true || result.code === "COMMAND_TIMEOUT" || result.code === "NO_RESULT" || result.code === "COMMAND_FAILED";
+    const maybeSent = possiblySent;
     const lastError = maybeSent
       ? `Send to ${to} may or may not have gone out (${result.code || "unconfirmed"}). Resume checks ${mailName} Sent first and will not send it twice.`
       : scriptFailureMessage(result, to, sender);
@@ -648,6 +693,7 @@ async function sendRowWithScript(input: {
   const finished = total > 0 && advanced >= total;
   const patch: Partial<CloudCampaignDoc> = {
     nextRow: advanced,
+    lastSentAt: new Date(),
     sentCount: fresh.sentCount + (alreadySent ? 0 : 1),
     sendLog,
     lastReport: `Row ${nextRow + 1}${total ? ` of ${total}` : ""}: ${entry.message}`,
@@ -671,6 +717,59 @@ async function sendRowWithScript(input: {
     needsUserInput: false,
     report: entry.message,
   };
+}
+
+/**
+ * Look in the sender's own inbox for replies from, and bounces for, this campaign's recipients.
+ * Read-only; runs on the email computer through the sender's signed-in Chrome (no AI).
+ */
+export async function checkCloudInbox(projectId: ObjectId, campaignId: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  if (!doc.profileDirectory) throw new Error("This campaign has no sender");
+  if (doc.status === "sending") {
+    throw new Error("Wait until sending stops — replies are checked on the same computer.");
+  }
+  const sent = await cloudSentEmails(projectId, campaignId);
+  if (!sent.length) {
+    await patchCloudCampaignDoc(projectId, campaignId, { inboxCheckedAt: new Date() });
+    return { checked: 0, newReplies: 0, newBounces: 0 };
+  }
+  const earliest = Math.min(...sent.map((s) => (s.sentAt ? new Date(s.sentAt).getTime() : Date.now())));
+  const sinceDate = new Date(earliest - 24 * 60 * 60 * 1000);
+  const since = `${sinceDate.getUTCFullYear()}/${sinceDate.getUTCMonth() + 1}/${sinceDate.getUTCDate()}`;
+  const provider = resolveSenderProvider(doc.profileProvider);
+  // The sender's own address can't "reply" (self-sent tests would all look like replies).
+  const sender = String(doc.profileGmail || "").trim().toLowerCase();
+  const emails = Array.from(new Set(sent.map((s) => s.email))).filter((email) => email !== sender);
+  const chunk = provider === "outlook" ? 8 : 60;
+  const sandbox = await readySandbox(projectId, campaignId);
+  let newReplies = 0;
+  let newBounces = 0;
+  for (let i = 0; i < emails.length; i += chunk) {
+    const result = await scanInboxViaScript(
+      sandbox.id,
+      doc.profileDirectory,
+      provider,
+      emails.slice(i, i + chunk),
+      since,
+    );
+    if (!result.ok) {
+      const reason =
+        result.code === "LOGIN_REQUIRED"
+          ? "The sender Chrome is signed out — sign in (step 2), then check again."
+          : `Couldn't check the inbox (${result.code || "error"}).`;
+      throw new Error(reason);
+    }
+    const counts = await recordCloudInboxEvents(projectId, campaignId, {
+      replied: result.replied || [],
+      bounced: result.bounced || [],
+    });
+    newReplies += counts.replied;
+    newBounces += counts.bounced;
+  }
+  await patchCloudCampaignDoc(projectId, campaignId, { inboxCheckedAt: new Date() });
+  return { checked: emails.length, newReplies, newBounces };
 }
 
 /** Diagnostics: list Outlook compose controls for this campaign's sender (no send). */
@@ -1620,6 +1719,12 @@ REPORT: one short sentence`;
       html: bodyHtml,
       plain: bodyPlain,
       replaceSignature: Boolean(signatureHtml),
+      contact: {
+        firstname: fields.firstname,
+        lastname: fields.lastname,
+        company: fields.company,
+        position: fields.position,
+      },
       phase,
     });
   }
@@ -1943,6 +2048,7 @@ export async function restartCloudSending(projectId: ObjectId, campaignId: strin
   if (sandboxId) {
     await interruptBoatAgent(sandboxId, null).catch(() => undefined);
   }
+  await deleteCloudSends(projectId, campaignId);
   await patchCloudCampaignDoc(projectId, campaignId, {
     status: "ready",
     nextRow: 0,
@@ -1950,7 +2056,7 @@ export async function restartCloudSending(projectId: ObjectId, campaignId: strin
     failedCount: 0,
     sendLog: [],
     lastError: undefined,
-    lastReport: "Restarted from the first people row. Send history cleared.",
+    lastReport: "Restarted from the first people row. Send history and report cleared.",
     inflightRow: undefined,
     lockPromptId: undefined,
     lockConversationId: null,

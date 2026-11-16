@@ -89,6 +89,10 @@ export type CloudCampaign = {
   /** Which people-list column feeds each email field, and how many rows are ready. */
   columnMap?: CloudColumnMap;
   columnStats?: CloudColumnStats;
+  trackOpens?: boolean;
+  trackClicks?: boolean;
+  unsubscribeFooter?: boolean;
+  inboxCheckedAt?: string;
   sheetVerifiedAt?: string;
   computerReady?: boolean;
   gapMinutes: number;
@@ -213,6 +217,9 @@ export async function patchCloudCampaign(
       | "signatureReady"
       | "customPrompt"
       | "customPromptReady"
+      | "trackOpens"
+      | "trackClicks"
+      | "unsubscribeFooter"
     >
   >,
 ): Promise<CloudCampaign> {
@@ -350,6 +357,7 @@ export async function runCloudCampaignAction(
     | "verify_csv"
     | "save_column_map"
     | "preview_row"
+    | "check_inbox"
     | "tick",
   body?: Record<string, unknown>,
 ) {

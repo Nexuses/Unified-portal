@@ -93,6 +93,10 @@ export async function ensureSenderChrome(
   const command = [
     `if ${probe}; then echo chrome-running; exit 0; fi;`,
     `mkdir -p ${dir};`,
+    // A computer that resumed on another machine (or was rebuilt from backup) keeps Chrome's
+    // profile lock from the old host, and Chrome then refuses to start. Clear it, but only
+    // when no Chrome here is using this profile.
+    `if ! pgrep -f -- "--user-data-dir=${dir}" >/dev/null 2>&1; then rm -f ${dir}/SingletonLock ${dir}/SingletonSocket ${dir}/SingletonCookie; fi;`,
     `DISPLAY=:0 nohup google-chrome-stable --user-data-dir=${dir} --remote-debugging-port=${port}`,
     `  --remote-debugging-address=127.0.0.1 --no-first-run --no-default-browser-check`,
     `  --disable-dev-shm-usage --password-store=basic --window-size=1400,950 ${shellQuote(openUrl)}`,
@@ -113,7 +117,7 @@ export async function ensureSenderChrome(
 /** Run one sender script command and parse its single NXS_RESULT line. */
 export async function runSenderScript(
   sandboxId: string,
-  command: "version" | "check" | "send" | "find_sent" | "read_sheet" | "probe_outlook",
+  command: "version" | "check" | "send" | "find_sent" | "read_sheet" | "probe_outlook" | "inbox_scan",
   args: Record<string, unknown>,
   timeoutSeconds = 85,
 ): Promise<SenderResult> {
@@ -322,4 +326,21 @@ export async function probeOutlookViaScript(sandboxId: string, directoryName: st
   const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl("outlook"));
   if (!chrome.ok) return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail };
   return runSenderScript(sandboxId, "probe_outlook", { port: chrome.port, to }, 85);
+}
+
+/** Look in the sender's inbox for replies from, and bounces for, these addresses. Read-only. */
+export async function scanInboxViaScript(
+  sandboxId: string,
+  directoryName: string,
+  provider: SenderProvider,
+  emails: string[],
+  since: string,
+): Promise<SenderResult & { replied?: string[]; bounced?: string[] }> {
+  const toolkit = await ensureSenderToolkit(sandboxId);
+  if (!toolkit.ok) return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail };
+  const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl(provider));
+  if (!chrome.ok) return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail };
+  return runSenderScript(sandboxId, "inbox_scan", { port: chrome.port, provider, emails, since }, 88) as Promise<
+    SenderResult & { replied?: string[]; bounced?: string[] }
+  >;
 }

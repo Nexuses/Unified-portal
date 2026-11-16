@@ -2918,6 +2918,10 @@ export async function recordCampaignOpen(
   if (!send) {
     return;
   }
+  // Never count opens on an email that isn't sent yet (e.g. a compose window loading the pixel).
+  if (send.status !== "sent") {
+    return;
+  }
   const { skipOpenGrace } = await getProjectEngagementFlags(send.projectId);
   if (!skipOpenGrace && isWithinBotGracePeriod(send, OPEN_BOT_GRACE_MS)) {
     return;
@@ -2991,6 +2995,9 @@ export async function recordCampaignClick(
   const db = await getDb();
   const send = await db.collection<CampaignSendDoc>("campaign_sends").findOne({ token });
   if (!send) {
+    return;
+  }
+  if (send.status !== "sent") {
     return;
   }
   const { skipClickGrace } = await getProjectEngagementFlags(send.projectId);

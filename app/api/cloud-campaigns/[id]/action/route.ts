@@ -13,6 +13,7 @@ import {
   submitChromeProfileAuthCode,
   clearCloudSendLog,
   checkScriptSender,
+  checkCloudInbox,
   previewCloudRow,
   saveCloudColumnMap,
   probeOutlookSender,
@@ -247,6 +248,12 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (action === "sender_read_sheet") {
       const result = await readSheetThroughSender(projectId, id, String(body?.sheetUrl ?? ""));
       return NextResponse.json({ sheet: result });
+    }
+
+    if (action === "check_inbox") {
+      const result = await checkCloudInbox(projectId, id);
+      const campaign = await getCloudCampaign(projectId, id);
+      return NextResponse.json({ inbox: result, campaign });
     }
 
     if (action === "save_column_map") {

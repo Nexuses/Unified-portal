@@ -12,6 +12,7 @@ import {
   saveChromeProfileDefaults,
 } from "@/lib/cloud-campaigns-server";
 import { columnMapStats, reconcileColumnMap } from "@/lib/cloud-sheet-csv";
+import { deleteCloudSends } from "@/lib/cloud-campaign-tracking";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
@@ -98,6 +99,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         }
       }
     }
+    for (const key of ["trackOpens", "trackClicks", "unsubscribeFooter"] as const) {
+      if (typeof body[key] === "boolean") patch[key] = body[key];
+    }
     if (typeof body.signatureHtml === "string") {
       patch.signatureHtml = cleanSignatureHtml(body.signatureHtml);
     }
@@ -158,6 +162,7 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
     if (isSessionError(session)) return session;
     const { id } = await params;
     const ok = await deleteCloudCampaign(new ObjectId(session.projectId), id);
+    if (ok) await deleteCloudSends(new ObjectId(session.projectId), id);
     if (!ok) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
