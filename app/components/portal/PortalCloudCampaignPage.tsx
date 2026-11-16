@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useConfirmDialog } from "@/app/components/portal/useConfirmDialog";
 import { useRouter } from "next/navigation";
 import {
   createCloudCampaign,
@@ -85,6 +86,8 @@ export default function PortalCloudCampaignPage() {
   const [newName, setNewName] = useState("");
   const [createError, setCreateError] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+  const [confirm, confirmDialog] = useConfirmDialog();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -194,7 +197,13 @@ export default function PortalCloudCampaignPage() {
   }
 
   async function handleDelete(campaign: CloudCampaign) {
-    if (!window.confirm(`Delete campaign "${campaign.name}"?`)) return;
+    const ok = await confirm(`“${campaign.name}” and its send history will be deleted. This can't be undone.`, {
+      title: "Delete campaign?",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    setDeleteError("");
     setDeletingId(campaign.id);
     setOpenMenuId(null);
     try {
@@ -206,7 +215,7 @@ export default function PortalCloudCampaignPage() {
         return next;
       });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Failed to delete campaign");
+      setDeleteError(error instanceof Error ? error.message : "Failed to delete campaign");
     } finally {
       setDeletingId(null);
     }
@@ -219,7 +228,13 @@ export default function PortalCloudCampaignPage() {
       ids.length === 1
         ? `Delete campaign "${campaigns.find((item) => item.id === ids[0])?.name ?? ids[0]}"?`
         : `Delete ${ids.length} campaigns?`;
-    if (!window.confirm(confirmText)) return;
+    const ok = await confirm(`${confirmText} Their send history will be deleted. This can't be undone.`, {
+      title: ids.length === 1 ? "Delete campaign?" : `Delete ${ids.length} campaigns?`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    setDeleteError("");
     setDeletingId("bulk");
     try {
       await Promise.all(ids.map((id) => deleteCloudCampaign(id)));
@@ -227,7 +242,7 @@ export default function PortalCloudCampaignPage() {
       setCampaigns((current) => current.filter((item) => !removed.has(item.id)));
       setSelectedIds(new Set());
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Failed to delete campaigns");
+      setDeleteError(error instanceof Error ? error.message : "Failed to delete campaigns");
     } finally {
       setDeletingId(null);
     }
@@ -235,6 +250,8 @@ export default function PortalCloudCampaignPage() {
 
   return (
     <>
+      {confirmDialog}
+      {deleteError ? <div className="cloud-notice" role="alert">{deleteError}</div> : null}
       {!showCreate ? (
         <div className="crm-page-head drip-page-head">
           <div>

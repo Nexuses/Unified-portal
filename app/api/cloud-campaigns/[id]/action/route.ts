@@ -12,6 +12,13 @@ import {
   stopCloudSending,
   submitChromeProfileAuthCode,
   clearCloudSendLog,
+  checkScriptSender,
+  previewCloudRow,
+  saveCloudColumnMap,
+  probeOutlookSender,
+  readSheetThroughSender,
+  testScriptSend,
+  verifyCloudCsv,
   verifyCloudSheet,
 } from "@/lib/cloud-boat-runner";
 import { learnBoatMemoryFromSender } from "@/lib/boat-memory";
@@ -51,6 +58,10 @@ type ActionBody = {
   email?: string;
   password?: string;
   code?: string;
+  csvText?: string;
+  fileName?: string;
+  columnMap?: Record<string, unknown>;
+  row?: number;
 };
 
 function isValidEmail(value: string) {
@@ -70,6 +81,19 @@ export async function POST(request: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
 
+    if (action === "sender_check") {
+      const result = await checkScriptSender(projectId, id);
+      return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
+    }
+
+    if (action === "sender_test_send" || action === "sender_dry_run") {
+      const result = await testScriptSend(projectId, id, {
+        dryRun: action === "sender_dry_run",
+        to: String(body?.email ?? "").trim() || undefined,
+      });
+      return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
+    }
+
     if (action === "start_computer") {
       const result = await startCloudComputer(projectId, id);
       const campaign = await getCloudCampaign(projectId, id);
@@ -79,6 +103,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         sandboxId: result.sandbox.id,
         state: result.sandbox.state,
         replacedDeletedDisk: result.replacedDeletedDisk,
+        restoredFromSnapshot: result.restoredFromSnapshot,
       });
     }
 
@@ -212,6 +237,39 @@ export async function POST(request: NextRequest, { params }: Params) {
         desktopUrl: login.desktopUrl,
         profile: login.email ? { ...profile, gmail: login.email } : profile,
       });
+    }
+
+    if (action === "sender_probe_outlook") {
+      const result = await probeOutlookSender(projectId, id, String(body?.email ?? ""));
+      return NextResponse.json({ probe: result });
+    }
+
+    if (action === "sender_read_sheet") {
+      const result = await readSheetThroughSender(projectId, id, String(body?.sheetUrl ?? ""));
+      return NextResponse.json({ sheet: result });
+    }
+
+    if (action === "save_column_map") {
+      const campaign = await saveCloudColumnMap(projectId, id, body?.columnMap ?? {});
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "preview_row") {
+      const preview = await previewCloudRow(projectId, id, typeof body?.row === "number" ? body.row : undefined);
+      return NextResponse.json({ preview });
+    }
+
+    if (action === "verify_csv") {
+      const csvText = String(body?.csvText ?? "");
+      if (!csvText.trim()) {
+        return NextResponse.json({ error: "Upload a CSV file first." }, { status: 400 });
+      }
+      const verified = await verifyCloudCsv(projectId, id, {
+        csvText,
+        fileName: String(body?.fileName ?? ""),
+      });
+      const campaign = await getCloudCampaign(projectId, id);
+      return NextResponse.json({ campaign, ...verified });
     }
 
     if (action === "verify_sheet") {
