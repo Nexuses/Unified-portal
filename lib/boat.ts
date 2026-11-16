@@ -26,7 +26,9 @@ export type BoatCommandResult = {
 
 type BoatLinkDoc = {
   projectId: ObjectId;
-  sandboxId: string;
+  sandboxId?: string;
+  /** Separate desktop for LinkedIn. Email and Cloud Campaign stay on sandboxId. */
+  linkedinSandboxId?: string;
   createdAt: Date;
   updatedAt: Date;
   promptId?: string;
@@ -220,6 +222,33 @@ export async function ensureProjectBoat(projectId: ObjectId) {
   );
   const ready = isBoatRunning(created.state) ? created : await waitForBoat(created.id);
   return replacedDeletedDisk ? { ...ready, replacedDeletedDisk: true } : ready;
+}
+
+/** LinkedIn's own computer. Does not resume or replace the email computer. */
+export async function ensureLinkedinBoat(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  if (saved?.linkedinSandboxId) {
+    try {
+      return await reviveBoat(saved.linkedinSandboxId);
+    } catch (error) {
+      if (!sandboxDiskGone(error)) {
+        throw error;
+      }
+    }
+  }
+
+  const created = await createBoatSandbox();
+  await collection.updateOne(
+    { projectId },
+    {
+      $set: { linkedinSandboxId: created.id, updatedAt: new Date() },
+      $setOnInsert: { projectId, createdAt: new Date() },
+    },
+    { upsert: true },
+  );
+  const ready = isBoatRunning(created.state) ? created : await waitForBoat(created.id);
+  return { ...ready, replacedDeletedDisk: true };
 }
 
 export async function projectBoatStatus(projectId: ObjectId) {

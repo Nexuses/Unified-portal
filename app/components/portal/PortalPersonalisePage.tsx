@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Bold, Italic, Underline } from "lucide-react";
 import {
   MAX_SIGNATURE_HTML,
   MAX_STEP_GAP_DAYS,
@@ -10,6 +11,7 @@ import {
   contactNeedsEmail,
   defaultStepGaps,
   formatPersonaliseEmail,
+  materializePitchBold,
   personaliseEmphasizeTerms,
   pitchBlocks,
   pitchToHtml,
@@ -132,10 +134,197 @@ function initials(contact: PersonaliseContact) {
 function Inline({ parts }: { parts: PitchInline[] }) {
   return (
     <>
-      {parts.map((part, index) =>
-        part.bold ? <strong key={index}>{part.text}</strong> : <Fragment key={index}>{part.text}</Fragment>,
-      )}
+      {parts.map((part, index) => {
+        let node: ReactNode = part.text;
+        if (part.underline) node = <u>{node}</u>;
+        if (part.italic) node = <em>{node}</em>;
+        if (part.bold) node = <strong>{node}</strong>;
+        return <Fragment key={index}>{node}</Fragment>;
+      })}
     </>
+  );
+}
+
+function pitchEditorHtml(body: string, explicitBold: boolean, emphasize: string[]) {
+  const html = pitchToHtml(body, "", {
+    emphasize,
+    explicitBold,
+  });
+  return html.replace(/^<div[^>]*>/, "").replace(/<\/div>\s*$/, "");
+}
+
+function inlineNodeToMarkdown(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? "";
+  }
+  if (!(node instanceof HTMLElement)) {
+    return "";
+  }
+  if (node.tagName === "BR") {
+    return "\n";
+  }
+  let inner = [...node.childNodes].map((child) => inlineNodeToMarkdown(child)).join("");
+  const decoration = `${node.style.textDecorationLine || ""} ${node.style.textDecoration || ""}`;
+  if (node.tagName === "U" || /underline/i.test(decoration)) {
+    inner = inner ? `<u>${inner}</u>` : "";
+  }
+  if (node.tagName === "EM" || node.tagName === "I" || node.style.fontStyle === "italic") {
+    inner = inner ? `<i>${inner}</i>` : "";
+  }
+  const weight = node.style.fontWeight;
+  if (
+    node.tagName === "STRONG" ||
+    node.tagName === "B" ||
+    weight === "bold" ||
+    Number(weight) >= 600
+  ) {
+    inner = inner ? `**${inner}**` : "";
+  }
+  return inner;
+}
+
+function listItemToMarkdown(item: HTMLElement) {
+  const first = item.firstElementChild;
+  if (
+    first instanceof HTMLElement &&
+    (first.tagName === "STRONG" || first.tagName === "B") &&
+    /:\s*$/.test(first.textContent ?? "")
+  ) {
+    const label = (first.textContent ?? "").replace(/:\s*$/, "").trim();
+    const rest = [...item.childNodes]
+      .slice(1)
+      .map((child) => inlineNodeToMarkdown(child))
+      .join("")
+      .trim();
+    return `- ${label}: ${rest}`;
+  }
+  return `- ${inlineNodeToMarkdown(item).trim()}`;
+}
+
+function pitchHtmlToBody(root: HTMLElement) {
+  const lines: string[] = [];
+  for (const node of root.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = (node.textContent ?? "").trim();
+      if (text) lines.push(text);
+      continue;
+    }
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.tagName === "UL" || node.tagName === "OL") {
+      for (const item of node.querySelectorAll(":scope > li")) {
+        if (item instanceof HTMLElement) {
+          lines.push(listItemToMarkdown(item));
+        }
+      }
+      continue;
+    }
+    lines.push(inlineNodeToMarkdown(node).trim());
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+function PitchFormatEditor({
+  body,
+  emphasize,
+  onChange,
+}: {
+  body: string;
+  emphasize: string[];
+  onChange: (body: string) => void;
+}) {
+  const editorRef = useRef<HTMLDivElement>(null);
+  const focused = useRef(false);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || focused.current) return;
+    editor.innerHTML = pitchEditorHtml(body, true, emphasize);
+  }, [body, emphasize]);
+
+  function emit() {
+    const editor = editorRef.current;
+    if (!editor) return;
+    onChange(pitchHtmlToBody(editor));
+  }
+
+  const [marks, setMarks] = useState({ bold: false, italic: false, underline: false });
+
+  function syncMarks() {
+    try {
+      setMarks({
+        bold: document.queryCommandState("bold"),
+        italic: document.queryCommandState("italic"),
+        underline: document.queryCommandState("underline"),
+      });
+    } catch {
+      setMarks({ bold: false, italic: false, underline: false });
+    }
+  }
+
+  function toggleMark(command: "bold" | "italic" | "underline") {
+    editorRef.current?.focus();
+    document.execCommand(command);
+    emit();
+    syncMarks();
+  }
+
+  return (
+    <div className="pz-format-editor-wrap">
+      <div className="pz-format-tools" role="toolbar" aria-label="Text formatting">
+        <button
+          type="button"
+          className={marks.bold ? "is-on" : undefined}
+          aria-label="Bold"
+          aria-pressed={marks.bold}
+          title="Bold"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => toggleMark("bold")}
+        >
+          <Bold size={16} strokeWidth={2.4} />
+        </button>
+        <button
+          type="button"
+          className={marks.italic ? "is-on" : undefined}
+          aria-label="Italic"
+          aria-pressed={marks.italic}
+          title="Italic"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => toggleMark("italic")}
+        >
+          <Italic size={16} strokeWidth={2.4} />
+        </button>
+        <button
+          type="button"
+          className={marks.underline ? "is-on" : undefined}
+          aria-label="Underline"
+          aria-pressed={marks.underline}
+          title="Underline"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => toggleMark("underline")}
+        >
+          <Underline size={16} strokeWidth={2.4} />
+        </button>
+      </div>
+      <div
+        ref={editorRef}
+        className="pz-format-editor pz-pitch"
+        contentEditable
+        role="textbox"
+        aria-multiline="true"
+        aria-label="Email body"
+        spellCheck
+        onFocus={() => {
+          focused.current = true;
+        }}
+        onMouseUp={syncMarks}
+        onKeyUp={syncMarks}
+        onBlur={() => {
+          focused.current = false;
+          emit();
+        }}
+        onInput={emit}
+      />
+    </div>
   );
 }
 
@@ -143,14 +332,16 @@ function PitchPreview({
   body,
   signature,
   emphasize = [],
+  explicitBold = false,
 }: {
   body: string;
   signature: string;
   emphasize?: string[];
+  explicitBold?: boolean;
 }) {
   const blocks = useMemo(
-    () => pitchBlocks(body, { emphasize }),
-    [body, emphasize],
+    () => pitchBlocks(body, { emphasize, explicitBold }),
+    [body, emphasize, explicitBold],
   );
   return (
     <div className="pz-pitch">
@@ -415,10 +606,21 @@ export default function PortalPersonalisePage({
     }, 700);
   }
 
+  function beginFormatEdit(contact: PersonaliseContact, step: PersonaliseStep, contactIndex: number, stepIndex: number) {
+    if (!step.formatLocked) {
+      updateStep(contactIndex, stepIndex, {
+        body: materializePitchBold(step.body, personaliseEmphasizeTerms(contact)),
+        formatLocked: true,
+      });
+    }
+    const key = stepEditKey(contactIndex, stepIndex);
+    setEditingSteps((current) => ({ ...current, [key]: true }));
+  }
+
   function updateStep(
     contactIndex: number,
     stepIndex: number,
-    patch: Partial<Pick<PersonaliseStep, "subject" | "body">>,
+    patch: Partial<Pick<PersonaliseStep, "subject" | "body" | "formatLocked">>,
   ) {
     setPlan((current) => {
       if (!current) {
@@ -462,6 +664,7 @@ export default function PortalPersonalisePage({
       const html = applyContactVariables(
         pitchToHtml(step.body, activeSignature, {
           emphasize: personaliseEmphasizeTerms(contact),
+          explicitBold: step.formatLocked === true,
         }),
         {
           firstName: contact.firstName,
@@ -1161,12 +1364,13 @@ export default function PortalPersonalisePage({
                               <button
                                 type="button"
                                 className="btn-soft pz-step-edit-btn"
-                                onClick={() =>
-                                  setEditingSteps((current) => ({
-                                    ...current,
-                                    [key]: !editing,
-                                  }))
-                                }
+                                onClick={() => {
+                                  if (editing) {
+                                    setEditingSteps((current) => ({ ...current, [key]: false }));
+                                    return;
+                                  }
+                                  beginFormatEdit(contact, step, index, stepIndex);
+                                }}
                               >
                                 {editing ? "Preview" : "Edit format"}
                               </button>
@@ -1184,23 +1388,17 @@ export default function PortalPersonalisePage({
                                     }
                                   />
                                 </label>
-                                <label className="pz-step-edit-field">
+                                <div className="pz-step-edit-field">
                                   <span>Email body</span>
-                                  <textarea
-                                    rows={12}
-                                    value={step.body}
-                                    spellCheck
-                                    autoFocus
-                                    onChange={(event) =>
-                                      updateStep(index, stepIndex, { body: event.target.value })
-                                    }
+                                  <PitchFormatEditor
+                                    body={step.body}
+                                    emphasize={personaliseEmphasizeTerms(contact)}
+                                    onChange={(body) => updateStep(index, stepIndex, { body })}
                                   />
-                                </label>
+                                </div>
                                 <p className="personalise-hint">
-                                  Keep blank lines between paragraphs. Lines starting with{" "}
-                                  <code>- </code> become bullets (first letter capitalized). Use{" "}
-                                  <code>**bold**</code> for emphasis. Solution/product names,
-                                  labels, and important/metric sentences are bolded automatically.
+                                  Select text, then use bold, italic, or underline. Click the same
+                                  icon again to remove it.
                                 </p>
                               </div>
                             ) : (
@@ -1208,19 +1406,11 @@ export default function PortalPersonalisePage({
                                 className="pz-step-preview-hit"
                                 role="button"
                                 tabIndex={0}
-                                onClick={() =>
-                                  setEditingSteps((current) => ({
-                                    ...current,
-                                    [key]: true,
-                                  }))
-                                }
+                                onClick={() => beginFormatEdit(contact, step, index, stepIndex)}
                                 onKeyDown={(event) => {
                                   if (event.key === "Enter" || event.key === " ") {
                                     event.preventDefault();
-                                    setEditingSteps((current) => ({
-                                      ...current,
-                                      [key]: true,
-                                    }));
+                                    beginFormatEdit(contact, step, index, stepIndex);
                                   }
                                 }}
                               >
@@ -1238,6 +1428,7 @@ export default function PortalPersonalisePage({
                                   body={filled.body}
                                   signature={activeSignature}
                                   emphasize={personaliseEmphasizeTerms(contact)}
+                                  explicitBold={step.formatLocked === true}
                                 />
                                 <span className="pz-step-preview-hint">Click to edit</span>
                               </div>

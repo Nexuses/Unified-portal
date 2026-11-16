@@ -92,7 +92,11 @@ function sequencesFromContacts(contacts: PersonaliseContact[], signatureHtml: st
       delayDays: delays[index] ?? 0,
       subject: index === 0 ? step?.subject || "Hello" : step?.subject || "",
       hasDesign: true,
-      designHtml: step ? pitchToHtml(step.body, signatureHtml) : "<p></p>",
+      designHtml: step
+        ? pitchToHtml(step.body, signatureHtml, {
+            explicitBold: step.formatLocked === true,
+          })
+        : "<p></p>",
     });
   }
   return sequences;
@@ -363,6 +367,7 @@ export async function rolloutPersonaliseCampaign(input: {
       htmlBody: applyContactVariables(
         pitchToHtml(step.body, signatureHtml, {
           emphasize: personaliseEmphasizeTerms(contact),
+          explicitBold: step.formatLocked === true,
         }),
         mergeContact,
         true,
