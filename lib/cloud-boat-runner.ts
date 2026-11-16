@@ -1,5 +1,6 @@
 import { ObjectId } from "mongodb";
 import {
+  backupProjectSoon,
   boatConfigured,
   ensureProjectBoat,
   getSavedBoatSandboxId,
@@ -52,6 +53,8 @@ import {
   markChromeProfileScriptState,
   markChromeProfileVerified,
   setChromeProfileSensitivity,
+  getChromeProfileDefaults,
+  saveChromeProfileDefaults,
   patchCloudCampaignDoc,
   unlockBoatDesktop,
   type CloudCampaignDoc,
@@ -296,6 +299,8 @@ async function stopBoatAfterCampaignWork(projectId: ObjectId) {
       error instanceof Error ? error.message : error,
     );
   });
+  // Keep the saved snapshot (sender logins) fresh; throttled to once every few hours.
+  backupProjectSoon(projectId);
 }
 
 /**
@@ -480,7 +485,10 @@ export async function checkScriptSender(projectId: ObjectId, campaignId: string)
   // First sign-in on a brand-new sender has no expected address yet: accept what Gmail shows.
   const matches = Boolean(email && (!expected || expected === email));
   if (doc.profileId && result.ok && result.status === "ready" && matches) {
+    const before = await getChromeProfile(projectId, doc.profileId);
     await markChromeProfileScriptState(projectId, doc.profileId, email);
+    // A fresh sign-in is exactly what we don't want to lose: back it up now.
+    if (before?.scriptEmail !== email) backupProjectSoon(projectId, true);
     await markChromeProfileVerified(projectId, doc.profileId, email);
     if (!expected) await patchCloudCampaignDoc(projectId, campaignId, { profileGmail: email });
   } else if (doc.profileId && result.ok && result.status === "login_required") {
@@ -701,6 +709,7 @@ export async function saveCloudColumnMap(
     if (!headers.includes(header)) throw new Error(`Column "${header}" isn't in the people list.`);
     columnMap[field] = header;
   }
+  if (doc.profileId) await saveChromeProfileDefaults(projectId, doc.profileId, { columnMap });
   return patchCloudCampaignDoc(projectId, campaignId, {
     columnMap,
     columnStats: columnMapStats(rows, columnMap),
@@ -803,6 +812,7 @@ export async function startCloudComputer(projectId: ObjectId, campaignId: string
     sandbox,
     desktopUrl,
     replacedDeletedDisk: sandbox.replacedDeletedDisk === true,
+    restoredFromSnapshot: (sandbox as { restoredFromSnapshot?: boolean }).restoredFromSnapshot === true,
   };
 }
 
@@ -1013,6 +1023,8 @@ export async function verifyCloudCsv(
 
   const { parseCloudCsvText } = await import("@/lib/cloud-sheet-csv");
   const parsed = parseCloudCsvText(input.csvText);
+  // The sender's last confirmed mapping is reused when the columns match.
+  const senderMap = (await getChromeProfileDefaults(projectId, doc.profileId))?.columnMap;
   const fileName = (input.fileName || "").trim().slice(0, 200) || "upload.csv";
   const report = `CSV ${fileName}: ${parsed.rowCount} rows · columns ${parsed.headers.join(", ")}`;
 
@@ -1022,7 +1034,7 @@ export async function verifyCloudCsv(
     sheetUrl: undefined,
     sheetHeaders: parsed.headers,
     ...(() => {
-      const columnMap = reconcileColumnMap(doc.columnMap, parsed.headers, parsed.rows);
+      const columnMap = reconcileColumnMap(doc.columnMap || senderMap, parsed.headers, parsed.rows);
       return { columnMap, columnStats: columnMapStats(parsed.rows, columnMap) };
     })(),
     sheetRowCount: parsed.rowCount,
@@ -1065,6 +1077,7 @@ export async function verifyCloudSheet(
     throw new Error("Pick a sender profile before verifying the sheet");
   }
 
+  const senderMap = (await getChromeProfileDefaults(projectId, doc.profileId))?.columnMap;
   // 1) Link-shared sheets: read server-side. Free, instant.
   // 2) Private sheets: read through the sender's signed-in Chrome as CSV (no AI).
   let exported = await tryFetchSheetCsv(url);
@@ -1118,7 +1131,7 @@ export async function verifyCloudSheet(
       sheetFileName: undefined,
       sheetHeaders: exported.headers,
       ...(() => {
-        const columnMap = reconcileColumnMap(doc.columnMap, exported.headers, exported.rows);
+        const columnMap = reconcileColumnMap(doc.columnMap || senderMap, exported.headers, exported.rows);
         return { columnMap, columnStats: columnMapStats(exported.rows, columnMap) };
       })(),
       sheetRowCount: exported.rowCount,

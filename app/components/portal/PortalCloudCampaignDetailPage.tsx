@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Pencil, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import CloudBoatMemoryCard from "@/app/components/portal/CloudBoatMemoryCard";
+import CloudSendersCard from "@/app/components/portal/CloudSendersCard";
 import CloudBoatUsageCard from "@/app/components/portal/CloudBoatUsageCard";
 import CloudCampaignRunPanel from "@/app/components/portal/CloudCampaignRunPanel";
 import CloudColumnMapPanel, {
@@ -330,7 +330,11 @@ export default function PortalCloudCampaignDetailPage({
         setDesktopUrl(data.desktopUrl);
         setDesktopLayout("floating");
       }
-      if (data.replacedDeletedDisk === true) {
+      if (data.restoredFromSnapshot === true) {
+        setNotice(
+          "The old computer had expired, so it was rebuilt from your saved backup — senders stay signed in. Click Check sign-in in step 2 to confirm.",
+        );
+      } else if (data.replacedDeletedDisk === true) {
         setNotice(
           "The old computer disk was deleted, so this is a blank desktop. Sign in to Gmail or Outlook again on the next step.",
         );
@@ -887,7 +891,7 @@ export default function PortalCloudCampaignDetailPage({
           </div>
           <div className="drip-detail-actions">
             <CloudBoatUsageCard />
-            <CloudBoatMemoryCard />
+            <CloudSendersCard refreshKey={profiles.length + (campaign.profileId ? 1 : 0)} />
             <button
               type="button"
               className="btn-soft"

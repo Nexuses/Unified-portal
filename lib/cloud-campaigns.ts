@@ -48,6 +48,8 @@ export type CloudChromeProfile = {
   scriptCheckedAt?: string;
   sensitivityLabel?: string;
   sensitivityLabels?: string[];
+  /** Sender has a remembered signature or column mapping. */
+  hasDefaults?: boolean;
   createdAt: string;
 };
 

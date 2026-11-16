@@ -12545,3 +12545,9 @@ a.an-kanban-card-name.is-link:hover{
 .confirm-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:6px;}
 .btn-dark.is-danger{background:#dc2626;}
 .btn-dark.is-danger:hover{background:#b91c1c;}
+.cloud-senders-list{list-style:none;margin:8px 0;padding:0;display:flex;flex-direction:column;gap:8px;}
+.cloud-senders-list li{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;}
+.cloud-senders-list li .cloud-run-dot{margin-top:4px;width:8px;height:8px;}
+.cloud-senders-list strong{display:block;color:#111827;font-size:12.5px;}
+.cloud-senders-list small{display:block;color:#6b7280;font-size:11.5px;}
+.cloud-usage-detail .cloud-senders-list li{justify-content:flex-start;text-align:left;}

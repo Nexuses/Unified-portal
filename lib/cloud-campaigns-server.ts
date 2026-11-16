@@ -68,8 +68,18 @@ export type CloudChromeProfileDoc = {
   /** Outlook orgs that require a sensitivity label: the one to apply, and what Outlook offered. */
   sensitivityLabel?: string;
   sensitivityLabels?: string[];
+  /** Remembered per sender so a new campaign only needs a people list. */
+  defaults?: CloudSenderDefaults;
   createdAt: Date;
   updatedAt: Date;
+};
+
+export type CloudSenderDefaults = {
+  signatureHtml?: string;
+  /** True once a signature (possibly empty) was saved with this sender. */
+  signatureSet?: boolean;
+  gapMinutes?: number;
+  columnMap?: CloudColumnMap;
 };
 
 export type BoatDesktopLockDoc = {
@@ -185,6 +195,7 @@ function mapProfile(doc: WithId<CloudChromeProfileDoc>): CloudChromeProfile {
     scriptEmail: doc.scriptEmail || undefined,
     scriptCheckedAt: iso(doc.scriptCheckedAt),
     sensitivityLabel: doc.sensitivityLabel || undefined,
+    hasDefaults: Boolean(doc.defaults && (doc.defaults.signatureSet || doc.defaults.columnMap)),
     sensitivityLabels: Array.isArray(doc.sensitivityLabels) ? doc.sensitivityLabels : undefined,
     createdAt: iso(doc.createdAt) || new Date().toISOString(),
   };
@@ -239,6 +250,26 @@ export async function createCloudCampaign(projectId: ObjectId, name: string) {
     createdAt: now,
     updatedAt: now,
   };
+  // Start from the project's most recently used sender and what it remembers, so a repeat
+  // campaign usually only needs a new people list.
+  const lastUsed = await campaigns.findOne(
+    { projectId, profileId: { $exists: true, $ne: "" } },
+    { sort: { updatedAt: -1 }, projection: { profileId: 1 } },
+  );
+  const { profiles } = await collections();
+  const sender = lastUsed?.profileId ? await profiles.findOne({ projectId, profileId: lastUsed.profileId }) : null;
+  if (sender) {
+    const email = resolveChromeProfileEmail(mapProfile(sender));
+    doc.profileId = sender.profileId;
+    doc.profileProvider = sender.provider === "outlook" ? "outlook" : "gmail";
+    doc.profileGmail = email || sender.gmail || "";
+    doc.profileDirectory = sender.directoryName;
+    if (sender.defaults?.signatureSet) {
+      doc.signatureHtml = sender.defaults.signatureHtml || "";
+      doc.signatureReady = true;
+    }
+    if (typeof sender.defaults?.gapMinutes === "number") doc.gapMinutes = sender.defaults.gapMinutes;
+  }
   await campaigns.insertOne(doc);
   return mapCampaign(doc as WithId<CloudCampaignDoc>);
 }
@@ -439,6 +470,27 @@ export async function markChromeProfileScriptState(
     returnDocument: "after",
   });
   return result ? mapProfile(result) : null;
+}
+
+/** Merge remembered defaults (signature, gap, column mapping) into a sender profile. */
+export async function saveChromeProfileDefaults(
+  projectId: ObjectId,
+  profileId: string,
+  defaults: CloudSenderDefaults,
+) {
+  const { profiles } = await collections();
+  const $set: Record<string, unknown> = { updatedAt: new Date() };
+  for (const [key, value] of Object.entries(defaults)) {
+    if (value !== undefined) $set[`defaults.${key}`] = value;
+  }
+  await profiles.updateOne({ projectId, profileId }, { $set });
+}
+
+export async function getChromeProfileDefaults(projectId: ObjectId, profileId?: string) {
+  if (!profileId) return undefined;
+  const { profiles } = await collections();
+  const doc = await profiles.findOne({ projectId, profileId }, { projection: { defaults: 1 } });
+  return doc?.defaults;
 }
 
 /** Save the chosen Outlook sensitivity label and/or the labels Outlook offered. */

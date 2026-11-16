@@ -103,6 +103,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         sandboxId: result.sandbox.id,
         state: result.sandbox.state,
         replacedDeletedDisk: result.replacedDeletedDisk,
+        restoredFromSnapshot: result.restoredFromSnapshot,
       });
     }
 

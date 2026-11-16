@@ -35,6 +35,10 @@ type BoatLinkDoc = {
   conversationId?: string | null;
   /** Last ensure/run/tick — used to idle-stop after BOAT_IDLE_STOP_MS. */
   lastBoatActivityAt?: Date;
+  /** Last time we asked Boat to refresh the project's saved snapshot (sender logins backup). */
+  snapshotRequestedAt?: Date;
+  /** Set when the email computer was rebuilt from the saved snapshot. */
+  restoredFromSnapshotAt?: Date;
 };
 
 /** Stop running VMs with no activity for this long (when not campaign-locked). */
@@ -135,13 +139,97 @@ export async function getBoatSandbox(sandboxId: string) {
   return readSandbox(await boatFetch(`/sandboxes/${encodeURIComponent(sandboxId)}`));
 }
 
-async function createBoatSandbox() {
+async function createBoatSandbox(from?: string) {
   return readSandbox(
     await boatFetch("/sandboxes", {
       method: "POST",
-      body: JSON.stringify({ type: "default", ttlSeconds: 3600 }),
+      body: JSON.stringify({ type: "default", ttlSeconds: 3600, ...(from ? { from } : {}) }),
     }),
   );
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Saved snapshot ("computer memory"): Boat deletes a stopped computer's disk after ~14 days,
+ * which loses the sender Chrome profiles and their Gmail/Outlook logins. A saved snapshot never
+ * expires, so we keep one rolling copy per project and rebuild from it when the disk is gone.
+ * ------------------------------------------------------------------------------------------- */
+
+export function projectSnapshotName(projectId: ObjectId) {
+  return `nx-${projectId.toHexString()}-email`;
+}
+
+export type ProjectSnapshotInfo = {
+  name: string;
+  status: "saving" | "ready" | "failed" | "none";
+  createdAt?: string;
+  sizeBytes?: number;
+  error?: string;
+};
+
+export async function getProjectSnapshot(projectId: ObjectId): Promise<ProjectSnapshotInfo> {
+  const name = projectSnapshotName(projectId);
+  try {
+    const data = (await boatFetch(`/saved-snapshots/${encodeURIComponent(name)}`)) as Record<string, unknown>;
+    const snap = (data?.snapshot ?? {}) as Record<string, unknown>;
+    const status = snap.status === "ready" || snap.status === "saving" || snap.status === "failed" ? snap.status : "none";
+    return {
+      name,
+      status,
+      createdAt: typeof snap.createdAt === "string" ? snap.createdAt : undefined,
+      sizeBytes: typeof snap.sizeBytes === "number" ? snap.sizeBytes : undefined,
+      error: typeof snap.error === "string" ? snap.error : undefined,
+    };
+  } catch (error) {
+    if (error instanceof BoatError && error.status === 404) return { name, status: "none" };
+    throw error;
+  }
+}
+
+/**
+ * Refresh the project's saved snapshot from its email computer (running or stopped).
+ * Throttled unless forced; a save already in progress counts as success.
+ */
+export async function saveProjectSnapshot(
+  projectId: ObjectId,
+  options: { force?: boolean; minIntervalMs?: number } = {},
+) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  if (!saved?.sandboxId) return { saved: false as const, reason: "no_computer" as const };
+  const minInterval = options.minIntervalMs ?? 6 * 60 * 60 * 1000;
+  if (
+    !options.force &&
+    saved.snapshotRequestedAt &&
+    Date.now() - saved.snapshotRequestedAt.getTime() < minInterval
+  ) {
+    return { saved: false as const, reason: "recent" as const };
+  }
+  try {
+    await boatFetch("/saved-snapshots", {
+      method: "POST",
+      body: JSON.stringify({ sandboxId: saved.sandboxId, name: projectSnapshotName(projectId) }),
+    });
+  } catch (error) {
+    if (!(error instanceof BoatError && error.code === "save_in_progress")) throw error;
+  }
+  await collection.updateOne({ projectId }, { $set: { snapshotRequestedAt: new Date() } });
+  return { saved: true as const };
+}
+
+/** Fire-and-forget backup; never blocks or fails the caller. */
+export function backupProjectSoon(projectId: ObjectId, force = false) {
+  void saveProjectSnapshot(projectId, { force }).catch((error) => {
+    console.warn("Saved snapshot failed:", error instanceof Error ? error.message : error);
+  });
+}
+
+export async function getProjectBackupMeta(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  return {
+    snapshotRequestedAt: saved?.snapshotRequestedAt?.toISOString(),
+    restoredFromSnapshotAt: saved?.restoredFromSnapshotAt?.toISOString(),
+  };
 }
 
 async function resumeBoatSandbox(sandboxId: string) {
@@ -321,7 +409,22 @@ export async function ensureProjectBoat(projectId: ObjectId) {
     }
   }
 
-  const created = await createBoatSandbox();
+  // Disk gone (or first computer): rebuild from the saved snapshot when there is one, so the
+  // sender Chromes and their logins come back instead of a blank desktop.
+  let restoredFrom = "";
+  if (replacedDeletedDisk || saved?.snapshotRequestedAt) {
+    const snapshot = await getProjectSnapshot(projectId).catch(() => null);
+    if (snapshot?.status === "ready") restoredFrom = snapshot.name;
+  }
+  let created: BoatSandbox;
+  try {
+    created = await createBoatSandbox(restoredFrom || undefined);
+  } catch (error) {
+    if (!restoredFrom) throw error;
+    console.warn("Restore from saved snapshot failed; starting blank:", error);
+    restoredFrom = "";
+    created = await createBoatSandbox();
+  }
   const now = new Date();
   await collection.updateOne(
     { projectId },
@@ -330,6 +433,7 @@ export async function ensureProjectBoat(projectId: ObjectId) {
         sandboxId: created.id,
         updatedAt: now,
         lastBoatActivityAt: now,
+        ...(restoredFrom ? { restoredFromSnapshotAt: now } : {}),
       },
       $unset: { promptId: "", conversationId: "" },
       $setOnInsert: { projectId, createdAt: now },
@@ -337,6 +441,7 @@ export async function ensureProjectBoat(projectId: ObjectId) {
     { upsert: true },
   );
   const ready = isBoatRunning(created.state) ? created : await waitForBoat(created.id);
+  if (restoredFrom) return { ...ready, restoredFromSnapshot: true };
   return replacedDeletedDisk ? { ...ready, replacedDeletedDisk: true } : ready;
 }
 
