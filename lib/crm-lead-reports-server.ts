@@ -49,13 +49,35 @@ export type ListLeadReportsOptions = {
   solution?: string;
 };
 
+function leadReportFlagClauses() {
+  return [
+    { [`attributes.${LEAD_REPORT_ATTR.flag}`]: "1" },
+    { [`attributes.${LEAD_REPORT_ATTR.legacyId}`]: { $exists: true, $ne: "" } },
+    { "profile.leadStage": { $exists: true, $nin: [null, ""] } },
+  ];
+}
+
 function leadReportBaseFilter(projectId: ObjectId): Record<string, unknown> {
   return {
     projectId,
+    $or: leadReportFlagClauses(),
+  };
+}
+
+function leadReportSearchClause(token: string) {
+  const regex = { $regex: escapeRegex(token), $options: "i" };
+  return {
     $or: [
-      { [`attributes.${LEAD_REPORT_ATTR.flag}`]: "1" },
-      { [`attributes.${LEAD_REPORT_ATTR.legacyId}`]: { $exists: true, $ne: "" } },
-      { "profile.leadStage": { $exists: true, $nin: [null, ""] } },
+      { email: regex },
+      { firstName: regex },
+      { lastName: regex },
+      { companyName: regex },
+      { "profile.title": regex },
+      { "attributes.position": regex },
+      { "attributes.title": regex },
+      { [`attributes.${LEAD_REPORT_ATTR.project}`]: regex },
+      { [`attributes.${LEAD_REPORT_ATTR.owner}`]: regex },
+      { [`attributes.${LEAD_REPORT_ATTR.solutions}`]: regex },
     ],
   };
 }
@@ -204,39 +226,36 @@ export async function listProjectLeadReports(
   const stage = String(options?.stage ?? "").trim();
   const solution = String(options?.solution ?? "").trim();
 
-  const filter: Record<string, unknown> = leadReportBaseFilter(projectId);
+  const andClauses: Record<string, unknown>[] = [
+    { $or: leadReportFlagClauses() },
+  ];
 
   if (stage) {
-    filter["profile.leadStage"] = stage;
+    andClauses.push({ "profile.leadStage": stage });
   }
 
   if (solution) {
     // Match whole token inside comma/semicolon-separated solutions string.
-    filter[`attributes.${LEAD_REPORT_ATTR.solutions}`] = {
-      $regex: `(^|[,;|\\s])${escapeRegex(solution)}([,;|\\s]|$)`,
-      $options: "i",
-    };
+    andClauses.push({
+      [`attributes.${LEAD_REPORT_ATTR.solutions}`]: {
+        $regex: `(^|[,;|\\s])${escapeRegex(solution)}([,;|\\s]|$)`,
+        $options: "i",
+      },
+    });
   }
 
   if (q) {
-    const regex = { $regex: escapeRegex(q), $options: "i" };
-    filter.$and = [
-      {
-        $or: [
-          { email: regex },
-          { firstName: regex },
-          { lastName: regex },
-          { companyName: regex },
-          { "profile.title": regex },
-          { "attributes.position": regex },
-          { "attributes.title": regex },
-          { [`attributes.${LEAD_REPORT_ATTR.project}`]: regex },
-          { [`attributes.${LEAD_REPORT_ATTR.owner}`]: regex },
-          { [`attributes.${LEAD_REPORT_ATTR.solutions}`]: regex },
-        ],
-      },
-    ];
+    // Multi-word queries (e.g. "asif taj") require every token to match
+    // somewhere across name/email/company/position fields.
+    for (const token of q.split(/\s+/).filter(Boolean)) {
+      andClauses.push(leadReportSearchClause(token));
+    }
   }
+
+  const filter: Record<string, unknown> = {
+    projectId,
+    $and: andClauses,
+  };
 
   const collection = (await getDb()).collection<ContactDoc>("contacts");
   const [total, docs, solutions] = await Promise.all([
@@ -346,6 +365,56 @@ export function normalizeSolutionNames(values: readonly unknown[]): string[] {
     result.push(name);
   }
   return result;
+}
+
+/**
+ * Remove a solution name from every lead report in the project
+ * (drops it from the Solutions dropdown catalog).
+ */
+export async function removeLeadReportSolutionOption(
+  projectId: ObjectId,
+  solutionName: string,
+): Promise<{ removed: number; solution: string }> {
+  const name = String(solutionName || "").trim();
+  if (!name) {
+    return { removed: 0, solution: "" };
+  }
+  const key = name.toLowerCase();
+  const collection = (await getDb()).collection<ContactDoc>("contacts");
+  const docs = await collection
+    .find(
+      {
+        ...leadReportBaseFilter(projectId),
+        [`attributes.${LEAD_REPORT_ATTR.solutions}`]: {
+          $exists: true,
+          $nin: [null, ""],
+        },
+      },
+      { projection: { attributes: 1 } },
+    )
+    .toArray();
+
+  let removed = 0;
+  const now = new Date();
+  for (const doc of docs) {
+    const current = parseSolutions(doc.attributes?.[LEAD_REPORT_ATTR.solutions]);
+    const next = current.filter((item) => item.toLowerCase() !== key);
+    if (next.length === current.length) {
+      continue;
+    }
+    const attributes = { ...(doc.attributes || {}) };
+    if (next.length > 0) {
+      attributes[LEAD_REPORT_ATTR.solutions] = next.join(", ");
+    } else {
+      delete attributes[LEAD_REPORT_ATTR.solutions];
+    }
+    await collection.updateOne(
+      { _id: doc._id, projectId },
+      { $set: { attributes, updatedAt: now } },
+    );
+    removed += 1;
+  }
+  return { removed, solution: name };
 }
 
 /** Replace the solution list on a lead report contact. */

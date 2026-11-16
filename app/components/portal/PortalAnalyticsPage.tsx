@@ -434,12 +434,14 @@ export function PortalAnalyticsPage() {
 
   const [sharePromptOpen, setSharePromptOpen] = useState(false);
   const [instantClickEnabled, setInstantClickEnabled] = useState(false);
+  const [hideBotClicks, setHideBotClicks] = useState(true);
   const [shareIncludeKinds, setShareIncludeKinds] =
     useState<AnalyticsIncludeKinds>(() => ({
       ...DEFAULT_ANALYTICS_INCLUDE_KINDS,
     }));
   const [sharePromptError, setSharePromptError] = useState("");
   const [reloadToken, setReloadToken] = useState(0);
+  const showBotEngagement = !hideBotClicks;
 
   useEffect(() => {
     let cancelled = false;
@@ -468,10 +470,16 @@ export function PortalAnalyticsPage() {
     async function run() {
       setLoading(true);
       try {
-        const response = await fetch(
-          `/api/analytics?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-          { cache: "no-store", signal: controller.signal },
-        );
+        const params = new URLSearchParams({ from, to });
+        if (hideBotClicks) {
+          params.set("hideBotClicks", "1");
+        } else {
+          params.set("hideBotClicks", "0");
+        }
+        const response = await fetch(`/api/analytics?${params.toString()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         const data = (await response.json()) as AnalyticsDashboard & {
           error?: string;
         };
@@ -519,7 +527,7 @@ export function PortalAnalyticsPage() {
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [from, to, reloadToken]);
+  }, [from, to, hideBotClicks, reloadToken]);
 
   function applyRange(nextFrom: string, nextTo: string, nextPreset: AnalyticsPreset | "custom") {
     setPreset(nextPreset);
@@ -748,6 +756,23 @@ export function PortalAnalyticsPage() {
           ))}
         </div>
         <div className="an-range">
+          {instantClickEnabled ? (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showBotEngagement}
+              className={`drip-report-table-toggle drip-report-bot-nav-toggle an-bot-toggle${showBotEngagement ? " is-on" : ""}`}
+              onClick={() => setHideBotClicks((value) => !value)}
+              title={
+                showBotEngagement
+                  ? "Bot opens/clicks included in opens and clicks"
+                  : "Bot opens/clicks hidden from opens and clicks"
+              }
+            >
+              <span className="drip-report-table-switch" aria-hidden="true" />
+              Show bot opens/clicks
+            </button>
+          ) : null}
           <label>
             From
             <input
@@ -804,7 +829,11 @@ export function PortalAnalyticsPage() {
       {loading && !dashboard ? <div className="an-empty">Loading analytics…</div> : null}
       {dashboard ? (
         <div className={loading ? "an-loading" : undefined}>
-          <AnalyticsDashboardView dashboard={dashboard} variant="portal" />
+          <AnalyticsDashboardView
+            dashboard={dashboard}
+            variant="portal"
+            hideBotClicks={hideBotClicks}
+          />
         </div>
       ) : null}
     </div>

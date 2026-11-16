@@ -12,6 +12,7 @@ export type PortalPageId =
   | "automation-history"
   | "personalise"
   | "cloud"
+  | "linkedin"
   | "edm"
   | "analytics"
   | "analytics-kanban"
@@ -22,6 +23,7 @@ export type PortalPageId =
   | "knowledge"
   | "inbox"
   | "activity"
+  | "aircall"
   | "files"
   | "unsub"
   | "integrations";
@@ -63,6 +65,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   "automation-history": "/portal/marketing/automation-history",
   personalise: "/portal/marketing/personalise",
   cloud: "/portal/marketing/cloud",
+  linkedin: "/portal/marketing/linkedin",
   edm: "/portal/marketing/edm",
   analytics: "/portal/analytics",
   "analytics-kanban": "/portal/analytics/kanban",
@@ -73,6 +76,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   knowledge: "/portal/knowledge-base",
   inbox: "/portal/inbox",
   activity: "/portal/activity",
+  aircall: "/portal/aircall",
   files: "/portal/file-manager",
   unsub: "/portal/unsub",
   integrations: "/portal/integrations",
@@ -221,6 +225,12 @@ export const PORTAL_NAV: PortalNavItem[] = [
   },
   {
     type: "item",
+    id: "aircall",
+    label: "Calling",
+    href: PORTAL_ROUTES.aircall,
+  },
+  {
+    type: "item",
     id: "analytics-kanban",
     label: "Pipeline",
     href: PORTAL_ROUTES["analytics-kanban"],
@@ -255,6 +265,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
       { id: "personalise", label: "Personalise Campaign", href: PORTAL_ROUTES.personalise },
       { id: "cloud", label: "Cloud Campaign", href: PORTAL_ROUTES.cloud },
       { id: "automation", label: "Automation", href: PORTAL_ROUTES.automation },
+      { id: "linkedin", label: "LinkedIn Automation", href: PORTAL_ROUTES.linkedin },
       { id: "edm", label: "EDM generation", href: PORTAL_ROUTES.edm },
     ],
   },
@@ -307,6 +318,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   cloud: "Cloud Campaign",
   automation: "Automation",
   "automation-history": "Automation history",
+  linkedin: "LinkedIn Automation",
   edm: "EDM generation",
   analytics: "Analytics",
   "analytics-kanban": "Pipeline",
@@ -317,6 +329,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   knowledge: "Knowledge Base",
   inbox: "Master Inbox",
   activity: "Activity Feed",
+  aircall: "Calling",
   files: "File Manager",
   unsub: "Suppression List",
   integrations: "Integrations",
@@ -346,6 +359,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/marketing/one-one")) return "oneone";
   if (pathname.startsWith("/portal/marketing/personalise")) return "personalise";
   if (pathname.startsWith("/portal/marketing/cloud")) return "cloud";
+  if (pathname.startsWith("/portal/marketing/linkedin")) return "linkedin";
   if (pathname.startsWith("/portal/marketing/edm")) return "edm";
   if (pathname.startsWith("/portal/marketing/automation-history")) {
     return "automation-history";
@@ -361,6 +375,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/knowledge-base")) return "knowledge";
   if (pathname.startsWith("/portal/inbox")) return "inbox";
   if (pathname.startsWith("/portal/activity")) return "activity";
+  if (pathname.startsWith("/portal/aircall")) return "aircall";
   if (pathname.startsWith("/portal/file-manager")) return "files";
   if (pathname.startsWith("/portal/unsub")) return "unsub";
   if (pathname.startsWith("/portal/integrations")) return "integrations";
@@ -384,6 +399,7 @@ export function getPageTitleFromPathname(pathname: string): string {
   if (pathname.startsWith("/portal/crm/contacts/")) return DETAIL_TITLES.contact;
   if (pathname.startsWith("/portal/marketing/one-one/")) return DETAIL_TITLES.campaign;
   if (pathname.startsWith("/portal/marketing/cloud/")) return DETAIL_TITLES.campaign;
+  if (pathname.startsWith("/portal/marketing/linkedin/")) return DETAIL_TITLES.campaign;
   if (pathname.startsWith("/portal/marketing/campaigns/")) {
     return DETAIL_TITLES.campaign;
   }

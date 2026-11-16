@@ -14,4 +14,7 @@ export async function register() {
 
   const { startInboxSyncWorker } = await import("./lib/inbox-sync-worker");
   startInboxSyncWorker();
+
+  const { startAircallSyncWorker } = await import("./lib/aircall-sync-worker");
+  startAircallSyncWorker();
 }

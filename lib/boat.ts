@@ -507,6 +507,12 @@ export async function getBoatPrompt(sandboxId: string, promptId: string) {
   return readPromptRun(data, promptId);
 }
 
+export async function getBoatTaskReport(sandboxId: string, promptId: string) {
+  const run = await getBoatPrompt(sandboxId, promptId);
+  const report = await latestAgentReport(sandboxId, run.conversationId);
+  return { ...run, report };
+}
+
 /** What the agent actually did (tool calls), for diagnosing turns that never produced text. */
 export type BoatAgentActivity = { responses: number; toolCalls: number; lastTool: string };
 

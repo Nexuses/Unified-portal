@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -10,6 +9,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import type { Contact } from "@/lib/crm";
@@ -24,12 +25,14 @@ import {
 import {
   LEAD_STATUS_LABELS,
   LEAD_STATUS_ORDER,
-  LEAD_STATUS_UI,
   getLeadStatusLabel,
   normalizeLeadStatus,
+  scoreForLeadStatus,
+  starsForLeadStatus,
 } from "@/lib/lead-status";
-import { portalContactRoute, portalListRoute } from "@/lib/portal-nav";
+import { portalContactRoute } from "@/lib/portal-nav";
 import LeadReportSolutionCell from "./LeadReportSolutionCell";
+import LeadReportStageCell from "./LeadReportStageCell";
 
 function formatLeadDate(value?: string) {
   if (!value) return "";
@@ -70,7 +73,7 @@ type ListResponse = {
 };
 
 const PAGE_SIZE = 50;
-const COLUMNS_STORAGE_KEY = "portal.leadReports.visibleColumns.v1";
+const COLUMNS_STORAGE_KEY = "portal.leadReports.visibleColumns.v2";
 
 function loadColumnVisibility(): LeadReportColumnVisibility {
   const defaults = defaultLeadReportColumnVisibility();
@@ -78,14 +81,19 @@ function loadColumnVisibility(): LeadReportColumnVisibility {
     return defaults;
   }
   try {
-    const raw = window.localStorage.getItem(COLUMNS_STORAGE_KEY);
+    const raw =
+      window.localStorage.getItem(COLUMNS_STORAGE_KEY) ||
+      window.localStorage.getItem("portal.leadReports.visibleColumns.v1");
     if (!raw) return defaults;
-    const parsed = JSON.parse(raw) as Partial<LeadReportColumnVisibility>;
-    return {
-      ...defaults,
-      ...parsed,
-      lead: true,
-    };
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const next = { ...defaults };
+    for (const key of Object.keys(defaults) as LeadReportColumnId[]) {
+      if (typeof parsed[key] === "boolean") {
+        next[key] = parsed[key] as boolean;
+      }
+    }
+    next.lead = true;
+    return next;
   } catch {
     return defaults;
   }
@@ -115,7 +123,6 @@ const CSV_HEADERS = [
   "Company",
   "Position",
   "Solution",
-  "Lists",
   "Stage",
   "Date",
   "Project",
@@ -130,10 +137,6 @@ function leadReportCsvRow(item: LeadReportItem): string[] {
     item.attributes?.title ||
     "";
   const solutions = leadReportSolutions(item);
-  const lists =
-    item.lists && item.lists.length > 0
-      ? item.lists.map((list) => list.name)
-      : item.listNames || [];
   const stage =
     item.leadStageLabel ||
     (item.leadStage ? getLeadStatusLabel(normalizeLeadStatus(item.leadStage)) : "");
@@ -144,7 +147,6 @@ function leadReportCsvRow(item: LeadReportItem): string[] {
     item.companyName || "",
     position,
     solutions.join(", "),
-    lists.join(", "),
     stage,
     formatLeadDate(reportAt),
     item.leadProject || item.attributes?.leadReportProject || "",
@@ -158,9 +160,11 @@ export default function PortalLeadReportsPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
   const [stage, setStage] = useState("");
   const [solution, setSolution] = useState("");
   const [solutionOptions, setSolutionOptions] = useState<string[]>([]);
+  const [savingStageId, setSavingStageId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -184,6 +188,7 @@ export default function PortalLeadReportsPage() {
   const columnMenuRef = useRef<HTMLDivElement | null>(null);
   const columnMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const columnMenuPanelRef = useRef<HTMLDivElement | null>(null);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     setVisibleColumns(loadColumnVisibility());
@@ -256,7 +261,7 @@ export default function PortalLeadReportsPage() {
     [visibleColumns],
   );
 
-  const tableColSpan = visibleColumnIds.length + 1; // + action
+  const tableColSpan = Math.max(1, visibleColumnIds.length);
 
   const tableMinWidth = useMemo(() => {
     const widths: Record<LeadReportColumnId, number> = {
@@ -265,18 +270,46 @@ export default function PortalLeadReportsPage() {
       company: 140,
       position: 140,
       solution: 140,
-      lists: 140,
       stage: 160,
       date: 124,
     };
-    const content = visibleColumnIds.reduce(
-      (sum, id) => sum + widths[id],
-      0,
-    );
-    return content + 72; // open action
+    return visibleColumnIds.reduce((sum, id) => sum + widths[id], 0);
   }, [visibleColumnIds]);
 
+  function leadReportHref(contactId: string) {
+    return portalContactRoute(contactId, "/portal/crm/lead-reports", {
+      view: "lead-report",
+    });
+  }
+
+  function openLeadReportRow(
+    contactId: string,
+    event?: ReactMouseEvent | ReactKeyboardEvent,
+  ) {
+    const target = event?.target as HTMLElement | null | undefined;
+    if (
+      target?.closest(
+        "a,button,input,textarea,select,label,.lr-notion-select,[role='listbox'],[role='option'],[role='menu']",
+      )
+    ) {
+      return;
+    }
+    router.push(leadReportHref(contactId));
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedQ(q.trim());
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [q]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedQ, stage, solution]);
+
   const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError("");
     try {
@@ -284,7 +317,7 @@ export default function PortalLeadReportsPage() {
         page: String(page),
         pageSize: String(PAGE_SIZE),
       });
-      if (q.trim()) params.set("q", q.trim());
+      if (debouncedQ) params.set("q", debouncedQ);
       if (stage) params.set("stage", stage);
       if (solution) params.set("solution", solution);
       const response = await fetch(`/api/crm/lead-reports?${params}`, {
@@ -294,17 +327,21 @@ export default function PortalLeadReportsPage() {
       if (!response.ok) {
         throw new Error(data.error || "Failed to load lead reports");
       }
+      if (requestId !== requestIdRef.current) return;
       setItems(data.items || []);
       setSolutionOptions(data.solutions || []);
       setTotal(data.total || 0);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
       setError(err instanceof Error ? err.message : "Failed to load lead reports");
       setItems([]);
       setTotal(0);
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+      }
     }
-  }, [page, q, stage, solution]);
+  }, [page, debouncedQ, stage, solution]);
 
   useEffect(() => {
     void load();
@@ -376,6 +413,140 @@ export default function PortalLeadReportsPage() {
       setError(err instanceof Error ? err.message : "Could not open lead report");
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function saveRowStage(item: LeadReportItem, nextLabel: string) {
+    if (savingStageId) return;
+    setSavingStageId(item.id);
+    setError("");
+    const previousStage = item.leadStageLabel || item.leadStage || "";
+    const label = nextLabel.trim();
+    setItems((current) =>
+      current.map((row) =>
+        row.id === item.id
+          ? {
+              ...row,
+              leadStage: label,
+              leadStageLabel: label,
+            }
+          : row,
+      ),
+    );
+    try {
+      const score = label ? scoreForLeadStatus(label) : undefined;
+      const stars = label ? starsForLeadStatus(label) : undefined;
+      const response = await fetch(
+        `/api/crm/contacts/${encodeURIComponent(item.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            profile: {
+              leadStage: label,
+              ...(score !== undefined ? { score } : {}),
+              ...(stars !== undefined
+                ? { qualification: { overallScore: stars } }
+                : {}),
+            },
+          }),
+        },
+      );
+      const data = (await response.json()) as LeadReportItem & {
+        error?: string;
+        profile?: { leadStage?: string };
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "Could not save stage");
+      }
+      const savedStage =
+        data.profile?.leadStage || data.leadStageLabel || data.leadStage || label;
+      setItems((current) =>
+        current.map((row) =>
+          row.id === item.id
+            ? {
+                ...row,
+                leadStage: savedStage,
+                leadStageLabel: savedStage,
+              }
+            : row,
+        ),
+      );
+    } catch (err) {
+      setItems((current) =>
+        current.map((row) =>
+          row.id === item.id
+            ? {
+                ...row,
+                leadStage: previousStage,
+                leadStageLabel: previousStage,
+              }
+            : row,
+        ),
+      );
+      setError(err instanceof Error ? err.message : "Could not save stage");
+    } finally {
+      setSavingStageId(null);
+    }
+  }
+
+  function addSolutionOption(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSolutionOptions((current) => {
+      if (current.some((item) => item.toLowerCase() === trimmed.toLowerCase())) {
+        return current;
+      }
+      return [...current, trimmed].sort((a, b) => a.localeCompare(b));
+    });
+  }
+
+  async function removeSolutionOption(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed || savingSolutionId) return;
+    setError("");
+    const previousOptions = solutionOptions;
+    setSolutionOptions((current) =>
+      current.filter((item) => item.toLowerCase() !== trimmed.toLowerCase()),
+    );
+    setItems((current) =>
+      current.map((row) => {
+        const rowSolutions = leadReportSolutions(row);
+        if (
+          !rowSolutions.some(
+            (item) => item.toLowerCase() === trimmed.toLowerCase(),
+          )
+        ) {
+          return row;
+        }
+        return {
+          ...row,
+          solutions: undefined,
+          attributes: {
+            ...(row.attributes || {}),
+            leadReportSolutions: "",
+          },
+        };
+      }),
+    );
+    try {
+      const response = await fetch("/api/crm/lead-reports/solutions", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ solution: trimmed }),
+      });
+      const data = (await response.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      if (!response.ok) {
+        throw new Error(data?.error || "Could not remove solution option");
+      }
+    } catch (err) {
+      setSolutionOptions(previousOptions);
+      setError(
+        err instanceof Error ? err.message : "Could not remove solution option",
+      );
+      void load();
     }
   }
 
@@ -473,7 +644,7 @@ export default function PortalLeadReportsPage() {
           page: String(pageIndex),
           pageSize: "100",
         });
-        if (q.trim()) params.set("q", q.trim());
+        if (debouncedQ) params.set("q", debouncedQ);
         if (stage) params.set("stage", stage);
         if (solution) params.set("solution", solution);
         const response = await fetch(`/api/crm/lead-reports?${params}`, {
@@ -537,8 +708,14 @@ export default function PortalLeadReportsPage() {
     }
   }
 
+  const hasActiveFilters = Boolean(debouncedQ || stage || solution);
+  const hasFilterChips = Boolean(stage || solution);
+  const stageFilterLabel = stage
+    ? LEAD_STATUS_LABELS[normalizeLeadStatus(stage)] || stage
+    : "";
+
   return (
-    <div className="crm-page">
+    <div className="crm-page lr-db-page">
       <div className="crm-page-head">
         <div>
           <h2>Lead Reports</h2>
@@ -585,69 +762,133 @@ export default function PortalLeadReportsPage() {
         </div>
       ) : null}
 
-      <div className="crm-filter-row lr-list-toolbar">
-        <input
-          value={q}
-          onChange={(event) => {
-            setPage(1);
-            setQ(event.target.value);
-          }}
-          placeholder="Search name, email, company, position, solution…"
-          aria-label="Search lead reports"
-        />
-        <select
-          className="lr-toolbar-select"
-          value={stage}
-          onChange={(event) => {
-            setPage(1);
-            setStage(event.target.value);
-          }}
-          aria-label="Filter by stage"
-        >
-          <option value="">All stages</option>
-          {LEAD_STATUS_ORDER.map((key) => (
-            <option key={key} value={key}>
-              {LEAD_STATUS_LABELS[key]}
-            </option>
-          ))}
-        </select>
-        <div className="lr-toolbar-solution-wrap">
-          <select
-            className="lr-toolbar-select"
-            value={solution}
-            onChange={(event) => {
-              setPage(1);
-              setSolution(event.target.value);
-            }}
-            aria-label="Filter by solution"
-          >
-            <option value="">All solutions</option>
-            {solutionOptions.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
+      <div className="lr-db-count-row">
+        <span className="lr-db-count">
+          {loading
+            ? "…"
+            : hasActiveFilters
+              ? `${total.toLocaleString()} result${total === 1 ? "" : "s"}`
+              : `${total.toLocaleString()} lead report${total === 1 ? "" : "s"}`}
+        </span>
+      </div>
+
+      <div className="lr-db-toolbar">
+        <div className="lr-db-filter-row">
+          <label className="lr-db-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+            <input
+              value={q}
+              onChange={(event) => setQ(event.target.value)}
+              placeholder="Search by name, email, company…"
+              aria-label="Search lead reports"
+            />
+          </label>
+
+          <label className={`lr-db-filter${stage ? " is-on" : ""}`}>
+            <span className="lr-db-filter-key">Stage</span>
+            <select
+              value={stage}
+              onChange={(event) => setStage(event.target.value)}
+              aria-label="Filter by stage"
+            >
+              <option value="">All</option>
+              {LEAD_STATUS_ORDER.map((key) => (
+                <option key={key} value={key}>
+                  {LEAD_STATUS_LABELS[key]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className={`lr-db-filter${solution ? " is-on" : ""}`}>
+            <span className="lr-db-filter-key">Solution</span>
+            <select
+              value={solution}
+              onChange={(event) => setSolution(event.target.value)}
+              aria-label="Filter by solution"
+            >
+              <option value="">All</option>
+              {solutionOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {hasFilterChips ? (
+            <button
+              type="button"
+              className="lr-db-clear"
+              onClick={() => {
+                setPage(1);
+                setStage("");
+                setSolution("");
+              }}
+            >
+              Clear filters
+            </button>
+          ) : null}
+
+          {hasFilterChips ? (
+            <div className="lr-db-active-filters" aria-label="Active filters">
+              {stage ? (
+                <span className="lr-db-chip">
+                  Stage: <strong>{stageFilterLabel}</strong>
+                  <button
+                    type="button"
+                    aria-label="Clear stage filter"
+                    onClick={() => {
+                      setPage(1);
+                      setStage("");
+                    }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ) : null}
+              {solution ? (
+                <span className="lr-db-chip">
+                  Solution: <strong>{solution}</strong>
+                  <button
+                    type="button"
+                    aria-label="Clear solution filter"
+                    onClick={() => {
+                      setPage(1);
+                      setSolution("");
+                    }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="lr-db-toolbar-spacer" />
+
           <div className="lr-columns-wrap" ref={columnMenuRef}>
             <button
               ref={columnMenuButtonRef}
               type="button"
-              className={`kebab${columnMenuOpen ? " active" : ""}`}
+              className={`lr-db-props-btn${columnMenuOpen ? " is-open" : ""}`}
               aria-label="Choose columns"
+              title="Properties"
               aria-expanded={columnMenuOpen}
               onClick={() => setColumnMenuOpen((open) => !open)}
             >
-              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <circle cx="12" cy="5" r="1.6" />
-                <circle cx="12" cy="12" r="1.6" />
-                <circle cx="12" cy="19" r="1.6" />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+                <path d="M4 6h16M4 12h10M4 18h13" />
               </svg>
             </button>
             {columnMenuOpen && typeof document !== "undefined"
               ? createPortal(
                   <div
                     ref={columnMenuPanelRef}
-                    className="lists-columns-menu-portal lr-columns-menu-portal"
+                    className="lists-columns-menu-portal lr-columns-menu-portal lr-db-props-menu"
                     role="menu"
                     aria-label="Visible columns"
                     style={{
@@ -656,6 +897,7 @@ export default function PortalLeadReportsPage() {
                       visibility: columnMenuPos ? "visible" : "hidden",
                     }}
                   >
+                    <div className="lr-db-props-menu-title">Properties</div>
                     {LEAD_REPORT_COLUMN_OPTIONS.map((column) => {
                       const locked = "locked" in column && column.locked;
                       return (
@@ -685,9 +927,9 @@ export default function PortalLeadReportsPage() {
 
       {error ? <p className="crm-error">{error}</p> : null}
 
-      <div className="data-table-wrap lr-reports-table-wrap">
+      <div className="lr-db-table-wrap lr-reports-table-wrap">
         <table
-          className="data-table contacts-table lr-reports-table"
+          className="lr-db-table lr-reports-table"
           style={{ minWidth: tableMinWidth }}
         >
           <thead>
@@ -705,18 +947,14 @@ export default function PortalLeadReportsPage() {
               {visibleColumns.solution ? (
                 <th className="lr-col-solution">Solution</th>
               ) : null}
-              {visibleColumns.lists ? (
-                <th className="lr-col-lists">Lists</th>
-              ) : null}
               {visibleColumns.stage ? (
                 <th className="lr-col-stage">Stage</th>
               ) : null}
               {visibleColumns.date ? <th className="lr-col-date">Date</th> : null}
-              <th className="lr-col-action" />
             </tr>
           </thead>
           <tbody>
-            {loading ? (
+            {loading && items.length === 0 ? (
               <tr className="lr-reports-loading-row">
                 <td
                   colSpan={tableColSpan}
@@ -734,19 +972,13 @@ export default function PortalLeadReportsPage() {
                   colSpan={tableColSpan}
                   className="crm-empty lr-reports-empty-cell"
                 >
-                  No lead reports in this project yet. Create one from a CRM contact, or
-                  run the migration for historical reports.
+                  {hasActiveFilters
+                    ? "No lead reports match this search."
+                    : "No lead reports in this project yet. Create one from a CRM contact, or run the migration for historical reports."}
                 </td>
               </tr>
             ) : (
               items.map((item) => {
-                const lists =
-                  item.lists && item.lists.length > 0
-                    ? item.lists
-                    : (item.listNames || []).map((name) => ({
-                        id: "",
-                        name,
-                      }));
                 const position =
                   item.position ||
                   item.attributes?.position ||
@@ -757,17 +989,27 @@ export default function PortalLeadReportsPage() {
                   item.leadReportAt || item.createdAt || item.updatedAt;
                 const dateLabel = formatLeadDate(reportAt);
                 return (
-                  <tr key={item.id}>
+                  <tr
+                    key={item.id}
+                    className="lr-db-row-link"
+                    tabIndex={0}
+                    role="link"
+                    aria-label={`Open lead report for ${displayName(item)}`}
+                    onClick={(event) => openLeadReportRow(item.id, event)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openLeadReportRow(item.id, event);
+                      }
+                    }}
+                  >
                     {visibleColumns.lead ? (
                       <td className="lr-col-lead">
                         <Link
                           className="lr-cell-text lr-lead-link"
-                          href={portalContactRoute(
-                            item.id,
-                            "/portal/crm/lead-reports",
-                            { view: "lead-report" },
-                          )}
+                          href={leadReportHref(item.id)}
                           title={`Open lead report for ${displayName(item)}`}
+                          onClick={(event) => event.stopPropagation()}
                         >
                           <strong>{displayName(item)}</strong>
                         </Link>
@@ -805,75 +1047,32 @@ export default function PortalLeadReportsPage() {
                       </td>
                     ) : null}
                     {visibleColumns.solution ? (
-                      <td className="lr-col-solution">
+                      <td
+                        className="lr-col-solution"
+                        onClick={(event) => event.stopPropagation()}
+                      >
                         <LeadReportSolutionCell
                           value={solutions[0] ?? ""}
                           options={solutionOptions}
                           saving={savingSolutionId === item.id}
                           onSave={(next) => void saveRowSolution(item, next)}
+                          onAddOption={addSolutionOption}
+                          onRemoveOption={(name) =>
+                            void removeSolutionOption(name)
+                          }
                         />
                       </td>
                     ) : null}
-                    {visibleColumns.lists ? (
-                      <td className="lr-col-lists">
-                        {lists.length > 0 || item.unsubscribed ? (
-                          <div className="lr-lists-cell">
-                            {lists.length > 0 ? (
-                              <span
-                                className="lr-lists-links"
-                                title={lists.map((list) => list.name).join(", ")}
-                              >
-                                {lists.map((list, index) => (
-                                  <span key={`${list.id || list.name}-${index}`}>
-                                    {index > 0 ? ", " : null}
-                                    {list.id ? (
-                                      <Link
-                                        className="lr-list-link"
-                                        href={portalListRoute(list.id)}
-                                      >
-                                        {list.name}
-                                      </Link>
-                                    ) : (
-                                      list.name
-                                    )}
-                                  </span>
-                                ))}
-                              </span>
-                            ) : null}
-                            {item.unsubscribed ? (
-                              <Link
-                                className="lr-list-link lr-unsub-link"
-                                href="/portal/unsub"
-                                title="This email is on the unsubscribe / suppression list"
-                              >
-                                Unsubscribed
-                              </Link>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <span className="contact-empty-dash">—</span>
-                        )}
-                      </td>
-                    ) : null}
                     {visibleColumns.stage ? (
-                      <td className="lr-col-stage">
-                        {item.leadStageLabel || item.leadStage ? (
-                          (() => {
-                            const status = normalizeLeadStatus(
-                              item.leadStage || item.leadStageLabel,
-                            );
-                            return (
-                              <span
-                                className={`lr-list-stage ${LEAD_STATUS_UI[status].badgeClass}`}
-                              >
-                                {item.leadStageLabel ||
-                                  getLeadStatusLabel(status)}
-                              </span>
-                            );
-                          })()
-                        ) : (
-                          <span className="contact-empty-dash">—</span>
-                        )}
+                      <td
+                        className="lr-col-stage"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <LeadReportStageCell
+                          value={item.leadStageLabel || item.leadStage || ""}
+                          saving={savingStageId === item.id}
+                          onSave={(next) => void saveRowStage(item, next)}
+                        />
                       </td>
                     ) : null}
                     {visibleColumns.date ? (
@@ -890,20 +1089,6 @@ export default function PortalLeadReportsPage() {
                         )}
                       </td>
                     ) : null}
-                    <td className="lr-col-action">
-                      <Link
-                        className="lr-open-icon"
-                        href={portalContactRoute(
-                          item.id,
-                          "/portal/crm/lead-reports",
-                          { view: "lead-report" },
-                        )}
-                        aria-label={`Open lead report for ${displayName(item)}`}
-                        title="Open lead report"
-                      >
-                        <ArrowUpRight aria-hidden="true" />
-                      </Link>
-                    </td>
                   </tr>
                 );
               })

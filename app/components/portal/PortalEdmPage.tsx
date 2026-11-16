@@ -281,7 +281,12 @@ export default function PortalEdmPage() {
   const [helloIndex, setHelloIndex] = useState(0);
   const [helloVisible, setHelloVisible] = useState(true);
   const [chatLoading, setChatLoading] = useState(false);
-  const speech = useSpeechInput({ value: draft, onChange: setDraft });
+  const speech = useSpeechInput({
+    value: draft,
+    onChange: setDraft,
+    prompt:
+      "HTML email EDM design brief for marketing: subject line, hero, CTA, brand colors, layout, social post.",
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -1243,11 +1248,13 @@ export default function PortalEdmPage() {
                   }
                 }}
                 placeholder={
-                  speech.listening
-                    ? "Listening… speak now"
-                    : html.trim()
-                      ? "Ask for an email change, or ask for a social post"
-                      : "Describe an email or a social post"
+                  speech.transcribing
+                    ? "Transcribing with Whisper…"
+                    : speech.recording
+                      ? "Listening… click the mic again when done"
+                      : html.trim()
+                        ? "Ask for an email change, or ask for a social post"
+                        : "Describe an email or a social post"
                 }
                 rows={1}
               />
@@ -1273,12 +1280,24 @@ export default function PortalEdmPage() {
                 {speech.supported ? (
                   <button
                     type="button"
-                    className={`edm-mic${speech.listening ? " is-listening" : ""}`}
+                    className={`edm-mic${speech.listening ? " is-listening" : ""}${speech.transcribing ? " is-transcribing" : ""}`}
                     onClick={speech.toggle}
-                    disabled={busy}
-                    aria-pressed={speech.listening}
-                    aria-label={speech.listening ? "Stop speaking" : "Speak"}
-                    title={speech.listening ? "Stop speaking" : "Speak instead of typing"}
+                    disabled={busy || speech.transcribing}
+                    aria-pressed={speech.recording}
+                    aria-label={
+                      speech.transcribing
+                        ? "Transcribing"
+                        : speech.recording
+                          ? "Stop speaking"
+                          : "Speak"
+                    }
+                    title={
+                      speech.transcribing
+                        ? "Transcribing with Whisper…"
+                        : speech.recording
+                          ? "Stop and transcribe"
+                          : "Speak with Whisper instead of typing"
+                    }
                   >
                     {speech.listening ? (
                       <span className="edm-mic-wave" aria-hidden="true">

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import AircallAudioPlayer from "@/app/components/portal/AircallAudioPlayer";
 import {
   formatCompanyDate,
   formatListDate,
@@ -920,7 +921,25 @@ export default function ContactActivityPanel({
                     </span>
                   </div>
                   <p className="lr-tl-body">{entry.item.body || "—"}</p>
-                  {readOnly ? null : (
+                  {entry.item.recordingUrl ? (
+                    <div className="cd-activity-call-card">
+                      <AircallAudioPlayer
+                        className="cd-activity-audio"
+                        src={entry.item.recordingUrl}
+                        label="Play recording"
+                      />
+                      {readOnly ? null : (
+                        <button
+                          type="button"
+                          className="cd-activity-remove"
+                          disabled={saving}
+                          onClick={() => void removeManual(entry.id)}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  ) : readOnly ? null : (
                     <div className="lr-tl-actions">
                       <button
                         type="button"

@@ -20,7 +20,6 @@ import {
   type ContactDetail,
   type ContactHistoryEvent,
   type ContactProfile,
-  type ContactProfileNote,
   type ContactProfileTimelineItem,
 } from "@/lib/crm";
 import {
@@ -154,6 +153,56 @@ function ensureHttp(url?: string) {
   if (!value) return "";
   if (/^https?:\/\//i.test(value)) return value;
   return `https://${value}`;
+}
+
+function isProbablyUrl(value?: string) {
+  const text = String(value || "").trim();
+  if (!text || /\s/.test(text)) return false;
+  if (/^https?:\/\//i.test(text) || /^www\./i.test(text)) return true;
+  return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}([/:?#].*)?$/i.test(text);
+}
+
+function linkHost(url: string) {
+  try {
+    return new URL(ensureHttp(url)).hostname.replace(/^www\./i, "");
+  } catch {
+    return "";
+  }
+}
+
+/** Short clickable label instead of a naked URL. */
+function friendlyLinkLabel(
+  raw?: string,
+  hint?: string,
+): string {
+  const value = String(raw || "").trim();
+  if (!value) return "Open link";
+  const key = String(hint || "").toLowerCase();
+  const href = ensureHttp(value).toLowerCase();
+  if (
+    key.includes("linkedin") ||
+    href.includes("linkedin.com")
+  ) {
+    return "View LinkedIn";
+  }
+  if (
+    key.includes("website") ||
+    key === "website" ||
+    key.includes("source")
+  ) {
+    const host = linkHost(value);
+    if (key.includes("source") && host.includes("linkedin")) {
+      return "View source";
+    }
+    return host ? `Visit ${host}` : "Visit website";
+  }
+  const host = linkHost(value);
+  return host || "Open link";
+}
+
+function attributeViewLabel(key: string) {
+  const label = CONTACT_ATTRIBUTE_LABELS[key] ?? key;
+  return label.replace(/\s+URL$/i, "");
 }
 
 function toDatetimeLocalValue(iso?: string) {
@@ -495,6 +544,7 @@ function Card({
   onCancel,
   onSave,
   edit,
+  headAction,
   hideHead = false,
   readOnly = false,
   children,
@@ -511,6 +561,8 @@ function Card({
   onSave: () => void;
   /** Form shown in the edit modal for this section. */
   edit?: ReactNode;
+  /** Extra header control (e.g. Add note) — same slot as Edit. */
+  headAction?: ReactNode;
   /** Skip the title/Edit header row (caller places Edit inline). */
   hideHead?: boolean;
   readOnly?: boolean;
@@ -522,7 +574,7 @@ function Card({
   const canEdit = Boolean(section && edit && !readOnly);
   const isEditing = Boolean(canEdit && editing === section);
   const modalTitle = title || (section ? SECTION_EDIT_TITLE[section] : "Edit");
-  const showHead = !hideHead && Boolean(title || (!readOnly && section));
+  const showHead = !hideHead && Boolean(title || headAction || (!readOnly && section));
 
   useEffect(() => {
     if (!isEditing) return;
@@ -550,7 +602,8 @@ function Card({
             ) : (
               <span />
             )}
-            {canEdit ? (
+            {headAction ? headAction : null}
+            {!headAction && canEdit ? (
               <button
                 type="button"
                 className="btn-soft lr-edit-btn"
@@ -632,14 +685,24 @@ function IconRow({
   value: string;
   href?: string;
 }) {
+  const linkText =
+    href && (isProbablyUrl(value) || /linkedin|website/i.test(label))
+      ? friendlyLinkLabel(value || href, label)
+      : display(value);
   return (
     <div className="lr-icon-row">
       <div className={`lr-icon-box ${tone}`}>{icon}</div>
       <div className="lr-icon-copy">
         <p className="lr-mini-label">{label}</p>
         {href ? (
-          <a className="lr-mini-value" href={href} target="_blank" rel="noreferrer">
-            {display(value)}
+          <a
+            className="lr-mini-value lr-link"
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            title={value || href}
+          >
+            {linkText}
           </a>
         ) : (
           <p className="lr-mini-value">{display(value)}</p>
@@ -695,10 +758,21 @@ type Props = {
   beginEdit: (section: LeadSectionKey) => void;
   cancelEdit: () => void;
   saveSection: () => void;
+  onAddNote?: (body: string) => Promise<void> | void;
+  onRemoveNote?: (noteId: string) => Promise<void> | void;
   historyEvents: ContactHistoryEvent[];
   campaignStats: ContactCampaignStats;
   readOnly?: boolean;
 };
+
+function shortLine(value: string, max = 140) {
+  const text = String(value || "")
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!text) return "";
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
 
 export default function LeadReportOverview({
   contact,
@@ -711,6 +785,8 @@ export default function LeadReportOverview({
   beginEdit,
   cancelEdit,
   saveSection,
+  onAddNote,
+  onRemoveNote,
   historyEvents,
   campaignStats,
   readOnly = false,
@@ -783,6 +859,14 @@ export default function LeadReportOverview({
   );
   const photoUrl = resolveContactPhotoUrl(viewProfile);
   const [timelineExpanded, setTimelineExpanded] = useState(false);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [addingNote, setAddingNote] = useState(false);
+  const [showNoteComposer, setShowNoteComposer] = useState(false);
+  const [notePendingRemove, setNotePendingRemove] = useState<{
+    id: string;
+    preview: string;
+  } | null>(null);
+  const [removingNote, setRemovingNote] = useState(false);
   const [emailPreview, setEmailPreview] = useState<{
     sendId: string;
     subject: string;
@@ -802,6 +886,87 @@ export default function LeadReportOverview({
     0,
     engagementEntries.length - TIMELINE_PREVIEW_COUNT,
   );
+
+  const notesFeed = (() => {
+    const notes = (viewProfile.notes || [])
+      .map((item) => ({
+        id: `note-${item.id}`,
+        noteId: item.id,
+        removable: true as const,
+        kind: "note" as const,
+        at: item.at || "",
+        label: "Note",
+        text: String(item.body || "").trim(),
+      }))
+      .filter((item) => item.text);
+    const timelineNotes = (viewProfile.timeline || [])
+      .map((item) => ({
+        id: `tl-${item.id}`,
+        noteId: "",
+        removable: false as const,
+        kind: "activity" as const,
+        at: item.at || "",
+        label: "Timeline",
+        text: shortLine(item.body || ""),
+      }))
+      .filter((item) => item.text);
+    const history = historyEvents
+      .map((event) => {
+        const label = timelineKindLabel(event.type);
+        const detail =
+          shortLine(event.title || "") ||
+          shortLine(event.description || "") ||
+          shortLine(event.campaignName || "") ||
+          shortLine(event.listName || "") ||
+          shortLine(event.companyName || "");
+        return {
+          id: `hist-${event.id}`,
+          noteId: "",
+          removable: false as const,
+          kind: "activity" as const,
+          at: event.at || "",
+          label,
+          text: detail,
+        };
+      })
+      .filter((item) => item.label);
+    return [...notes, ...timelineNotes, ...history].sort((a, b) => {
+      const ta = a.at ? new Date(a.at).getTime() : 0;
+      const tb = b.at ? new Date(b.at).getTime() : 0;
+      return tb - ta;
+    });
+  })();
+
+  async function submitNote() {
+    if (!onAddNote || addingNote || saving || readOnly) {
+      return;
+    }
+    const body = noteDraft.trim();
+    if (!body) {
+      return;
+    }
+    setAddingNote(true);
+    try {
+      await onAddNote(body);
+      setNoteDraft("");
+      setShowNoteComposer(false);
+    } finally {
+      setAddingNote(false);
+    }
+  }
+
+  async function confirmRemoveNote() {
+    if (!notePendingRemove || !onRemoveNote || removingNote || readOnly) {
+      return;
+    }
+    setRemovingNote(true);
+    try {
+      await onRemoveNote(notePendingRemove.id);
+      setNotePendingRemove(null);
+    } finally {
+      setRemovingNote(false);
+    }
+  }
 
   function resolveSendId(event: ContactHistoryEvent | null | undefined) {
     if (!event) {
@@ -1182,12 +1347,7 @@ export default function LeadReportOverview({
                   tone="tone-indigo"
                   icon={<IconGlobe />}
                   label="Website"
-                  value={
-                    (viewProfile.company?.website || "").replace(
-                      /^https?:\/\//i,
-                      "",
-                    ) || ""
-                  }
+                  value={viewProfile.company?.website || ""}
                   href={companyWebsite || undefined}
                 />
                 <IconRow
@@ -2233,91 +2393,190 @@ export default function LeadReportOverview({
           </div>
 
           <Card
-            title="Internal Notes"
-            section="notes"
+            title="Notes"
             editing={editing}
             readOnly={readOnly}
-            saving={saving}
+            saving={saving || addingNote}
             onEdit={beginEdit}
             onCancel={cancelEdit}
             onSave={saveSection}
-            edit={
-              <div className="lr-edit-stack">
-                {(viewProfile.notes || []).length === 0 ? (
-                  <p className="lr-empty">No internal notes yet.</p>
-                ) : (
-                  (viewProfile.notes || []).map((item, index) => (
-                    <div key={item.id} className="lr-edit-panel lr-edit-panel-row">
-                      <div className="lr-edit-panel-head">
-                        <span className="lr-edit-panel-label">Note</span>
-                        <RemoveIconButton
-                          label="Remove note"
-                          onClick={() =>
-                            patchProfile((p) => ({
-                              ...p,
-                              notes: (p.notes || []).filter(
-                                (entry) => entry.id !== item.id,
-                              ),
-                            }))
-                          }
-                        />
-                      </div>
-                      <textarea
-                        className="lr-input"
-                        rows={4}
-                        aria-label="Note"
-                        value={item.body}
-                        onChange={(e) =>
-                          patchProfile((p) => {
-                            const notes = [...(p.notes || [])];
-                            notes[index] = {
-                              ...notes[index],
-                              body: e.target.value,
-                            };
-                            return { ...p, notes };
-                          })
-                        }
-                      />
-                    </div>
-                  ))
-                )}
+            headAction={
+              !readOnly && !showNoteComposer ? (
                 <button
                   type="button"
-                  className="btn-soft"
-                  onClick={() =>
-                    patchProfile((p) => ({
-                      ...p,
-                      notes: [
-                        ...(p.notes || []),
-                        {
-                          id: newNoteId(),
-                          at: new Date().toISOString(),
-                          body: "",
-                        } satisfies ContactProfileNote,
-                      ],
-                    }))
-                  }
+                  className="btn-soft lr-edit-btn"
+                  disabled={saving || addingNote || Boolean(editing)}
+                  onClick={() => setShowNoteComposer(true)}
                 >
                   Add note
                 </button>
-              </div>
+              ) : null
             }
           >
-            {(viewProfile.notes || []).length === 0 ? (
-              <p className="lr-empty">No internal notes yet.</p>
-            ) : (
-              <div className="space-y-3 mb-4 max-h-[300px] overflow-y-auto pr-1">
-                {(viewProfile.notes || []).map((item) => (
-                  <div key={item.id} className="lr-note">
-                    <p className="lr-note-meta">
-                      {formatCompanyDate(item.at)} · Note
-                    </p>
-                    <p className="lr-desc">{item.body}</p>
+            <div className="lr-notes-panel">
+              {showNoteComposer && !readOnly ? (
+                <div className="lr-note-composer">
+                  <div className="lr-note-composer-label">New note</div>
+                  <textarea
+                    className="lr-note-composer-input"
+                    rows={3}
+                    autoFocus
+                    placeholder="Write a note…"
+                    value={noteDraft}
+                    disabled={addingNote || saving}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                        e.preventDefault();
+                        void submitNote();
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setShowNoteComposer(false);
+                        setNoteDraft("");
+                      }
+                    }}
+                  />
+                  <div className="lr-note-composer-bar">
+                    <span className="lr-note-composer-hint">
+                      ⌘/Ctrl + Enter to submit
+                    </span>
+                    <div className="lr-note-composer-actions">
+                      <button
+                        type="button"
+                        className="btn-soft lr-edit-btn"
+                        disabled={addingNote || saving}
+                        onClick={() => {
+                          setShowNoteComposer(false);
+                          setNoteDraft("");
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-dark lr-edit-btn"
+                        disabled={
+                          addingNote || saving || !noteDraft.trim()
+                        }
+                        onClick={() => void submitNote()}
+                      >
+                        {addingNote ? "Saving…" : "Submit"}
+                      </button>
+                    </div>
                   </div>
-                ))}
-              </div>
-            )}
+                </div>
+              ) : null}
+
+              {notesFeed.length === 0 ? (
+                <p className="lr-empty">
+                  No notes or timeline activity yet.
+                </p>
+              ) : (
+                <div className="lr-notes lr-notes-feed">
+                  {notesFeed.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`lr-note${item.removable && !readOnly ? " is-removable" : ""}`}
+                    >
+                      {item.removable && !readOnly ? (
+                        <button
+                          type="button"
+                          className="lr-note-remove"
+                          aria-label="Remove note"
+                          title="Remove note"
+                          disabled={saving || removingNote || addingNote}
+                          onClick={() =>
+                            setNotePendingRemove({
+                              id: item.noteId,
+                              preview: shortLine(item.text, 80),
+                            })
+                          }
+                        >
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.2"
+                            aria-hidden
+                          >
+                            <path d="M18 6 6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      ) : null}
+                      <p className="lr-note-meta">
+                        {formatCompanyDate(item.at) || "—"} · {item.label}
+                      </p>
+                      {item.text ? (
+                        <p className="lr-desc">{item.text}</p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </Card>
+
+          {notePendingRemove ? (
+            <div
+              className="crm-modal-backdrop"
+              onClick={() => {
+                if (!removingNote) setNotePendingRemove(null);
+              }}
+            >
+              <div
+                className="crm-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="lr-note-remove-title"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="crm-modal-head">
+                  <h3 id="lr-note-remove-title">Remove note?</h3>
+                  <button
+                    type="button"
+                    className="crm-modal-close"
+                    aria-label="Close"
+                    disabled={removingNote}
+                    onClick={() => setNotePendingRemove(null)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="crm-modal-body">
+                  <p>
+                    {notePendingRemove.preview ? (
+                      <>
+                        Remove note{" "}
+                        <strong>&ldquo;{notePendingRemove.preview}&rdquo;</strong>
+                        ? This cannot be undone.
+                      </>
+                    ) : (
+                      <>Remove this note? This cannot be undone.</>
+                    )}
+                  </p>
+                </div>
+                <div className="crm-modal-foot">
+                  <button
+                    type="button"
+                    className="btn-soft"
+                    disabled={removingNote}
+                    onClick={() => setNotePendingRemove(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-dark"
+                    disabled={removingNote}
+                    onClick={() => void confirmRemoveNote()}
+                  >
+                    {removingNote ? "Removing…" : "Remove"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           <Card
             title="Information"
@@ -2358,18 +2617,32 @@ export default function LeadReportOverview({
             {Object.keys(viewCore.attributes).length === 0 ? (
               <p className="lr-empty">No custom attributes yet.</p>
             ) : (
-              Object.entries(viewCore.attributes).map(([key, value]) => (
-                <div
-                  key={key}
-                  className="lr-company-fields"
-                  style={{ marginBottom: 10 }}
-                >
-                  <p className="lr-mini-label">
-                    {CONTACT_ATTRIBUTE_LABELS[key] ?? key}
-                  </p>
-                  <p className="lr-mini-value">{display(value)}</p>
-                </div>
-              ))
+              Object.entries(viewCore.attributes).map(([key, value]) => {
+                const text = String(value ?? "").trim();
+                const href = isProbablyUrl(text) ? ensureHttp(text) : "";
+                return (
+                  <div
+                    key={key}
+                    className="lr-company-fields"
+                    style={{ marginBottom: 10 }}
+                  >
+                    <p className="lr-mini-label">{attributeViewLabel(key)}</p>
+                    {href ? (
+                      <a
+                        className="lr-mini-value lr-link"
+                        href={href}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={text}
+                      >
+                        {friendlyLinkLabel(text, key)}
+                      </a>
+                    ) : (
+                      <p className="lr-mini-value">{display(text)}</p>
+                    )}
+                  </div>
+                );
+              })
             )}
           </Card>
 

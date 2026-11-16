@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_TRACKING_HOST,
   trackingDnsRecords,
+  trackingHubHostsLabel,
   trackingOrigin,
   type TrackingDnsRecord,
 } from "@/lib/campaign-tracking";
@@ -1154,8 +1155,8 @@ export default function PortalSmtpPage() {
               <div>
                 <h3>Set custom tracking domain</h3>
                 <p>
-                  Point a CNAME at {DEFAULT_TRACKING_HOST}, then verify. We also
-                  check HTTPS — if Cloudflare returns Error 1014 (CNAME
+                  Point a CNAME at {trackingHubHostsLabel()}, then verify. We
+                  also check HTTPS — if Cloudflare returns Error 1014 (CNAME
                   Cross-User Banned), keep using {DEFAULT_TRACKING_HOST} for
                   opens, clicks, and unsubscribe.
                 </p>

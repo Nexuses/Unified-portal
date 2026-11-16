@@ -169,22 +169,61 @@ async function upsertSuppressionEntry(
   return Boolean(result.upsertedCount);
 }
 
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export async function getUnsubscribeListEntries(
   projectId: ObjectId,
-  options?: { page?: number; pageSize?: number },
+  options?: { page?: number; pageSize?: number; q?: string },
 ) {
   const pageSize = Math.min(100, Math.max(1, options?.pageSize ?? 50));
   const page = Math.max(1, options?.page ?? 1);
+  const q = String(options?.q ?? "").trim();
   const list = await getOrCreateUnsubscribeList(projectId);
   const db = await getDb();
   const offset = (page - 1) * pageSize;
-  const domainFilter = { projectId, kind: "domain" as const };
+  const domainFilter: Record<string, unknown> = {
+    projectId,
+    kind: "domain" as const,
+  };
+  if (q) {
+    domainFilter.value = { $regex: escapeRegex(q), $options: "i" };
+  }
+
+  let matchingContactIds: ObjectId[] | null = null;
+  if (q) {
+    const regex = { $regex: escapeRegex(q), $options: "i" };
+    const matchedContacts = await db
+      .collection<ContactDoc>("contacts")
+      .find(
+        {
+          projectId,
+          $or: [
+            { email: regex },
+            { firstName: regex },
+            { lastName: regex },
+            { companyName: regex },
+          ],
+        },
+        { projection: { _id: 1 } },
+      )
+      .toArray();
+    matchingContactIds = matchedContacts.map((contact) => contact._id);
+  }
+
+  const emailFilter: Record<string, unknown> = {
+    projectId,
+    listId: list._id,
+  };
+  if (matchingContactIds) {
+    emailFilter.contactId = { $in: matchingContactIds };
+  }
 
   const [emailTotal, domainTotal] = await Promise.all([
-    db.collection<ListMembershipDoc>("list_memberships").countDocuments({
-      projectId,
-      listId: list._id,
-    }),
+    matchingContactIds && matchingContactIds.length === 0
+      ? Promise.resolve(0)
+      : db.collection<ListMembershipDoc>("list_memberships").countDocuments(emailFilter),
     db.collection<SuppressionEntryDoc>("suppression_entries").countDocuments(domainFilter),
   ]);
 
@@ -201,10 +240,10 @@ export async function getUnsubscribeListEntries(
       : [];
   const emailLimit = pageSize - domainDocs.length;
   const memberships =
-    emailLimit > 0
+    emailLimit > 0 && !(matchingContactIds && matchingContactIds.length === 0)
       ? await db
           .collection<ListMembershipDoc>("list_memberships")
-          .find({ projectId, listId: list._id })
+          .find(emailFilter)
           .sort({ addedAt: -1, _id: -1 })
           .skip(Math.max(0, offset - domainTotal))
           .limit(emailLimit)
@@ -257,6 +296,7 @@ export async function getUnsubscribeListEntries(
     domainTotal,
     page,
     pageSize,
+    q,
   };
 }
 

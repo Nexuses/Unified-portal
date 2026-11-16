@@ -1467,7 +1467,7 @@ async function runBoatTool(
       if (url.protocol !== "http:" && url.protocol !== "https:") {
         return { output: { error: "Only http and https URLs can be opened." } };
       }
-      const command = `if ! command -v google-chrome-stable >/dev/null; then echo chrome-missing; exit 1; fi; DISPLAY=:0 nohup google-chrome-stable --no-first-run --new-window ${shellQuote(url.toString())} >/tmp/boat-chrome.log 2>&1 & echo started`;
+      const command = `if ! command -v google-chrome-stable >/dev/null; then echo chrome-missing; exit 1; fi; LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 LANGUAGE=en_US:en DISPLAY=:0 nohup google-chrome-stable --no-first-run --lang=en-US --accept-lang=en-US,en --new-window ${shellQuote(url.toString())} >/tmp/boat-chrome.log 2>&1 & echo started`;
       const result = await runBoatCommand(sandbox.id, command, 20);
       return {
         card: boatCard(sandbox, `Chrome is opening ${url.toString()}`),

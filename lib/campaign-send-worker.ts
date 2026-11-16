@@ -12,6 +12,7 @@ import {
   processDueInboxReplies,
   type InboxScheduledReplyDoc,
 } from "@/lib/master-inbox-server";
+import { processDueLinkedinMessages } from "@/lib/linkedin-campaigns-server";
 
 const DEFAULT_INTERVAL_MS = 15_000;
 
@@ -157,6 +158,13 @@ export async function runCampaignSendTick() {
   state.running = true;
   try {
     const result = await processAllDueCampaignSends();
+    const linkedin = await processDueLinkedinMessages().catch((error) => {
+      console.error("[campaign-worker] linkedin follow-up failed:", error);
+      return { sent: 0 };
+    });
+    if (linkedin.sent > 0) {
+      console.info(`[campaign-worker] linkedin messages=${linkedin.sent}`);
+    }
     if (result.projects > 0 || result.errors.length > 0) {
       console.info(
         `[campaign-worker] tick projects=${result.projects} reports=${result.reports} followUps=${result.followUps} errors=${result.errors.length}`,

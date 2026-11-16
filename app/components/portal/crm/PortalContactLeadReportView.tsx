@@ -365,6 +365,85 @@ export default function PortalContactLeadReportView({
     }
   }
 
+  async function addNote(body: string) {
+    if (!contact || saving) {
+      return;
+    }
+    const text = body.trim();
+    if (!text) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    showToast(null);
+    try {
+      const nextProfile = cloneProfile(contact.profile);
+      nextProfile.notes = [
+        ...(nextProfile.notes || []),
+        {
+          id: `n_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+          at: new Date().toISOString(),
+          body: text,
+        },
+      ];
+      const response = await fetch(`/api/crm/contacts/${contact.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: nextProfile }),
+      });
+      const data = (await response.json()) as ContactDetail & { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to save note");
+      }
+      applyContact(data, setContact, setDraftProfile, setDraftCore);
+      showToast({
+        message: "Note added",
+        variant: "success",
+        durationMs: 2400,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save note");
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeNote(noteId: string) {
+    if (!contact || saving || !noteId) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    showToast(null);
+    try {
+      const nextProfile = cloneProfile(contact.profile);
+      nextProfile.notes = (nextProfile.notes || []).filter(
+        (note) => note.id !== noteId,
+      );
+      const response = await fetch(`/api/crm/contacts/${contact.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: nextProfile }),
+      });
+      const data = (await response.json()) as ContactDetail & { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to remove note");
+      }
+      applyContact(data, setContact, setDraftProfile, setDraftCore);
+      showToast({
+        message: "Note removed",
+        variant: "success",
+        durationMs: 2400,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to remove note");
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function patchProfile(updater: (current: ContactProfile) => ContactProfile) {
     setDraftProfile((current) => updater(cloneProfile(current)));
   }
@@ -529,6 +608,8 @@ export default function PortalContactLeadReportView({
         beginEdit={beginEdit}
         cancelEdit={cancelEdit}
         saveSection={() => void saveSection()}
+        onAddNote={addNote}
+        onRemoveNote={removeNote}
         historyEvents={contact.history}
         campaignStats={contact.campaignStats}
       />

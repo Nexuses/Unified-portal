@@ -1,7 +1,21 @@
 import { replaceUnsubscribeVariables } from "@/lib/email-variables";
 
 export const DEFAULT_TRACKING_HOST = "unified.nexuses.xyz";
+/** Hub hosts a custom tracking CNAME may point at (same app origin). */
+export const TRACKING_HUB_HOSTS = [
+  DEFAULT_TRACKING_HOST,
+  "app.nexgos.com",
+] as const;
 export const DEFAULT_TRACKING_ORIGIN = `https://${DEFAULT_TRACKING_HOST}`;
+
+export function isTrackingHubHost(host: string) {
+  const normalized = normalizeTrackingDomain(host);
+  return (TRACKING_HUB_HOSTS as readonly string[]).includes(normalized);
+}
+
+export function trackingHubHostsLabel() {
+  return TRACKING_HUB_HOSTS.join(" or ");
+}
 
 export function normalizeTrackingDomain(value: string | undefined | null) {
   const raw = String(value ?? "").trim();
@@ -40,7 +54,7 @@ export async function probeTrackingHost(hostInput: string) {
   if (!host) {
     return { ok: false, detail: "Invalid tracking host." };
   }
-  if (host === DEFAULT_TRACKING_HOST) {
+  if (isTrackingHubHost(host)) {
     return { ok: true, detail: "Default tracking host." };
   }
 
@@ -64,8 +78,8 @@ export async function probeTrackingHost(hostInput: string) {
     const detail = ok
       ? `${host} responds to open tracking.`
       : response.status === 403 || response.status === 1014
-        ? `${host} is blocked by Cloudflare (often Error 1014 CNAME Cross-User Banned when both zones are on Cloudflare). Use ${DEFAULT_TRACKING_HOST}, or set up Cloudflare for SaaS custom hostnames.`
-        : `${host} returned HTTP ${response.status} for /t/o/…. Tracking links would break — use ${DEFAULT_TRACKING_HOST} until this is fixed.`;
+        ? `${host} is blocked by Cloudflare (often Error 1014 CNAME Cross-User Banned when both zones are on Cloudflare). Use ${trackingHubHostsLabel()}, or set up Cloudflare for SaaS custom hostnames.`
+        : `${host} returned HTTP ${response.status} for /t/o/…. Tracking links would break — use ${trackingHubHostsLabel()} until this is fixed.`;
     trackingProbeCache.set(host, { ok, at: Date.now(), detail });
     return { ok, detail };
   } catch (error) {
@@ -81,8 +95,11 @@ export async function probeTrackingHost(hostInput: string) {
 /** Origin used in outbound email links — never bake in a broken custom CNAME. */
 export async function resolveUsableTrackingOrigin(trackingDomain?: string | null) {
   const host = normalizeTrackingDomain(trackingDomain);
-  if (!host || host === DEFAULT_TRACKING_HOST) {
+  if (!host) {
     return DEFAULT_TRACKING_ORIGIN;
+  }
+  if (isTrackingHubHost(host)) {
+    return `https://${host}`;
   }
   const probe = await probeTrackingHost(host);
   return probe.ok ? `https://${host}` : DEFAULT_TRACKING_ORIGIN;
@@ -108,14 +125,12 @@ export function trackingDnsRecords(domain: string): TrackingDnsRecord[] {
     return [];
   }
 
-  return [
-    {
-      type: "CNAME",
-      host,
-      value: DEFAULT_TRACKING_HOST,
-      purpose: "Open, click, and unsubscribe tracking",
-    },
-  ];
+  return TRACKING_HUB_HOSTS.map((value) => ({
+    type: "CNAME" as const,
+    host,
+    value,
+    purpose: `Open, click, and unsubscribe tracking (CNAME to either ${trackingHubHostsLabel()})`,
+  }));
 }
 
 function isIpv4(value: string) {
@@ -151,7 +166,7 @@ export async function verifyTrackingDomain(domain: string) {
     } satisfies TrackingDomainVerification;
   }
 
-  if (host === DEFAULT_TRACKING_HOST) {
+  if (isTrackingHubHost(host)) {
     return {
       domain: host,
       verified: true,
@@ -162,9 +177,8 @@ export async function verifyTrackingDomain(domain: string) {
 
   try {
     const cnames = await lookupCnameTargets(host);
-    const expected = DEFAULT_TRACKING_HOST;
-    const matched = cnames.some((target) => target === expected);
-    if (matched) {
+    const matchedTarget = cnames.find((target) => isTrackingHubHost(target));
+    if (matchedTarget) {
       const probe = await probeTrackingHost(host);
       if (!probe.ok) {
         return {
@@ -178,7 +192,7 @@ export async function verifyTrackingDomain(domain: string) {
         domain: host,
         verified: true,
         checkedAt: new Date().toISOString(),
-        detail: `${host} CNAME points to ${expected} and HTTPS tracking works.`,
+        detail: `${host} CNAME points to ${matchedTarget} and HTTPS tracking works.`,
       } satisfies TrackingDomainVerification;
     }
 
@@ -192,6 +206,7 @@ export async function verifyTrackingDomain(domain: string) {
     const aRecords = (aData.Answer ?? [])
       .filter((answer) => answer.type === 1 && answer.data && isIpv4(answer.data))
       .map((answer) => answer.data as string);
+    const expected = trackingHubHostsLabel();
 
     return {
       domain: host,

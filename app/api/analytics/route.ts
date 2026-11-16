@@ -30,6 +30,9 @@ export async function GET(request: NextRequest) {
     const defaults = defaultAnalyticsRange();
     const from = request.nextUrl.searchParams.get("from")?.trim() || defaults.from;
     const to = request.nextUrl.searchParams.get("to")?.trim() || defaults.to;
+    // Default hide bots (matches campaign report “Show bot opens/clicks” off).
+    const hideBotParam = request.nextUrl.searchParams.get("hideBotClicks");
+    const hideBotClicks = hideBotParam !== "0" && hideBotParam !== "false";
     const projectId = new ObjectId(session.projectId);
 
     let dashboard;
@@ -39,6 +42,7 @@ export async function GET(request: NextRequest) {
         from,
         to,
         session.projectName,
+        { hideBotClicks },
       );
     } catch (error) {
       if (!isMongoPoolError(error)) {
@@ -51,6 +55,7 @@ export async function GET(request: NextRequest) {
         from,
         to,
         session.projectName,
+        { hideBotClicks },
       );
     }
     return NextResponse.json(dashboard, {

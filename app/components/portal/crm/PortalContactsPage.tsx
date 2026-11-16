@@ -13,6 +13,7 @@ import { portalContactRoute } from "@/lib/portal-nav";
 
 const CORE_FIELDS = new Set(["firstName", "lastName", "email", "companyName"]);
 const CONTACTS_PAGE_SIZE = 50;
+const NEW_LIST = "__new__";
 
 /** Suppression imports store firstName as "Blocked" — prefer a readable label. */
 function contactDisplayName(contact: Contact) {
@@ -129,6 +130,10 @@ export default function PortalContactsPage() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [listId, setListId] = useState("");
+  const [listsLoading, setListsLoading] = useState(false);
+  const [listMenuOpen, setListMenuOpen] = useState(false);
+  const [newListName, setNewListName] = useState("");
+  const listPickerRef = useRef<HTMLDivElement | null>(null);
   const [values, setValues] = useState<Record<string, string>>(emptyAttributeValues);
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState("");
@@ -198,6 +203,7 @@ export default function PortalContactsPage() {
       return;
     }
     let cancelled = false;
+    setListsLoading(true);
     void (async () => {
       try {
         const response = await fetch("/api/crm/lists");
@@ -211,9 +217,9 @@ export default function PortalContactsPage() {
           );
           setLists(next);
           setListId((current) =>
-            current && next.some((list) => list.id === current)
+            current === NEW_LIST || (current && next.some((list) => list.id === current))
               ? current
-              : (next[0]?.id ?? ""),
+              : (next[0]?.id ?? NEW_LIST),
           );
         }
       } catch (err) {
@@ -221,6 +227,10 @@ export default function PortalContactsPage() {
           setModalError(
             err instanceof Error ? err.message : "Failed to load lists",
           );
+        }
+      } finally {
+        if (!cancelled) {
+          setListsLoading(false);
         }
       }
     })();
@@ -336,15 +346,31 @@ export default function PortalContactsPage() {
 
   function openCreateModal() {
     setValues(emptyAttributeValues());
+    setNewListName("");
+    setListMenuOpen(false);
     setModalError("");
     setModalOpen(true);
   }
+
+  useEffect(() => {
+    if (!listMenuOpen) {
+      return;
+    }
+    function onPointerDown(event: MouseEvent) {
+      if (!listPickerRef.current?.contains(event.target as Node)) {
+        setListMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [listMenuOpen]);
 
   function closeCreateModal() {
     if (saving) {
       return;
     }
     setModalOpen(false);
+    setNewListName("");
     setModalError("");
   }
 
@@ -354,6 +380,26 @@ export default function PortalContactsPage() {
     try {
       if (!listId) {
         throw new Error("Select a list for this contact.");
+      }
+      let targetListId = listId;
+      if (listId === NEW_LIST) {
+        const name = newListName.trim();
+        if (!name) {
+          throw new Error("Enter a name for the new list.");
+        }
+        const created = await fetch("/api/crm/lists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        const createdData = await created.json();
+        if (!created.ok) {
+          throw new Error(createdData.error || "Failed to create list");
+        }
+        const list = createdData.list as CrmList;
+        targetListId = list.id;
+        setLists((current) => [list, ...current.filter((item) => item.id !== list.id)]);
+        setListId(list.id);
       }
       const firstName = values.firstName?.trim() ?? "";
       const lastName = values.lastName?.trim() ?? "";
@@ -374,7 +420,7 @@ export default function PortalContactsPage() {
         }
       }
 
-      const response = await fetch(`/api/crm/lists/${encodeURIComponent(listId)}`, {
+      const response = await fetch(`/api/crm/lists/${encodeURIComponent(targetListId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -395,6 +441,7 @@ export default function PortalContactsPage() {
       }
 
       setModalOpen(false);
+      setNewListName("");
       setValues(emptyAttributeValues());
       setPage(1);
       await loadContactsPage(1);
@@ -645,8 +692,8 @@ export default function PortalContactsPage() {
               <div>
                 <h3 id="create-contact-title">Create a contact</h3>
                 <p>
-                  Choose a list and fill in contact details. First Name, Email,
-                  and Company Name are required.
+                  Choose a list, or create a new one, then fill in the contact.
+                  First Name, Email, and Company Name are required.
                 </p>
               </div>
               <button
@@ -662,23 +709,73 @@ export default function PortalContactsPage() {
 
             <div className="crm-modal-body">
               <div className="crm-field">
-                <label htmlFor="create-contact-list">List</label>
-                <select
-                  id="create-contact-list"
-                  value={listId}
-                  onChange={(event) => setListId(event.target.value)}
-                  disabled={saving || lists.length === 0}
-                >
-                  {lists.length === 0 ? (
-                    <option value="">No lists available</option>
-                  ) : (
-                    lists.map((list) => (
-                      <option key={list.id} value={list.id}>
-                        {list.name} (#{list.displayId})
-                      </option>
-                    ))
-                  )}
-                </select>
+                <label id="create-contact-list-label">List</label>
+                <div className="crm-list-picker" ref={listPickerRef}>
+                  <button
+                    type="button"
+                    className={`crm-list-picker-trigger${listMenuOpen ? " is-open" : ""}`}
+                    aria-labelledby="create-contact-list-label"
+                    aria-expanded={listMenuOpen}
+                    disabled={saving}
+                    onClick={() => setListMenuOpen((open) => !open)}
+                  >
+                    <span>
+                      {listsLoading
+                        ? "Loading lists…"
+                        : listId === NEW_LIST
+                          ? "Create new list…"
+                          : (lists.find((list) => list.id === listId)?.name ??
+                            "Choose a list")}
+                    </span>
+                    <span aria-hidden>▾</span>
+                  </button>
+                  {listMenuOpen ? (
+                    <div className="crm-list-picker-menu" role="listbox">
+                      {listsLoading ? (
+                        <p className="crm-list-picker-empty">Loading lists…</p>
+                      ) : lists.length === 0 ? (
+                        <p className="crm-list-picker-empty">No lists yet.</p>
+                      ) : (
+                        lists.map((list) => (
+                          <button
+                            key={list.id}
+                            type="button"
+                            role="option"
+                            aria-selected={list.id === listId}
+                            className={list.id === listId ? "is-selected" : ""}
+                            onClick={() => {
+                              setListId(list.id);
+                              setListMenuOpen(false);
+                            }}
+                          >
+                            <span>{list.name}</span>
+                            <span>#{list.displayId}</span>
+                          </button>
+                        ))
+                      )}
+                      <button
+                        type="button"
+                        className={`crm-list-picker-create${listId === NEW_LIST ? " is-selected" : ""}`}
+                        onClick={() => {
+                          setListId(NEW_LIST);
+                          setListMenuOpen(false);
+                        }}
+                      >
+                        Create new list…
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+                {listId === NEW_LIST ? (
+                  <input
+                    id="create-contact-new-list"
+                    value={newListName}
+                    onChange={(event) => setNewListName(event.target.value)}
+                    placeholder="New list name"
+                    disabled={saving}
+                    autoFocus
+                  />
+                ) : null}
               </div>
 
               <div className="crm-mapping-grid">
@@ -727,7 +824,7 @@ export default function PortalContactsPage() {
                 type="button"
                 className="btn-dark"
                 onClick={() => void handleCreateContact()}
-                disabled={saving || lists.length === 0}
+                disabled={saving || !listId || (listId === NEW_LIST && !newListName.trim())}
               >
                 {saving ? "Saving…" : "Add contact"}
               </button>
