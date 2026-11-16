@@ -367,6 +367,12 @@ export async function getBoatPrompt(sandboxId: string, promptId: string) {
   return readPromptRun(data, promptId);
 }
 
+export async function getBoatTaskReport(sandboxId: string, promptId: string) {
+  const run = await getBoatPrompt(sandboxId, promptId);
+  const report = await latestAgentReport(sandboxId, run.conversationId);
+  return { ...run, report };
+}
+
 async function latestAgentReport(sandboxId: string, conversationId: string | null) {
   const params = new URLSearchParams({ sort: "asc" });
   if (conversationId) params.set("conversation", conversationId);

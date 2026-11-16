@@ -12,6 +12,7 @@ export type PortalPageId =
   | "automation-history"
   | "personalise"
   | "cloud"
+  | "linkedin"
   | "edm"
   | "analytics"
   | "analytics-kanban"
@@ -64,6 +65,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   "automation-history": "/portal/marketing/automation-history",
   personalise: "/portal/marketing/personalise",
   cloud: "/portal/marketing/cloud",
+  linkedin: "/portal/marketing/linkedin",
   edm: "/portal/marketing/edm",
   analytics: "/portal/analytics",
   "analytics-kanban": "/portal/analytics/kanban",
@@ -263,6 +265,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
       { id: "personalise", label: "Personalise Campaign", href: PORTAL_ROUTES.personalise },
       { id: "cloud", label: "Cloud Campaign", href: PORTAL_ROUTES.cloud },
       { id: "automation", label: "Automation", href: PORTAL_ROUTES.automation },
+      { id: "linkedin", label: "LinkedIn Automation", href: PORTAL_ROUTES.linkedin },
       { id: "edm", label: "EDM generation", href: PORTAL_ROUTES.edm },
     ],
   },
@@ -315,6 +318,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   cloud: "Cloud Campaign",
   automation: "Automation",
   "automation-history": "Automation history",
+  linkedin: "LinkedIn Automation",
   edm: "EDM generation",
   analytics: "Analytics",
   "analytics-kanban": "Pipeline",
@@ -355,6 +359,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/marketing/one-one")) return "oneone";
   if (pathname.startsWith("/portal/marketing/personalise")) return "personalise";
   if (pathname.startsWith("/portal/marketing/cloud")) return "cloud";
+  if (pathname.startsWith("/portal/marketing/linkedin")) return "linkedin";
   if (pathname.startsWith("/portal/marketing/edm")) return "edm";
   if (pathname.startsWith("/portal/marketing/automation-history")) {
     return "automation-history";
@@ -394,6 +399,7 @@ export function getPageTitleFromPathname(pathname: string): string {
   if (pathname.startsWith("/portal/crm/contacts/")) return DETAIL_TITLES.contact;
   if (pathname.startsWith("/portal/marketing/one-one/")) return DETAIL_TITLES.campaign;
   if (pathname.startsWith("/portal/marketing/cloud/")) return DETAIL_TITLES.campaign;
+  if (pathname.startsWith("/portal/marketing/linkedin/")) return DETAIL_TITLES.campaign;
   if (pathname.startsWith("/portal/marketing/campaigns/")) {
     return DETAIL_TITLES.campaign;
   }
