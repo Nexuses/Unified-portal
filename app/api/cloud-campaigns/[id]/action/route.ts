@@ -12,6 +12,9 @@ import {
   stopCloudSending,
   submitChromeProfileAuthCode,
   clearCloudSendLog,
+  checkScriptSender,
+  testScriptSend,
+  verifyCloudCsv,
   verifyCloudSheet,
 } from "@/lib/cloud-boat-runner";
 import { learnBoatMemoryFromSender } from "@/lib/boat-memory";
@@ -51,6 +54,8 @@ type ActionBody = {
   email?: string;
   password?: string;
   code?: string;
+  csvText?: string;
+  fileName?: string;
 };
 
 function isValidEmail(value: string) {
@@ -68,6 +73,18 @@ export async function POST(request: NextRequest, { params }: Params) {
     const existing = await getCloudCampaign(projectId, id);
     if (!existing) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
+    }
+
+    if (action === "sender_check") {
+      const result = await checkScriptSender(projectId, id);
+      return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
+    }
+
+    if (action === "sender_test_send" || action === "sender_dry_run") {
+      const result = await testScriptSend(projectId, id, {
+        dryRun: action === "sender_dry_run",
+      });
+      return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
     }
 
     if (action === "start_computer") {
@@ -212,6 +229,19 @@ export async function POST(request: NextRequest, { params }: Params) {
         desktopUrl: login.desktopUrl,
         profile: login.email ? { ...profile, gmail: login.email } : profile,
       });
+    }
+
+    if (action === "verify_csv") {
+      const csvText = String(body?.csvText ?? "");
+      if (!csvText.trim()) {
+        return NextResponse.json({ error: "Upload a CSV file first." }, { status: 400 });
+      }
+      const verified = await verifyCloudCsv(projectId, id, {
+        csvText,
+        fileName: String(body?.fileName ?? ""),
+      });
+      const campaign = await getCloudCampaign(projectId, id);
+      return NextResponse.json({ campaign, ...verified });
     }
 
     if (action === "verify_sheet") {

@@ -43,6 +43,8 @@ export type CloudCampaignDoc = {
   sendLog: CloudSendLogEntry[];
   lockPromptId?: string;
   lockConversationId?: string | null;
+  /** Row whose script send started but has no definitive outcome yet (duplicate guard). */
+  inflightRow?: number;
   createdAt: Date;
   updatedAt: Date;
 };

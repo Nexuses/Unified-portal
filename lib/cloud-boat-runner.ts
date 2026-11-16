@@ -31,6 +31,7 @@ import {
   resolveCloudRowFields,
 } from "@/lib/cloud-sheet-csv";
 import { applyContactVariables } from "@/lib/email-variables";
+import { prepareAndCheckSender, sendViaScript, type SenderResult } from "@/lib/cloud-sender";
 import {
   getBoatDesktopLock,
   getChromeProfile,
@@ -453,6 +454,237 @@ async function verifyEmailInSentFolder(
   } catch (error) {
     return { state: "unknown", detail: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/**
+ * Script sender (no AI): install the toolkit on the email VM, start the sender's dedicated
+ * Chrome, and report whether it is signed in to Gmail as the campaign's sender.
+ */
+export async function checkScriptSender(projectId: ObjectId, campaignId: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  if (!doc.profileDirectory) throw new Error("Pick a sender profile first");
+  const sandbox = await readySandbox(projectId, campaignId);
+  const result = await prepareAndCheckSender(sandbox.id, doc.profileDirectory);
+  const expected = String(doc.profileGmail || "").trim().toLowerCase();
+  const email = String(result.email || "").toLowerCase();
+  const matches = Boolean(expected && email && expected === email);
+  const desktopUrl = await openBoatDesktop(sandbox.id).catch(() => "");
+  return {
+    ...result,
+    expectedEmail: expected || undefined,
+    accountMatches: result.status === "ready" ? matches : undefined,
+    sandboxId: sandbox.id,
+    desktopUrl: desktopUrl || undefined,
+  };
+}
+
+/** Pre-send failures that are safe to retry once right away (nothing was sent). */
+const SCRIPT_RETRYABLE = new Set([
+  "CDP_UNREACHABLE",
+  "CHROME_START_FAILED",
+  "COMPOSE_NOT_LOADED",
+  "GMAIL_NAVIGATION_FAILED",
+  "BODY_INSERT_FAILED",
+  "SENT_LIST_NOT_LOADED",
+  "NO_BROWSER_CONTEXT",
+]);
+
+function scriptFailureMessage(result: SenderResult, email: string, sender: string) {
+  const detail = result.message ? ` (${String(result.message).slice(0, 160)})` : "";
+  switch (result.code) {
+    case "LOGIN_REQUIRED":
+      return `Gmail is signed out in the sender Chrome. Take control, sign in as ${sender || "the sender"}, then Resume. Nothing was sent.`;
+    case "WRONG_ACCOUNT":
+      return `The sender Chrome is signed in to a different Gmail account${detail}. Sign in as ${sender}, then Resume. Nothing was sent.`;
+    case "RECIPIENT_MISMATCH":
+    case "SUBJECT_MISMATCH":
+      return `Gmail didn't fill the recipient/subject for ${email} correctly${detail}. Nothing was sent; Resume to retry.`;
+    case "BODY_VERIFY_FAILED":
+    case "BODY_INSERT_FAILED":
+      return `The formatted email didn't paste correctly for ${email}${detail}. Nothing was sent; Resume to retry.`;
+    case "TOOLKIT_INSTALL_FAILED":
+      return `Could not set up the sender on the computer${detail}. Nothing was sent; Resume to retry.`;
+    default:
+      return `Sending to ${email} stopped before Send (${result.code || "error"})${detail}. Nothing was sent; Resume to retry.`;
+  }
+}
+
+/**
+ * One row through the script sender, with a single safe retry for pre-send failures.
+ * A row that might have been sent is never retried blindly: it stays "in flight" and the next
+ * attempt checks Gmail Sent first.
+ */
+async function sendRowWithScript(input: {
+  projectId: ObjectId;
+  campaignId: string;
+  doc: CloudCampaignDoc;
+  sandbox: BoatSandbox;
+  nextRow: number;
+  total: number;
+  to: string;
+  subject: string;
+  html: string;
+  plain: string;
+  replaceSignature: boolean;
+  phase: (text: string) => Promise<unknown>;
+}) {
+  const { projectId, campaignId, doc, sandbox, nextRow, total, to } = input;
+  const sender = String(doc.profileGmail || "").trim().toLowerCase();
+  const dupCheck = doc.inflightRow === nextRow;
+  await patchCloudCampaignDoc(projectId, campaignId, { inflightRow: nextRow });
+
+  const attempt = (withDupCheck: boolean) =>
+    sendViaScript(sandbox.id, doc.profileDirectory || "", {
+      to,
+      subject: input.subject,
+      html: input.html,
+      plain: input.plain,
+      expectedEmail: sender || undefined,
+      replaceSignature: input.replaceSignature,
+      dupCheck: withDupCheck,
+    });
+
+  await input.phase(
+    dupCheck
+      ? `checking Gmail Sent for ${to} before retrying, then sending…`
+      : `sending to ${to} in Gmail (no AI)…`,
+  );
+  let result = await attempt(dupCheck);
+  if (!result.ok && !result.sendPressed && SCRIPT_RETRYABLE.has(String(result.code))) {
+    await input.phase(`retrying ${to} once (${result.code})…`);
+    result = await attempt(dupCheck);
+  }
+
+  // Restart/pause while we were working: don't overwrite that state.
+  const fresh = await getCloudCampaignDoc(projectId, campaignId);
+  if (!fresh || fresh.status !== "sending" || (fresh.nextRow || 0) !== nextRow) {
+    const campaign = await patchCloudCampaignDoc(projectId, campaignId, {});
+    return {
+      campaign,
+      sandbox,
+      done: false,
+      needsLogin: false,
+      needsOtp: false,
+      needsUserInput: false,
+      report: "Campaign changed while this row was running; result discarded.",
+    };
+  }
+
+  const definitive = result.ok && (result.status === "sent" || result.status === "already_sent");
+  if (!definitive) {
+    // sendPressed (or unknown because the command died) => possibly sent: keep in-flight.
+    const maybeSent = result.sendPressed === true || result.code === "COMMAND_TIMEOUT" || result.code === "NO_RESULT" || result.code === "COMMAND_FAILED";
+    const lastError = maybeSent
+      ? `Send to ${to} may or may not have gone out (${result.code || "unconfirmed"}). Resume checks Gmail Sent first and will not send it twice.`
+      : scriptFailureMessage(result, to, sender);
+    const campaign = await patchCloudCampaignDoc(projectId, campaignId, {
+      status: "paused",
+      lastError,
+      lastReport: JSON.stringify(result).slice(0, 800),
+      inflightRow: maybeSent ? nextRow : undefined,
+    });
+    await unlockBoatDesktop(projectId, campaignId);
+    const needsLogin = result.code === "LOGIN_REQUIRED" || result.code === "WRONG_ACCOUNT";
+    return {
+      campaign,
+      sandbox,
+      done: false,
+      needsLogin,
+      needsOtp: false,
+      needsUserInput: false,
+      report: lastError,
+    };
+  }
+
+  const alreadySent = result.status === "already_sent";
+  const entry = {
+    row: nextRow,
+    email: to,
+    status: "sent" as const,
+    message: alreadySent
+      ? "Already in Gmail Sent; not sent again."
+      : `Sent via Gmail${result.inSent === true ? " · confirmed in Sent" : ""}.`,
+    at: new Date().toISOString(),
+  };
+  const sendLog = [...(fresh.sendLog ?? []), entry].slice(-500);
+  const advanced = nextRow + 1;
+  const finished = total > 0 && advanced >= total;
+  const patch: Partial<CloudCampaignDoc> = {
+    nextRow: advanced,
+    sentCount: fresh.sentCount + (alreadySent ? 0 : 1),
+    sendLog,
+    lastReport: `Row ${nextRow + 1}${total ? ` of ${total}` : ""}: ${entry.message}`,
+    lastError: undefined,
+    inflightRow: undefined,
+    lockPromptId: undefined,
+    lockConversationId: null,
+  };
+  if (finished) {
+    patch.status = "sent";
+    await unlockBoatDesktop(projectId, campaignId);
+    await stopBoatAfterCampaignWork(projectId);
+  }
+  const campaign = await patchCloudCampaignDoc(projectId, campaignId, patch);
+  return {
+    campaign,
+    sandbox,
+    done: finished,
+    needsLogin: false,
+    needsOtp: false,
+    needsUserInput: false,
+    report: entry.message,
+  };
+}
+
+/** Build the exact HTML/plain body the campaign would send for a row. */
+function buildRowEmail(rowCells: Record<string, string>, signatureHtml: string) {
+  const fields = resolveCloudRowFields(rowCells);
+  const html = buildCloudPitchHtml(rowCells, signatureHtml);
+  const plain = applyContactVariables(
+    fields.pitch,
+    {
+      firstName: fields.firstname,
+      lastName: fields.lastname,
+      email: fields.email,
+      companyName: fields.company,
+      position: fields.position,
+    },
+    false,
+  ).trim();
+  return { fields, html, plain };
+}
+
+/**
+ * Send row 1's email to the sender's own address through the script sender.
+ * dryRun fills and verifies compose without pressing Send.
+ */
+export async function testScriptSend(
+  projectId: ObjectId,
+  campaignId: string,
+  options: { dryRun?: boolean } = {},
+) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  if (!doc.profileDirectory) throw new Error("Pick a sender profile first");
+  const self = String(doc.profileGmail || "").trim().toLowerCase();
+  if (!self.includes("@")) throw new Error("Confirm the sender inbox first");
+  const rowCells = Array.isArray(doc.sheetRows) ? doc.sheetRows.find((r) => r?.cells)?.cells : null;
+  if (!rowCells) throw new Error("No stored people rows to build a test email from");
+  const signatureHtml = String(doc.signatureHtml || "").trim();
+  const { fields, html, plain } = buildRowEmail(rowCells, signatureHtml);
+  const sandbox = await readySandbox(projectId, campaignId);
+  const result = await sendViaScript(sandbox.id, doc.profileDirectory, {
+    to: self,
+    subject: `[Test] ${fields.subject || "Cloud campaign test"}`,
+    html,
+    plain,
+    expectedEmail: self,
+    replaceSignature: Boolean(signatureHtml),
+    dryRun: Boolean(options.dryRun),
+  });
+  const desktopUrl = await openBoatDesktop(sandbox.id).catch(() => "");
+  return { ...result, to: self, desktopUrl: desktopUrl || undefined };
 }
 
 export async function startCloudComputer(projectId: ObjectId, campaignId: string) {
@@ -1151,6 +1383,26 @@ REPORT: one short sentence`;
   // bold company/product terms, bullet lists, sign-off + signature) and is pasted as rich HTML.
   // To + Subject come from the compose URL (never typed into Gmail's To chips).
   const bodyHtml = buildCloudPitchHtml(rowCells, signatureHtml);
+
+  // Gmail: deterministic script sender (no AI). Outlook, or CLOUD_SENDER=agent, keeps the
+  // desktop-agent path below.
+  if (provider === "gmail" && process.env.CLOUD_SENDER !== "agent") {
+    return sendRowWithScript({
+      projectId,
+      campaignId,
+      doc,
+      sandbox,
+      nextRow,
+      total,
+      to: fields.email,
+      subject: fields.subject,
+      html: bodyHtml,
+      plain: bodyPlain,
+      replaceSignature: Boolean(signatureHtml),
+      phase,
+    });
+  }
+
   await phase("preparing the formatted email (first run installs a clipboard tool, up to ~1 min)…");
   const clipboard = await setBoatClipboardHtml(sandbox.id, bodyHtml);
   if (!clipboard.ok) {
@@ -1439,6 +1691,7 @@ export async function restartCloudSending(projectId: ObjectId, campaignId: strin
     sendLog: [],
     lastError: undefined,
     lastReport: "Restarted from the first people row. Send history cleared.",
+    inflightRow: undefined,
     lockPromptId: undefined,
     lockConversationId: null,
   });
