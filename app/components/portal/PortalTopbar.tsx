@@ -24,6 +24,9 @@ type PortalTopbarProps = {
 };
 
 type OpenMenu = "notifications" | "user" | null;
+
+/** Live project alert (a campaign stopped, a sender signed out, …) from /api/portal-alerts. */
+type LiveAlert = PortalNotification & { severity: "error" | "warning"; readKey: string };
 type ThemeMode = "light" | "dark";
 
 const THEME_STORAGE_KEY = "portal-theme";
@@ -57,6 +60,44 @@ export default function PortalTopbar({
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [seenInPanel, setSeenInPanel] = useState<Set<string>>(new Set());
   const menusRef = useRef<HTMLDivElement | null>(null);
+  const [alerts, setAlerts] = useState<LiveAlert[]>([]);
+
+  // Live alerts: polled every minute and when the tab regains focus.
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const response = await fetch("/api/portal-alerts", { cache: "no-store" });
+        const data = (await response.json().catch(() => null)) as {
+          alerts?: { id: string; severity: "error" | "warning"; title: string; body: string; href?: string; updatedAt: string }[];
+        } | null;
+        if (cancelled || !response.ok) return;
+        setAlerts(
+          (data?.alerts || []).map((alert) => ({
+            id: `alert:${alert.id}`,
+            // A re-raised alert (new problem) counts as unread again.
+            readKey: `alert:${alert.id}@${alert.updatedAt}`,
+            severity: alert.severity,
+            title: alert.title,
+            body: alert.body,
+            href: alert.href,
+            createdAt: alert.updatedAt,
+          })),
+        );
+      } catch {
+        // Keep the last list; try again on the next tick.
+      }
+    }
+    void load();
+    const timer = window.setInterval(() => void load(), 60_000);
+    const onFocus = () => void load();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
 
   useEffect(() => {
     setReadIds(getReadNotificationIds());
@@ -93,7 +134,8 @@ export default function PortalTopbar({
     () => getUnreadNotifications(readIds),
     [readIds],
   );
-  const unreadCount = unread.length;
+  const unreadAlerts = alerts.filter((alert) => !readIds.has(alert.readKey));
+  const unreadCount = unread.length + unreadAlerts.length;
   const badgeLabel = unreadCount > 9 ? "9+" : String(unreadCount);
 
   function toggleMenu(menu: Exclude<OpenMenu, null>) {
@@ -101,10 +143,12 @@ export default function PortalTopbar({
       const next = current === menu ? null : menu;
       if (next === "notifications") {
         const unreadIds = getUnreadNotifications(readIds).map((item) => item.id);
-        setSeenInPanel(new Set(unreadIds));
-        const nextRead = markNotificationsRead(
-          PORTAL_NOTIFICATIONS.map((item) => item.id),
-        );
+        const unreadAlertIds = alerts.filter((alert) => !readIds.has(alert.readKey)).map((alert) => alert.id);
+        setSeenInPanel(new Set([...unreadIds, ...unreadAlertIds]));
+        const nextRead = markNotificationsRead([
+          ...PORTAL_NOTIFICATIONS.map((item) => item.id),
+          ...alerts.map((alert) => alert.readKey),
+        ]);
         setReadIds(nextRead);
       } else if (menu === "notifications") {
         setSeenInPanel(new Set());
@@ -113,10 +157,11 @@ export default function PortalTopbar({
     });
   }
 
-  function notificationItem(item: PortalNotification, isUnread: boolean) {
+  function notificationItem(item: PortalNotification, isUnread: boolean, severity?: "error" | "warning") {
     const content = (
       <>
         <div className="top-notif-head">
+          {severity ? <span className={`top-notif-alert-icon is-${severity}`} aria-hidden="true">!</span> : null}
           <strong>{item.title}</strong>
           {isUnread ? <span className="top-notif-dot" aria-hidden="true" /> : null}
         </div>
@@ -130,7 +175,7 @@ export default function PortalTopbar({
         <Link
           key={item.id}
           href={item.href}
-          className={`top-notif-item${isUnread ? " is-unread" : ""}`}
+          className={`top-notif-item${isUnread ? " is-unread" : ""}${severity ? ` is-alert is-${severity}` : ""}`}
           role="menuitem"
           onClick={() => setOpenMenu(null)}
         >
@@ -184,6 +229,13 @@ export default function PortalTopbar({
             >
               <div className="org-dropdown-label top-notif-label">Notifications</div>
               <div className="top-notif-list">
+                {alerts.length ? (
+                  <>
+                    <div className="top-notif-section">Needs attention</div>
+                    {alerts.map((alert) => notificationItem(alert, seenInPanel.has(alert.id), alert.severity))}
+                    <div className="top-notif-section">Updates</div>
+                  </>
+                ) : null}
                 {PORTAL_NOTIFICATIONS.length === 0 ? (
                   <div className="top-notif-empty">No notifications yet.</div>
                 ) : (

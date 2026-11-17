@@ -43,6 +43,7 @@ import {
 import { applyContactVariables } from "@/lib/email-variables";
 import { nextAllowedTime, type CloudSchedule } from "@/lib/cloud-schedule";
 import { ensureAttachmentsOnVm } from "@/lib/cloud-attachments";
+import { resolveCampaignStopped } from "@/lib/cloud-alerts";
 import {
   deleteCloudFollowups,
   followupBody,
@@ -2231,8 +2232,12 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
     if (doc.profileId) await markChromeProfileScriptState(projectId, doc.profileId, email);
   }
   await lockBoatDesktop(projectId, campaignId, doc.name);
+  // Running again: the "stopped" bell alert is no longer true.
+  await resolveCampaignStopped(projectId, campaignId).catch(() => undefined);
   return patchCloudCampaignDoc(projectId, campaignId, {
     status: "sending",
+    stopKind: undefined,
+    stoppedAt: undefined,
     computerReady: true,
     // The server send worker picks it up at this time (now, or the next allowed slot).
     nextSendAt: firstSend,

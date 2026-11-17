@@ -51,7 +51,8 @@ function writeIdsToStorage(ids: string[]) {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(READ_STORAGE_KEY, JSON.stringify([...new Set(ids)]));
+  // Alerts add a read key per occurrence: keep the newest few hundred.
+  window.localStorage.setItem(READ_STORAGE_KEY, JSON.stringify([...new Set(ids)].slice(-300)));
 }
 
 export function getReadNotificationIds() {

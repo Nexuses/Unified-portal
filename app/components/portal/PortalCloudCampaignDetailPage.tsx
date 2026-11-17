@@ -874,10 +874,20 @@ export default function PortalCloudCampaignDetailPage({
   }
 
   async function resumeSending() {
-    await withBusy("Resuming…", async () => {
+    if (!campaign) return;
+    const total = campaign.sheetRowCount || 0;
+    const row = Math.min(total || Infinity, (campaign.nextRow || 0)) + 1;
+    const left = Math.max(0, total - (campaign.nextRow || 0));
+    const sender = campaign.profileGmail || "the sender";
+    const ok = await confirm(
+      `Sending continues from row ${row}${total ? ` of ${total}` : ""} (${left} email${left === 1 ? "" : "s"} left). Before anything goes out, ${sender}'s sign-in is checked again, and a row that may already have gone out is looked up in Sent so it's never sent twice.`,
+      { title: "Resume sending?", confirmLabel: `Resume from row ${row}` },
+    );
+    if (!ok) return;
+    await withBusy("Checking the sender and resuming…", async () => {
       const data = await runCloudCampaignAction(campaignId, "resume");
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
-      setNotice("Resumed from the next people row.");
+      setNotice(`Resumed from row ${row}. Sending runs on the server — you can close this page.`);
     });
   }
 
@@ -1078,6 +1088,10 @@ export default function PortalCloudCampaignDetailPage({
           onStart={() => void startSending()}
           onStop={() => void stopSending()}
           onResume={() => void resumeSending()}
+          senderSignedIn={stepsDone.senderVerified}
+          senderEmail={campaign.profileGmail}
+          onOpenSender={() => void checkScriptSender(true)}
+          onCheckSender={() => void checkScriptSender(false)}
           onRestart={() => void restartSending()}
           onClearLog={() => void clearSendLog()}
           onSendTest={(to) => void sendTestToSelf(to)}

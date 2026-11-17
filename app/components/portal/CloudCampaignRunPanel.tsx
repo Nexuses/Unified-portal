@@ -31,6 +31,11 @@ type Props = {
   canSchedule?: boolean;
   onSchedule?: () => void;
   onCancelSchedule?: () => void;
+  /** Sender's Chrome is signed in and checked (needed before Resume after a sign-out). */
+  senderSignedIn?: boolean;
+  senderEmail?: string;
+  onOpenSender?: () => void;
+  onCheckSender?: () => void;
 };
 
 function isEmail(value: string) {
@@ -58,6 +63,10 @@ export default function CloudCampaignRunPanel({
   canSchedule,
   onSchedule,
   onCancelSchedule,
+  senderSignedIn,
+  senderEmail,
+  onOpenSender,
+  onCheckSender,
 }: Props) {
   const [testTo, setTestTo] = useState("");
   const [logPage, setLogPage] = useState(1);
@@ -76,6 +85,8 @@ export default function CloudCampaignRunPanel({
   const pageItems = logNewestFirst.slice((safePage - 1) * LOG_PAGE_SIZE, safePage * LOG_PAGE_SIZE);
 
   const live = campaign.lastError || campaign.lastReport || "";
+  const resumeRow = processed + 1;
+  const stopKind = status === "paused" ? campaign.stopKind : undefined;
   const testDisabled = busy || sending || !canTest;
 
   return (
@@ -97,8 +108,14 @@ export default function CloudCampaignRunPanel({
             </button>
           ) : null}
           {status === "paused" ? (
-            <button type="button" className="btn-dark" disabled={busy || !ready} onClick={onResume}>
-              Resume
+            <button
+              type="button"
+              className="btn-dark"
+              disabled={busy || !ready}
+              title={!ready ? blockedReason : undefined}
+              onClick={onResume}
+            >
+              {total && resumeRow <= total ? `Resume from row ${resumeRow}` : "Resume"}
             </button>
           ) : null}
           {status === "scheduled" ? (
@@ -166,7 +183,53 @@ export default function CloudCampaignRunPanel({
         </ul>
       </div>
 
-      {!ready && blockedReason && (status === "ready" || status === "draft") ? (
+      {stopKind ? (
+        <div className={`cloud-recover is-${stopKind}`} role="alert">
+          <div className="cloud-recover-head">
+            <strong>
+              {stopKind === "signed_out"
+                ? `Sender signed out — stopped at row ${resumeRow}${total ? ` of ${total}` : ""}`
+                : stopKind === "schedule"
+                  ? "Waiting — the schedule allows no sending days"
+                  : `Stopped at row ${resumeRow}${total ? ` of ${total}` : ""}`}
+            </strong>
+            {campaign.stoppedAt ? <small>{new Date(campaign.stoppedAt).toLocaleString()}</small> : null}
+          </div>
+          {stopKind === "signed_out" ? (
+            <ol>
+              <li className={senderSignedIn ? "is-done" : ""}>
+                <span>
+                  Sign in again{senderEmail ? ` as ${senderEmail}` : ""} in the sender&apos;s Chrome.
+                </span>
+                <button type="button" className="btn-soft btn-sm" disabled={busy} onClick={onOpenSender}>
+                  Open sender Chrome
+                </button>
+              </li>
+              <li className={senderSignedIn ? "is-done" : ""}>
+                <span>{senderSignedIn ? "Sign-in checked." : "Check the sign-in."}</span>
+                <button type="button" className="btn-soft btn-sm" disabled={busy} onClick={onCheckSender}>
+                  Check sign-in
+                </button>
+              </li>
+              <li>
+                <span>
+                  Resume — it continues from row {resumeRow}. Nothing already sent goes out again.
+                </span>
+                <button type="button" className="btn-dark btn-sm" disabled={busy || !ready} onClick={onResume}>
+                  Resume from row {resumeRow}
+                </button>
+              </li>
+            </ol>
+          ) : (
+            <p>
+              {campaign.lastError || "Sending stopped."}{" "}
+              {stopKind === "schedule"
+                ? "Allow at least one day in When to send, save it, then Resume."
+                : `Fix it if needed, then Resume — it continues from row ${resumeRow}.`}
+            </p>
+          )}
+        </div>
+      ) : !ready && blockedReason && (status === "ready" || status === "draft") ? (
         <p className="cloud-run-live">
           <strong>Before you start:</strong> {blockedReason}
         </p>

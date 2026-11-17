@@ -15,6 +15,7 @@ import { columnMapStats, reconcileColumnMap } from "@/lib/cloud-sheet-csv";
 import { deleteCloudSends } from "@/lib/cloud-campaign-tracking";
 import { deleteCloudFollowups, normalizeFollowupSettings, planCloudFollowups } from "@/lib/cloud-followups";
 import { normalizeEmailStyle } from "@/lib/cloud-campaigns";
+import { resolveCampaignAlerts } from "@/lib/cloud-alerts";
 import { deleteCloudAttachment } from "@/lib/cloud-attachments";
 import { isValidTimezone } from "@/lib/cloud-schedule";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
@@ -206,6 +207,7 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
       // Clear its sends while the campaign still exists: the lookup uses its id (indexed).
       await deleteCloudSends(projectId, id);
       await deleteCloudFollowups(projectId, id);
+      await resolveCampaignAlerts(projectId, id).catch(() => undefined);
     }
     const ok = await deleteCloudCampaign(projectId, id);
     if (ok) {

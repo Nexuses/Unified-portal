@@ -2,7 +2,13 @@ import { getDb } from "@/lib/mongodb";
 import { stopCloudBoat } from "@/lib/boat";
 import { cloudFollowupHooks, sendNextCloudRow, startCloudSending } from "@/lib/cloud-boat-runner";
 import { runCloudFollowupTick } from "@/lib/cloud-followups";
-import { patchCloudCampaignDoc, type CloudCampaignDoc } from "@/lib/cloud-campaigns-server";
+import {
+  getCloudCampaignDoc,
+  markChromeProfileScriptState,
+  patchCloudCampaignDoc,
+  type CloudCampaignDoc,
+} from "@/lib/cloud-campaigns-server";
+import { alertCampaignStopped, type CloudStopKind } from "@/lib/cloud-alerts";
 import { isSendAllowed, nextAllowedTime, type CloudSchedule } from "@/lib/cloud-schedule";
 
 /**
@@ -74,15 +80,38 @@ function friendly(date: Date, timezone: string) {
   }
 }
 
+const SIGNED_OUT = /sign(ed)? ?out|isn't signed in|not signed in|signed in as|login_required|wrong_account/i;
+
+/**
+ * The campaign stopped on its own: remember why, mark a signed-out sender as not signed in
+ * (so Resume needs a fresh sign-in + check), and raise a bell alert.
+ */
+async function noteStopped(doc: CloudCampaignDoc, kind: CloudStopKind, message: string) {
+  const fresh = (await getCloudCampaignDoc(doc.projectId, doc.campaignId)) || doc;
+  await patchCloudCampaignDoc(doc.projectId, doc.campaignId, { stopKind: kind, stoppedAt: new Date() });
+  if (kind === "signed_out" && fresh.profileId) {
+    await markChromeProfileScriptState(fresh.projectId, fresh.profileId, null).catch(() => undefined);
+  }
+  await alertCampaignStopped({
+    projectId: fresh.projectId,
+    campaignId: fresh.campaignId,
+    name: fresh.name,
+    kind,
+    nextRow: fresh.nextRow || 0,
+    total: fresh.sheetRowCount || 0,
+    sender: fresh.profileGmail,
+    message,
+  }).catch((error) => console.error("[cloud-send] alert failed:", error));
+}
+
 /** Book the next send; stop the computer if the wait is long. */
 async function bookNext(doc: CloudCampaignDoc, earliest: Date, reason: string) {
   const schedule = scheduleOf(doc);
   const next = nextAllowedTime(earliest, schedule);
   if (!next) {
-    await release(doc, {
-      status: "paused",
-      lastError: "Every day is excluded in the schedule — allow at least one day, then Resume.",
-    });
+    const lastError = "Every day is excluded in the schedule — allow at least one day, then Resume.";
+    await release(doc, { status: "paused", lastError });
+    await noteStopped(doc, "schedule", lastError);
     return;
   }
   await release(doc, {
@@ -105,10 +134,9 @@ async function startDueScheduled() {
       await startCloudSending(doc.projectId, doc.campaignId);
       await release(doc);
     } catch (error) {
-      await release(doc, {
-        status: "paused",
-        lastError: `Scheduled start failed: ${error instanceof Error ? error.message : String(error)}`,
-      });
+      const message = error instanceof Error ? error.message : String(error);
+      await release(doc, { status: "paused", lastError: `Scheduled start failed: ${message}` });
+      await noteStopped(doc, SIGNED_OUT.test(message) ? "signed_out" : "error", `Scheduled start failed: ${message}`);
     }
   }
 }
@@ -127,6 +155,11 @@ async function sendDueRows() {
       const fresh = result.campaign;
       if (!fresh || fresh.status !== "sending" || result.done) {
         await release(doc);
+        // Stopped by a failure (not by the user pressing Stop): tell them in the bell.
+        if (fresh && fresh.status === "paused" && fresh.lastError && fresh.lastError === result.report) {
+          const signedOut = Boolean(result.needsLogin) || SIGNED_OUT.test(fresh.lastError);
+          await noteStopped(doc, signedOut ? "signed_out" : "error", fresh.lastError);
+        }
         continue;
       }
       // Human-like pacing: the gap ±20%, at least 20 s.
@@ -135,10 +168,9 @@ async function sendDueRows() {
       const wait = Math.max(20_000, gapMs + jitter);
       await bookNext(doc, new Date(Date.now() + wait), "Waiting between emails.");
     } catch (error) {
-      await release(doc, {
-        status: "paused",
-        lastError: error instanceof Error ? error.message : "Sending stopped unexpectedly.",
-      });
+      const lastError = error instanceof Error ? error.message : "Sending stopped unexpectedly.";
+      await release(doc, { status: "paused", lastError });
+      await noteStopped(doc, SIGNED_OUT.test(lastError) ? "signed_out" : "error", lastError);
     }
   }
 }

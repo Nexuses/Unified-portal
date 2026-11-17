@@ -194,6 +194,9 @@ export type CloudCampaign = {
   followups?: CloudFollowupSettings;
   /** Font, size, colours and bold for every email. */
   emailStyle?: CloudEmailStyle;
+  /** Set when sending stopped on its own: signed-out sender, an error, or the schedule. */
+  stopKind?: "signed_out" | "error" | "schedule";
+  stoppedAt?: string;
   /** When the server will send the next email (respects gap, days and window). */
   nextSendAt?: string;
   attachments?: { id: string; name: string; size: number; type: string }[];
