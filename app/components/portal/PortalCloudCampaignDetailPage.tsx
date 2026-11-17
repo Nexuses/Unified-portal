@@ -2,11 +2,14 @@
 
 import Link from "next/link";
 import { Pencil, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import CloudSendersCard from "@/app/components/portal/CloudSendersCard";
 import CloudBoatUsageCard from "@/app/components/portal/CloudBoatUsageCard";
 import CloudCampaignRunPanel from "@/app/components/portal/CloudCampaignRunPanel";
 import CloudCampaignReport from "@/app/components/portal/CloudCampaignReport";
+import CloudSchedulePanel from "@/app/components/portal/CloudSchedulePanel";
+import CloudAttachmentsPanel from "@/app/components/portal/CloudAttachmentsPanel";
+import type { CloudSchedule } from "@/lib/cloud-schedule";
 import CloudColumnMapPanel, {
   type CloudRowPreview,
 } from "@/app/components/portal/CloudColumnMapPanel";
@@ -43,9 +46,6 @@ import { useRouter } from "next/navigation";
 type StepId = "computer" | "sender" | "signature" | "sheet" | "review";
 
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function authModeFromAction(data: Record<string, unknown>): CloudAuthMode | null {
   if (data.needsOtp === true) return "otp";
@@ -89,9 +89,6 @@ export default function PortalCloudCampaignDetailPage({
   const [renameDraft, setRenameDraft] = useState("");
   const [confirm, confirmDialog] = useConfirmDialog();
   const [view, setView] = useState<"setup" | "report">("setup");
-  const tickBusy = useRef(false);
-  // Bumped after restart/resume so the send loop starts again even if status stayed "sending".
-  const [tickEpoch, setTickEpoch] = useState(0);
 
   function openDesktopForLogin(url?: string) {
     if (url) setDesktopUrl(url);
@@ -214,93 +211,23 @@ export default function PortalCloudCampaignDetailPage({
     selectedProfileEmail,
   ]);
 
+  // Sending runs on the server (lib/cloud-send-worker). While a campaign is sending or
+  // scheduled, mirror its live state into the page and surface when it stops.
   useEffect(() => {
-    if (!campaign || campaign.status !== "sending") return;
-    let cancelled = false;
-    async function loop() {
-      while (!cancelled) {
-        if (tickBusy.current) {
-          await sleep(2000);
-          continue;
-        }
-        tickBusy.current = true;
-        try {
-          const data = await runCloudCampaignAction(campaignId, "tick");
-          if (typeof data.desktopUrl === "string" && data.desktopUrl) {
-            setDesktopUrl(data.desktopUrl);
-          }
-          if (data.campaign && typeof data.campaign === "object") {
-            const next = data.campaign as CloudCampaign;
-            setCampaign(next);
-            if (typeof next.gapMinutes === "number" && Number.isFinite(next.gapMinutes)) {
-              setGapMinutes(Math.max(0, Math.min(120, Math.round(next.gapMinutes))));
-            }
-            if (next.status === "paused") {
-              setNotice(
-                next.lastError ||
-                  (typeof data.report === "string" && data.report.trim()
-                    ? data.report.trim().slice(0, 400)
-                    : "Sending paused."),
-              );
-              break;
-            }
-          }
-          if (needsInteractiveLogin(data)) {
-            const blocked = authModeFromAction(data);
-            if (blocked) setAuthMode(blocked);
-            openDesktopForLogin(
-              typeof data.desktopUrl === "string" ? data.desktopUrl : undefined,
-            );
-            setNotice(
-              "Sign in on the full-screen computer, then click “I’ve signed in — check inbox”. Resume sending after the inbox is confirmed.",
-            );
-            break;
-          }
-          if (data.done === true) {
-            setNotice("All rows finished.");
-            break;
-          }
-          const gapRaw = Number(
-            (data.campaign as CloudCampaign | undefined)?.gapMinutes ?? gapMinutes,
-          );
-          const gap = Number.isFinite(gapRaw) ? Math.max(0, gapRaw) : 0;
-          // 0-minute gap: brief pause only so the UI can breathe between ticks.
-          await sleep(gap > 0 ? gap * 60_000 : 2_000);
-        } catch (error) {
-          setNotice(error instanceof Error ? error.message : "Send tick failed");
-          break;
-        } finally {
-          tickBusy.current = false;
-        }
-      }
-    }
-    void loop();
-    return () => {
-      cancelled = true;
-    };
-  }, [campaign?.status, campaignId, gapMinutes, tickEpoch]);
-
-  // While sending, mirror the server's live progress (row, counts, current step) into the page.
-  useEffect(() => {
-    if (campaign?.status !== "sending") return;
+    if (campaign?.status !== "sending" && campaign?.status !== "scheduled") return;
     let cancelled = false;
     const timer = window.setInterval(() => {
       void fetchCloudCampaign(campaignId)
         .then((next) => {
           if (cancelled) return;
-          setCampaign((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  lastReport: next.lastReport,
-                  lastError: next.lastError,
-                  nextRow: next.nextRow,
-                  sentCount: next.sentCount,
-                  failedCount: next.failedCount,
-                  sendLog: next.sendLog,
-                }
-              : prev,
-          );
+          setCampaign((prev) => {
+            if (prev && prev.status !== next.status) {
+              if (next.status === "paused") setNotice(next.lastError || "Sending paused.");
+              if (next.status === "sent") setNotice("All rows finished.");
+              if (next.status === "sending" && prev.status === "scheduled") setNotice("Scheduled campaign started.");
+            }
+            return next;
+          });
         })
         .catch(() => undefined);
     }, 4000);
@@ -542,6 +469,34 @@ export default function PortalCloudCampaignDetailPage({
           sender.message ? `: ${String(sender.message).slice(0, 140)}` : ""
         }). Try again.`,
       );
+    });
+  }
+
+  async function saveSchedule(schedule: CloudSchedule) {
+    await withBusy("Saving schedule…", async () => {
+      const next = await patchCloudCampaign(campaignId, { schedule });
+      setCampaign(next);
+      setNotice(
+        schedule.startAt
+          ? "Schedule saved. Click Schedule to queue it, or Start now to begin within the allowed days and hours."
+          : "Schedule saved. Emails only go out on the allowed days and hours.",
+      );
+    });
+  }
+
+  async function scheduleSending() {
+    await withBusy("Scheduling…", async () => {
+      const data = await runCloudCampaignAction(campaignId, "schedule");
+      if (data.campaign) setCampaign(data.campaign as CloudCampaign);
+      setNotice("Scheduled. It starts on its own — you can close this page.");
+    });
+  }
+
+  async function cancelSchedule() {
+    await withBusy("Cancelling schedule…", async () => {
+      const data = await runCloudCampaignAction(campaignId, "cancel_schedule");
+      if (data.campaign) setCampaign(data.campaign as CloudCampaign);
+      setNotice("Schedule cancelled.");
     });
   }
 
@@ -790,7 +745,7 @@ export default function PortalCloudCampaignDetailPage({
     await withBusy("Starting send…", async () => {
       const data = await runCloudCampaignAction(campaignId, "start");
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
-      setNotice("Sending started. The computer will email one row at a time.");
+      setNotice("Sending started on the server — one email at a time. You can close this page.");
     });
   }
 
@@ -806,7 +761,6 @@ export default function PortalCloudCampaignDetailPage({
     await withBusy("Resuming…", async () => {
       const data = await runCloudCampaignAction(campaignId, "resume");
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
-      setTickEpoch((value) => value + 1);
       setNotice("Resumed from the next people row.");
     });
   }
@@ -826,7 +780,6 @@ export default function PortalCloudCampaignDetailPage({
           setGapMinutes(Math.max(0, Math.min(120, Math.round(next.gapMinutes))));
         }
       }
-      setTickEpoch((value) => value + 1);
       setNotice("Restarted from row 1. Sending…");
     });
   }
@@ -968,6 +921,21 @@ export default function PortalCloudCampaignDetailPage({
           onClearLog={() => void clearSendLog()}
           onSendTest={(to) => void sendTestToSelf(to)}
           canTest={stepsDone.senderVerified && stepsDone.sheet}
+          canSchedule={Boolean(
+            campaign.schedule?.startAt && new Date(campaign.schedule.startAt).getTime() > Date.now() + 60_000,
+          )}
+          onSchedule={() => void scheduleSending()}
+          onCancelSchedule={() => void cancelSchedule()}
+          scheduleSlot={
+            <CloudSchedulePanel
+              key={`${campaign.status}-${campaign.schedule?.timezone || ""}-${campaign.schedule?.startAt || ""}`}
+              schedule={campaign.schedule}
+              nextSendAt={campaign.nextSendAt}
+              status={campaign.status}
+              busy={Boolean(busy)}
+              onSave={saveSchedule}
+            />
+          }
         />
 
         {view === "report" ? (
@@ -1343,7 +1311,7 @@ export default function PortalCloudCampaignDetailPage({
                   setOpenStep("signature");
                 }}
               >
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.signature ? "✓" : "3"}</i>Signature</span>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.signature ? "✓" : "3"}</i>Signature &amp; attachments</span>
                 <em>
                   {!stepsDone.sender
                     ? "Locked until sender selected"
@@ -1417,6 +1385,12 @@ export default function PortalCloudCampaignDetailPage({
                       Save &amp; continue
                     </button>
                   </div>
+                  <CloudAttachmentsPanel
+                    campaign={campaign}
+                    disabled={Boolean(busy)}
+                    onChange={setCampaign}
+                    onError={setNotice}
+                  />
                 </div>
               ) : null}
             </section>

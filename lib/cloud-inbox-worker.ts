@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/mongodb";
-import { isBoatRunning, projectBoatStatus, stopProjectBoat } from "@/lib/boat";
+import { cloudBoatStatus, isBoatRunning, stopCloudBoat } from "@/lib/boat";
 import { checkCloudInbox } from "@/lib/cloud-boat-runner";
 import { getBoatDesktopLock, type CloudCampaignDoc } from "@/lib/cloud-campaigns-server";
 
@@ -55,7 +55,7 @@ export async function runCloudInboxTick() {
       if (!doc) break;
       // Never interrupt a campaign that is sending on this project's computer.
       if (await getBoatDesktopLock(doc.projectId)) continue;
-      const before = await projectBoatStatus(doc.projectId).catch(() => null);
+      const before = await cloudBoatStatus(doc.projectId).catch(() => null);
       const wasRunning = Boolean(before?.sandbox && isBoatRunning(before.sandbox.state));
       try {
         const result = await checkCloudInbox(doc.projectId, doc.campaignId);
@@ -69,7 +69,7 @@ export async function runCloudInboxTick() {
       } finally {
         // Leave the computer as we found it.
         if (!wasRunning && !(await getBoatDesktopLock(doc.projectId))) {
-          await stopProjectBoat(doc.projectId).catch(() => undefined);
+          await stopCloudBoat(doc.projectId).catch(() => undefined);
         }
       }
     }

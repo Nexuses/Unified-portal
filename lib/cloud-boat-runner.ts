@@ -2,8 +2,8 @@ import { ObjectId } from "mongodb";
 import {
   backupProjectSoon,
   boatConfigured,
-  ensureProjectBoat,
-  getSavedBoatSandboxId,
+  ensureCloudBoat,
+  getCloudBoatMeta,
   isBoatRunning,
   openBoatDesktop,
   refreshBoatTask,
@@ -11,7 +11,7 @@ import {
   interruptBoatAgent,
   runBoatDesktopTask,
   shellQuote,
-  stopProjectBoat,
+  stopCloudBoat,
   type BoatSandbox,
 } from "@/lib/boat";
 import {
@@ -38,6 +38,8 @@ import {
   resolveCloudRowFields,
 } from "@/lib/cloud-sheet-csv";
 import { applyContactVariables } from "@/lib/email-variables";
+import { nextAllowedTime, type CloudSchedule } from "@/lib/cloud-schedule";
+import { ensureAttachmentsOnVm } from "@/lib/cloud-attachments";
 import {
   cloudSentEmails,
   deleteCloudSends,
@@ -257,7 +259,7 @@ export async function assertBoatUnlocked(
   if (!lock) return;
   if (allowCampaignId && lock.campaignId === allowCampaignId) return;
   throw new Error(
-    `The LinkedIn computer is busy with cloud campaign "${lock.campaignName}". Pause or finish that campaign first.`,
+    `The cloud computer is busy with campaign "${lock.campaignName}". Stop or finish that campaign first — one campaign sends at a time per project.`,
   );
 }
 
@@ -266,11 +268,11 @@ async function readySandbox(projectId: ObjectId, allowCampaignId?: string) {
     throw new Error("Boat is not set up. An admin needs to add BOAT_API_KEY.");
   }
   await assertBoatUnlocked(projectId, allowCampaignId);
-  // ensureProjectBoat resumes archived disks; poll until running after stop/restart.
-  let sandbox = await ensureProjectBoat(projectId);
+  // Cloud campaigns' own computer; resumes archived disks, poll until running after stop/restart.
+  let sandbox = await ensureCloudBoat(projectId);
   for (let attempt = 0; attempt < 8 && !isBoatRunning(sandbox.state); attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
-    sandbox = await ensureProjectBoat(projectId);
+    sandbox = await ensureCloudBoat(projectId);
   }
   if (!isBoatRunning(sandbox.state)) {
     throw new Error(
@@ -303,7 +305,7 @@ async function runCloudDesktopTask(
 }
 
 async function stopBoatAfterCampaignWork(projectId: ObjectId) {
-  await stopProjectBoat(projectId).catch((error) => {
+  await stopCloudBoat(projectId).catch((error) => {
     console.warn(
       "Could not stop Boat after campaign work:",
       error instanceof Error ? error.message : error,
@@ -523,6 +525,7 @@ const SCRIPT_RETRYABLE = new Set([
   "BODY_INSERT_FAILED",
   "SENT_LIST_NOT_LOADED",
   "NO_BROWSER_CONTEXT",
+  "ATTACHMENT_NOT_READY",
 ]);
 
 function scriptFailureMessage(result: SenderResult, email: string, sender: string) {
@@ -542,6 +545,10 @@ function scriptFailureMessage(result: SenderResult, email: string, sender: strin
       return `Your Outlook organisation requires a sensitivity label on every email. Pick one for this sender in step 2, then Resume. Nothing was sent.`;
     case "SENSITIVITY_LABEL_NOT_FOUND":
       return `The sensitivity label saved for this sender isn't offered by Outlook any more. Pick another in step 2, then Resume. Nothing was sent.`;
+    case "ATTACH_INPUT_MISSING":
+    case "ATTACHMENT_NOT_READY":
+    case "ATTACHMENTS_COPY_FAILED":
+      return `Attachments couldn't be added for ${email}${detail}. Nothing was sent; Resume to retry.`;
     case "TOOLKIT_INSTALL_FAILED":
       return `Could not set up the sender on the computer${detail}. Nothing was sent; Resume to retry.`;
     default:
@@ -600,8 +607,31 @@ async function sendRowWithScript(input: {
     doc.name,
   );
 
+  let attachments: { path: string; name: string }[] = [];
+  if (doc.attachments?.length) {
+    await input.phase(`copying ${doc.attachments.length} attachment(s) to the computer…`);
+    try {
+      attachments = await ensureAttachmentsOnVm(sandbox.id, doc.attachments);
+    } catch (error) {
+      await discardCloudSend(record.sendId);
+      const lastError = scriptFailureMessage(
+        { ok: false, code: "ATTACHMENTS_COPY_FAILED", message: error instanceof Error ? error.message : String(error) },
+        to,
+        sender,
+      );
+      const campaign = await patchCloudCampaignDoc(projectId, campaignId, {
+        status: "paused",
+        lastError,
+        inflightRow: undefined,
+      });
+      await unlockBoatDesktop(projectId, campaignId);
+      return { campaign, sandbox, done: false, needsLogin: false, needsOtp: false, needsUserInput: false, report: lastError };
+    }
+  }
+
   const attempt = (withDupCheck: boolean) =>
     sendViaScript(sandbox.id, doc.profileDirectory || "", {
+      attachments,
       provider: resolveSenderProvider(doc.profileProvider),
       to,
       subject: input.subject,
@@ -882,7 +912,9 @@ export async function testScriptSend(
   const { fields, html, plain } = buildRowEmail(rowCells, signatureHtml, columnMap);
   const sandbox = await readySandbox(projectId, campaignId);
   const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
+  const attachments = doc.attachments?.length ? await ensureAttachmentsOnVm(sandbox.id, doc.attachments) : [];
   const result = await sendViaScript(sandbox.id, doc.profileDirectory, {
+    attachments,
     sensitivityLabel: profile?.sensitivityLabel,
     provider: resolveSenderProvider(doc.profileProvider),
     to: self,
@@ -1947,10 +1979,8 @@ export async function clearCloudSendLog(projectId: ObjectId, campaignId: string)
   });
 }
 
-export async function startCloudSending(projectId: ObjectId, campaignId: string) {
-  const doc = await getCloudCampaignDoc(projectId, campaignId);
-  if (!doc) throw new Error("Campaign not found");
-  if (!doc.computerReady) throw new Error("Start the computer first");
+/** Everything that must be true before a campaign can send or be scheduled (no computer needed). */
+async function assertCampaignReady(projectId: ObjectId, campaignId: string, doc: CloudCampaignDoc) {
   if (!doc.profileId || !doc.profileDirectory) {
     throw new Error("Pick a sender profile first");
   }
@@ -1977,6 +2007,56 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
       await patchCloudCampaignDoc(projectId, campaignId, { columnMap, columnStats: stats });
     }
   }
+}
+
+/** Effective schedule (defaults: send any day, any time, UTC). */
+function scheduleOf(doc: CloudCampaignDoc): CloudSchedule {
+  return {
+    timezone: doc.schedule?.timezone || "UTC",
+    excludedDays: doc.schedule?.excludedDays || [],
+    windowStart: doc.schedule?.windowStart,
+    windowEnd: doc.schedule?.windowEnd,
+    startAt: doc.schedule?.startAt,
+  };
+}
+
+/** Schedule the campaign to start at its start time (the server starts it; no computer now). */
+export async function scheduleCloudSending(projectId: ObjectId, campaignId: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  const schedule = scheduleOf(doc);
+  if (!schedule.startAt || new Date(schedule.startAt).getTime() <= Date.now() + 60_000) {
+    throw new Error("Pick a start time at least a minute from now, or use Start sending.");
+  }
+  await assertCampaignReady(projectId, campaignId, doc);
+  const next = nextAllowedTime(new Date(), schedule);
+  if (!next) throw new Error("Every day is excluded — allow at least one day in the schedule.");
+  return patchCloudCampaignDoc(projectId, campaignId, {
+    status: "scheduled",
+    nextSendAt: next,
+    lastError: undefined,
+    lastReport: `Scheduled to start ${next.toISOString()}.`,
+  });
+}
+
+export async function cancelCloudSchedule(projectId: ObjectId, campaignId: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  if (doc.status !== "scheduled") return patchCloudCampaignDoc(projectId, campaignId, {});
+  return patchCloudCampaignDoc(projectId, campaignId, {
+    status: (doc.nextRow || 0) > 0 ? "paused" : "ready",
+    nextSendAt: undefined,
+    lastReport: "Schedule cancelled.",
+  });
+}
+
+export async function startCloudSending(projectId: ObjectId, campaignId: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  await assertCampaignReady(projectId, campaignId, doc);
+  const schedule = scheduleOf(doc);
+  const firstSend = nextAllowedTime(new Date(), { ...schedule, startAt: undefined });
+  if (!firstSend) throw new Error("Every day is excluded — allow at least one day in the schedule.");
   await assertBoatUnlocked(projectId, campaignId);
   const sandbox = await readySandbox(projectId, campaignId);
   // No-AI Gmail sender: make sure its dedicated Chrome is up and signed in as the sender
@@ -1984,7 +2064,7 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
   if (process.env.CLOUD_SENDER !== "agent") {
     const check = await prepareAndCheckSender(
       sandbox.id,
-      doc.profileDirectory,
+      doc.profileDirectory || "",
       resolveSenderProvider(doc.profileProvider),
     );
     const expected = String(doc.profileGmail || "").trim().toLowerCase();
@@ -2010,6 +2090,9 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
   await lockBoatDesktop(projectId, campaignId, doc.name);
   return patchCloudCampaignDoc(projectId, campaignId, {
     status: "sending",
+    computerReady: true,
+    // The server send worker picks it up at this time (now, or the next allowed slot).
+    nextSendAt: firstSend,
     lastError: undefined,
     // Drop any mid-task conversation so Resume does not continue a frozen tab-tidy turn.
     lockPromptId: undefined,
@@ -2044,7 +2127,7 @@ export async function restartCloudSending(projectId: ObjectId, campaignId: strin
   const doc = await getCloudCampaignDoc(projectId, campaignId);
   if (!doc) throw new Error("Campaign not found");
   await unlockBoatDesktop(projectId, campaignId);
-  const sandboxId = await getSavedBoatSandboxId(projectId).catch(() => null);
+  const sandboxId = (await getCloudBoatMeta(projectId).catch(() => null))?.sandboxId;
   if (sandboxId) {
     await interruptBoatAgent(sandboxId, null).catch(() => undefined);
   }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { formatCloudStatus, type CloudCampaign } from "@/lib/cloud-campaigns";
 
 const LOG_PAGE_SIZE = 8;
@@ -25,6 +25,12 @@ type Props = {
   /** Undefined target = the sender's own address. */
   onSendTest: (to?: string) => void;
   canTest: boolean;
+  /** Schedule editor (timezone, days, window, start time). */
+  scheduleSlot?: ReactNode;
+  /** A future start time is saved: offer Schedule instead of starting now. */
+  canSchedule?: boolean;
+  onSchedule?: () => void;
+  onCancelSchedule?: () => void;
 };
 
 function isEmail(value: string) {
@@ -48,6 +54,10 @@ export default function CloudCampaignRunPanel({
   onClearLog,
   onSendTest,
   canTest,
+  scheduleSlot,
+  canSchedule,
+  onSchedule,
+  onCancelSchedule,
 }: Props) {
   const [testTo, setTestTo] = useState("");
   const [logPage, setLogPage] = useState(1);
@@ -91,15 +101,31 @@ export default function CloudCampaignRunPanel({
               Resume
             </button>
           ) : null}
-          {status === "ready" || status === "draft" ? (
+          {status === "scheduled" ? (
+            <button type="button" className="btn-soft" disabled={busy} onClick={onCancelSchedule}>
+              Cancel schedule
+            </button>
+          ) : null}
+          {(status === "ready" || status === "draft") && canSchedule ? (
             <button
               type="button"
               className="btn-dark"
               disabled={busy || !ready}
               title={!ready ? blockedReason : undefined}
+              onClick={onSchedule}
+            >
+              Schedule
+            </button>
+          ) : null}
+          {status === "ready" || status === "draft" ? (
+            <button
+              type="button"
+              className={canSchedule ? "btn-soft" : "btn-dark"}
+              disabled={busy || !ready}
+              title={!ready ? blockedReason : undefined}
               onClick={onStart}
             >
-              Start sending
+              {canSchedule ? "Start now" : "Start sending"}
             </button>
           ) : null}
           {status === "paused" || status === "sent" || sending ? (
@@ -148,6 +174,13 @@ export default function CloudCampaignRunPanel({
         <p className={`cloud-run-live${campaign.lastError ? " is-error" : ""}`} role="status">
           <strong>{campaign.lastError ? "Needs attention:" : sending ? "Now:" : "Last:"}</strong> {live}
         </p>
+      ) : null}
+
+      {scheduleSlot ? (
+        <div className="cloud-run-when">
+          <strong>When to send</strong>
+          {scheduleSlot}
+        </div>
       ) : null}
 
       <div className="cloud-run-controls">

@@ -146,6 +146,8 @@ export type CloudReportRecipient = {
   bouncedAt?: string;
   unsubscribedAt?: string;
   botOpen?: boolean;
+  /** Clicks made by link scanners (hidden trap link or a burst of clicks). Not counted as clicks. */
+  botClicks: number;
 };
 
 const iso = (value?: Date) => (value ? new Date(value).toISOString() : undefined);
@@ -158,7 +160,13 @@ export async function cloudCampaignReport(projectId: ObjectId, campaignId: strin
     .sort({ sentAt: -1 })
     .limit(5000)
     .toArray();
-  const recipients: CloudReportRecipient[] = docs.map((doc) => ({
+  const recipients: CloudReportRecipient[] = docs.map((doc) => {
+    // Human clicks only: the hidden trap link and scanner bursts are tagged `bot` / `ignored`.
+    const events = doc.clickEvents || [];
+    const humanEvents = events.filter((e) => !e.bot && !e.ignored);
+    const botClicks = events.filter((e) => e.bot || e.ignored).length;
+    const humanClick = events.length ? humanEvents.length > 0 : Boolean(doc.clickedAt);
+    return {
     row: doc.cloudRow,
     email: doc.email,
     name: doc.fullName,
@@ -167,13 +175,15 @@ export async function cloudCampaignReport(projectId: ObjectId, campaignId: strin
     sentAt: iso(doc.sentAt),
     openedAt: doc.botOpen ? undefined : iso(doc.openedAt),
     openCount: doc.botOpen ? 0 : doc.openCount || 0,
-    clickedAt: iso(doc.clickedAt),
-    clickCount: doc.clickCount || 0,
+    clickedAt: humanClick ? iso(humanEvents[0]?.at || doc.clickedAt) : undefined,
+    clickCount: humanClick ? (events.length ? humanEvents.length : doc.clickCount || 0) : 0,
+    botClicks,
     repliedAt: iso(doc.repliedAt),
     bouncedAt: iso(doc.bouncedAt),
     unsubscribedAt: iso(doc.unsubscribedAt),
     botOpen: doc.botOpen,
-  }));
+    };
+  });
   const count = (pick: (r: CloudReportRecipient) => unknown) => recipients.filter((r) => pick(r)).length;
   return {
     totals: {
@@ -183,6 +193,7 @@ export async function cloudCampaignReport(projectId: ObjectId, campaignId: strin
       replied: count((r) => r.repliedAt),
       bounced: count((r) => r.bouncedAt),
       unsubscribed: count((r) => r.unsubscribedAt),
+      botClicked: count((r) => r.botClicks > 0),
     },
     recipients,
   };

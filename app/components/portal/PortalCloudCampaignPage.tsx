@@ -19,6 +19,7 @@ const STATUS_OPTIONS: Array<CloudCampaignStatus | "all"> = [
   "all",
   "draft",
   "ready",
+  "scheduled",
   "sending",
   "paused",
   "sent",

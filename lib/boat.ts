@@ -37,8 +37,13 @@ type BoatLinkDoc = {
   lastBoatActivityAt?: Date;
   /** Last time we asked Boat to refresh the project's saved snapshot (sender logins backup). */
   snapshotRequestedAt?: Date;
-  /** Set when the email computer was rebuilt from the saved snapshot. */
+  /** Set when the cloud computer was rebuilt from the saved snapshot. */
   restoredFromSnapshotAt?: Date;
+  /** Cloud campaigns' own computer (separate from the assistant's `sandboxId`). */
+  cloudSandboxId?: string;
+  /** Every cloud computer this project has had (for exact per-project cost). */
+  cloudSandboxIds?: string[];
+  cloudActivityAt?: Date;
 };
 
 /** Stop running VMs with no activity for this long (when not campaign-locked). */
@@ -195,7 +200,8 @@ export async function saveProjectSnapshot(
 ) {
   const collection = await boatLinks();
   const saved = await collection.findOne({ projectId });
-  if (!saved?.sandboxId) return { saved: false as const, reason: "no_computer" as const };
+  const sourceId = saved?.cloudSandboxId || saved?.sandboxId;
+  if (!sourceId) return { saved: false as const, reason: "no_computer" as const };
   const minInterval = options.minIntervalMs ?? 6 * 60 * 60 * 1000;
   if (
     !options.force &&
@@ -207,7 +213,7 @@ export async function saveProjectSnapshot(
   try {
     await boatFetch("/saved-snapshots", {
       method: "POST",
-      body: JSON.stringify({ sandboxId: saved.sandboxId, name: projectSnapshotName(projectId) }),
+      body: JSON.stringify({ sandboxId: sourceId, name: projectSnapshotName(projectId) }),
     });
   } catch (error) {
     if (!(error instanceof BoatError && error.code === "save_in_progress")) throw error;
@@ -321,8 +327,12 @@ export async function stopProjectBoat(projectId: ObjectId) {
   if (!saved?.sandboxId) {
     return { stopped: false as const, reason: "none" as const };
   }
+  return stopSandboxIfRunning(saved.sandboxId);
+}
+
+async function stopSandboxIfRunning(sandboxId: string) {
   try {
-    const sandbox = await getBoatSandbox(saved.sandboxId);
+    const sandbox = await getBoatSandbox(sandboxId);
     if (
       sandbox.state === "archived" ||
       sandbox.state === "archiving" ||
@@ -409,22 +419,7 @@ export async function ensureProjectBoat(projectId: ObjectId) {
     }
   }
 
-  // Disk gone (or first computer): rebuild from the saved snapshot when there is one, so the
-  // sender Chromes and their logins come back instead of a blank desktop.
-  let restoredFrom = "";
-  if (replacedDeletedDisk || saved?.snapshotRequestedAt) {
-    const snapshot = await getProjectSnapshot(projectId).catch(() => null);
-    if (snapshot?.status === "ready") restoredFrom = snapshot.name;
-  }
-  let created: BoatSandbox;
-  try {
-    created = await createBoatSandbox(restoredFrom || undefined);
-  } catch (error) {
-    if (!restoredFrom) throw error;
-    console.warn("Restore from saved snapshot failed; starting blank:", error);
-    restoredFrom = "";
-    created = await createBoatSandbox();
-  }
+  const created = await createBoatSandbox();
   const now = new Date();
   await collection.updateOne(
     { projectId },
@@ -433,7 +428,6 @@ export async function ensureProjectBoat(projectId: ObjectId) {
         sandboxId: created.id,
         updatedAt: now,
         lastBoatActivityAt: now,
-        ...(restoredFrom ? { restoredFromSnapshotAt: now } : {}),
       },
       $unset: { promptId: "", conversationId: "" },
       $setOnInsert: { projectId, createdAt: now },
@@ -441,8 +435,142 @@ export async function ensureProjectBoat(projectId: ObjectId) {
     { upsert: true },
   );
   const ready = isBoatRunning(created.state) ? created : await waitForBoat(created.id);
-  if (restoredFrom) return { ...ready, restoredFromSnapshot: true };
   return replacedDeletedDisk ? { ...ready, replacedDeletedDisk: true } : ready;
+}
+
+/* ------------------------------------------------------------------ Cloud computer */
+
+async function waitForSnapshotReady(projectId: ObjectId, timeoutMs = 4 * 60 * 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const snapshot = await getProjectSnapshot(projectId).catch(() => null);
+    if (snapshot?.status === "ready") return snapshot;
+    if (snapshot?.status === "failed") return null;
+    await sleep(5000);
+  }
+  return null;
+}
+
+/**
+ * Cloud campaigns' own computer per project (separate from the assistant's), so its cost is
+ * exactly this feature's. Starts from the project's saved backup so sender logins carry over;
+ * the very first time, that backup is taken from the shared computer the senders used before.
+ */
+export async function ensureCloudBoat(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  let diskGone = false;
+  if (saved?.cloudSandboxId) {
+    try {
+      const sandbox = await reviveBoat(saved.cloudSandboxId);
+      await collection.updateOne({ projectId }, { $set: { cloudActivityAt: new Date() } });
+      return sandbox;
+    } catch (error) {
+      if (!sandboxDiskGone(error)) throw error;
+      diskGone = true;
+    }
+  }
+
+  let snapshot = await getProjectSnapshot(projectId).catch(() => null);
+  if (snapshot?.status === "saving") snapshot = await waitForSnapshotReady(projectId);
+  if (snapshot?.status !== "ready" && !saved?.cloudSandboxId && saved?.sandboxId) {
+    // First cloud computer for an existing project: copy the shared computer (sender logins).
+    await boatFetch("/saved-snapshots", {
+      method: "POST",
+      body: JSON.stringify({ sandboxId: saved.sandboxId, name: projectSnapshotName(projectId) }),
+    }).catch((error) => {
+      if (!(error instanceof BoatError && error.code === "save_in_progress")) throw error;
+    });
+    snapshot = await waitForSnapshotReady(projectId);
+  }
+  let from = snapshot?.status === "ready" ? snapshot.name : "";
+  let created: BoatSandbox;
+  try {
+    created = await createBoatSandbox(from || undefined);
+  } catch (error) {
+    if (!from) throw error;
+    console.warn("Cloud computer from backup failed; starting blank:", error);
+    from = "";
+    created = await createBoatSandbox();
+  }
+  const now = new Date();
+  await collection.updateOne(
+    { projectId },
+    {
+      $set: {
+        cloudSandboxId: created.id,
+        cloudActivityAt: now,
+        updatedAt: now,
+        ...(from ? { restoredFromSnapshotAt: now } : {}),
+      },
+      $addToSet: { cloudSandboxIds: created.id },
+      $setOnInsert: { projectId, createdAt: now },
+    },
+    { upsert: true },
+  );
+  const ready = isBoatRunning(created.state) ? created : await waitForBoat(created.id);
+  return {
+    ...ready,
+    ...(from ? { restoredFromSnapshot: true } : {}),
+    ...(diskGone && !from ? { replacedDeletedDisk: true } : {}),
+  };
+}
+
+export async function getCloudBoatMeta(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  const ids = new Set(saved?.cloudSandboxIds || []);
+  if (saved?.cloudSandboxId) ids.add(saved.cloudSandboxId);
+  return {
+    sandboxId: saved?.cloudSandboxId || null,
+    sandboxIds: [...ids],
+    lastActivityAt: saved?.cloudActivityAt?.toISOString() || null,
+  };
+}
+
+export async function stopCloudBoat(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  if (!saved?.cloudSandboxId) return { stopped: false as const, reason: "none" as const };
+  return stopSandboxIfRunning(saved.cloudSandboxId);
+}
+
+export async function cloudBoatStatus(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  if (!saved?.cloudSandboxId) return { sandbox: null };
+  const sandbox = await getBoatSandbox(saved.cloudSandboxId).catch(() => null);
+  return { sandbox };
+}
+
+/** Stop the cloud computer after BOAT_IDLE_STOP_MS without cloud activity. */
+export async function maybeStopIdleCloudBoat(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  if (!saved?.cloudSandboxId || !saved.cloudActivityAt) {
+    return { stopped: false as const, reason: "none" as const };
+  }
+  if (Date.now() - saved.cloudActivityAt.getTime() < BOAT_IDLE_STOP_MS) {
+    return { stopped: false as const, reason: "active" as const };
+  }
+  return stopSandboxIfRunning(saved.cloudSandboxId);
+}
+
+export async function stampCloudActivity(projectId: ObjectId) {
+  const collection = await boatLinks();
+  await collection.updateOne({ projectId }, { $set: { cloudActivityAt: new Date() } });
+}
+
+/** Saved-snapshot allowance (backup storage is billed only above the plan's included count). */
+export async function getSnapshotAllowance() {
+  const data = (await boatFetch("/saved-snapshots")) as Record<string, unknown>;
+  const allowance = (data?.allowance ?? {}) as Record<string, unknown>;
+  return {
+    included: Number(allowance.included) || 0,
+    used: Number(allowance.used) || 0,
+    extra: Number(allowance.extra) || 0,
+    extraDailyDollars: Number(allowance.extraDailyDollars) || 0,
+  };
 }
 
 /** LinkedIn's own computer. Does not resume or replace the email computer. */

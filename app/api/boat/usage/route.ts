@@ -2,13 +2,13 @@ import { ObjectId } from "mongodb";
 import { NextRequest, NextResponse } from "next/server";
 import {
   boatConfigured,
-  getBoatActivityMeta,
   getBoatAiUsage,
   getBoatMachineUsage,
   getBoatSandbox,
-  getSavedBoatSandboxId,
+  getCloudBoatMeta,
+  getSnapshotAllowance,
   isBoatRunning,
-  maybeStopIdleProjectBoat,
+  maybeStopIdleCloudBoat,
 } from "@/lib/boat";
 import {
   estimateClaudeCostUsd,
@@ -31,7 +31,9 @@ export async function GET(request: NextRequest) {
     const daysRaw = Number(request.nextUrl.searchParams.get("days") || 30);
     const days = Math.max(1, Math.min(365, Number.isFinite(daysRaw) ? Math.floor(daysRaw) : 30));
     const projectId = new ObjectId(session.projectId);
-    const sandboxId = await getSavedBoatSandboxId(projectId);
+    // Cloud campaigns only: their own computer(s) for this project, nothing shared.
+    const cloud = await getCloudBoatMeta(projectId);
+    const sandboxId = cloud.sandboxId;
     if (!sandboxId) {
       return NextResponse.json({
         usage: null,
@@ -44,7 +46,7 @@ export async function GET(request: NextRequest) {
     const lock = await getBoatDesktopLock(projectId);
     let idleStopped = false;
     if (!lock) {
-      const idle = await maybeStopIdleProjectBoat(projectId).catch(() => null);
+      const idle = await maybeStopIdleCloudBoat(projectId).catch(() => null);
       idleStopped = idle?.stopped === true;
     }
 
@@ -53,15 +55,19 @@ export async function GET(request: NextRequest) {
     since.setUTCHours(0, 0, 0, 0);
     const sinceIso = since.toISOString();
 
-    const [ai, machine, sandbox, activity] = await Promise.all([
+    const [ai, machines, sandbox, allowance] = await Promise.all([
       getBoatAiUsage(sandboxId, days),
-      getBoatMachineUsage(sandboxId, sinceIso).catch(() => null),
+      Promise.all(cloud.sandboxIds.map((id) => getBoatMachineUsage(id, sinceIso).catch(() => null))),
       getBoatSandbox(sandboxId).catch(() => null),
-      getBoatActivityMeta(projectId),
+      getSnapshotAllowance().catch(() => null),
     ]);
+    const machine = machines.find((m) => m?.sandboxId === sandboxId) ?? null;
+    const activity = { lastBoatActivityAt: cloud.lastActivityAt };
 
     const claudeEstimatedUsd = estimateClaudeCostUsd(ai.usage);
-    const boatMachineUsd = machine?.dollars ?? 0;
+    const boatMachineUsd = machines.reduce((sum, m) => sum + (m?.dollars ?? 0), 0);
+    // One backup per project; it only costs money once the account is over its included count.
+    const backupUsd = allowance && allowance.extra > 0 ? 0.056 * days : 0;
     const models = [
       ...new Set(
         ai.usage
@@ -87,7 +93,10 @@ export async function GET(request: NextRequest) {
       claudeEstimatedUsd,
       boatProxyUsd: ai.proxyDollars,
       boatMachineUsd,
-      totalEstimatedUsd: claudeEstimatedUsd + ai.proxyDollars + boatMachineUsd,
+      totalEstimatedUsd: claudeEstimatedUsd + ai.proxyDollars + boatMachineUsd + backupUsd,
+      backupUsd,
+      backupIncluded: !allowance || allowance.extra === 0,
+      computers: cloud.sandboxIds.length,
       models,
       proxied: ai.proxied,
       blocked: ai.blocked,

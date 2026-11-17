@@ -15,6 +15,9 @@ export async function register() {
   const { startInboxSyncWorker } = await import("./lib/inbox-sync-worker");
   startInboxSyncWorker();
 
+  const { startCloudSendWorker } = await import("./lib/cloud-send-worker");
+  startCloudSendWorker();
+
   const { startCloudInboxWorker } = await import("./lib/cloud-inbox-worker");
   startCloudInboxWorker();
 

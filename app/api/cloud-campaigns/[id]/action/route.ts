@@ -13,6 +13,8 @@ import {
   submitChromeProfileAuthCode,
   clearCloudSendLog,
   checkScriptSender,
+  scheduleCloudSending,
+  cancelCloudSchedule,
   checkCloudInbox,
   previewCloudRow,
   saveCloudColumnMap,
@@ -248,6 +250,16 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (action === "sender_read_sheet") {
       const result = await readSheetThroughSender(projectId, id, String(body?.sheetUrl ?? ""));
       return NextResponse.json({ sheet: result });
+    }
+
+    if (action === "schedule") {
+      const campaign = await scheduleCloudSending(projectId, id);
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "cancel_schedule") {
+      const campaign = await cancelCloudSchedule(projectId, id);
+      return NextResponse.json({ campaign });
     }
 
     if (action === "check_inbox") {

@@ -19,6 +19,7 @@ type Recipient = {
   repliedAt?: string;
   bouncedAt?: string;
   unsubscribedAt?: string;
+  botClicks: number;
 };
 
 type Report = {
@@ -29,6 +30,7 @@ type Report = {
     replied: number;
     bounced: number;
     unsubscribed: number;
+    botClicked: number;
     skipped: number;
     failed: number;
   };
@@ -145,9 +147,9 @@ export default function CloudCampaignReport({
 
   function exportCsv() {
     if (!report) return;
-    const header = ["Row", "Email", "Name", "Company", "Subject", "Sent", "Opened", "Opens", "Clicked", "Clicks", "Replied", "Bounced", "Unsubscribed"];
+    const header = ["Row", "Email", "Name", "Company", "Subject", "Sent", "Opened", "Opens", "Clicked", "Clicks", "Bot clicks", "Replied", "Bounced", "Unsubscribed"];
     const lines = report.recipients.map((r) =>
-      [r.row + 1, r.email, r.name, r.company, r.subject, r.sentAt, r.openedAt, r.openCount, r.clickedAt, r.clickCount, r.repliedAt, r.bouncedAt, r.unsubscribedAt]
+      [r.row + 1, r.email, r.name, r.company, r.subject, r.sentAt, r.openedAt, r.openCount, r.clickedAt, r.clickCount, r.botClicks, r.repliedAt, r.bouncedAt, r.unsubscribedAt]
         .map(csvCell)
         .join(","),
     );
@@ -174,7 +176,14 @@ export default function CloudCampaignReport({
   const cards = [
     { key: "sent", label: "Sent", value: t.sent, rate: "" },
     { key: "opened", label: "Opened", value: report.tracking.opens ? t.opened : null, rate: pct(t.opened, t.sent), off: !report.tracking.opens },
-    { key: "clicked", label: "Clicked", value: report.tracking.clicks ? t.clicked : null, rate: pct(t.clicked, t.sent), off: !report.tracking.clicks },
+    {
+      key: "clicked",
+      label: "Clicked",
+      value: report.tracking.clicks ? t.clicked : null,
+      rate: pct(t.clicked, t.sent),
+      off: !report.tracking.clicks,
+      hint: t.botClicked ? `${t.botClicked} recipient(s) had link-scanner clicks; those aren't counted` : undefined,
+    },
     { key: "replied", label: "Replied", value: t.replied, rate: pct(t.replied, t.sent) },
     { key: "bounced", label: "Bounced", value: t.bounced, rate: pct(t.bounced, t.sent), bad: t.bounced > 0 },
     { key: "skipped", label: "Skipped", value: t.skipped, rate: "", hint: "Rows that couldn't be sent" },
@@ -188,6 +197,9 @@ export default function CloudCampaignReport({
             <span>{card.label}</span>
             <strong>{card.value === null ? "Off" : card.value}</strong>
             {card.value !== null && card.rate ? <small>{card.rate}</small> : null}
+            {card.key === "clicked" && t.botClicked ? (
+              <em className="cloud-report-bot">{t.botClicked} bot filtered</em>
+            ) : null}
           </div>
         ))}
       </div>
@@ -288,6 +300,11 @@ export default function CloudCampaignReport({
                     </small>
                     {r.bouncedAt ? <em className="cloud-tag is-bad">Bounced</em> : null}
                     {r.unsubscribedAt ? <em className="cloud-tag">Unsubscribed</em> : null}
+                    {r.botClicks ? (
+                      <em className="cloud-tag" title="A link scanner hit the hidden trap link or clicked every link at once">
+                        Bot clicks {r.botClicks}
+                      </em>
+                    ) : null}
                   </td>
                   <td>{short(r.sentAt)}</td>
                   <td>{r.openedAt ? `${short(r.openedAt)}${r.openCount > 1 ? ` · ${r.openCount}×` : ""}` : "—"}</td>

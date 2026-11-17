@@ -12590,3 +12590,31 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-tag.is-ok{background:#dcfce7;color:#166534;margin:0;}
 .cloud-tag.is-bad{background:#fee2e2;color:#991b1b;}
 @media (max-width:760px){.cloud-report{padding:16px;}}
+/* Cloud: schedule */
+.cloud-run-when{display:flex;flex-direction:column;gap:10px;padding-top:14px;border-top:1px solid #f1f2f4;}
+.cloud-run-when > strong{font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;}
+.cloud-schedule{display:flex;flex-direction:column;gap:12px;}
+.cloud-schedule-row{display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:12px;}
+.cloud-schedule-label{font-size:12.5px;font-weight:600;color:#374151;}
+.cloud-schedule select{height:36px;padding:0 10px;border:1px solid #e5e7eb;border-radius:10px;font:inherit;font-size:13px;background:#fff;min-width:0;}
+.cloud-schedule-days{display:flex;flex-wrap:wrap;gap:6px;}
+.cloud-schedule-days button{min-width:46px;height:34px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;font:inherit;font-size:12.5px;font-weight:600;color:#9ca3af;cursor:pointer;}
+.cloud-schedule-days button.is-on{background:#111827;border-color:#111827;color:#fff;}
+.cloud-schedule-days button:disabled{cursor:not-allowed;opacity:.6;}
+.cloud-schedule-check{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#374151;cursor:pointer;}
+.cloud-schedule input[type="time"],.cloud-schedule input[type="datetime-local"]{height:36px;padding:0 10px;border:1px solid #e5e7eb;border-radius:10px;font:inherit;font-size:13px;background:#fff;}
+.cloud-schedule-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.cloud-schedule-foot small{font-size:12.5px;color:#6b7280;flex:1;min-width:200px;}
+.cloud-schedule-foot .cloud-schedule-error{color:#b91c1c;flex:0 1 auto;}
+.cloud-run-dot.is-scheduled{background:#6366f1;}
+@media (max-width:760px){.cloud-schedule-row{grid-template-columns:1fr;}}
+.cloud-report-bot{font-style:normal;font-size:11px;color:#9ca3af;font-weight:600;}
+/* Cloud: attachments */
+.cloud-attachments{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:1px solid #eef0f2;border-radius:12px;background:#fafbfc;}
+.cloud-attachments-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
+.cloud-attachments-head strong{font-size:13.5px;color:#111827;}
+.cloud-attachments-head small{font-size:12px;color:#6b7280;}
+.cloud-attachments ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
+.cloud-attachments li{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;background:#fff;border:1px solid #eef0f2;font-size:13px;}
+.cloud-attachments-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#111827;font-weight:600;}
+.cloud-attachments li small{color:#6b7280;font-size:12px;}
