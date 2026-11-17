@@ -18,6 +18,79 @@ export function formatCloudSenderProvider(provider?: CloudSenderProvider) {
   return cloudMailProductName(provider === "outlook" ? "outlook" : "gmail");
 }
 
+/** How every email in the campaign looks (pitch and follow-ups). */
+export type CloudEmailStyle = {
+  fontFamily: string;
+  /** px */
+  fontSize: number;
+  color: string;
+  lineHeight: number;
+  linkColor: string;
+  /** auto: highlight company/key phrases · markdown: only **text** you wrote · none: no bold */
+  bold: "auto" | "markdown" | "none";
+  /** Use the body font in the signature too (sizes and colours there are kept). */
+  signatureFont: boolean;
+  savedAt?: string;
+};
+
+/** Email-safe fonts (each with fallbacks every mail app has). */
+export const CLOUD_FONT_OPTIONS = [
+  { label: "Arial", value: "Arial,Helvetica,sans-serif" },
+  { label: "Helvetica", value: "Helvetica,Arial,sans-serif" },
+  { label: "Verdana", value: "Verdana,Geneva,sans-serif" },
+  { label: "Tahoma", value: "Tahoma,Verdana,sans-serif" },
+  { label: "Trebuchet MS", value: "'Trebuchet MS',Arial,sans-serif" },
+  { label: "Segoe UI", value: "'Segoe UI',Arial,sans-serif" },
+  { label: "Calibri", value: "Calibri,Carlito,Arial,sans-serif" },
+  { label: "Georgia", value: "Georgia,'Times New Roman',serif" },
+  { label: "Times New Roman", value: "'Times New Roman',Times,serif" },
+] as const;
+
+/** The one-click "standard": plain, readable, looks like a normal hand-written email. */
+export const CLOUD_STANDARD_STYLE: CloudEmailStyle = {
+  fontFamily: "Arial,Helvetica,sans-serif",
+  fontSize: 14,
+  color: "#222222",
+  lineHeight: 1.5,
+  linkColor: "#1a5fd0",
+  bold: "markdown",
+  signatureFont: true,
+};
+
+/** Look used before the style step existed (older campaigns keep rendering the same). */
+export const CLOUD_LEGACY_STYLE: CloudEmailStyle = {
+  fontFamily: "Arial,Helvetica,sans-serif",
+  fontSize: 15,
+  color: "#222",
+  lineHeight: 1.6,
+  linkColor: "#1a5fd0",
+  bold: "auto",
+  signatureFont: false,
+};
+
+const HEX = /^#[0-9a-f]{3}([0-9a-f]{3})?$/i;
+
+/** Validate a style from the page (unknown values fall back to the standard). */
+export function normalizeEmailStyle(raw: unknown): CloudEmailStyle {
+  const input = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const std = CLOUD_STANDARD_STYLE;
+  const font = CLOUD_FONT_OPTIONS.find((option) => option.value === input.fontFamily)?.value;
+  const size = Math.round(Number(input.fontSize));
+  const line = Number(input.lineHeight);
+  const color = String(input.color || "");
+  const link = String(input.linkColor || "");
+  const bold = input.bold === "auto" || input.bold === "none" || input.bold === "markdown" ? input.bold : std.bold;
+  return {
+    fontFamily: font || std.fontFamily,
+    fontSize: size >= 11 && size <= 20 ? size : std.fontSize,
+    color: HEX.test(color) ? color : std.color,
+    lineHeight: line >= 1.1 && line <= 2.2 ? Math.round(line * 10) / 10 : std.lineHeight,
+    linkColor: HEX.test(link) ? link : std.linkColor,
+    bold,
+    signatureFont: input.signatureFont !== false,
+  };
+}
+
 /** One automatic follow-up: sent `delayDays` after the previous email if there's no reply. */
 export type CloudFollowupStep = {
   id: string;
@@ -119,6 +192,8 @@ export type CloudCampaign = {
   schedule?: CloudSchedule;
   /** Automatic follow-ups (replies in the same thread). */
   followups?: CloudFollowupSettings;
+  /** Font, size, colours and bold for every email. */
+  emailStyle?: CloudEmailStyle;
   /** When the server will send the next email (respects gap, days and window). */
   nextSendAt?: string;
   attachments?: { id: string; name: string; size: number; type: string }[];
@@ -260,6 +335,7 @@ export async function patchCloudCampaign(
       | "unsubscribeFooter"
       | "schedule"
       | "followups"
+      | "emailStyle"
     >
   >,
 ): Promise<CloudCampaign> {

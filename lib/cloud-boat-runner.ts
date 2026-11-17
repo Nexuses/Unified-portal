@@ -23,6 +23,7 @@ import {
   CLOUD_SHEET_COLUMNS,
   cloudMailInboxUrl,
   cloudMailProductName,
+  type CloudEmailStyle,
   type CloudSenderProvider,
   type CloudSheetSample,
 } from "@/lib/cloud-campaigns";
@@ -971,7 +972,7 @@ export async function previewCloudRow(projectId: ObjectId, campaignId: string, r
       : Math.max(0, rows.findIndex((r) => r?.cells && !rowIssue(r.cells, columnMap)));
   const cells = rows[index]?.cells || {};
   const issue = rowIssue(cells, columnMap);
-  const { fields, html } = buildRowEmail(cells, String(doc.signatureHtml || "").trim(), columnMap);
+  const { fields, html } = buildRowEmail(cells, String(doc.signatureHtml || "").trim(), columnMap, doc.emailStyle);
   return { row: index, total: rows.length, to: fields.email, subject: fields.subject, html, issue };
 }
 
@@ -980,9 +981,10 @@ function buildRowEmail(
   rowCells: Record<string, string>,
   signatureHtml: string,
   columnMap: CloudColumnMap = {},
+  style?: CloudEmailStyle,
 ) {
   const fields = resolveCloudRowFields(rowCells, columnMap);
-  const html = buildCloudPitchHtml(rowCells, signatureHtml, columnMap);
+  const html = buildCloudPitchHtml(rowCells, signatureHtml, columnMap, style);
   const plain = applyContactVariables(
     fields.pitch,
     {
@@ -1036,7 +1038,7 @@ export async function testScriptSend(
     : null;
   if (!rowCells) throw new Error("No ready people row to build a test email from — check the column mapping (step 4).");
   const signatureHtml = String(doc.signatureHtml || "").trim();
-  const { fields, html, plain } = buildRowEmail(rowCells, signatureHtml, columnMap);
+  const { fields, html, plain } = buildRowEmail(rowCells, signatureHtml, columnMap, doc.emailStyle);
   const sandbox = await readySandbox(projectId, campaignId);
   const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
   const attachments = doc.attachments?.length ? await ensureAttachmentsOnVm(sandbox.id, doc.attachments) : [];
@@ -1875,7 +1877,7 @@ REPORT: one short sentence`;
   // Formatting: the pitch goes through the same pitchToHtml path as Personalise (paragraphs,
   // bold company/product terms, bullet lists, sign-off + signature) and is pasted as rich HTML.
   // To + Subject come from the compose URL (never typed into Gmail's To chips).
-  const bodyHtml = buildCloudPitchHtml(rowCells, signatureHtml, columnMap);
+  const bodyHtml = buildCloudPitchHtml(rowCells, signatureHtml, columnMap, doc.emailStyle);
 
   // Gmail: deterministic script sender (no AI). Outlook, or CLOUD_SENDER=agent, keeps the
   // desktop-agent path below.

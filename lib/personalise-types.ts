@@ -700,6 +700,26 @@ export type PitchRenderOptions = {
   explicitBold?: boolean;
   /** Make http(s) URLs and [text](url) markdown links clickable. */
   linkify?: boolean;
+  /** Body look (font, size, colours, spacing). Defaults to the original Arial 15px. */
+  look?: PitchLook;
+  /** Render no bold at all (markdown ** markers are dropped). */
+  noBold?: boolean;
+};
+
+export type PitchLook = {
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  lineHeight: number;
+  linkColor: string;
+};
+
+const DEFAULT_LOOK: PitchLook = {
+  fontFamily: "Arial,Helvetica,sans-serif",
+  fontSize: 15,
+  color: "#222",
+  lineHeight: 1.6,
+  linkColor: "#1a5fd0",
 };
 
 /** Turns plain pitch text into paragraphs, bullet lists, and a sign-off. */
@@ -821,7 +841,6 @@ function escapeHtml(value: string) {
     .replace(/"/g, "&quot;");
 }
 
-const LINK_STYLE = "color:#1a5fd0;text-decoration:underline";
 const LINK_RE = /\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<>"']+/gi;
 
 type LinkSpan = { start: number; end: number; url: string; label: string };
@@ -848,11 +867,13 @@ function findLinks(text: string): LinkSpan[] {
   return spans;
 }
 
-function styledHtml(part: PitchInline, text: string) {
+type InlineRender = { linkify?: boolean; linkColor?: string; noBold?: boolean };
+
+function styledHtml(part: PitchInline, text: string, render: InlineRender = {}) {
   let html = escapeHtml(text);
   if (part.underline) html = `<u>${html}</u>`;
   if (part.italic) html = `<em>${html}</em>`;
-  if (part.bold) html = `<strong>${html}</strong>`;
+  if (part.bold && !render.noBold) html = `<strong>${html}</strong>`;
   return html;
 }
 
@@ -860,11 +881,12 @@ function styledHtml(part: PitchInline, text: string) {
  * Render a line's parts. With linkify, links are found across the whole line first, so automatic
  * bolding (which can split "calendly.com" at the dot) never breaks a URL: each URL is one link.
  */
-function inlineHtml(parts: PitchInline[], linkify = false) {
-  if (!linkify) return parts.map((part) => styledHtml(part, part.text)).join("");
+function inlineHtml(parts: PitchInline[], render: InlineRender = {}) {
+  if (!render.linkify) return parts.map((part) => styledHtml(part, part.text, render)).join("");
   const full = parts.map((part) => part.text).join("");
   const links = findLinks(full);
-  if (!links.length) return parts.map((part) => styledHtml(part, part.text)).join("");
+  if (!links.length) return parts.map((part) => styledHtml(part, part.text, render)).join("");
+  const linkStyle = `color:${render.linkColor || DEFAULT_LOOK.linkColor};text-decoration:underline`;
   let out = "";
   let offset = 0;
   let linkIndex = 0;
@@ -881,13 +903,13 @@ function inlineHtml(parts: PitchInline[], linkify = false) {
       if (link && cursor >= link.start) {
         // Inside a link: emit the whole link once (at its first character), skip the rest.
         if (cursor === link.start) {
-          out += `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener" style="${LINK_STYLE}">${escapeHtml(link.label)}</a>`;
+          out += `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener" style="${linkStyle}">${escapeHtml(link.label)}</a>`;
         }
         cursor = Math.min(partEnd, link.end);
         continue;
       }
       const stop = Math.min(partEnd, link ? link.start : partEnd);
-      out += styledHtml(part, full.slice(cursor, stop));
+      out += styledHtml(part, full.slice(cursor, stop), render);
       cursor = stop;
     }
     offset = partEnd;
@@ -950,6 +972,10 @@ export function pitchToHtml(
 ) {
   const signature = cleanSignatureHtml(signatureHtml);
   const signatureBlock = signature ? `<div style="margin:8px 0 0">${signature}</div>` : "";
+  const look = { ...DEFAULT_LOOK, ...(options?.look || {}) };
+  const render: InlineRender = { linkify: options?.linkify, linkColor: look.linkColor, noBold: options?.noBold };
+  // Paragraph spacing follows the font size (14px at the original 15px).
+  const gap = Math.round(look.fontSize * 0.93);
   let signed = false;
   const html = pitchBlocks(body, options)
     .map((block) => {
@@ -957,10 +983,12 @@ export function pitchToHtml(
         const items = block.items
           .map(
             (item) =>
-              `<li style="display:list-item;list-style-type:disc;margin:0 0 6px">${item.label ? `<strong>${escapeHtml(item.label)}:</strong> ` : ""}${inlineHtml(item.text, options?.linkify)}</li>`,
+              `<li style="display:list-item;list-style-type:disc;margin:0 0 6px">${
+                item.label ? (options?.noBold ? `${escapeHtml(item.label)}: ` : `<strong>${escapeHtml(item.label)}:</strong> `) : ""
+              }${inlineHtml(item.text, render)}</li>`,
           )
           .join("");
-        return `<ul style="list-style-type:disc;list-style-position:outside;margin:0 0 14px;padding-left:24px">${items}</ul>`;
+        return `<ul style="list-style-type:disc;list-style-position:outside;margin:0 0 ${gap}px;padding-left:24px">${items}</ul>`;
       }
       if (block.type === "signoff") {
         if (signature) {
@@ -969,11 +997,11 @@ export function pitchToHtml(
         }
         return `<p style="margin:18px 0 0">${block.lines.map(escapeHtml).join("<br>")}</p>`;
       }
-      return `<p style="margin:0 0 14px">${inlineHtml(block.text, options?.linkify)}</p>`;
+      return `<p style="margin:0 0 ${gap}px">${inlineHtml(block.text, render)}</p>`;
     })
     .join("")
     .concat(signature && !signed ? `<div style="margin:18px 0 0">${signature}</div>` : "");
-  return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#222">${html}</div>`;
+  return `<div style="font-family:${look.fontFamily};font-size:${look.fontSize}px;line-height:${look.lineHeight};color:${look.color}">${html}</div>`;
 }
 
 /** Pull product / assistant names from natural pitch copy (e.g. Shamil, Labib). */
