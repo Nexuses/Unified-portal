@@ -824,46 +824,75 @@ function escapeHtml(value: string) {
 const LINK_STYLE = "color:#1a5fd0;text-decoration:underline";
 const LINK_RE = /\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<>"']+/gi;
 
-/** Escape text, turning URLs and [text](url) into links. Trailing punctuation stays outside. */
-function linkifiedHtml(text: string) {
-  let out = "";
-  let last = 0;
+type LinkSpan = { start: number; end: number; url: string; label: string };
+
+/** Where the links are in a line: bare URLs and [text](url). Trailing punctuation stays out. */
+function findLinks(text: string): LinkSpan[] {
+  const spans: LinkSpan[] = [];
   for (const match of text.matchAll(LINK_RE)) {
     const start = match.index ?? 0;
-    let url = match[2] || match[0];
-    let label = match[1] || "";
-    let tail = "";
-    if (!match[2]) {
-      // "…see https://x.com/a." or "(https://x.com)": keep the dot / bracket out of the link.
-      const trimmed = url.match(/^(.*?)([.,;:!?]+|\)+)?$/);
-      if (trimmed?.[2]) {
-        const closers = trimmed[2];
-        const opens = (trimmed[1].match(/\(/g) || []).length;
-        const closes = (trimmed[1].match(/\)/g) || []).length;
-        if (!/^\)+$/.test(closers) || opens <= closes) {
-          url = trimmed[1];
-          tail = closers;
-        }
-      }
-      label = url;
+    if (match[2]) {
+      spans.push({ start, end: start + match[0].length, url: match[2], label: match[1] });
+      continue;
     }
-    out += escapeHtml(text.slice(last, start));
-    out += `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" style="${LINK_STYLE}">${escapeHtml(label)}</a>${escapeHtml(tail)}`;
-    last = start + match[0].length;
+    let url = match[0];
+    // "…see https://x.com/a." or "(https://x.com)": keep the dot / bracket out of the link.
+    const trimmed = url.match(/^(.*?)([.,;:!?]+|\)+)?$/);
+    if (trimmed?.[2]) {
+      const opens = (trimmed[1].match(/\(/g) || []).length;
+      const closes = (trimmed[1].match(/\)/g) || []).length;
+      if (!/^\)+$/.test(trimmed[2]) || opens <= closes) url = trimmed[1];
+    }
+    spans.push({ start, end: start + url.length, url, label: url });
   }
-  return out + escapeHtml(text.slice(last));
+  return spans;
 }
 
+function styledHtml(part: PitchInline, text: string) {
+  let html = escapeHtml(text);
+  if (part.underline) html = `<u>${html}</u>`;
+  if (part.italic) html = `<em>${html}</em>`;
+  if (part.bold) html = `<strong>${html}</strong>`;
+  return html;
+}
+
+/**
+ * Render a line's parts. With linkify, links are found across the whole line first, so automatic
+ * bolding (which can split "calendly.com" at the dot) never breaks a URL: each URL is one link.
+ */
 function inlineHtml(parts: PitchInline[], linkify = false) {
-  return parts
-    .map((part) => {
-      let html = linkify ? linkifiedHtml(part.text) : escapeHtml(part.text);
-      if (part.underline) html = `<u>${html}</u>`;
-      if (part.italic) html = `<em>${html}</em>`;
-      if (part.bold) html = `<strong>${html}</strong>`;
-      return html;
-    })
-    .join("");
+  if (!linkify) return parts.map((part) => styledHtml(part, part.text)).join("");
+  const full = parts.map((part) => part.text).join("");
+  const links = findLinks(full);
+  if (!links.length) return parts.map((part) => styledHtml(part, part.text)).join("");
+  let out = "";
+  let offset = 0;
+  let linkIndex = 0;
+  for (const part of parts) {
+    const partStart = offset;
+    const partEnd = offset + part.text.length;
+    let cursor = partStart;
+    while (cursor < partEnd) {
+      const link = links[linkIndex];
+      if (link && cursor >= link.end) {
+        linkIndex += 1;
+        continue;
+      }
+      if (link && cursor >= link.start) {
+        // Inside a link: emit the whole link once (at its first character), skip the rest.
+        if (cursor === link.start) {
+          out += `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener" style="${LINK_STYLE}">${escapeHtml(link.label)}</a>`;
+        }
+        cursor = Math.min(partEnd, link.end);
+        continue;
+      }
+      const stop = Math.min(partEnd, link ? link.start : partEnd);
+      out += styledHtml(part, full.slice(cursor, stop));
+      cursor = stop;
+    }
+    offset = partEnd;
+  }
+  return out;
 }
 
 export const MAX_SIGNATURE_HTML = 20_000;
