@@ -121,7 +121,7 @@ function chunkArray<T>(items: T[], size: number) {
   return chunks;
 }
 
-async function ensureCompanies(
+export async function ensureCompanies(
   projectId: ObjectId,
   companyNames: string[],
 ): Promise<{ byKey: Map<string, ObjectId>; created: number }> {
@@ -200,7 +200,7 @@ async function ensureCompanies(
   return { byKey, created };
 }
 
-async function refreshCompanyCounts(projectId: ObjectId, companyIds: ObjectId[]) {
+export async function refreshCompanyCounts(projectId: ObjectId, companyIds: ObjectId[]) {
   if (companyIds.length === 0) {
     return;
   }

@@ -203,6 +203,8 @@ function manualKindLabel(kind: string) {
       return "WhatsApp";
     case "message":
       return "Message";
+    case "linkedin":
+      return "LinkedIn";
     case "note":
       return "Note";
     default:
@@ -903,6 +905,7 @@ export default function ContactActivityPanel({
                         entry.kind === "call" ||
                         entry.kind === "whatsapp" ||
                         entry.kind === "message" ||
+                        entry.kind === "linkedin" ||
                         entry.kind === "note"
                           ? entry.kind
                           : "custom"
@@ -921,7 +924,7 @@ export default function ContactActivityPanel({
                     </span>
                   </div>
                   <p className="lr-tl-body">{entry.item.body || "—"}</p>
-                  {entry.item.recordingUrl ? (
+                  {entry.kind === "linkedin" ? null : entry.item.recordingUrl ? (
                     <div className="cd-activity-call-card">
                       <AircallAudioPlayer
                         className="cd-activity-audio"

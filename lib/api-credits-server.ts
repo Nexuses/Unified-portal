@@ -2,6 +2,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import {
+  boatConfigured,
+  getBoatAiUsage,
+  getBoatMachineUsage,
+} from "@/lib/boat";
+import {
   API_FEATURE_LABELS,
   ApiCreditLimitError,
   BILLABLE_API_FEATURES,
@@ -80,7 +85,8 @@ async function usedMicros(projectId: ObjectId) {
           projectId,
           // Historical email / lookup / other non-billable rows stay in the
           // collection but must not count against the limit any more.
-          feature: { $in: [...BILLABLE_API_FEATURES] },
+          // Computer cost is read live from Box and added separately.
+          feature: { $in: [...BILLABLE_API_FEATURES].filter((feature) => feature !== "computer") },
         },
       },
       { $group: { _id: null, costMicros: { $sum: "$costMicros" } } },
@@ -89,14 +95,67 @@ async function usedMicros(projectId: ObjectId) {
   return row?.costMicros ?? 0;
 }
 
+type ComputerCost = { usd: number; machines: number };
+
+const computerCostCache = new Map<string, { at: number; cost: ComputerCost }>();
+
+/** Box's own machine and proxy charges for this project's computers, last 30 days. */
+async function computerCost(projectId: string): Promise<ComputerCost> {
+  const empty: ComputerCost = { usd: 0, machines: 0 };
+  if (!boatConfigured() || !ObjectId.isValid(projectId)) return empty;
+  const cached = computerCostCache.get(projectId);
+  if (cached && Date.now() - cached.at < 60_000) return cached.cost;
+  try {
+    const db = await getDb();
+    const link = await db
+      .collection<{ sandboxId?: string; linkedinSandboxId?: string }>("boat_sandboxes")
+      .findOne({ projectId: new ObjectId(projectId) });
+    const ids = [
+      ...new Set(
+        [link?.sandboxId, link?.linkedinSandboxId].filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    if (!ids.length) {
+      computerCostCache.set(projectId, { at: Date.now(), cost: empty });
+      return empty;
+    }
+    const since = new Date();
+    since.setUTCDate(since.getUTCDate() - 29);
+    since.setUTCHours(0, 0, 0, 0);
+    const sinceIso = since.toISOString();
+    const parts = await Promise.all(
+      ids.map(async (sandboxId) => {
+        const [machine, ai] = await Promise.all([
+          getBoatMachineUsage(sandboxId, sinceIso).catch(() => null),
+          getBoatAiUsage(sandboxId, 30).catch(() => null),
+        ]);
+        return (machine?.dollars || 0) + (ai?.proxyDollars || 0);
+      }),
+    );
+    const cost = {
+      usd: parts.reduce((sum, amount) => sum + amount, 0),
+      machines: ids.length,
+    };
+    computerCostCache.set(projectId, { at: Date.now(), cost });
+    return cost;
+  } catch (error) {
+    console.error("Failed to read Box computer cost:", error);
+    return empty;
+  }
+}
+
 export async function assertApiCredit(projectId: string, feature?: ApiFeature) {
   // Non-billable work (email, lookup, Personalise, ...) is never blocked
   // by — and never counted toward — the API credit limit.
   if (feature && !isBillableApiFeature(feature)) return;
   if (!ObjectId.isValid(projectId)) return;
   const id = new ObjectId(projectId);
-  const [limitUsd, spent] = await Promise.all([projectLimitUsd(id), usedMicros(id)]);
-  if (microsToUsd(spent) >= limitUsd) {
+  const [limitUsd, spent, computer] = await Promise.all([
+    projectLimitUsd(id),
+    usedMicros(id),
+    computerCost(projectId),
+  ]);
+  if (microsToUsd(spent) + computer.usd >= limitUsd) {
     throw new ApiCreditLimitError(limitUsd);
   }
 }
@@ -138,11 +197,9 @@ export async function noteApiUsage(input: {
   const scope = creditStorage().getStore();
   const projectId = input.projectId || scope?.projectId;
   const feature = input.feature || scope?.feature;
-  // Only Assistant, EDM, and CRM list-clean may deduct API credit. Every
-  // other caller (email sends, lookup, Personalise, post, pitch, Enrich,
-  // Automation, Kanban, ...) is ignored here so it can never be billed
-  // by accident, even if a stray noteApiUsage call is added elsewhere.
-  if (!isBillableApiFeature(feature)) return;
+  // Assistant, EDM, and CRM list-clean are stored here. The virtual machine
+  // is added from Box when the credit is read, so it is not stored again.
+  if (!feature || feature === "computer" || !isBillableApiFeature(feature)) return;
   if (!projectId || !ObjectId.isValid(projectId)) return;
   const costMicros = usdToMicros(
     estimateApiCostUsd({
@@ -190,9 +247,11 @@ export async function getApiCreditStatus(projectId: string): Promise<ApiCreditSt
   const collection = await usageCollection();
   const billableMatch = {
     projectId: id,
-    feature: { $in: [...BILLABLE_API_FEATURES] },
+    feature: {
+      $in: [...BILLABLE_API_FEATURES].filter((feature) => feature !== "computer"),
+    },
   };
-  const [limitUsd, rows, latest] = await Promise.all([
+  const [limitUsd, rows, latest, computer] = await Promise.all([
     projectLimitUsd(id),
     collection
       .aggregate<{ _id: ApiFeature; calls: number; costMicros: number }>([
@@ -212,6 +271,7 @@ export async function getApiCreditStatus(projectId: string): Promise<ApiCreditSt
       .sort({ createdAt: -1 })
       .limit(40)
       .toArray(),
+    computerCost(projectId),
   ]);
   const items = rows
     .filter((row) => row._id in API_FEATURE_LABELS)
@@ -221,6 +281,15 @@ export async function getApiCreditStatus(projectId: string): Promise<ApiCreditSt
       calls: row.calls,
       costUsd: microsToUsd(row.costMicros),
     }));
+  if (computer.machines > 0) {
+    items.push({
+      feature: "computer",
+      label: API_FEATURE_LABELS.computer,
+      calls: computer.machines,
+      costUsd: computer.usd,
+    });
+    items.sort((a, b) => b.costUsd - a.costUsd);
+  }
   const recent: ApiCreditEntry[] = latest
     .filter((row) => row.feature in API_FEATURE_LABELS)
     .map((row) => ({
@@ -231,7 +300,7 @@ export async function getApiCreditStatus(projectId: string): Promise<ApiCreditSt
       costUsd: microsToUsd(row.costMicros),
       createdAt: row.createdAt.toISOString(),
     }));
-  const usedUsd = microsToUsd(rows.reduce((sum, row) => sum + row.costMicros, 0));
+  const usedUsd = microsToUsd(rows.reduce((sum, row) => sum + row.costMicros, 0)) + computer.usd;
   return {
     limitUsd,
     usedUsd,
@@ -251,7 +320,9 @@ export async function getApiCreditUsedByProject(projectIds: ObjectId[]) {
       {
         $match: {
           projectId: { $in: projectIds },
-          feature: { $in: [...BILLABLE_API_FEATURES] },
+          feature: {
+            $in: [...BILLABLE_API_FEATURES].filter((feature) => feature !== "computer"),
+          },
         },
       },
       { $group: { _id: "$projectId", costMicros: { $sum: "$costMicros" } } },
@@ -260,5 +331,12 @@ export async function getApiCreditUsedByProject(projectIds: ObjectId[]) {
   for (const row of rows) {
     totals.set(row._id.toString(), microsToUsd(row.costMicros));
   }
+  await Promise.all(
+    projectIds.map(async (projectId) => {
+      const key = projectId.toString();
+      const computer = await computerCost(key);
+      totals.set(key, (totals.get(key) || 0) + computer.usd);
+    }),
+  );
   return totals;
 }

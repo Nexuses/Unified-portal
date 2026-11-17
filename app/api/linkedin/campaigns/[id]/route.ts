@@ -5,6 +5,7 @@ import {
   getLinkedinCampaign,
   moveLinkedinContact,
   processDueLinkedinMessages,
+  setLinkedinCampaignPaused,
 } from "@/lib/linkedin-campaigns-server";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
@@ -41,20 +42,23 @@ export async function POST(request: Request, context: RouteContext) {
     const body = (await request.json().catch(() => null)) as {
       action?: string;
       label?: string;
+      color?: string;
       contactId?: string;
       stage?: string;
     } | null;
     const campaign =
-      body?.action === "add-stage"
-        ? await addLinkedinStage(projectId, id, String(body.label || ""))
-        : body?.action === "move"
-          ? await moveLinkedinContact(
-              projectId,
-              id,
-              String(body.contactId || ""),
-              String(body.stage || ""),
-            )
-          : null;
+      body?.action === "pause" || body?.action === "resume"
+        ? await setLinkedinCampaignPaused(projectId, id, body.action === "pause")
+        : body?.action === "add-stage"
+          ? await addLinkedinStage(projectId, id, String(body.label || ""), body.color)
+          : body?.action === "move"
+            ? await moveLinkedinContact(
+                projectId,
+                id,
+                String(body.contactId || ""),
+                String(body.stage || ""),
+              )
+            : null;
     if (!campaign) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
