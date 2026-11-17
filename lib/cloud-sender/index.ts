@@ -246,8 +246,32 @@ export type ScriptSendInput = {
 };
 
 /** Text fragments the body must contain after insertion (first lines of the pitch). */
+/** Visible text of the HTML we paste (what Gmail/Outlook will show), entities decoded. */
+function htmlVisibleText(html: string) {
+  return String(html || "")
+    .replace(/<\s*(style|script)[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, "")
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/\s*(p|div|li|h[1-6]|tr|ul|ol)\s*>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&");
+}
+
+/**
+ * What to look for in the editor after pasting. Taken from the rendered HTML, not the raw
+ * sheet text: markdown (**bold**, "- " bullets, links) is formatted away when the HTML is
+ * built, so the raw text would never be found and a good email would fail its check.
+ */
 export function bodyExpectations(plain: string, html: string) {
-  const lines = String(plain || "")
+  const source = html ? htmlVisibleText(html) : String(plain || "");
+  const lines = source
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
     .split(/\n+/)
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter((line) => line.length >= 4);

@@ -47,6 +47,43 @@ type StepId = "computer" | "sender" | "signature" | "sheet" | "review";
 
 
 
+/**
+ * CSV files from Excel are often not UTF-8 (UTF-16 "Unicode text", or Windows-1252), which
+ * shows up as garbled names. Pick the encoding from the bytes.
+ */
+function decodeCsvBytes(bytes: Uint8Array) {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return new TextDecoder("windows-1252").decode(bytes);
+  }
+}
+
+/** Plain-language reason a test email didn't go out. */
+function testFailureText(sender: Record<string, unknown>) {
+  const code = String(sender.code || "error");
+  const detail = sender.message ? ` (${String(sender.message).slice(0, 140)})` : "";
+  const reasons: Record<string, string> = {
+    LOGIN_REQUIRED: "The sender Chrome is signed out. Open it in step 2, sign in, click Check sign-in, then try again.",
+    WRONG_ACCOUNT: `The sender Chrome is signed in to a different account${detail}. Sign in as the sender in step 2.`,
+    BODY_VERIFY_FAILED: `The email body didn't paste correctly${detail}. Try again; if it repeats, preview row 1 in step 4.`,
+    BODY_INSERT_FAILED: "The email body couldn't be pasted. Try again in a moment.",
+    COMPOSE_NOT_LOADED: "The compose window didn't open in time. Try again in a moment.",
+    GMAIL_NOT_LOADED: "Gmail didn't load in time on the computer. Try again in a moment.",
+    OUTLOOK_NOT_LOADED: "Outlook didn't load in time on the computer. Try again in a moment.",
+    CDP_UNREACHABLE: "The sender Chrome wasn't responding. Try again; it restarts on its own.",
+    CHROME_START_FAILED: "The sender Chrome couldn't start. Try again in a moment.",
+    ATTACHMENT_NOT_READY: "The attachments didn't finish uploading in time. Try again, or use smaller files.",
+    ATTACH_INPUT_MISSING: "The attach button wasn't found in the compose window. Try again in a moment.",
+    SCRIPT_TIMEOUT: "The computer took too long. Check the sender's Sent folder before trying again.",
+    SEND_UNCONFIRMED: "Send was pressed but the email isn't in Sent yet. Check Sent before trying again, so it isn't sent twice.",
+    BUSY: "The cloud computer is busy sending a campaign. Try the test when it pauses.",
+  };
+  return `Test email was not sent. ${reasons[code] || `${code}${detail}.`}`;
+}
+
 function authModeFromAction(data: Record<string, unknown>): CloudAuthMode | null {
   if (data.needsOtp === true) return "otp";
   if (data.needsUserInput === true) return "user_input";
@@ -174,7 +211,8 @@ export default function PortalCloudCampaignDetailPage({
       senderVerified,
       signature,
       sheet,
-      review: computer && senderVerified && signature && sheet,
+      // The computer starts by itself when sending starts, and the signature is optional.
+      review: senderVerified && sheet,
     };
   }, [campaign, profiles, selectedProfileEmail]);
 
@@ -577,29 +615,37 @@ export default function PortalCloudCampaignDetailPage({
         );
         return;
       }
-      setNotice(
-        `Test email was not sent (${String(sender.code || "error")}${
-          sender.message ? `: ${String(sender.message).slice(0, 160)}` : ""
-        }).`,
-      );
+      setNotice(testFailureText(sender));
     });
   }
 
   async function uploadCsv(file: File) {
-    if (file.size > 2_000_000) {
-      setNotice("That CSV is larger than 2 MB. Split it into smaller files.");
+    const isExcel = /\.xlsx$/i.test(file.name);
+    if (/\.xls$/i.test(file.name)) {
+      setNotice("Old .xls files aren't supported. In Excel, save it as .xlsx or CSV and upload again.");
       return;
     }
-    await withBusy("Reading the CSV…", async () => {
-      const csvText = await file.text();
-      const data = await runCloudCampaignAction(campaignId, "verify_csv", {
-        csvText,
-        fileName: file.name,
-      });
+    if (file.size > (isExcel ? 5_000_000 : 2_000_000)) {
+      setNotice(`That file is larger than ${isExcel ? 5 : 2} MB. Split it into smaller files.`);
+      return;
+    }
+    await withBusy(isExcel ? "Reading the Excel file…" : "Reading the CSV…", async () => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const payload: Record<string, string> = { fileName: file.name };
+      if (isExcel) {
+        let binary = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        }
+        payload.xlsxBase64 = btoa(binary);
+      } else {
+        payload.csvText = decodeCsvBytes(bytes);
+      }
+      const data = await runCloudCampaignAction(campaignId, "verify_csv", payload);
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
       const missing = Array.isArray(data.missingExpected) ? (data.missingExpected as string[]) : [];
       setNotice(
-        `CSV ready: ${String(data.rowCount ?? 0)} people · columns ${
+        `List ready: ${String(data.rowCount ?? 0)} people · columns ${
           Array.isArray(data.headers) ? (data.headers as string[]).join(", ") : ""
         }${missing.length ? `. Missing recommended: ${missing.join(", ")}` : ""}.`,
       );
@@ -824,17 +870,16 @@ export default function PortalCloudCampaignDetailPage({
     stepsDone.signature,
     stepsDone.sheet,
   ].filter(Boolean).length;
-  const blockedReason = !stepsDone.computer
-    ? "start the computer (step 1)."
-    : !stepsDone.senderVerified
-      ? "sign in the sender and click Check sign-in (step 2)."
-      : !stepsDone.signature
-        ? "save the signature step — it can be empty (step 3)."
-        : !stepsDone.sheet
-          ? campaign.sheetVerifiedAt
-            ? "check the column mapping — email, subject and body must be mapped (step 4)."
-            : "add people with a CSV or Google Sheet (step 4)."
-          : undefined;
+  // Steps can be done in any order; only what sending really needs is listed here.
+  const missingForStart = [
+    !stepsDone.senderVerified ? "sign in the sender and click Check sign-in (step 2)" : "",
+    !stepsDone.sheet
+      ? campaign.sheetVerifiedAt
+        ? "map the email, subject and body columns (step 4)"
+        : "add people with a CSV, Excel file or Google Sheet (step 4)"
+      : "",
+  ].filter(Boolean);
+  const blockedReason = missingForStart.length ? `${missingForStart.join("; and ")}.` : undefined;
   const signaturePreview = cleanSignatureHtml(signatureHtml);
   const sheetHeaders = campaign.sheetHeaders ?? [];
 
@@ -952,7 +997,7 @@ export default function PortalCloudCampaignDetailPage({
             <div className="drip-setup-intro-copy">
               <strong>Set up this cloud campaign</strong>
               <span>
-                Five quick steps, then start from the panel above. Recommended people columns:{" "}
+                Do the steps in any order — only a signed-in sender and a people list are required to start. Recommended people columns:{" "}
                 {CLOUD_SHEET_COLUMNS.join(", ")}.
               </span>
             </div>
@@ -1302,27 +1347,18 @@ export default function PortalCloudCampaignDetailPage({
               <button
                 type="button"
                 className="cloud-step-head"
-                onClick={() => {
-                  if (!stepsDone.sender) {
-                    setNotice("Pick a sender first, then add a signature.");
-                    setOpenStep("sender");
-                    return;
-                  }
-                  setOpenStep("signature");
-                }}
+                onClick={() => setOpenStep("signature")}
               >
                 <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.signature ? "✓" : "3"}</i>Signature &amp; attachments</span>
                 <em>
-                  {!stepsDone.sender
-                    ? "Locked until sender selected"
-                    : stepsDone.signature
+                  {stepsDone.signature
                       ? signaturePreview
                         ? "Saved"
                         : "None"
-                      : "HTML code"}
+                      : "Optional"}
                 </em>
               </button>
-              {openStep === "signature" && stepsDone.sender ? (
+              {openStep === "signature" ? (
                 <div className="cloud-step-body">
                   <p>
                     Paste signature HTML for this campaign. It is appended under each pitch when
@@ -1399,25 +1435,11 @@ export default function PortalCloudCampaignDetailPage({
               <button
                 type="button"
                 className="cloud-step-head"
-                onClick={() => {
-                  if (!stepsDone.sender) {
-                    setNotice("Pick a sender first, then continue.");
-                    setOpenStep("sender");
-                    return;
-                  }
-                  if (!stepsDone.signature) {
-                    setNotice("Save the signature step first (you can leave it empty).");
-                    setOpenStep("signature");
-                    return;
-                  }
-                  setOpenStep("sheet");
-                }}
+                onClick={() => setOpenStep("sheet")}
               >
                 <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.sheet ? "✓" : "4"}</i>People</span>
                 <em>
-                  {!stepsDone.sender || !stepsDone.signature
-                    ? "Locked until earlier steps done"
-                    : stepsDone.sheet
+                  {stepsDone.sheet
                       ? campaign.columnStats
                         ? `${campaign.columnStats.ready}/${campaign.columnStats.total} ready`
                         : `${campaign.sheetRowCount} rows`
@@ -1426,7 +1448,7 @@ export default function PortalCloudCampaignDetailPage({
                         : "Add people"}
                 </em>
               </button>
-              {openStep === "sheet" && stepsDone.sender && stepsDone.signature ? (
+              {openStep === "sheet" ? (
                 <div className="cloud-step-body">
                   <p>
                     Upload a CSV, or paste a Google Sheet. A sheet shared as “anyone with the link
@@ -1436,14 +1458,14 @@ export default function PortalCloudCampaignDetailPage({
                   </p>
                   <label className="crm-field">
                     <span>
-                      Upload CSV
+                      Upload CSV or Excel
                       {campaign.sheetSource === "csv" && campaign.sheetFileName
                         ? ` · current: ${campaign.sheetFileName} (${campaign.sheetRowCount ?? 0} rows)`
                         : ""}
                     </span>
                     <input
                       type="file"
-                      accept=".csv,text/csv"
+                      accept=".csv,.tsv,.txt,.xlsx,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                       disabled={Boolean(busy)}
                       onChange={(event) => {
                         const file = event.target.files?.[0];

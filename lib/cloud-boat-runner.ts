@@ -128,31 +128,42 @@ function campaignHasPeopleList(doc: CloudCampaignDoc) {
 
 /** Google's CSV export works without a browser only when the sheet is link-viewable. */
 function googleSheetCsvExportUrl(sheetUrl: string) {
+  const gid = sheetUrl.match(/[#&?]gid=(\d+)/)?.[1];
+  // "Publish to the web" links: /spreadsheets/d/e/<id>/pubhtml
+  const published = sheetUrl.match(/spreadsheets\/d\/e\/([a-zA-Z0-9_-]+)/)?.[1];
+  if (published) {
+    return `https://docs.google.com/spreadsheets/d/e/${published}/pub?output=csv${gid ? `&gid=${gid}` : ""}`;
+  }
   const id = sheetUrl.match(/spreadsheets\/d\/([a-zA-Z0-9_-]+)/)?.[1];
   if (!id) return null;
-  const gid = sheetUrl.match(/[#&?]gid=(\d+)/)?.[1];
   return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv${gid ? `&gid=${gid}` : ""}`;
 }
 
-/** Free read of a shared sheet (no desktop agent, no credits). Null when private or unreachable. */
+/**
+ * Free read of a shared sheet (no computer, no credits). Null when the sheet is private or
+ * unreachable; a sheet that downloads but can't be used throws the real reason.
+ */
 async function tryFetchSheetCsv(sheetUrl: string) {
   const exportUrl = googleSheetCsvExportUrl(sheetUrl);
   if (!exportUrl) return null;
+  let text = "";
   try {
     const response = await fetch(exportUrl, {
       redirect: "follow",
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(20_000),
     });
     if (!response.ok) return null;
     const type = response.headers.get("content-type") || "";
     if (/text\/html/i.test(type)) return null; // login wall
-    const text = await response.text();
-    if (!text.trim() || text.length > CLOUD_CSV_MAX_CHARS) return null;
-    const parsed = parseCloudCsvText(text);
-    return parsed.rowCount > 0 ? parsed : null;
+    text = await response.text();
   } catch {
     return null;
   }
+  if (!text.trim()) throw new Error("The sheet is empty. Check the tab the link points to.");
+  if (text.length > CLOUD_CSV_MAX_CHARS) {
+    throw new Error("The sheet is too large (max about 2MB). Split it or hide long columns.");
+  }
+  return parseCloudCsvText(text);
 }
 
 function parseNeedsLogin(report: string) {
@@ -888,6 +899,20 @@ function buildRowEmail(
  * Send row 1's email to the sender's own address through the script sender.
  * dryRun fills and verifies compose without pressing Send.
  */
+/** Failures before Send is pressed that usually pass on a second try. */
+const TRANSIENT_SENDER_CODES = new Set([
+  "CDP_UNREACHABLE",
+  "CHROME_START_FAILED",
+  "GMAIL_NOT_LOADED",
+  "OUTLOOK_NOT_LOADED",
+  "GMAIL_NAVIGATION_FAILED",
+  "OUTLOOK_NAVIGATION_FAILED",
+  "COMPOSE_NOT_LOADED",
+  "BODY_INSERT_FAILED",
+  "BODY_VERIFY_FAILED",
+  "ATTACH_INPUT_MISSING",
+]);
+
 export async function testScriptSend(
   projectId: ObjectId,
   campaignId: string,
@@ -913,18 +938,25 @@ export async function testScriptSend(
   const sandbox = await readySandbox(projectId, campaignId);
   const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
   const attachments = doc.attachments?.length ? await ensureAttachmentsOnVm(sandbox.id, doc.attachments) : [];
-  const result = await sendViaScript(sandbox.id, doc.profileDirectory, {
-    attachments,
-    sensitivityLabel: profile?.sensitivityLabel,
-    provider: resolveSenderProvider(doc.profileProvider),
-    to: self,
-    subject: `[Test] ${fields.subject || "Cloud campaign test"}`,
-    html,
-    plain,
-    expectedEmail: sender,
-    replaceSignature: Boolean(signatureHtml),
-    dryRun: Boolean(options.dryRun),
-  });
+  const attempt = () =>
+    sendViaScript(sandbox.id, doc.profileDirectory || "", {
+      attachments,
+      sensitivityLabel: profile?.sensitivityLabel,
+      provider: resolveSenderProvider(doc.profileProvider),
+      to: self,
+      subject: `[Test] ${fields.subject || "Cloud campaign test"}`,
+      html,
+      plain,
+      expectedEmail: sender,
+      replaceSignature: Boolean(signatureHtml),
+      dryRun: Boolean(options.dryRun),
+    });
+  let result = await attempt();
+  // A cold computer or slow Gmail/Outlook load fails the first try now and then. Retry once,
+  // only when Send was never pressed, so a test is never sent twice.
+  if (!result.ok && result.sendPressed !== true && TRANSIENT_SENDER_CODES.has(String(result.code))) {
+    result = await attempt();
+  }
   if (Array.isArray(result.labels) && doc.profileId) {
     await setChromeProfileSensitivity(projectId, doc.profileId, { labels: result.labels as string[] });
   }
@@ -1145,19 +1177,20 @@ Do not create drafts or send mail.`;
 export async function verifyCloudCsv(
   projectId: ObjectId,
   campaignId: string,
-  input: { csvText: string; fileName?: string },
+  input: { csvText?: string; xlsx?: Buffer; fileName?: string },
 ) {
   const doc = await getCloudCampaignDoc(projectId, campaignId);
   if (!doc) {
     throw new Error("Campaign not found");
   }
 
-  const { parseCloudCsvText } = await import("@/lib/cloud-sheet-csv");
-  const parsed = parseCloudCsvText(input.csvText);
+  const parsed = input.xlsx
+    ? await (await import("@/lib/cloud-sheet-xlsx")).parseCloudXlsx(input.xlsx)
+    : parseCloudCsvText(input.csvText || "");
   // The sender's last confirmed mapping is reused when the columns match.
   const senderMap = (await getChromeProfileDefaults(projectId, doc.profileId))?.columnMap;
   const fileName = (input.fileName || "").trim().slice(0, 200) || "upload.csv";
-  const report = `CSV ${fileName}: ${parsed.rowCount} rows · columns ${parsed.headers.join(", ")}`;
+  const report = `${input.xlsx ? "Excel" : "CSV"} ${fileName}: ${parsed.rowCount} rows · columns ${parsed.headers.join(", ")}`;
 
   await patchCloudCampaignDoc(projectId, campaignId, {
     sheetSource: "csv",
@@ -1204,15 +1237,21 @@ export async function verifyCloudSheet(
     throw new Error("Paste a Google Sheet link first");
   }
   const doc = await getCloudCampaignDoc(projectId, campaignId);
-  if (!doc?.profileDirectory) {
-    throw new Error("Pick a sender profile before verifying the sheet");
+  if (!doc) throw new Error("Campaign not found");
+  if (!googleSheetCsvExportUrl(url)) {
+    throw new Error("That doesn't look like a Google Sheets link. Copy it from the sheet's address bar or Share button.");
   }
 
   const senderMap = (await getChromeProfileDefaults(projectId, doc.profileId))?.columnMap;
-  // 1) Link-shared sheets: read server-side. Free, instant.
+  // 1) Link-shared sheets: read server-side. Free, instant, no sender needed.
   // 2) Private sheets: read through the sender's signed-in Chrome as CSV (no AI).
   let exported = await tryFetchSheetCsv(url);
-  if (!exported && process.env.CLOUD_SENDER !== "agent") {
+  if (!exported && !doc.profileDirectory) {
+    throw new Error(
+      "This sheet is private. Set it to “Anyone with the link can view”, upload a CSV, or pick a signed-in sender (step 2) so it can be read as that account.",
+    );
+  }
+  if (!exported && doc.profileDirectory && process.env.CLOUD_SENDER !== "agent") {
     const sandbox = await readySandbox(projectId, campaignId);
     const read = await readSheetViaScript(sandbox.id, doc.profileDirectory, url);
     const sender = String(doc.profileGmail || "the sender").trim();
@@ -1291,7 +1330,7 @@ export async function verifyCloudSheet(
   }
 
   const sandbox = await readySandbox(projectId, campaignId);
-  await openChromeProfile(sandbox.id, doc.profileDirectory, url);
+  await openChromeProfile(sandbox.id, doc.profileDirectory || "", url);
   const expected = CLOUD_SHEET_COLUMNS.join(", ");
   const task = `In the Chrome window for profile "${doc.profileDirectory}", open this Google Sheet if it is not already open:
 ${url}
@@ -1986,9 +2025,6 @@ async function assertCampaignReady(projectId: ObjectId, campaignId: string, doc:
   }
   if (!doc.profileGmail || !doc.profileGmail.includes("@")) {
     throw new Error("Sign in the sender and click Check sign-in (step 2) before starting.");
-  }
-  if (!doc.signatureReady) {
-    throw new Error("Save the email signature step first (you can leave it empty)");
   }
   if (!campaignHasPeopleList(doc)) {
     throw new Error("Add people with a CSV or Google Sheet first (step 4).");

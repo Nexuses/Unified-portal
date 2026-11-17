@@ -69,7 +69,7 @@ export function parseCsv(text: string): ParsedCsv {
  */
 export function parseCsvRecords(
   text: string,
-  delimiter: "," | "\t" = ",",
+  delimiter: string = ",",
 ): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -84,13 +84,35 @@ export function parseCsvRecords(
         cell += '"';
         i += 1;
       } else if (char === '"') {
-        quoted = false;
+        // Only a quote before a separator / line end / file end closes the cell; an unescaped
+        // quote inside quoted text (hand-edited files: 5" widget) is kept as text.
+        const next = source[i + 1];
+        let j = i + 1;
+        while (source[j] === " " || source[j] === "\t") j += 1;
+        const after = source[j];
+        if (
+          next === undefined ||
+          next === delimiter ||
+          next === "\n" ||
+          next === "\r" ||
+          after === undefined ||
+          after === delimiter ||
+          after === "\n" ||
+          after === "\r"
+        ) {
+          quoted = false;
+        } else {
+          cell += '"';
+        }
       } else {
         cell += char;
       }
       continue;
     }
-    if (char === '"') {
+    // A quote only opens a quoted cell at the start of the cell; a stray quote mid-cell
+    // (e.g. 5" screen) is kept as text instead of swallowing the rest of the file.
+    if (char === '"' && !cell.trim()) {
+      cell = "";
       quoted = true;
       continue;
     }
