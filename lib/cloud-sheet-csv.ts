@@ -550,7 +550,7 @@ export function buildCloudPitchHtml(
   const markedSignature = cleanedSig
     ? `<div data-cloud-signature="1" style="margin:18px 0 0">${cleanedSig}</div>`
     : "";
-  const html = pitchToHtml(fields.pitch, markedSignature, { emphasize });
+  const html = pitchToHtml(fields.pitch, markedSignature, { emphasize, linkify: true });
   return applyContactVariables(
     html,
     {
