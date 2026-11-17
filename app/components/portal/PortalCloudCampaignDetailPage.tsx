@@ -2,10 +2,14 @@
 
 import Link from "next/link";
 import { Pencil, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import CloudSendersCard from "@/app/components/portal/CloudSendersCard";
 import CloudBoatUsageCard from "@/app/components/portal/CloudBoatUsageCard";
 import CloudCampaignRunPanel from "@/app/components/portal/CloudCampaignRunPanel";
+import CloudCampaignReport from "@/app/components/portal/CloudCampaignReport";
+import CloudSchedulePanel from "@/app/components/portal/CloudSchedulePanel";
+import CloudAttachmentsPanel from "@/app/components/portal/CloudAttachmentsPanel";
+import type { CloudSchedule } from "@/lib/cloud-schedule";
 import CloudColumnMapPanel, {
   type CloudRowPreview,
 } from "@/app/components/portal/CloudColumnMapPanel";
@@ -42,8 +46,42 @@ import { useRouter } from "next/navigation";
 type StepId = "computer" | "sender" | "signature" | "sheet" | "review";
 
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * CSV files from Excel are often not UTF-8 (UTF-16 "Unicode text", or Windows-1252), which
+ * shows up as garbled names. Pick the encoding from the bytes.
+ */
+function decodeCsvBytes(bytes: Uint8Array) {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return new TextDecoder("windows-1252").decode(bytes);
+  }
+}
+
+/** Plain-language reason a test email didn't go out. */
+function testFailureText(sender: Record<string, unknown>) {
+  const code = String(sender.code || "error");
+  const detail = sender.message ? ` (${String(sender.message).slice(0, 140)})` : "";
+  const reasons: Record<string, string> = {
+    LOGIN_REQUIRED: "The sender Chrome is signed out. Open it in step 2, sign in, click Check sign-in, then try again.",
+    WRONG_ACCOUNT: `The sender Chrome is signed in to a different account${detail}. Sign in as the sender in step 2.`,
+    BODY_VERIFY_FAILED: `The email body didn't paste correctly${detail}. Try again; if it repeats, preview row 1 in step 4.`,
+    BODY_INSERT_FAILED: "The email body couldn't be pasted. Try again in a moment.",
+    COMPOSE_NOT_LOADED: "The compose window didn't open in time. Try again in a moment.",
+    GMAIL_NOT_LOADED: "Gmail didn't load in time on the computer. Try again in a moment.",
+    OUTLOOK_NOT_LOADED: "Outlook didn't load in time on the computer. Try again in a moment.",
+    CDP_UNREACHABLE: "The sender Chrome wasn't responding. Try again; it restarts on its own.",
+    CHROME_START_FAILED: "The sender Chrome couldn't start. Try again in a moment.",
+    ATTACHMENT_NOT_READY: "The attachments didn't finish uploading in time. Try again, or use smaller files.",
+    ATTACH_INPUT_MISSING: "The attach button wasn't found in the compose window. Try again in a moment.",
+    SCRIPT_TIMEOUT: "The computer took too long. Check the sender's Sent folder before trying again.",
+    SEND_UNCONFIRMED: "Send was pressed but the email isn't in Sent yet. Check Sent before trying again, so it isn't sent twice.",
+    BUSY: "The cloud computer is busy sending a campaign. Try the test when it pauses.",
+  };
+  return `Test email was not sent. ${reasons[code] || `${code}${detail}.`}`;
 }
 
 function authModeFromAction(data: Record<string, unknown>): CloudAuthMode | null {
@@ -87,9 +125,7 @@ export default function PortalCloudCampaignDetailPage({
   const [renamingProfileId, setRenamingProfileId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [confirm, confirmDialog] = useConfirmDialog();
-  const tickBusy = useRef(false);
-  // Bumped after restart/resume so the send loop starts again even if status stayed "sending".
-  const [tickEpoch, setTickEpoch] = useState(0);
+  const [view, setView] = useState<"setup" | "report">("setup");
 
   function openDesktopForLogin(url?: string) {
     if (url) setDesktopUrl(url);
@@ -212,93 +248,23 @@ export default function PortalCloudCampaignDetailPage({
     selectedProfileEmail,
   ]);
 
+  // Sending runs on the server (lib/cloud-send-worker). While a campaign is sending or
+  // scheduled, mirror its live state into the page and surface when it stops.
   useEffect(() => {
-    if (!campaign || campaign.status !== "sending") return;
-    let cancelled = false;
-    async function loop() {
-      while (!cancelled) {
-        if (tickBusy.current) {
-          await sleep(2000);
-          continue;
-        }
-        tickBusy.current = true;
-        try {
-          const data = await runCloudCampaignAction(campaignId, "tick");
-          if (typeof data.desktopUrl === "string" && data.desktopUrl) {
-            setDesktopUrl(data.desktopUrl);
-          }
-          if (data.campaign && typeof data.campaign === "object") {
-            const next = data.campaign as CloudCampaign;
-            setCampaign(next);
-            if (typeof next.gapMinutes === "number" && Number.isFinite(next.gapMinutes)) {
-              setGapMinutes(Math.max(0, Math.min(120, Math.round(next.gapMinutes))));
-            }
-            if (next.status === "paused") {
-              setNotice(
-                next.lastError ||
-                  (typeof data.report === "string" && data.report.trim()
-                    ? data.report.trim().slice(0, 400)
-                    : "Sending paused."),
-              );
-              break;
-            }
-          }
-          if (needsInteractiveLogin(data)) {
-            const blocked = authModeFromAction(data);
-            if (blocked) setAuthMode(blocked);
-            openDesktopForLogin(
-              typeof data.desktopUrl === "string" ? data.desktopUrl : undefined,
-            );
-            setNotice(
-              "Sign in on the full-screen computer, then click “I’ve signed in — check inbox”. Resume sending after the inbox is confirmed.",
-            );
-            break;
-          }
-          if (data.done === true) {
-            setNotice("All rows finished.");
-            break;
-          }
-          const gapRaw = Number(
-            (data.campaign as CloudCampaign | undefined)?.gapMinutes ?? gapMinutes,
-          );
-          const gap = Number.isFinite(gapRaw) ? Math.max(0, gapRaw) : 0;
-          // 0-minute gap: brief pause only so the UI can breathe between ticks.
-          await sleep(gap > 0 ? gap * 60_000 : 2_000);
-        } catch (error) {
-          setNotice(error instanceof Error ? error.message : "Send tick failed");
-          break;
-        } finally {
-          tickBusy.current = false;
-        }
-      }
-    }
-    void loop();
-    return () => {
-      cancelled = true;
-    };
-  }, [campaign?.status, campaignId, gapMinutes, tickEpoch]);
-
-  // While sending, mirror the server's live progress (row, counts, current step) into the page.
-  useEffect(() => {
-    if (campaign?.status !== "sending") return;
+    if (campaign?.status !== "sending" && campaign?.status !== "scheduled") return;
     let cancelled = false;
     const timer = window.setInterval(() => {
       void fetchCloudCampaign(campaignId)
         .then((next) => {
           if (cancelled) return;
-          setCampaign((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  lastReport: next.lastReport,
-                  lastError: next.lastError,
-                  nextRow: next.nextRow,
-                  sentCount: next.sentCount,
-                  failedCount: next.failedCount,
-                  sendLog: next.sendLog,
-                }
-              : prev,
-          );
+          setCampaign((prev) => {
+            if (prev && prev.status !== next.status) {
+              if (next.status === "paused") setNotice(next.lastError || "Sending paused.");
+              if (next.status === "sent") setNotice("All rows finished.");
+              if (next.status === "sending" && prev.status === "scheduled") setNotice("Scheduled campaign started.");
+            }
+            return next;
+          });
         })
         .catch(() => undefined);
     }, 4000);
@@ -543,6 +509,47 @@ export default function PortalCloudCampaignDetailPage({
     });
   }
 
+  async function saveSchedule(schedule: CloudSchedule) {
+    await withBusy("Saving schedule…", async () => {
+      const next = await patchCloudCampaign(campaignId, { schedule });
+      setCampaign(next);
+      setNotice(
+        schedule.startAt
+          ? "Schedule saved. Click Schedule to queue it, or Start now to begin within the allowed days and hours."
+          : "Schedule saved. Emails only go out on the allowed days and hours.",
+      );
+    });
+  }
+
+  async function scheduleSending() {
+    await withBusy("Scheduling…", async () => {
+      const data = await runCloudCampaignAction(campaignId, "schedule");
+      if (data.campaign) setCampaign(data.campaign as CloudCampaign);
+      setNotice("Scheduled. It starts on its own — you can close this page.");
+    });
+  }
+
+  async function cancelSchedule() {
+    await withBusy("Cancelling schedule…", async () => {
+      const data = await runCloudCampaignAction(campaignId, "cancel_schedule");
+      if (data.campaign) setCampaign(data.campaign as CloudCampaign);
+      setNotice("Schedule cancelled.");
+    });
+  }
+
+  async function checkInboxNow(): Promise<string> {
+    const data = await runCloudCampaignAction(campaignId, "check_inbox");
+    if (data.campaign) setCampaign(data.campaign as CloudCampaign);
+    const inbox = (data.inbox || {}) as { checked?: number; newReplies?: number; newBounces?: number };
+    const checked = inbox.checked ?? 0;
+    return `Checked ${checked} address${checked === 1 ? "" : "es"}: ${inbox.newReplies ?? 0} new repl${inbox.newReplies === 1 ? "y" : "ies"}, ${inbox.newBounces ?? 0} new bounce${inbox.newBounces === 1 ? "" : "s"}.`;
+  }
+
+  async function saveTracking(patch: { trackOpens?: boolean; trackClicks?: boolean; unsubscribeFooter?: boolean }) {
+    const next = await patchCloudCampaign(campaignId, patch);
+    setCampaign(next);
+  }
+
   async function saveColumnMap(map: CloudColumnMap) {
     await withBusy("Saving column mapping…", async () => {
       const data = await runCloudCampaignAction(campaignId, "save_column_map", { columnMap: map });
@@ -607,29 +614,37 @@ export default function PortalCloudCampaignDetailPage({
         );
         return;
       }
-      setNotice(
-        `Test email was not sent (${String(sender.code || "error")}${
-          sender.message ? `: ${String(sender.message).slice(0, 160)}` : ""
-        }).`,
-      );
+      setNotice(testFailureText(sender));
     });
   }
 
   async function uploadCsv(file: File) {
-    if (file.size > 2_000_000) {
-      setNotice("That CSV is larger than 2 MB. Split it into smaller files.");
+    const isExcel = /\.xlsx$/i.test(file.name);
+    if (/\.xls$/i.test(file.name)) {
+      setNotice("Old .xls files aren't supported. In Excel, save it as .xlsx or CSV and upload again.");
       return;
     }
-    await withBusy("Reading the CSV…", async () => {
-      const csvText = await file.text();
-      const data = await runCloudCampaignAction(campaignId, "verify_csv", {
-        csvText,
-        fileName: file.name,
-      });
+    if (file.size > (isExcel ? 5_000_000 : 2_000_000)) {
+      setNotice(`That file is larger than ${isExcel ? 5 : 2} MB. Split it into smaller files.`);
+      return;
+    }
+    await withBusy(isExcel ? "Reading the Excel file…" : "Reading the CSV…", async () => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const payload: Record<string, string> = { fileName: file.name };
+      if (isExcel) {
+        let binary = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        }
+        payload.xlsxBase64 = btoa(binary);
+      } else {
+        payload.csvText = decodeCsvBytes(bytes);
+      }
+      const data = await runCloudCampaignAction(campaignId, "verify_csv", payload);
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
       const missing = Array.isArray(data.missingExpected) ? (data.missingExpected as string[]) : [];
       setNotice(
-        `CSV ready: ${String(data.rowCount ?? 0)} people · columns ${
+        `List ready: ${String(data.rowCount ?? 0)} people · columns ${
           Array.isArray(data.headers) ? (data.headers as string[]).join(", ") : ""
         }${missing.length ? `. Missing recommended: ${missing.join(", ")}` : ""}.`,
       );
@@ -775,7 +790,7 @@ export default function PortalCloudCampaignDetailPage({
     await withBusy("Starting send…", async () => {
       const data = await runCloudCampaignAction(campaignId, "start");
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
-      setNotice("Sending started. The computer will email one row at a time.");
+      setNotice("Sending started on the server — one email at a time. You can close this page.");
     });
   }
 
@@ -791,7 +806,6 @@ export default function PortalCloudCampaignDetailPage({
     await withBusy("Resuming…", async () => {
       const data = await runCloudCampaignAction(campaignId, "resume");
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
-      setTickEpoch((value) => value + 1);
       setNotice("Resumed from the next people row.");
     });
   }
@@ -811,7 +825,6 @@ export default function PortalCloudCampaignDetailPage({
           setGapMinutes(Math.max(0, Math.min(120, Math.round(next.gapMinutes))));
         }
       }
-      setTickEpoch((value) => value + 1);
       setNotice("Restarted from row 1. Sending…");
     });
   }
@@ -856,6 +869,41 @@ export default function PortalCloudCampaignDetailPage({
     stepsDone.signature,
     stepsDone.sheet,
   ].filter(Boolean).length;
+  // Steps unlock one at a time: each needs every earlier step fully done.
+  const STEP_NAMES: Record<Exclude<StepId, "review">, string> = {
+    computer: "1 (Computer)",
+    sender: "2 (Email sender — signed in and checked)",
+    signature: "3 (Signature — save it, even if empty)",
+    sheet: "4 (People — list added and columns mapped)",
+  };
+  const stepComplete: Record<Exclude<StepId, "review">, boolean> = {
+    computer: stepsDone.computer,
+    sender: stepsDone.senderVerified,
+    signature: stepsDone.signature,
+    sheet: stepsDone.sheet,
+  };
+  const STEP_ORDER: StepId[] = ["computer", "sender", "signature", "sheet", "review"];
+  /** The first earlier step that isn't finished, or null when this step is open to use. */
+  const blockingStep = (step: StepId) => {
+    for (const earlier of STEP_ORDER.slice(0, STEP_ORDER.indexOf(step))) {
+      const key = earlier as Exclude<StepId, "review">;
+      if (!stepComplete[key]) return key;
+    }
+    return null;
+  };
+  const goToStep = (step: StepId) => {
+    const blocker = blockingStep(step);
+    if (blocker) {
+      setNotice(`Finish step ${STEP_NAMES[blocker]} first.`);
+      setOpenStep(blocker);
+      return;
+    }
+    setOpenStep(step);
+  };
+  const lockedLabel = (step: StepId) => {
+    const blocker = blockingStep(step);
+    return blocker ? `Locked · finish step ${STEP_ORDER.indexOf(blocker) + 1}` : null;
+  };
   const blockedReason = !stepsDone.computer
     ? "start the computer (step 1)."
     : !stepsDone.senderVerified
@@ -864,8 +912,8 @@ export default function PortalCloudCampaignDetailPage({
         ? "save the signature step — it can be empty (step 3)."
         : !stepsDone.sheet
           ? campaign.sheetVerifiedAt
-            ? "check the column mapping — email, subject and body must be mapped (step 4)."
-            : "add people with a CSV or Google Sheet (step 4)."
+            ? "map the email, subject and body columns (step 4)."
+            : "add people with a CSV, Excel file or Google Sheet (step 4)."
           : undefined;
   const signaturePreview = cleanSignatureHtml(signatureHtml);
   const sheetHeaders = campaign.sheetHeaders ?? [];
@@ -906,6 +954,28 @@ export default function PortalCloudCampaignDetailPage({
         {notice ? <div className="cloud-notice">{notice}</div> : null}
         {busy ? <div className="cloud-busy">{busy}</div> : null}
 
+        <div className="cloud-view-tabs" role="tablist" aria-label="Campaign view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "setup"}
+            className={view === "setup" ? "is-active" : ""}
+            onClick={() => setView("setup")}
+          >
+            Setup
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "report"}
+            className={view === "report" ? "is-active" : ""}
+            onClick={() => setView("report")}
+          >
+            Report
+            {campaign.sentCount > 0 ? <span>{campaign.sentCount}</span> : null}
+          </button>
+        </div>
+
         <CloudCampaignRunPanel
           campaign={campaign}
           busy={Boolean(busy)}
@@ -931,14 +1001,38 @@ export default function PortalCloudCampaignDetailPage({
           onClearLog={() => void clearSendLog()}
           onSendTest={(to) => void sendTestToSelf(to)}
           canTest={stepsDone.senderVerified && stepsDone.sheet}
+          canSchedule={Boolean(
+            campaign.schedule?.startAt && new Date(campaign.schedule.startAt).getTime() > Date.now() + 60_000,
+          )}
+          onSchedule={() => void scheduleSending()}
+          onCancelSchedule={() => void cancelSchedule()}
+          scheduleSlot={
+            <CloudSchedulePanel
+              key={`${campaign.status}-${campaign.schedule?.timezone || ""}-${campaign.schedule?.startAt || ""}`}
+              schedule={campaign.schedule}
+              nextSendAt={campaign.nextSendAt}
+              status={campaign.status}
+              busy={Boolean(busy)}
+              onSave={saveSchedule}
+            />
+          }
         />
 
+        {view === "report" ? (
+          <CloudCampaignReport
+            campaignId={campaignId}
+            campaignName={campaign.name}
+            sending={campaign.status === "sending"}
+            onCheckInbox={checkInboxNow}
+            onTrackingChange={saveTracking}
+          />
+        ) : (
         <div className="drip-setup-card drip-setup-card-active">
           <div className="drip-setup-intro">
             <div className="drip-setup-intro-copy">
               <strong>Set up this cloud campaign</strong>
               <span>
-                Five quick steps, then start from the panel above. Recommended people columns:{" "}
+                Five steps, in order — each unlocks when the one before it is fully done. Recommended people columns:{" "}
                 {CLOUD_SHEET_COLUMNS.join(", ")}.
               </span>
             </div>
@@ -977,22 +1071,23 @@ export default function PortalCloudCampaignDetailPage({
 
             <section
               className={`cloud-step${openStep === "sender" ? " open" : ""}${
-                stepsDone.senderVerified ? " done" : ""
-              }`}
+                stepsDone.senderVerified && !blockingStep("sender") ? " done" : ""
+              }${blockingStep("sender") ? " locked" : ""}`}
             >
-              <button type="button" className="cloud-step-head" onClick={() => setOpenStep("sender")}>
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.senderVerified ? "✓" : "2"}</i>Email sender</span>
+              <button type="button" className="cloud-step-head" onClick={() => goToStep("sender")}>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.senderVerified && !blockingStep("sender") ? "✓" : "2"}</i>Email sender</span>
                 <em>
-                  {!campaign.profileId
+                  {lockedLabel("sender") ||
+                    (!campaign.profileId
                     ? "Pick profile"
                     : stepsDone.senderVerified
                       ? `${formatCloudSenderProvider(campaign.profileProvider)} · ${
                           selectedProfile?.label || campaign.profileGmail
                         }`
-                      : "Selected — confirm inbox"}
+                      : "Selected — confirm inbox")}
                 </em>
               </button>
-              {openStep === "sender" ? (
+              {openStep === "sender" && !blockingStep("sender") ? (
                 <div className="cloud-step-body">
                   <p>
                     Each sender has its own Chrome on the computer. Sign in once (Take control →
@@ -1283,32 +1378,22 @@ export default function PortalCloudCampaignDetailPage({
             </section>
 
             <section
-              className={`cloud-step${openStep === "signature" ? " open" : ""}${stepsDone.signature ? " done" : ""}`}
+              className={`cloud-step${openStep === "signature" ? " open" : ""}${stepsDone.signature && !blockingStep("signature") ? " done" : ""}${
+                blockingStep("signature") ? " locked" : ""
+              }`}
             >
               <button
                 type="button"
                 className="cloud-step-head"
-                onClick={() => {
-                  if (!stepsDone.sender) {
-                    setNotice("Pick a sender first, then add a signature.");
-                    setOpenStep("sender");
-                    return;
-                  }
-                  setOpenStep("signature");
-                }}
+                onClick={() => goToStep("signature")}
               >
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.signature ? "✓" : "3"}</i>Signature</span>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.signature && !blockingStep("signature") ? "✓" : "3"}</i>Signature &amp; attachments</span>
                 <em>
-                  {!stepsDone.sender
-                    ? "Locked until sender selected"
-                    : stepsDone.signature
-                      ? signaturePreview
-                        ? "Saved"
-                        : "None"
-                      : "HTML code"}
+                  {lockedLabel("signature") ||
+                    (stepsDone.signature ? (signaturePreview ? "Saved" : "None") : "Save to continue (can be empty)")}
                 </em>
               </button>
-              {openStep === "signature" && stepsDone.sender ? (
+              {openStep === "signature" && !blockingStep("signature") ? (
                 <div className="cloud-step-body">
                   <p>
                     Paste signature HTML for this campaign. It is appended under each pitch when
@@ -1371,42 +1456,39 @@ export default function PortalCloudCampaignDetailPage({
                       Save &amp; continue
                     </button>
                   </div>
+                  <CloudAttachmentsPanel
+                    campaign={campaign}
+                    disabled={Boolean(busy)}
+                    onChange={setCampaign}
+                    onError={setNotice}
+                  />
                 </div>
               ) : null}
             </section>
 
-            <section className={`cloud-step${openStep === "sheet" ? " open" : ""}${stepsDone.sheet ? " done" : ""}`}>
+            <section
+              className={`cloud-step${openStep === "sheet" ? " open" : ""}${stepsDone.sheet && !blockingStep("sheet") ? " done" : ""}${
+                blockingStep("sheet") ? " locked" : ""
+              }`}
+            >
               <button
                 type="button"
                 className="cloud-step-head"
-                onClick={() => {
-                  if (!stepsDone.sender) {
-                    setNotice("Pick a sender first, then continue.");
-                    setOpenStep("sender");
-                    return;
-                  }
-                  if (!stepsDone.signature) {
-                    setNotice("Save the signature step first (you can leave it empty).");
-                    setOpenStep("signature");
-                    return;
-                  }
-                  setOpenStep("sheet");
-                }}
+                onClick={() => goToStep("sheet")}
               >
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.sheet ? "✓" : "4"}</i>People</span>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.sheet && !blockingStep("sheet") ? "✓" : "4"}</i>People</span>
                 <em>
-                  {!stepsDone.sender || !stepsDone.signature
-                    ? "Locked until earlier steps done"
-                    : stepsDone.sheet
+                  {lockedLabel("sheet") ||
+                    (stepsDone.sheet
                       ? campaign.columnStats
                         ? `${campaign.columnStats.ready}/${campaign.columnStats.total} ready`
                         : `${campaign.sheetRowCount} rows`
                       : campaign.sheetVerifiedAt
                         ? "Map columns"
-                        : "Add people"}
+                        : "Add people")}
                 </em>
               </button>
-              {openStep === "sheet" && stepsDone.sender && stepsDone.signature ? (
+              {openStep === "sheet" && !blockingStep("sheet") ? (
                 <div className="cloud-step-body">
                   <p>
                     Upload a CSV, or paste a Google Sheet. A sheet shared as “anyone with the link
@@ -1416,14 +1498,14 @@ export default function PortalCloudCampaignDetailPage({
                   </p>
                   <label className="crm-field">
                     <span>
-                      Upload CSV
+                      Upload CSV or Excel
                       {campaign.sheetSource === "csv" && campaign.sheetFileName
                         ? ` · current: ${campaign.sheetFileName} (${campaign.sheetRowCount ?? 0} rows)`
                         : ""}
                     </span>
                     <input
                       type="file"
-                      accept=".csv,text/csv"
+                      accept=".csv,.tsv,.txt,.xlsx,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                       disabled={Boolean(busy)}
                       onChange={(event) => {
                         const file = event.target.files?.[0];
@@ -1470,18 +1552,23 @@ export default function PortalCloudCampaignDetailPage({
                 </div>
               ) : null}
             </section>
-            <section className={`cloud-step${openStep === "review" ? " open" : ""}${stepsDone.review ? " done" : ""}`}>
-              <button type="button" className="cloud-step-head" onClick={() => setOpenStep("review")}>
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review ? "✓" : "5"}</i>Review &amp; start</span>
+            <section
+              className={`cloud-step${openStep === "review" ? " open" : ""}${stepsDone.review && !blockingStep("review") ? " done" : ""}${
+                blockingStep("review") ? " locked" : ""
+              }`}
+            >
+              <button type="button" className="cloud-step-head" onClick={() => goToStep("review")}>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review && !blockingStep("review") ? "✓" : "5"}</i>Review &amp; start</span>
                 <em>
-                  {stepsDone.review
+                  {lockedLabel("review") ||
+                    (stepsDone.review
                     ? "Ready"
                     : stepsDone.sender && !stepsDone.senderVerified
                       ? "Confirm inbox to start"
-                      : "Finish setup"}
+                      : "Finish setup")}
                 </em>
               </button>
-              {openStep === "review" ? (
+              {openStep === "review" && !blockingStep("review") ? (
                 <div className="cloud-step-body">
                   {stepsDone.sender && !stepsDone.senderVerified ? (
                     <p className="cloud-auth-hint">
@@ -1538,6 +1625,7 @@ export default function PortalCloudCampaignDetailPage({
             </section>
           </div>
         </div>
+        )}
       </div>
 
       {confirmDialog}

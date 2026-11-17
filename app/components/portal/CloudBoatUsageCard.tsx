@@ -33,6 +33,7 @@ export default function CloudBoatUsageCard({ days = 30 }: { days?: number }) {
   }, [days]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
     const timer = window.setInterval(() => void refresh(), 60_000);
     return () => window.clearInterval(timer);
@@ -41,7 +42,7 @@ export default function CloudBoatUsageCard({ days = 30 }: { days?: number }) {
   if (error) {
     return (
       <div className="cloud-usage-card cloud-usage-card-muted">
-        <strong>Computer cost</strong>
+        <strong>Cloud campaign cost</strong>
         <span>{error}</span>
       </div>
     );
@@ -50,7 +51,7 @@ export default function CloudBoatUsageCard({ days = 30 }: { days?: number }) {
   if (!usage) {
     return (
       <div className="cloud-usage-card cloud-usage-card-muted">
-        <strong>Computer cost</strong>
+        <strong>Cloud campaign cost</strong>
         <span>{message || "Loading…"}</span>
       </div>
     );
@@ -72,7 +73,7 @@ export default function CloudBoatUsageCard({ days = 30 }: { days?: number }) {
         aria-expanded={open}
       >
         <span className="cloud-usage-label">
-          <strong>Computer cost</strong>
+          <strong>Cloud campaign cost</strong>
           <small>
             <span className={`cloud-machine-pill${running ? " is-on" : ""}`}>{stateLabel}</span>
             {" · "}
@@ -85,26 +86,25 @@ export default function CloudBoatUsageCard({ days = 30 }: { days?: number }) {
         <div className="cloud-usage-detail">
           <ul>
             <li>
-              <span>Claude tokens (est.)</span>
-              <strong>{formatUsd(usage.claudeEstimatedUsd)}</strong>
-            </li>
-            <li>
-              <span>Boat AI proxy</span>
-              <strong>{formatUsd(usage.boatProxyUsd)}</strong>
-            </li>
-            <li>
-              <span>Boat machine time</span>
+              <span>Computer time</span>
               <strong>{formatUsd(usage.boatMachineUsd)}</strong>
+            </li>
+            <li>
+              <span>Saved backup</span>
+              <strong>{usage.backupIncluded !== false ? "Included" : formatUsd(usage.backupUsd ?? 0)}</strong>
+            </li>
+            <li>
+              <span>AI</span>
+              <strong>{formatUsd(usage.claudeEstimatedUsd + usage.boatProxyUsd)}</strong>
             </li>
           </ul>
           <p className="cloud-muted">
-            {formatTokenCount(usage.inputTokens)} in · {formatTokenCount(usage.outputTokens)} out
-            {usage.cacheReadTokens
-              ? ` · ${formatTokenCount(usage.cacheReadTokens)} cache read`
+            This project&apos;s cloud campaigns only — their own computer
+            {usage.computers && usage.computers > 1 ? ` (${usage.computers} over time)` : ""}, separate
+            from the assistant and LinkedIn. Sending uses no AI.
+            {usage.requests
+              ? ` ${usage.requests} AI requests (${formatTokenCount(usage.inputTokens)} in · ${formatTokenCount(usage.outputTokens)} out) came from the optional agent fallback.`
               : ""}
-            {" · "}
-            {usage.requests} requests
-            {usage.models.length ? ` · ${usage.models.join(", ")}` : ""}
           </p>
           <p className="cloud-muted">
             {running
@@ -113,10 +113,7 @@ export default function CloudBoatUsageCard({ days = 30 }: { days?: number }) {
             {" "}
             Idle computers stop after about 30 minutes with no work (unless a campaign holds the lock).
           </p>
-          <p className="cloud-muted">
-            Claude $ is estimated from Boat-reported tokens (list prices). Exact Anthropic billing
-            stays on your Claude account.
-          </p>
+
         </div>
       ) : null}
     </div>

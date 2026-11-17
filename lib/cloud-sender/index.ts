@@ -16,6 +16,15 @@ const TOOLKIT_DIR = "$HOME/nexuses-sender";
 const CHROME_ROOT = "$HOME/.nexuses-chrome";
 const BASE_PORT = 9301;
 
+export type SenderCommand =
+  | "version"
+  | "check"
+  | "send"
+  | "find_sent"
+  | "read_sheet"
+  | "probe_outlook"
+  | "inbox_scan";
+
 export type SenderResult = {
   ok: boolean;
   status?: string;
@@ -93,6 +102,10 @@ export async function ensureSenderChrome(
   const command = [
     `if ${probe}; then echo chrome-running; exit 0; fi;`,
     `mkdir -p ${dir};`,
+    // A computer that resumed on another machine (or was rebuilt from backup) keeps Chrome's
+    // profile lock from the old host, and Chrome then refuses to start. Clear it, but only
+    // when no Chrome here is using this profile.
+    `if ! pgrep -f -- "--user-data-dir=${dir}" >/dev/null 2>&1; then rm -f ${dir}/SingletonLock ${dir}/SingletonSocket ${dir}/SingletonCookie; fi;`,
     `DISPLAY=:0 nohup google-chrome-stable --user-data-dir=${dir} --remote-debugging-port=${port}`,
     `  --remote-debugging-address=127.0.0.1 --no-first-run --no-default-browser-check`,
     `  --disable-dev-shm-usage --password-store=basic --window-size=1400,950 ${shellQuote(openUrl)}`,
@@ -110,40 +123,76 @@ export async function ensureSenderChrome(
   };
 }
 
-/** Run one sender script command and parse its single NXS_RESULT line. */
+/**
+ * Run one sender script command on the VM and parse its NXS_RESULT line.
+ * `background: true` runs it detached and polls for the result, so long jobs (sends with
+ * attachments) aren't cut off by the per-command time limit.
+ */
 export async function runSenderScript(
   sandboxId: string,
-  command: "version" | "check" | "send" | "find_sent" | "read_sheet" | "probe_outlook",
+  command: SenderCommand,
   args: Record<string, unknown>,
   timeoutSeconds = 85,
+  options: { background?: boolean } = {},
 ): Promise<SenderResult> {
   const budgetMs = Math.max(10, timeoutSeconds - 5) * 1000;
   const argsB64 = Buffer.from(JSON.stringify({ ...args, timeoutMs: budgetMs }), "utf8").toString(
     "base64",
   );
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   // Args go through a heredoc file, not argv/env, so big HTML bodies never hit size limits.
-  const argsFile = `/tmp/nexuses-sender-args-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.b64`;
+  const argsFile = `/tmp/nexuses-sender-args-${id}.b64`;
+  const outFile = `/tmp/nexuses-sender-out-${id}.txt`;
   const wrapped = argsB64.replace(/(.{1,76})/g, "$1\n");
-  const shell = [
-    `cat > ${argsFile} <<'NXS_ARGS_EOF'`,
-    wrapped.trimEnd(),
-    `NXS_ARGS_EOF`,
-    `cd ${TOOLKIT_DIR} && SENDER_ARGS_FILE=${argsFile} timeout ${Math.ceil(budgetMs / 1000) + 3} node sender.mjs ${command} 2>/tmp/nexuses-sender-last.err; rm -f ${argsFile}`,
-  ].join("\n");
-  try {
-    const result = await runBoatCommand(sandboxId, shell, timeoutSeconds);
-    const line = result.stdout
+  const writeArgs = [`cat > ${argsFile} <<'NXS_ARGS_EOF'`, wrapped.trimEnd(), `NXS_ARGS_EOF`];
+  const run = `cd ${TOOLKIT_DIR} && SENDER_ARGS_FILE=${argsFile} timeout ${Math.ceil(budgetMs / 1000) + 3} node sender.mjs ${command}`;
+
+  const parse = (stdout: string) => {
+    const line = stdout
       .split("\n")
       .reverse()
       .find((entry) => entry.startsWith("NXS_RESULT "));
-    if (!line) {
+    return line ? (JSON.parse(line.slice("NXS_RESULT ".length)) as SenderResult) : null;
+  };
+
+  try {
+    if (!options.background) {
+      const result = await runBoatCommand(
+        sandboxId,
+        [...writeArgs, `${run} 2>/tmp/nexuses-sender-last.err; rm -f ${argsFile}`].join("\n"),
+        timeoutSeconds,
+      );
+      const parsed = parse(result.stdout);
+      if (parsed) return parsed;
       return {
         ok: false,
         code: result.timedOut ? "COMMAND_TIMEOUT" : "NO_RESULT",
         message: (result.stdout || result.stderr || "").trim().slice(-300),
       };
     }
-    return JSON.parse(line.slice("NXS_RESULT ".length)) as SenderResult;
+
+    await runBoatCommand(
+      sandboxId,
+      [
+        ...writeArgs,
+        `nohup sh -c ${shellQuote(`${run} > ${outFile} 2>/tmp/nexuses-sender-last.err; rm -f ${argsFile}`)} >/dev/null 2>&1 &`,
+        `echo started`,
+      ].join("\n"),
+      20,
+    );
+    const deadline = Date.now() + budgetMs + 15_000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const poll = await runBoatCommand(sandboxId, `cat ${outFile} 2>/dev/null | grep NXS_RESULT | tail -1`, 15).catch(
+        () => null,
+      );
+      const parsed = poll ? parse(poll.stdout) : null;
+      if (parsed) {
+        await runBoatCommand(sandboxId, `rm -f ${outFile}`, 10).catch(() => undefined);
+        return parsed;
+      }
+    }
+    return { ok: false, code: "COMMAND_TIMEOUT", message: "No result from the sender in time" };
   } catch (error) {
     return {
       ok: false,
@@ -192,11 +241,37 @@ export type ScriptSendInput = {
   dryRun?: boolean;
   /** Outlook: label to pick when the org requires a sensitivity label. */
   sensitivityLabel?: string;
+  /** Files already on the VM to attach (see ensureAttachmentsOnVm). */
+  attachments?: { path: string; name: string }[];
 };
 
 /** Text fragments the body must contain after insertion (first lines of the pitch). */
+/** Visible text of the HTML we paste (what Gmail/Outlook will show), entities decoded. */
+function htmlVisibleText(html: string) {
+  return String(html || "")
+    .replace(/<\s*(style|script)[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, "")
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/\s*(p|div|li|h[1-6]|tr|ul|ol)\s*>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&");
+}
+
+/**
+ * What to look for in the editor after pasting. Taken from the rendered HTML, not the raw
+ * sheet text: markdown (**bold**, "- " bullets, links) is formatted away when the HTML is
+ * built, so the raw text would never be found and a good email would fail its check.
+ */
 export function bodyExpectations(plain: string, html: string) {
-  const lines = String(plain || "")
+  const source = html ? htmlVisibleText(html) : String(plain || "");
+  const lines = source
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
     .split(/\n+/)
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter((line) => line.length >= 4);
@@ -236,10 +311,13 @@ export async function sendViaScript(
       dupCheck: Boolean(input.dupCheck),
       sensitivityLabel: input.sensitivityLabel || "",
       dryRun: Boolean(input.dryRun),
+      attachments: input.attachments || [],
       expectText,
       expectStrong,
     },
-    88,
+    // Runs in the background: attachments can push a send past the 90 s command limit.
+    240,
+    { background: true },
   );
 }
 
@@ -322,4 +400,21 @@ export async function probeOutlookViaScript(sandboxId: string, directoryName: st
   const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl("outlook"));
   if (!chrome.ok) return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail };
   return runSenderScript(sandboxId, "probe_outlook", { port: chrome.port, to }, 85);
+}
+
+/** Look in the sender's inbox for replies from, and bounces for, these addresses. Read-only. */
+export async function scanInboxViaScript(
+  sandboxId: string,
+  directoryName: string,
+  provider: SenderProvider,
+  emails: string[],
+  since: string,
+): Promise<SenderResult & { replied?: string[]; bounced?: string[] }> {
+  const toolkit = await ensureSenderToolkit(sandboxId);
+  if (!toolkit.ok) return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail };
+  const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl(provider));
+  if (!chrome.ok) return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail };
+  return runSenderScript(sandboxId, "inbox_scan", { port: chrome.port, provider, emails, since }, 88) as Promise<
+    SenderResult & { replied?: string[]; bounced?: string[] }
+  >;
 }

@@ -1,9 +1,10 @@
 import type { CloudColumnMap, CloudColumnStats } from "@/lib/cloud-sheet-csv";
+import type { CloudSchedule } from "@/lib/cloud-schedule";
 /** Cloud campaigns send from Gmail or Outlook on the project's Boat desktop. */
 
 export type CloudSenderProvider = "gmail" | "outlook";
 
-export type CloudCampaignStatus = "draft" | "ready" | "sending" | "paused" | "sent";
+export type CloudCampaignStatus = "draft" | "ready" | "scheduled" | "sending" | "paused" | "sent";
 
 export function cloudMailInboxUrl(provider: CloudSenderProvider) {
   return provider === "outlook" ? "https://outlook.office.com/mail/" : "https://mail.google.com/";
@@ -89,6 +90,15 @@ export type CloudCampaign = {
   /** Which people-list column feeds each email field, and how many rows are ready. */
   columnMap?: CloudColumnMap;
   columnStats?: CloudColumnStats;
+  trackOpens?: boolean;
+  trackClicks?: boolean;
+  unsubscribeFooter?: boolean;
+  inboxCheckedAt?: string;
+  /** Start time, timezone, excluded weekdays and daily window. */
+  schedule?: CloudSchedule;
+  /** When the server will send the next email (respects gap, days and window). */
+  nextSendAt?: string;
+  attachments?: { id: string; name: string; size: number; type: string }[];
   sheetVerifiedAt?: string;
   computerReady?: boolean;
   gapMinutes: number;
@@ -108,6 +118,8 @@ export function formatCloudStatus(status: CloudCampaignStatus) {
       return "Draft";
     case "ready":
       return "Ready";
+    case "scheduled":
+      return "Scheduled";
     case "sending":
       return "Sending";
     case "paused":
@@ -127,6 +139,13 @@ export function formatCloudCampaignStatus(campaign: CloudCampaign) {
         detail: campaign.sheetRowCount
           ? `${campaign.sheetRowCount} people in sheet`
           : "Setup complete",
+      };
+    case "scheduled":
+      return {
+        label: "Scheduled",
+        detail: campaign.schedule?.startAt
+          ? `Starts ${new Date(campaign.schedule.startAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+          : "Starts at the next allowed time",
       };
     case "sending":
       return {
@@ -213,6 +232,10 @@ export async function patchCloudCampaign(
       | "signatureReady"
       | "customPrompt"
       | "customPromptReady"
+      | "trackOpens"
+      | "trackClicks"
+      | "unsubscribeFooter"
+      | "schedule"
     >
   >,
 ): Promise<CloudCampaign> {
@@ -350,6 +373,9 @@ export async function runCloudCampaignAction(
     | "verify_csv"
     | "save_column_map"
     | "preview_row"
+    | "check_inbox"
+    | "schedule"
+    | "cancel_schedule"
     | "tick",
   body?: Record<string, unknown>,
 ) {

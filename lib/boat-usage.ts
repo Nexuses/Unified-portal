@@ -91,4 +91,9 @@ export type BoatUsageSummary = {
   machineState?: string;
   lastBoatActivityAt?: string | null;
   lockedByCampaign?: boolean;
+  /** Saved backup storage for this project (0 while within the plan's included count). */
+  backupUsd?: number;
+  backupIncluded?: boolean;
+  /** Cloud computers this project has used (cost covers all of them). */
+  computers?: number;
 };

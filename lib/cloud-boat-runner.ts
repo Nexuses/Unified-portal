@@ -2,8 +2,8 @@ import { ObjectId } from "mongodb";
 import {
   backupProjectSoon,
   boatConfigured,
-  ensureProjectBoat,
-  getSavedBoatSandboxId,
+  ensureCloudBoat,
+  getCloudBoatMeta,
   isBoatRunning,
   openBoatDesktop,
   refreshBoatTask,
@@ -11,7 +11,7 @@ import {
   interruptBoatAgent,
   runBoatDesktopTask,
   shellQuote,
-  stopProjectBoat,
+  stopCloudBoat,
   type BoatSandbox,
 } from "@/lib/boat";
 import {
@@ -38,10 +38,22 @@ import {
   resolveCloudRowFields,
 } from "@/lib/cloud-sheet-csv";
 import { applyContactVariables } from "@/lib/email-variables";
+import { nextAllowedTime, type CloudSchedule } from "@/lib/cloud-schedule";
+import { ensureAttachmentsOnVm } from "@/lib/cloud-attachments";
+import {
+  cloudSentEmails,
+  deleteCloudSends,
+  discardCloudSend,
+  recordCloudInboxEvents,
+  markCloudSendSent,
+  prepareCloudSend,
+  trackCloudHtml,
+} from "@/lib/cloud-campaign-tracking";
 import {
   prepareAndCheckSender,
   probeOutlookViaScript,
   readSheetViaScript,
+  scanInboxViaScript,
   sendViaScript,
   type SenderResult,
 } from "@/lib/cloud-sender";
@@ -116,31 +128,42 @@ function campaignHasPeopleList(doc: CloudCampaignDoc) {
 
 /** Google's CSV export works without a browser only when the sheet is link-viewable. */
 function googleSheetCsvExportUrl(sheetUrl: string) {
+  const gid = sheetUrl.match(/[#&?]gid=(\d+)/)?.[1];
+  // "Publish to the web" links: /spreadsheets/d/e/<id>/pubhtml
+  const published = sheetUrl.match(/spreadsheets\/d\/e\/([a-zA-Z0-9_-]+)/)?.[1];
+  if (published) {
+    return `https://docs.google.com/spreadsheets/d/e/${published}/pub?output=csv${gid ? `&gid=${gid}` : ""}`;
+  }
   const id = sheetUrl.match(/spreadsheets\/d\/([a-zA-Z0-9_-]+)/)?.[1];
   if (!id) return null;
-  const gid = sheetUrl.match(/[#&?]gid=(\d+)/)?.[1];
   return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv${gid ? `&gid=${gid}` : ""}`;
 }
 
-/** Free read of a shared sheet (no desktop agent, no credits). Null when private or unreachable. */
+/**
+ * Free read of a shared sheet (no computer, no credits). Null when the sheet is private or
+ * unreachable; a sheet that downloads but can't be used throws the real reason.
+ */
 async function tryFetchSheetCsv(sheetUrl: string) {
   const exportUrl = googleSheetCsvExportUrl(sheetUrl);
   if (!exportUrl) return null;
+  let text = "";
   try {
     const response = await fetch(exportUrl, {
       redirect: "follow",
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(20_000),
     });
     if (!response.ok) return null;
     const type = response.headers.get("content-type") || "";
     if (/text\/html/i.test(type)) return null; // login wall
-    const text = await response.text();
-    if (!text.trim() || text.length > CLOUD_CSV_MAX_CHARS) return null;
-    const parsed = parseCloudCsvText(text);
-    return parsed.rowCount > 0 ? parsed : null;
+    text = await response.text();
   } catch {
     return null;
   }
+  if (!text.trim()) throw new Error("The sheet is empty. Check the tab the link points to.");
+  if (text.length > CLOUD_CSV_MAX_CHARS) {
+    throw new Error("The sheet is too large (max about 2MB). Split it or hide long columns.");
+  }
+  return parseCloudCsvText(text);
 }
 
 function parseNeedsLogin(report: string) {
@@ -247,7 +270,7 @@ export async function assertBoatUnlocked(
   if (!lock) return;
   if (allowCampaignId && lock.campaignId === allowCampaignId) return;
   throw new Error(
-    `The LinkedIn computer is busy with cloud campaign "${lock.campaignName}". Pause or finish that campaign first.`,
+    `The cloud computer is busy with campaign "${lock.campaignName}". Stop or finish that campaign first — one campaign sends at a time per project.`,
   );
 }
 
@@ -256,11 +279,11 @@ async function readySandbox(projectId: ObjectId, allowCampaignId?: string) {
     throw new Error("Boat is not set up. An admin needs to add BOAT_API_KEY.");
   }
   await assertBoatUnlocked(projectId, allowCampaignId);
-  // ensureProjectBoat resumes archived disks; poll until running after stop/restart.
-  let sandbox = await ensureProjectBoat(projectId);
+  // Cloud campaigns' own computer; resumes archived disks, poll until running after stop/restart.
+  let sandbox = await ensureCloudBoat(projectId);
   for (let attempt = 0; attempt < 8 && !isBoatRunning(sandbox.state); attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
-    sandbox = await ensureProjectBoat(projectId);
+    sandbox = await ensureCloudBoat(projectId);
   }
   if (!isBoatRunning(sandbox.state)) {
     throw new Error(
@@ -293,7 +316,7 @@ async function runCloudDesktopTask(
 }
 
 async function stopBoatAfterCampaignWork(projectId: ObjectId) {
-  await stopProjectBoat(projectId).catch((error) => {
+  await stopCloudBoat(projectId).catch((error) => {
     console.warn(
       "Could not stop Boat after campaign work:",
       error instanceof Error ? error.message : error,
@@ -513,6 +536,7 @@ const SCRIPT_RETRYABLE = new Set([
   "BODY_INSERT_FAILED",
   "SENT_LIST_NOT_LOADED",
   "NO_BROWSER_CONTEXT",
+  "ATTACHMENT_NOT_READY",
 ]);
 
 function scriptFailureMessage(result: SenderResult, email: string, sender: string) {
@@ -532,6 +556,10 @@ function scriptFailureMessage(result: SenderResult, email: string, sender: strin
       return `Your Outlook organisation requires a sensitivity label on every email. Pick one for this sender in step 2, then Resume. Nothing was sent.`;
     case "SENSITIVITY_LABEL_NOT_FOUND":
       return `The sensitivity label saved for this sender isn't offered by Outlook any more. Pick another in step 2, then Resume. Nothing was sent.`;
+    case "ATTACH_INPUT_MISSING":
+    case "ATTACHMENT_NOT_READY":
+    case "ATTACHMENTS_COPY_FAILED":
+      return `Attachments couldn't be added for ${email}${detail}. Nothing was sent; Resume to retry.`;
     case "TOOLKIT_INSTALL_FAILED":
       return `Could not set up the sender on the computer${detail}. Nothing was sent; Resume to retry.`;
     default:
@@ -556,6 +584,7 @@ async function sendRowWithScript(input: {
   html: string;
   plain: string;
   replaceSignature: boolean;
+  contact: { firstname: string; lastname: string; company: string; position: string };
   phase: (text: string) => Promise<unknown>;
 }) {
   const { projectId, campaignId, doc, sandbox, nextRow, total, to } = input;
@@ -565,12 +594,59 @@ async function sendRowWithScript(input: {
   const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
   await patchCloudCampaignDoc(projectId, campaignId, { inflightRow: nextRow });
 
+  // Tracking record for the Report tab (reused if this row is being retried).
+  const record = await prepareCloudSend({
+    projectId,
+    campaignObjectId: doc._id,
+    campaignId,
+    row: nextRow,
+    email: to,
+    firstName: input.contact.firstname,
+    lastName: input.contact.lastname,
+    companyName: input.contact.company,
+    position: input.contact.position,
+    subject: input.subject,
+  });
+  const trackedHtml = await trackCloudHtml(
+    input.html,
+    record.token,
+    {
+      trackOpens: doc.trackOpens !== false,
+      trackClicks: doc.trackClicks === true,
+      unsubscribeFooter: doc.unsubscribeFooter === true,
+    },
+    doc.name,
+  );
+
+  let attachments: { path: string; name: string }[] = [];
+  if (doc.attachments?.length) {
+    await input.phase(`copying ${doc.attachments.length} attachment(s) to the computer…`);
+    try {
+      attachments = await ensureAttachmentsOnVm(sandbox.id, doc.attachments);
+    } catch (error) {
+      await discardCloudSend(record.sendId);
+      const lastError = scriptFailureMessage(
+        { ok: false, code: "ATTACHMENTS_COPY_FAILED", message: error instanceof Error ? error.message : String(error) },
+        to,
+        sender,
+      );
+      const campaign = await patchCloudCampaignDoc(projectId, campaignId, {
+        status: "paused",
+        lastError,
+        inflightRow: undefined,
+      });
+      await unlockBoatDesktop(projectId, campaignId);
+      return { campaign, sandbox, done: false, needsLogin: false, needsOtp: false, needsUserInput: false, report: lastError };
+    }
+  }
+
   const attempt = (withDupCheck: boolean) =>
     sendViaScript(sandbox.id, doc.profileDirectory || "", {
+      attachments,
       provider: resolveSenderProvider(doc.profileProvider),
       to,
       subject: input.subject,
-      html: input.html,
+      html: trackedHtml,
       plain: input.plain,
       expectedEmail: sender || undefined,
       replaceSignature: input.replaceSignature,
@@ -588,6 +664,16 @@ async function sendRowWithScript(input: {
     await input.phase(`retrying ${to} once (${result.code})…`);
     result = await attempt(dupCheck);
   }
+
+  // Keep the tracking record in step with what really happened.
+  const sentForSure = result.ok && (result.status === "sent" || result.status === "already_sent");
+  const possiblySent =
+    result.sendPressed === true ||
+    result.code === "COMMAND_TIMEOUT" ||
+    result.code === "NO_RESULT" ||
+    result.code === "COMMAND_FAILED";
+  if (sentForSure) await markCloudSendSent(record.sendId);
+  else if (!possiblySent) await discardCloudSend(record.sendId);
 
   // Restart/pause while we were working: don't overwrite that state.
   const fresh = await getCloudCampaignDoc(projectId, campaignId);
@@ -610,7 +696,7 @@ async function sendRowWithScript(input: {
   const definitive = result.ok && (result.status === "sent" || result.status === "already_sent");
   if (!definitive) {
     // sendPressed (or unknown because the command died) => possibly sent: keep in-flight.
-    const maybeSent = result.sendPressed === true || result.code === "COMMAND_TIMEOUT" || result.code === "NO_RESULT" || result.code === "COMMAND_FAILED";
+    const maybeSent = possiblySent;
     const lastError = maybeSent
       ? `Send to ${to} may or may not have gone out (${result.code || "unconfirmed"}). Resume checks ${mailName} Sent first and will not send it twice.`
       : scriptFailureMessage(result, to, sender);
@@ -648,6 +734,7 @@ async function sendRowWithScript(input: {
   const finished = total > 0 && advanced >= total;
   const patch: Partial<CloudCampaignDoc> = {
     nextRow: advanced,
+    lastSentAt: new Date(),
     sentCount: fresh.sentCount + (alreadySent ? 0 : 1),
     sendLog,
     lastReport: `Row ${nextRow + 1}${total ? ` of ${total}` : ""}: ${entry.message}`,
@@ -671,6 +758,59 @@ async function sendRowWithScript(input: {
     needsUserInput: false,
     report: entry.message,
   };
+}
+
+/**
+ * Look in the sender's own inbox for replies from, and bounces for, this campaign's recipients.
+ * Read-only; runs on the email computer through the sender's signed-in Chrome (no AI).
+ */
+export async function checkCloudInbox(projectId: ObjectId, campaignId: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  if (!doc.profileDirectory) throw new Error("This campaign has no sender");
+  if (doc.status === "sending") {
+    throw new Error("Wait until sending stops — replies are checked on the same computer.");
+  }
+  const sent = await cloudSentEmails(projectId, campaignId);
+  if (!sent.length) {
+    await patchCloudCampaignDoc(projectId, campaignId, { inboxCheckedAt: new Date() });
+    return { checked: 0, newReplies: 0, newBounces: 0 };
+  }
+  const earliest = Math.min(...sent.map((s) => (s.sentAt ? new Date(s.sentAt).getTime() : Date.now())));
+  const sinceDate = new Date(earliest - 24 * 60 * 60 * 1000);
+  const since = `${sinceDate.getUTCFullYear()}/${sinceDate.getUTCMonth() + 1}/${sinceDate.getUTCDate()}`;
+  const provider = resolveSenderProvider(doc.profileProvider);
+  // The sender's own address can't "reply" (self-sent tests would all look like replies).
+  const sender = String(doc.profileGmail || "").trim().toLowerCase();
+  const emails = Array.from(new Set(sent.map((s) => s.email))).filter((email) => email !== sender);
+  const chunk = provider === "outlook" ? 8 : 60;
+  const sandbox = await readySandbox(projectId, campaignId);
+  let newReplies = 0;
+  let newBounces = 0;
+  for (let i = 0; i < emails.length; i += chunk) {
+    const result = await scanInboxViaScript(
+      sandbox.id,
+      doc.profileDirectory,
+      provider,
+      emails.slice(i, i + chunk),
+      since,
+    );
+    if (!result.ok) {
+      const reason =
+        result.code === "LOGIN_REQUIRED"
+          ? "The sender Chrome is signed out — sign in (step 2), then check again."
+          : `Couldn't check the inbox (${result.code || "error"}).`;
+      throw new Error(reason);
+    }
+    const counts = await recordCloudInboxEvents(projectId, campaignId, {
+      replied: result.replied || [],
+      bounced: result.bounced || [],
+    });
+    newReplies += counts.replied;
+    newBounces += counts.bounced;
+  }
+  await patchCloudCampaignDoc(projectId, campaignId, { inboxCheckedAt: new Date() });
+  return { checked: emails.length, newReplies, newBounces };
 }
 
 /** Diagnostics: list Outlook compose controls for this campaign's sender (no send). */
@@ -759,6 +899,20 @@ function buildRowEmail(
  * Send row 1's email to the sender's own address through the script sender.
  * dryRun fills and verifies compose without pressing Send.
  */
+/** Failures before Send is pressed that usually pass on a second try. */
+const TRANSIENT_SENDER_CODES = new Set([
+  "CDP_UNREACHABLE",
+  "CHROME_START_FAILED",
+  "GMAIL_NOT_LOADED",
+  "OUTLOOK_NOT_LOADED",
+  "GMAIL_NAVIGATION_FAILED",
+  "OUTLOOK_NAVIGATION_FAILED",
+  "COMPOSE_NOT_LOADED",
+  "BODY_INSERT_FAILED",
+  "BODY_VERIFY_FAILED",
+  "ATTACH_INPUT_MISSING",
+]);
+
 export async function testScriptSend(
   projectId: ObjectId,
   campaignId: string,
@@ -783,17 +937,26 @@ export async function testScriptSend(
   const { fields, html, plain } = buildRowEmail(rowCells, signatureHtml, columnMap);
   const sandbox = await readySandbox(projectId, campaignId);
   const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
-  const result = await sendViaScript(sandbox.id, doc.profileDirectory, {
-    sensitivityLabel: profile?.sensitivityLabel,
-    provider: resolveSenderProvider(doc.profileProvider),
-    to: self,
-    subject: `[Test] ${fields.subject || "Cloud campaign test"}`,
-    html,
-    plain,
-    expectedEmail: sender,
-    replaceSignature: Boolean(signatureHtml),
-    dryRun: Boolean(options.dryRun),
-  });
+  const attachments = doc.attachments?.length ? await ensureAttachmentsOnVm(sandbox.id, doc.attachments) : [];
+  const attempt = () =>
+    sendViaScript(sandbox.id, doc.profileDirectory || "", {
+      attachments,
+      sensitivityLabel: profile?.sensitivityLabel,
+      provider: resolveSenderProvider(doc.profileProvider),
+      to: self,
+      subject: `[Test] ${fields.subject || "Cloud campaign test"}`,
+      html,
+      plain,
+      expectedEmail: sender,
+      replaceSignature: Boolean(signatureHtml),
+      dryRun: Boolean(options.dryRun),
+    });
+  let result = await attempt();
+  // A cold computer or slow Gmail/Outlook load fails the first try now and then. Retry once,
+  // only when Send was never pressed, so a test is never sent twice.
+  if (!result.ok && result.sendPressed !== true && TRANSIENT_SENDER_CODES.has(String(result.code))) {
+    result = await attempt();
+  }
   if (Array.isArray(result.labels) && doc.profileId) {
     await setChromeProfileSensitivity(projectId, doc.profileId, { labels: result.labels as string[] });
   }
@@ -1014,19 +1177,20 @@ Do not create drafts or send mail.`;
 export async function verifyCloudCsv(
   projectId: ObjectId,
   campaignId: string,
-  input: { csvText: string; fileName?: string },
+  input: { csvText?: string; xlsx?: Buffer; fileName?: string },
 ) {
   const doc = await getCloudCampaignDoc(projectId, campaignId);
   if (!doc) {
     throw new Error("Campaign not found");
   }
 
-  const { parseCloudCsvText } = await import("@/lib/cloud-sheet-csv");
-  const parsed = parseCloudCsvText(input.csvText);
+  const parsed = input.xlsx
+    ? await (await import("@/lib/cloud-sheet-xlsx")).parseCloudXlsx(input.xlsx)
+    : parseCloudCsvText(input.csvText || "");
   // The sender's last confirmed mapping is reused when the columns match.
   const senderMap = (await getChromeProfileDefaults(projectId, doc.profileId))?.columnMap;
   const fileName = (input.fileName || "").trim().slice(0, 200) || "upload.csv";
-  const report = `CSV ${fileName}: ${parsed.rowCount} rows · columns ${parsed.headers.join(", ")}`;
+  const report = `${input.xlsx ? "Excel" : "CSV"} ${fileName}: ${parsed.rowCount} rows · columns ${parsed.headers.join(", ")}`;
 
   await patchCloudCampaignDoc(projectId, campaignId, {
     sheetSource: "csv",
@@ -1073,15 +1237,21 @@ export async function verifyCloudSheet(
     throw new Error("Paste a Google Sheet link first");
   }
   const doc = await getCloudCampaignDoc(projectId, campaignId);
-  if (!doc?.profileDirectory) {
-    throw new Error("Pick a sender profile before verifying the sheet");
+  if (!doc) throw new Error("Campaign not found");
+  if (!googleSheetCsvExportUrl(url)) {
+    throw new Error("That doesn't look like a Google Sheets link. Copy it from the sheet's address bar or Share button.");
   }
 
   const senderMap = (await getChromeProfileDefaults(projectId, doc.profileId))?.columnMap;
-  // 1) Link-shared sheets: read server-side. Free, instant.
+  // 1) Link-shared sheets: read server-side. Free, instant, no sender needed.
   // 2) Private sheets: read through the sender's signed-in Chrome as CSV (no AI).
   let exported = await tryFetchSheetCsv(url);
-  if (!exported && process.env.CLOUD_SENDER !== "agent") {
+  if (!exported && !doc.profileDirectory) {
+    throw new Error(
+      "This sheet is private. Set it to “Anyone with the link can view”, upload a CSV, or pick a signed-in sender (step 2) so it can be read as that account.",
+    );
+  }
+  if (!exported && doc.profileDirectory && process.env.CLOUD_SENDER !== "agent") {
     const sandbox = await readySandbox(projectId, campaignId);
     const read = await readSheetViaScript(sandbox.id, doc.profileDirectory, url);
     const sender = String(doc.profileGmail || "the sender").trim();
@@ -1160,7 +1330,7 @@ export async function verifyCloudSheet(
   }
 
   const sandbox = await readySandbox(projectId, campaignId);
-  await openChromeProfile(sandbox.id, doc.profileDirectory, url);
+  await openChromeProfile(sandbox.id, doc.profileDirectory || "", url);
   const expected = CLOUD_SHEET_COLUMNS.join(", ");
   const task = `In the Chrome window for profile "${doc.profileDirectory}", open this Google Sheet if it is not already open:
 ${url}
@@ -1620,6 +1790,12 @@ REPORT: one short sentence`;
       html: bodyHtml,
       plain: bodyPlain,
       replaceSignature: Boolean(signatureHtml),
+      contact: {
+        firstname: fields.firstname,
+        lastname: fields.lastname,
+        company: fields.company,
+        position: fields.position,
+      },
       phase,
     });
   }
@@ -1842,10 +2018,8 @@ export async function clearCloudSendLog(projectId: ObjectId, campaignId: string)
   });
 }
 
-export async function startCloudSending(projectId: ObjectId, campaignId: string) {
-  const doc = await getCloudCampaignDoc(projectId, campaignId);
-  if (!doc) throw new Error("Campaign not found");
-  if (!doc.computerReady) throw new Error("Start the computer first");
+/** Everything that must be true before a campaign can send or be scheduled (no computer needed). */
+async function assertCampaignReady(projectId: ObjectId, campaignId: string, doc: CloudCampaignDoc) {
   if (!doc.profileId || !doc.profileDirectory) {
     throw new Error("Pick a sender profile first");
   }
@@ -1853,7 +2027,7 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
     throw new Error("Sign in the sender and click Check sign-in (step 2) before starting.");
   }
   if (!doc.signatureReady) {
-    throw new Error("Save the email signature step first (you can leave it empty)");
+    throw new Error("Save the signature step first — it can be empty (step 3).");
   }
   if (!campaignHasPeopleList(doc)) {
     throw new Error("Add people with a CSV or Google Sheet first (step 4).");
@@ -1872,6 +2046,56 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
       await patchCloudCampaignDoc(projectId, campaignId, { columnMap, columnStats: stats });
     }
   }
+}
+
+/** Effective schedule (defaults: send any day, any time, UTC). */
+function scheduleOf(doc: CloudCampaignDoc): CloudSchedule {
+  return {
+    timezone: doc.schedule?.timezone || "UTC",
+    excludedDays: doc.schedule?.excludedDays || [],
+    windowStart: doc.schedule?.windowStart,
+    windowEnd: doc.schedule?.windowEnd,
+    startAt: doc.schedule?.startAt,
+  };
+}
+
+/** Schedule the campaign to start at its start time (the server starts it; no computer now). */
+export async function scheduleCloudSending(projectId: ObjectId, campaignId: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  const schedule = scheduleOf(doc);
+  if (!schedule.startAt || new Date(schedule.startAt).getTime() <= Date.now() + 60_000) {
+    throw new Error("Pick a start time at least a minute from now, or use Start sending.");
+  }
+  await assertCampaignReady(projectId, campaignId, doc);
+  const next = nextAllowedTime(new Date(), schedule);
+  if (!next) throw new Error("Every day is excluded — allow at least one day in the schedule.");
+  return patchCloudCampaignDoc(projectId, campaignId, {
+    status: "scheduled",
+    nextSendAt: next,
+    lastError: undefined,
+    lastReport: `Scheduled to start ${next.toISOString()}.`,
+  });
+}
+
+export async function cancelCloudSchedule(projectId: ObjectId, campaignId: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  if (doc.status !== "scheduled") return patchCloudCampaignDoc(projectId, campaignId, {});
+  return patchCloudCampaignDoc(projectId, campaignId, {
+    status: (doc.nextRow || 0) > 0 ? "paused" : "ready",
+    nextSendAt: undefined,
+    lastReport: "Schedule cancelled.",
+  });
+}
+
+export async function startCloudSending(projectId: ObjectId, campaignId: string) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc) throw new Error("Campaign not found");
+  await assertCampaignReady(projectId, campaignId, doc);
+  const schedule = scheduleOf(doc);
+  const firstSend = nextAllowedTime(new Date(), { ...schedule, startAt: undefined });
+  if (!firstSend) throw new Error("Every day is excluded — allow at least one day in the schedule.");
   await assertBoatUnlocked(projectId, campaignId);
   const sandbox = await readySandbox(projectId, campaignId);
   // No-AI Gmail sender: make sure its dedicated Chrome is up and signed in as the sender
@@ -1879,7 +2103,7 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
   if (process.env.CLOUD_SENDER !== "agent") {
     const check = await prepareAndCheckSender(
       sandbox.id,
-      doc.profileDirectory,
+      doc.profileDirectory || "",
       resolveSenderProvider(doc.profileProvider),
     );
     const expected = String(doc.profileGmail || "").trim().toLowerCase();
@@ -1905,6 +2129,9 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
   await lockBoatDesktop(projectId, campaignId, doc.name);
   return patchCloudCampaignDoc(projectId, campaignId, {
     status: "sending",
+    computerReady: true,
+    // The server send worker picks it up at this time (now, or the next allowed slot).
+    nextSendAt: firstSend,
     lastError: undefined,
     // Drop any mid-task conversation so Resume does not continue a frozen tab-tidy turn.
     lockPromptId: undefined,
@@ -1939,10 +2166,11 @@ export async function restartCloudSending(projectId: ObjectId, campaignId: strin
   const doc = await getCloudCampaignDoc(projectId, campaignId);
   if (!doc) throw new Error("Campaign not found");
   await unlockBoatDesktop(projectId, campaignId);
-  const sandboxId = await getSavedBoatSandboxId(projectId).catch(() => null);
+  const sandboxId = (await getCloudBoatMeta(projectId).catch(() => null))?.sandboxId;
   if (sandboxId) {
     await interruptBoatAgent(sandboxId, null).catch(() => undefined);
   }
+  await deleteCloudSends(projectId, campaignId);
   await patchCloudCampaignDoc(projectId, campaignId, {
     status: "ready",
     nextRow: 0,
@@ -1950,7 +2178,7 @@ export async function restartCloudSending(projectId: ObjectId, campaignId: strin
     failedCount: 0,
     sendLog: [],
     lastError: undefined,
-    lastReport: "Restarted from the first people row. Send history cleared.",
+    lastReport: "Restarted from the first people row. Send history and report cleared.",
     inflightRow: undefined,
     lockPromptId: undefined,
     lockConversationId: null,

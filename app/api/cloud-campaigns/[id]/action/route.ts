@@ -13,6 +13,9 @@ import {
   submitChromeProfileAuthCode,
   clearCloudSendLog,
   checkScriptSender,
+  scheduleCloudSending,
+  cancelCloudSchedule,
+  checkCloudInbox,
   previewCloudRow,
   saveCloudColumnMap,
   probeOutlookSender,
@@ -59,6 +62,7 @@ type ActionBody = {
   password?: string;
   code?: string;
   csvText?: string;
+  xlsxBase64?: string;
   fileName?: string;
   columnMap?: Record<string, unknown>;
   row?: number;
@@ -249,6 +253,22 @@ export async function POST(request: NextRequest, { params }: Params) {
       return NextResponse.json({ sheet: result });
     }
 
+    if (action === "schedule") {
+      const campaign = await scheduleCloudSending(projectId, id);
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "cancel_schedule") {
+      const campaign = await cancelCloudSchedule(projectId, id);
+      return NextResponse.json({ campaign });
+    }
+
+    if (action === "check_inbox") {
+      const result = await checkCloudInbox(projectId, id);
+      const campaign = await getCloudCampaign(projectId, id);
+      return NextResponse.json({ inbox: result, campaign });
+    }
+
     if (action === "save_column_map") {
       const campaign = await saveCloudColumnMap(projectId, id, body?.columnMap ?? {});
       return NextResponse.json({ campaign });
@@ -261,11 +281,13 @@ export async function POST(request: NextRequest, { params }: Params) {
 
     if (action === "verify_csv") {
       const csvText = String(body?.csvText ?? "");
-      if (!csvText.trim()) {
-        return NextResponse.json({ error: "Upload a CSV file first." }, { status: 400 });
+      const xlsxBase64 = String(body?.xlsxBase64 ?? "");
+      if (!csvText.trim() && !xlsxBase64) {
+        return NextResponse.json({ error: "Upload a CSV or Excel file first." }, { status: 400 });
       }
       const verified = await verifyCloudCsv(projectId, id, {
         csvText,
+        xlsx: xlsxBase64 ? Buffer.from(xlsxBase64, "base64") : undefined,
         fileName: String(body?.fileName ?? ""),
       });
       const campaign = await getCloudCampaign(projectId, id);

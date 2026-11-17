@@ -12537,6 +12537,9 @@ a.an-kanban-card-name.is-link:hover{
   border-radius:999px;padding:3px 10px;white-space:nowrap;max-width:55%;overflow:hidden;text-overflow:ellipsis;
 }
 .cloud-step.done .cloud-step-head em{background:#f0fdf4;color:#166534;}
+.cloud-step.locked .cloud-step-head{cursor:not-allowed;}
+.cloud-step.locked .cloud-step-title{opacity:.55;}
+.cloud-step.locked .cloud-step-head em{background:#f4f4f5;color:#71717a;}
 .cloud-step-head:hover{background:#fafafa;}
 .cloud-step-head:focus-visible{outline:2px solid #111827;outline-offset:-2px;}
 .cloud-step{transition:border-color .2s ease, box-shadow .2s ease;}
@@ -12596,3 +12599,70 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-senders-list strong{display:block;color:#111827;font-size:12.5px;}
 .cloud-senders-list small{display:block;color:#6b7280;font-size:11.5px;}
 .cloud-usage-detail .cloud-senders-list li{justify-content:flex-start;text-align:left;}
+/* Cloud: Setup / Report tabs + report */
+.cloud-view-tabs{display:flex;gap:4px;margin-top:4px;border-bottom:1px solid #eef0f2;}
+.cloud-view-tabs button{border:0;background:transparent;padding:10px 14px;font:inherit;font-size:14px;font-weight:600;color:#6b7280;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;display:inline-flex;align-items:center;gap:6px;}
+.cloud-view-tabs button:hover{color:#111827;}
+.cloud-view-tabs button.is-active{color:#111827;border-bottom-color:#111827;}
+.cloud-view-tabs button span{font-size:11px;font-weight:700;background:#f3f4f6;color:#374151;border-radius:999px;padding:1px 7px;}
+.cloud-report{margin-top:8px;border:1px solid #e5e7eb;border-radius:16px;background:#fff;padding:18px 20px;display:flex;flex-direction:column;gap:16px;}
+.cloud-report-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;}
+.cloud-report-card{border:1px solid #eef0f2;border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:2px;background:#fafbfc;}
+.cloud-report-card span{font-size:12px;font-weight:600;color:#6b7280;}
+.cloud-report-card strong{font-size:24px;font-weight:700;color:#111827;font-variant-numeric:tabular-nums;letter-spacing:-.3px;}
+.cloud-report-card small{font-size:12px;color:#0b996e;font-weight:600;}
+.cloud-report-card.is-bad strong{color:#b91c1c;}
+.cloud-report-card.is-bad small{color:#b91c1c;}
+.cloud-report-funnel{padding:4px 0;}
+.cloud-report-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 14px;border:1px solid #eef0f2;border-radius:12px;}
+.cloud-report-inbox strong{display:block;font-size:13.5px;color:#111827;}
+.cloud-report-inbox small{display:block;font-size:12px;color:#6b7280;margin-top:2px;}
+.cloud-report-tracking{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;font-size:13px;color:#374151;}
+.cloud-report-tracking strong{font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-right:4px;}
+.cloud-report-tracking label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;}
+.cloud-report-tracking small{color:#9ca3af;}
+.cloud-report-table-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+.cloud-report-filters{display:inline-flex;flex-wrap:wrap;gap:4px;}
+.cloud-report-filters button{border:1px solid #e5e7eb;background:#fff;border-radius:999px;padding:5px 12px;font:inherit;font-size:12.5px;font-weight:600;color:#4b5563;cursor:pointer;}
+.cloud-report-filters button.is-active{background:#111827;border-color:#111827;color:#fff;}
+.cloud-report-table-head input[type="search"]{height:34px;padding:0 10px;border:1px solid #e5e7eb;border-radius:10px;font:inherit;font-size:13px;min-width:180px;}
+.cloud-report-table-wrap{overflow-x:auto;border:1px solid #eef0f2;border-radius:12px;}
+.cloud-report-table{width:100%;border-collapse:collapse;font-size:13px;}
+.cloud-report-table th{text-align:left;font-size:11.5px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;padding:10px 12px;background:#fafbfc;border-bottom:1px solid #eef0f2;white-space:nowrap;}
+.cloud-report-table td{padding:10px 12px;border-bottom:1px solid #f3f4f6;color:#374151;vertical-align:top;white-space:nowrap;}
+.cloud-report-table tr:last-child td{border-bottom:0;}
+.cloud-report-table td:first-child{white-space:normal;min-width:220px;}
+.cloud-report-table td strong{display:block;color:#111827;font-weight:600;}
+.cloud-report-table td small{display:block;color:#6b7280;font-size:12px;margin-top:1px;}
+.cloud-tag{display:inline-block;margin:4px 4px 0 0;font-style:normal;font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;background:#f3f4f6;color:#374151;}
+.cloud-tag.is-ok{background:#dcfce7;color:#166534;margin:0;}
+.cloud-tag.is-bad{background:#fee2e2;color:#991b1b;}
+@media (max-width:760px){.cloud-report{padding:16px;}}
+/* Cloud: schedule */
+.cloud-run-when{display:flex;flex-direction:column;gap:10px;padding-top:14px;border-top:1px solid #f1f2f4;}
+.cloud-run-when > strong{font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;}
+.cloud-schedule{display:flex;flex-direction:column;gap:12px;}
+.cloud-schedule-row{display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:12px;}
+.cloud-schedule-label{font-size:12.5px;font-weight:600;color:#374151;}
+.cloud-schedule select{height:36px;padding:0 10px;border:1px solid #e5e7eb;border-radius:10px;font:inherit;font-size:13px;background:#fff;min-width:0;}
+.cloud-schedule-days{display:flex;flex-wrap:wrap;gap:6px;}
+.cloud-schedule-days button{min-width:46px;height:34px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;font:inherit;font-size:12.5px;font-weight:600;color:#9ca3af;cursor:pointer;}
+.cloud-schedule-days button.is-on{background:#111827;border-color:#111827;color:#fff;}
+.cloud-schedule-days button:disabled{cursor:not-allowed;opacity:.6;}
+.cloud-schedule-check{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#374151;cursor:pointer;}
+.cloud-schedule input[type="time"],.cloud-schedule input[type="datetime-local"]{height:36px;padding:0 10px;border:1px solid #e5e7eb;border-radius:10px;font:inherit;font-size:13px;background:#fff;}
+.cloud-schedule-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.cloud-schedule-foot small{font-size:12.5px;color:#6b7280;flex:1;min-width:200px;}
+.cloud-schedule-foot .cloud-schedule-error{color:#b91c1c;flex:0 1 auto;}
+.cloud-run-dot.is-scheduled{background:#6366f1;}
+@media (max-width:760px){.cloud-schedule-row{grid-template-columns:1fr;}}
+.cloud-report-bot{font-style:normal;font-size:11px;color:#9ca3af;font-weight:600;}
+/* Cloud: attachments */
+.cloud-attachments{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:1px solid #eef0f2;border-radius:12px;background:#fafbfc;}
+.cloud-attachments-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
+.cloud-attachments-head strong{font-size:13.5px;color:#111827;}
+.cloud-attachments-head small{font-size:12px;color:#6b7280;}
+.cloud-attachments ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
+.cloud-attachments li{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;background:#fff;border:1px solid #eef0f2;font-size:13px;}
+.cloud-attachments-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#111827;font-weight:600;}
+.cloud-attachments li small{color:#6b7280;font-size:12px;}

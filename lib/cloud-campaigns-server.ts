@@ -1,6 +1,8 @@
 import { ObjectId, type WithId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import type { CloudColumnMap, CloudColumnStats } from "@/lib/cloud-sheet-csv";
+import type { CloudSchedule } from "@/lib/cloud-schedule";
+import type { CloudAttachment } from "@/lib/cloud-attachments";
 import type {
   CloudCampaign,
   CloudCampaignStatus,
@@ -46,6 +48,20 @@ export type CloudCampaignDoc = {
   lockConversationId?: string | null;
   /** Row whose script send started but has no definitive outcome yet (duplicate guard). */
   inflightRow?: number;
+  /** Report tracking: open pixel (default on), click links (default off), unsubscribe footer (off). */
+  trackOpens?: boolean;
+  trackClicks?: boolean;
+  unsubscribeFooter?: boolean;
+  /** Last inbox check for replies/bounces. */
+  inboxCheckedAt?: Date;
+  /** Last confirmed send (drives the 7-day reply-check window). */
+  lastSentAt?: Date;
+  schedule?: CloudSchedule;
+  /** Files attached to every email. */
+  attachments?: CloudAttachment[];
+  /** Server send worker: when the next row is due, and a short claim so only one server sends. */
+  nextSendAt?: Date;
+  tickClaimUntil?: Date;
   /** Which people-list column feeds each email field (user-confirmed). */
   columnMap?: CloudColumnMap;
   columnStats?: CloudColumnStats;
@@ -163,6 +179,13 @@ function mapCampaign(doc: WithId<CloudCampaignDoc>): CloudCampaign {
     sheetHeaders: doc.sheetHeaders,
     columnMap: doc.columnMap,
     columnStats: doc.columnStats,
+    trackOpens: doc.trackOpens !== false,
+    trackClicks: doc.trackClicks === true,
+    unsubscribeFooter: doc.unsubscribeFooter === true,
+    inboxCheckedAt: doc.inboxCheckedAt ? doc.inboxCheckedAt.toISOString() : undefined,
+    schedule: doc.schedule,
+    attachments: doc.attachments || [],
+    nextSendAt: doc.nextSendAt ? doc.nextSendAt.toISOString() : undefined,
     sheetRowCount: doc.sheetRowCount,
     sheetSamples: normalizeSheetSamples(doc.sheetSamples),
     sheetVerifiedAt: iso(doc.sheetVerifiedAt),

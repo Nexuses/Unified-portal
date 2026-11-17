@@ -50,21 +50,27 @@ export const CLOUD_FIELD_LABELS: Record<CloudField, string> = {
 
 /** Whole-name aliases (normalized: lowercase, no spaces/punctuation). */
 const FIELD_ALIASES: Record<CloudField, string[]> = {
-  email: ["email", "emailaddress", "mail", "emailid", "mailid", "workemail", "businessemail", "contactemail", "emailaddr"],
-  subject: ["subject", "subjectline", "emailsubject", "subj", "mailsubject"],
-  pitch: ["pitch", "outreachpitch", "body", "emailbody", "message", "emailmessage", "emailcopy", "copy", "content", "emailcontent", "emailtext", "personalizedemail", "personalisedemail", "draft", "emaildraft", "script"],
-  firstname: ["firstname", "first", "fname", "givenname", "forename"],
+  email: ["email", "emails", "emailaddress", "mail", "emailid", "mailid", "workemail", "businessemail", "contactemail", "emailaddr", "primaryemail", "officeemail", "personalemail", "corporateemail", "professionalemail"],
+  subject: ["subject", "subjectline", "emailsubject", "subj", "mailsubject", "subjects", "subjectlines"],
+  pitch: ["pitch", "outreachpitch", "body", "emailbody", "message", "emailmessage", "emailcopy", "copy", "content", "emailcontent", "emailtext", "personalizedemail", "personalisedemail", "draft", "emaildraft", "script", "mailbody", "messagebody", "personalizedmessage", "personalisedmessage", "outreachmessage", "outreachemail", "coldemail", "pitchtext", "emailpitch"],
+  firstname: ["firstname", "first", "fname", "givenname", "forename", "name", "fullname", "contactname", "contact", "prospectname", "leadname", "person", "personname"],
   lastname: ["lastname", "last", "lname", "surname", "familyname"],
-  company: ["company", "companyname", "organization", "organisation", "org", "account", "accountname", "employer", "business", "firm"],
-  position: ["position", "title", "jobtitle", "role", "designation", "job", "jobrole"],
-  industry: ["industry", "sector", "vertical"],
+  company: ["company", "companyname", "organization", "organisation", "org", "account", "accountname", "employer", "business", "firm", "brand", "client", "clientname", "organizationname", "organisationname"],
+  position: ["position", "title", "jobtitle", "role", "designation", "job", "jobrole", "jobposition", "jobdesignation"],
+  industry: ["industry", "sector", "vertical", "industries"],
 };
+
+/** Aliases too generic to match inside a longer header. */
+const EXACT_ONLY_ALIASES = new Set(["name", "contact", "person", "mail", "copy", "content", "draft", "script", "account", "business", "client", "brand", "org"]);
+
+/** Headers that hold a whole name ("Jane Smith"); the first name is taken from them. */
+const FULL_NAME_HEADERS = new Set(["name", "fullname", "contactname", "contact", "prospectname", "leadname", "person", "personname"]);
 
 /** Words that mean "this column is about the field, not the field itself". */
 const FIELD_NEGATIVE_WORDS: Partial<Record<CloudField, string[]>> = {
   email: ["sent", "status", "opened", "open", "date", "bounce", "bounced", "valid", "verified", "count", "provider", "domain", "type"],
-  firstname: ["contacted", "contact", "touch", "seen", "date", "activity", "sent", "reply"],
-  lastname: ["contacted", "contact", "touch", "seen", "date", "activity", "sent", "reply", "updated", "modified"],
+  firstname: ["contacted", "touch", "seen", "date", "activity", "sent", "reply", "company", "account", "file", "user", "username", "campaign", "sender", "list"],
+  lastname: ["contacted", "touch", "seen", "date", "activity", "sent", "reply", "updated", "modified"],
   pitch: ["type", "length", "status", "date", "sent", "count"],
   subject: ["status", "date", "count"],
   company: ["size", "domain", "url", "website", "linkedin", "revenue", "employees"],
@@ -72,6 +78,33 @@ const FIELD_NEGATIVE_WORDS: Partial<Record<CloudField, string[]>> = {
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_IN_TEXT = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/;
+
+/** Remove invisible characters and odd spaces that Sheets/Excel leave in cells. */
+export function cleanCell(value: unknown) {
+  return String(value ?? "")
+    .replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, "")
+    .replace(/[\u00A0\u2007\u202F]/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .trim();
+}
+
+function cleanHeader(value: unknown) {
+  return cleanCell(value).replace(/\s+/g, " ").replace(/\s*[*:]+$/, "").trim();
+}
+
+/** The address in "Jane <jane@x.com>", "mailto:jane@x.com", "jane@x.com;" and similar. */
+export function extractEmail(value: string) {
+  const text = cleanCell(value).replace(/^mailto:/i, "");
+  if (EMAIL_RE.test(text)) return text.replace(/[.,;:]+$/, "");
+  if (text.length > 160) return text;
+  const found = text.match(EMAIL_IN_TEXT);
+  return found ? found[0] : text;
+}
+
+function looksLikeEmail(value: string) {
+  return value.length <= 160 && EMAIL_RE.test(extractEmail(value));
+}
 
 type ColumnProfile = { header: string; filled: number; emailShare: number; avgLen: number; multiline: number };
 
@@ -80,7 +113,7 @@ function profileColumns(headers: string[], rows: CloudSheetSample[]): ColumnProf
   return headers.map((header) => {
     const values = sample.map((row) => String(row.cells?.[header] ?? "").trim()).filter(Boolean);
     const filled = values.length;
-    const emails = values.filter((value) => EMAIL_RE.test(value)).length;
+    const emails = values.filter(looksLikeEmail).length;
     const total = values.reduce((sum, value) => sum + value.length, 0);
     const multiline = values.filter((value) => /\n/.test(value)).length;
     return {
@@ -102,6 +135,11 @@ function headerScore(header: string, field: CloudField) {
   const hasNegative = words.some((word) => negatives.includes(word));
   let best = 0;
   for (const alias of FIELD_ALIASES[field]) {
+    // Generic words only count as the whole header ("Name", not "Company Name").
+    if (EXACT_ONLY_ALIASES.has(alias)) {
+      if (key === alias) best = Math.max(best, field === "firstname" ? 75 : 100);
+      continue;
+    }
     if (key === alias) best = Math.max(best, 100);
     else if (!hasNegative && words.join("") === alias) best = Math.max(best, 95);
     else if (!hasNegative && words.includes(alias)) best = Math.max(best, 70);
@@ -121,7 +159,7 @@ function valueScore(profile: ColumnProfile, field: CloudField) {
     case "subject":
       return profile.avgLen >= 6 && profile.avgLen <= 140 && profile.multiline < 0.1 ? 15 : profile.avgLen > 200 ? -50 : 0;
     default:
-      return profile.emailShare > 0.5 ? -60 : profile.avgLen > 120 ? -40 : 0;
+      return profile.emailShare > 0.5 ? -100 : profile.avgLen > 120 ? -40 : 0;
   }
 }
 
@@ -149,7 +187,7 @@ export function detectColumnMap(headers: string[], rows: CloudSheetSample[]): Cl
   // Data-only fallbacks for the two fields we can recognise by content alone.
   if (!map.email) {
     const best = profiles
-      .filter((p) => !used.has(p.header) && p.emailShare >= 0.8)
+      .filter((p) => !used.has(p.header) && p.emailShare >= 0.5)
       .sort((a, b) => b.emailShare - a.emailShare)[0];
     if (best) {
       map.email = best.header;
@@ -158,7 +196,7 @@ export function detectColumnMap(headers: string[], rows: CloudSheetSample[]): Cl
   }
   if (!map.pitch) {
     const best = profiles
-      .filter((p) => !used.has(p.header) && (p.avgLen >= 120 || p.multiline >= 0.3))
+      .filter((p) => !used.has(p.header) && (p.avgLen >= 80 || p.multiline >= 0.3))
       .sort((a, b) => b.avgLen - a.avgLen)[0];
     if (best) {
       map.pitch = best.header;
@@ -198,7 +236,15 @@ export function cellForField(
 ) {
   const header = map?.[field] || findHeaderForField(Object.keys(cells), field);
   if (!header) return "";
-  return String(cells[header] ?? "").trim();
+  const value = cleanCell(cells[header]);
+  if (field === "email") return extractEmail(value);
+  if (field === "firstname" && FULL_NAME_HEADERS.has(normHeader(header))) {
+    // "Dr. Jane Smith" -> "Jane"; an email-looking or empty value gives "".
+    if (value.includes("@")) return "";
+    const words = value.replace(/^(mr|mrs|ms|miss|dr|prof)\.?\s+/i, "").split(/\s+/);
+    return words[0] || "";
+  }
+  return value;
 }
 
 /** Replace {{Any Column Name}} with that column's value (case/space-insensitive). */
@@ -308,43 +354,106 @@ export type ParsedCloudCsv = {
   emailHeader: string;
 };
 
-export function parseCloudCsvText(csvText: string): ParsedCloudCsv {
-  const text = csvText.replace(/^\uFEFF/, "");
-  if (!text.trim()) {
-    throw new Error("CSV is empty");
+/** Count a character outside quoted text on one line (for delimiter detection). */
+function countOutsideQuotes(line: string, char: string) {
+  let count = 0;
+  let quoted = false;
+  for (const c of line) {
+    if (c === '"') quoted = !quoted;
+    else if (c === char && !quoted) count += 1;
   }
-  if (text.length > CLOUD_CSV_MAX_CHARS) {
-    throw new Error("CSV is too large (max about 2MB). Split the list or remove long columns.");
-  }
+  return count;
+}
 
-  const delimiter =
-    text.split("\n")[0]?.includes("\t") && !text.split("\n")[0]?.includes(",") ? "\t" : ",";
-  const records = parseCsvRecords(text, delimiter);
-  if (records.length < 2) {
-    throw new Error("CSV needs a header row and at least one people row");
+/** Comma, semicolon (European Excel), tab or pipe: the one used consistently across lines. */
+export function detectCsvDelimiter(text: string) {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim()).slice(0, 30);
+  let best = ",";
+  let bestScore = 0;
+  for (const delimiter of [",", ";", "\t", "|"]) {
+    const counts = lines.map((line) => countOutsideQuotes(line, delimiter)).filter((n) => n > 0);
+    if (!counts.length) continue;
+    const tally = new Map<number, number>();
+    counts.forEach((n) => tally.set(n, (tally.get(n) || 0) + 1));
+    const [, lines_] = [...tally.entries()].sort((x, y) => y[1] - x[1] || y[0] - x[0])[0];
+    const score = lines_ * 10 + counts.length;
+    if (score > bestScore) {
+      best = delimiter;
+      bestScore = score;
+    }
   }
+  return best;
+}
 
-  const headers = uniquifyCsvHeaders(records[0].map((cell) => String(cell ?? "").trim()));
-  if (!headers.some((header) => header.trim())) {
-    throw new Error("CSV header row is empty");
+function columnLetter(index: number) {
+  let n = index + 1;
+  let out = "";
+  while (n > 0) {
+    const r = (n - 1) % 26;
+    out = String.fromCharCode(65 + r) + out;
+    n = Math.floor((n - 1) / 26);
   }
+  return out;
+}
 
-
-  const dataRecords = records.slice(1).filter((row) => row.some((cell) => String(cell ?? "").trim()));
-  if (dataRecords.length === 0) {
-    throw new Error("CSV has no people rows under the header");
+/**
+ * Which row holds the column names. Lists often start with a title, notes or blank rows; the
+ * header is the early row with several short labels (ideally known ones) and no email addresses.
+ * Returns -1 when the first row is already data (no header row at all).
+ */
+function findHeaderRow(records: string[][]) {
+  const limit = Math.min(records.length - 1, 20);
+  let best = 0;
+  let bestScore = -Infinity;
+  for (let i = 0; i < limit; i += 1) {
+    const filled = records[i].map(cleanHeader).filter(Boolean);
+    if (filled.length < 2) continue;
+    const known = filled.filter((cell) => CLOUD_FIELDS.some((field) => headerScore(cell, field) >= 70)).length;
+    const emails = filled.filter(looksLikeEmail).length;
+    const long = filled.filter((cell) => cell.length > 60).length;
+    const unique = new Set(filled.map((cell) => cell.toLowerCase())).size === filled.length;
+    const score = filled.length + known * 4 - emails * 8 - long * 3 + (unique ? 1 : -3);
+    if (score > bestScore) {
+      best = i;
+      bestScore = score;
+    }
   }
-  if (dataRecords.length > CLOUD_CSV_MAX_ROWS) {
-    throw new Error(`CSV has too many rows (max ${CLOUD_CSV_MAX_ROWS})`);
-  }
+  return records[best]?.some((cell) => looksLikeEmail(cleanCell(cell))) ? -1 : best;
+}
 
-  const rows: CloudSheetSample[] = dataRecords.map((row) => {
+/** Turn raw records (from CSV or a spreadsheet) into a clean people list. */
+export function recordsToCloudList(records: string[][]): ParsedCloudCsv {
+  if (records.length < 1) throw new Error("The list is empty");
+  const headerIndex = findHeaderRow(records);
+  const headerCells = headerIndex >= 0 ? records[headerIndex] : [];
+  const body = records.slice(headerIndex + 1);
+  const width = Math.max(headerCells.length, ...body.slice(0, 500).map((row) => row.length));
+
+  // Keep columns that have a name or any data; unnamed data columns become "Column C".
+  const columns: { index: number; name: string }[] = [];
+  for (let index = 0; index < width; index += 1) {
+    const name = cleanHeader(headerCells[index]);
+    const hasData = body.some((row) => cleanCell(row[index]));
+    if (name || hasData) columns.push({ index, name: name || `Column ${columnLetter(index)}` });
+  }
+  if (!columns.length) throw new Error("The list has no columns");
+  const headers = uniquifyCsvHeaders(columns.map((column) => column.name));
+  const headerKey = headers.map((h) => h.toLowerCase()).join("\u0001");
+
+  const rows: CloudSheetSample[] = [];
+  for (const record of body) {
+    const values = columns.map((column) => cleanCell(record[column.index]));
+    if (!values.some(Boolean)) continue;
+    // A repeated header row (pasted lists) is not a person.
+    if (values.map((v) => v.toLowerCase()).join("\u0001") === headerKey) continue;
     const cells: Record<string, string> = {};
     headers.forEach((header, index) => {
-      cells[header] = String(row[index] ?? "").trim();
+      cells[header] = values[index];
     });
-    return { cells };
-  });
+    rows.push({ cells });
+  }
+  if (rows.length === 0) throw new Error("The list has no people rows under the header");
+  if (rows.length > CLOUD_CSV_MAX_ROWS) throw new Error(`The list has too many rows (max ${CLOUD_CSV_MAX_ROWS})`);
 
   const emailHeader = detectColumnMap(headers, rows).email || "";
   const normalizedHeaders = headers.map(normHeader);
@@ -370,6 +479,29 @@ export function parseCloudCsvText(csvText: string): ParsedCloudCsv {
     missingExpected,
     emailHeader,
   };
+}
+
+export function parseCloudCsvText(csvText: string): ParsedCloudCsv {
+  let text = String(csvText || "").replace(/^\uFEFF/, "");
+  if (!text.trim()) {
+    throw new Error("CSV is empty");
+  }
+  if (text.length > CLOUD_CSV_MAX_CHARS) {
+    throw new Error("CSV is too large (max about 2MB). Split the list or remove long columns.");
+  }
+  // Excel's "sep=;" hint line.
+  let delimiter = "";
+  const sep = text.match(/^sep=(.)\r?\n/i);
+  if (sep) {
+    delimiter = sep[1];
+    text = text.slice(sep[0].length);
+  }
+  delimiter = delimiter || detectCsvDelimiter(text);
+  const records = parseCsvRecords(text, delimiter);
+  if (records.length < 2) {
+    throw new Error("CSV needs a header row and at least one people row");
+  }
+  return recordsToCloudList(records);
 }
 
 export type CloudResolvedRow = {

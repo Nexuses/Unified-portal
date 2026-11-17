@@ -12,6 +12,9 @@ import {
   saveChromeProfileDefaults,
 } from "@/lib/cloud-campaigns-server";
 import { columnMapStats, reconcileColumnMap } from "@/lib/cloud-sheet-csv";
+import { deleteCloudSends } from "@/lib/cloud-campaign-tracking";
+import { deleteCloudAttachment } from "@/lib/cloud-attachments";
+import { isValidTimezone } from "@/lib/cloud-schedule";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
@@ -98,6 +101,31 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         }
       }
     }
+    if (body.schedule && typeof body.schedule === "object") {
+      const raw = body.schedule as Record<string, unknown>;
+      const timezone = String(raw.timezone || "UTC");
+      if (!isValidTimezone(timezone)) {
+        return NextResponse.json({ error: "Unknown timezone" }, { status: 400 });
+      }
+      const excludedDays = Array.isArray(raw.excludedDays)
+        ? [...new Set(raw.excludedDays.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))]
+        : [];
+      const hhmm = (v: unknown) => (typeof v === "string" && /^\d{2}:\d{2}$/.test(v) ? v : undefined);
+      const startAt =
+        typeof raw.startAt === "string" && raw.startAt && !Number.isNaN(Date.parse(raw.startAt))
+          ? new Date(raw.startAt).toISOString()
+          : undefined;
+      patch.schedule = {
+        timezone,
+        excludedDays,
+        windowStart: hhmm(raw.windowStart),
+        windowEnd: hhmm(raw.windowEnd),
+        startAt,
+      };
+    }
+    for (const key of ["trackOpens", "trackClicks", "unsubscribeFooter"] as const) {
+      if (typeof body[key] === "boolean") patch[key] = body[key];
+    }
     if (typeof body.signatureHtml === "string") {
       patch.signatureHtml = cleanSignatureHtml(body.signatureHtml);
     }
@@ -157,7 +185,12 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
     const session = await requirePortalSession();
     if (isSessionError(session)) return session;
     const { id } = await params;
+    const before = await getCloudCampaignDoc(new ObjectId(session.projectId), id);
     const ok = await deleteCloudCampaign(new ObjectId(session.projectId), id);
+    if (ok) {
+      await deleteCloudSends(new ObjectId(session.projectId), id);
+      for (const attachment of before?.attachments || []) await deleteCloudAttachment(attachment.id);
+    }
     if (!ok) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
