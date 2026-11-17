@@ -370,7 +370,7 @@ export default function PortalCloudCampaignDetailPage({
         setNotice(
           profile?.scriptEmail
             ? `Sender selected (signed in as ${profile.scriptEmail}). Click “Check sign-in” to confirm.`
-            : "Sender selected. Click “Open sender Chrome to sign in” — a one-time Gmail sign-in for this sender.",
+            : `Sender selected. Click “Open sender Chrome to sign in” — a one-time ${formatCloudSenderProvider(profile?.provider)} sign-in for this sender.`,
         );
       } else if (verified) {
         setAwaitingLoginConfirm(false);
@@ -428,6 +428,7 @@ export default function PortalCloudCampaignDetailPage({
   }
 
   async function addProfile() {
+    let openScriptSender = false;
     await withBusy("Creating Chrome profile…", async () => {
       const label =
         newSenderProvider === "outlook" ? "New Outlook" : "New Gmail";
@@ -439,7 +440,7 @@ export default function PortalCloudCampaignDetailPage({
       if (usesScriptSender(newSenderProvider)) {
         const refreshedProfiles = await fetchCloudProfiles();
         setProfiles(refreshedProfiles);
-        setNotice("New Gmail sender created. Click “Open sender Chrome to sign in”.");
+        openScriptSender = true;
         return;
       }
       if (created.needsLogin) {
@@ -459,6 +460,8 @@ export default function PortalCloudCampaignDetailPage({
       const refreshed = await fetchCloudProfiles();
       setProfiles(refreshed);
     });
+    // New sender: open its own Chrome straight away, in front, at the sign-in page.
+    if (openScriptSender) await checkScriptSender(true, newSenderProvider);
   }
 
   async function confirmLoginFromDesktop() {
@@ -470,13 +473,18 @@ export default function PortalCloudCampaignDetailPage({
   }
 
   /** No-AI sender: start its dedicated Chrome and check which Gmail account is signed in. */
-  async function checkScriptSender(openForSignIn: boolean) {
-    if (!campaign?.profileId) {
+  async function checkScriptSender(openForSignIn: boolean, justAddedProvider?: CloudSenderProvider) {
+    if (!justAddedProvider && !campaign?.profileId) {
       setNotice("Pick a sender first.");
       return;
     }
-    await withBusy(openForSignIn ? "Opening the sender Chrome…" : "Checking Gmail sign-in…", async () => {
-      const data = await runCloudCampaignAction(campaignId, "sender_check");
+    const mailName = formatCloudSenderProvider(
+      justAddedProvider ||
+        profiles.find((item) => item.id === campaign?.profileId)?.provider ||
+        campaign?.profileProvider,
+    );
+    await withBusy(openForSignIn ? `Opening the sender Chrome at ${mailName}…` : `Checking ${mailName} sign-in…`, async () => {
+      const data = await runCloudCampaignAction(campaignId, "sender_check", { focus: openForSignIn });
       const sender = (data.sender || {}) as Record<string, unknown>;
       if (typeof data.desktopUrl === "string" && data.desktopUrl) setDesktopUrl(data.desktopUrl);
       const [nextCampaign, nextProfiles] = await Promise.all([
@@ -505,7 +513,7 @@ export default function PortalCloudCampaignDetailPage({
         setAwaitingLoginConfirm(true);
         setDesktopLayout("maximized");
         setNotice(
-          `Take control and sign in to Gmail${expected ? ` as ${expected}` : ""} in the Chrome window, then click “Check sign-in”. You only do this once per sender.`,
+          `Take control and sign in to ${mailName}${expected ? ` as ${expected}` : ""} in the Chrome window, then click “Check sign-in”. You only do this once per sender.`,
         );
         return;
       }

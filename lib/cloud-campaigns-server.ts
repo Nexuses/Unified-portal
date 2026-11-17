@@ -89,6 +89,11 @@ export type CloudChromeProfileDoc = {
   sensitivityLabels?: string[];
   /** Remembered per sender so a new campaign only needs a people list. */
   defaults?: CloudSenderDefaults;
+  /**
+   * New sender: its Chrome folder may be left over from a deleted sender with the same name,
+   * still signed in to that account. Cleared on the computer before its Chrome first starts.
+   */
+  freshChrome?: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -475,11 +480,24 @@ export async function createChromeProfile(
     provider,
     gmail,
     directoryName,
+    freshChrome: true,
     createdAt: now,
     updatedAt: now,
   };
   await profiles.insertOne(doc);
   return mapProfile(doc as WithId<CloudChromeProfileDoc>);
+}
+
+/** True when this sender's Chrome folder must be emptied before first use (new sender). */
+export async function senderNeedsFreshChrome(projectId: ObjectId, profileId: string) {
+  const { profiles } = await collections();
+  const doc = await profiles.findOne({ projectId, profileId }, { projection: { freshChrome: 1 } });
+  return doc?.freshChrome === true;
+}
+
+export async function markSenderChromeFresh(projectId: ObjectId, profileId: string) {
+  const { profiles } = await collections();
+  await profiles.updateOne({ projectId, profileId }, { $unset: { freshChrome: "" }, $set: { updatedAt: new Date() } });
 }
 
 /** Record (or clear) which account the sender's dedicated script Chrome is signed in to. */

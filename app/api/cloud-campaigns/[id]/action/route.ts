@@ -69,6 +69,7 @@ type ActionBody = {
   columnMap?: Record<string, unknown>;
   row?: number;
   step?: number;
+  focus?: boolean;
 };
 
 function isValidEmail(value: string) {
@@ -89,7 +90,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     if (action === "sender_check") {
-      const result = await checkScriptSender(projectId, id);
+      const result = await checkScriptSender(projectId, id, { focus: body?.focus === true });
       return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
     }
 

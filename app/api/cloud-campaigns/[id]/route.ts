@@ -196,11 +196,15 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
     const session = await requirePortalSession();
     if (isSessionError(session)) return session;
     const { id } = await params;
-    const before = await getCloudCampaignDoc(new ObjectId(session.projectId), id);
-    const ok = await deleteCloudCampaign(new ObjectId(session.projectId), id);
+    const projectId = new ObjectId(session.projectId);
+    const before = await getCloudCampaignDoc(projectId, id);
+    if (before) {
+      // Clear its sends while the campaign still exists: the lookup uses its id (indexed).
+      await deleteCloudSends(projectId, id);
+      await deleteCloudFollowups(projectId, id);
+    }
+    const ok = await deleteCloudCampaign(projectId, id);
     if (ok) {
-      await deleteCloudSends(new ObjectId(session.projectId), id);
-      await deleteCloudFollowups(new ObjectId(session.projectId), id);
       for (const attachment of before?.attachments || []) await deleteCloudAttachment(attachment.id);
     }
     if (!ok) {

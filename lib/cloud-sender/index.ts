@@ -21,6 +21,7 @@ export type SenderCommand =
   | "check"
   | "send"
   | "reply"
+  | "focus"
   | "find_sent"
   | "read_sheet"
   | "probe_outlook"
@@ -225,6 +226,22 @@ export async function prepareAndCheckSender(
   }
   const check = await runSenderScript(sandboxId, "check", { port: chrome.port, provider }, 85);
   return { ...check, stage: "check", port: chrome.port, chromeStarted: chrome.started };
+}
+
+/** Close this sender's Chrome and empty its folder (a brand-new sender must start signed out). */
+export async function resetSenderChromeDir(sandboxId: string, directoryName: string) {
+  const dir = `${CHROME_ROOT}/${senderSlug(directoryName)}`;
+  const result = await runBoatCommand(
+    sandboxId,
+    `pkill -f -- "--user-data-dir=${dir}" 2>/dev/null; sleep 1; rm -rf ${dir} && echo reset-ok`,
+    30,
+  );
+  return /reset-ok/.test(result.stdout);
+}
+
+/** Raise this sender's Chrome window above other senders' windows (for signing in). */
+export async function focusSenderChrome(sandboxId: string, port: number, provider: SenderProvider = "gmail") {
+  return runSenderScript(sandboxId, "focus", { port, provider }, 30);
 }
 
 export type ScriptSendInput = {

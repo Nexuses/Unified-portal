@@ -66,10 +66,14 @@ import {
   scanInboxViaScript,
   sendViaScript,
   replyViaScript,
+  focusSenderChrome,
+  resetSenderChromeDir,
   type SenderResult,
 } from "@/lib/cloud-sender";
 import {
   getBoatDesktopLock,
+  markSenderChromeFresh,
+  senderNeedsFreshChrome,
   getChromeProfile,
   getCloudCampaignDoc,
   lockBoatDesktop,
@@ -504,16 +508,27 @@ async function verifyEmailInSentFolder(
  * Script sender (no AI): install the toolkit on the email VM, start the sender's dedicated
  * Chrome, and report whether it is signed in to Gmail as the campaign's sender.
  */
-export async function checkScriptSender(projectId: ObjectId, campaignId: string) {
+export async function checkScriptSender(
+  projectId: ObjectId,
+  campaignId: string,
+  options: { focus?: boolean } = {},
+) {
   const doc = await getCloudCampaignDoc(projectId, campaignId);
   if (!doc) throw new Error("Campaign not found");
   if (!doc.profileDirectory) throw new Error("Pick a sender profile first");
   const sandbox = await readySandbox(projectId, campaignId);
-  const result = await prepareAndCheckSender(
-    sandbox.id,
-    doc.profileDirectory,
-    resolveSenderProvider(doc.profileProvider),
-  );
+  const provider = resolveSenderProvider(doc.profileProvider);
+  // A new sender reusing a deleted sender's folder name must not inherit that sign-in.
+  if (doc.profileId && (await senderNeedsFreshChrome(projectId, doc.profileId))) {
+    if (await resetSenderChromeDir(sandbox.id, doc.profileDirectory)) {
+      await markSenderChromeFresh(projectId, doc.profileId);
+    }
+  }
+  const result = await prepareAndCheckSender(sandbox.id, doc.profileDirectory, provider);
+  // Opening to sign in (or signed out): show this sender's window, not another sender's.
+  if (result.port && (options.focus || result.status === "login_required")) {
+    await focusSenderChrome(sandbox.id, result.port, provider).catch(() => undefined);
+  }
   const expected = String(doc.profileGmail || "").trim().toLowerCase();
   const email = String(result.email || "").toLowerCase();
   // First sign-in on a brand-new sender has no expected address yet: accept what Gmail shows.
