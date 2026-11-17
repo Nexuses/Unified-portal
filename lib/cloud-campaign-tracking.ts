@@ -16,6 +16,25 @@ async function sends() {
   return db.collection<CloudSendDoc>("campaign_sends");
 }
 
+const blastIds = new Map<string, ObjectId | null>();
+
+/**
+ * Filter for one cloud campaign's sends. Includes `blastId` (the campaign's _id) so queries use
+ * the existing { blastId, status } index on the shared, large `campaign_sends` collection.
+ */
+export async function cloudSendsFilter(projectId: ObjectId, campaignId: string) {
+  const key = `${projectId.toHexString()}:${campaignId}`;
+  if (!blastIds.has(key)) {
+    const db = await getDb();
+    const campaign = await db
+      .collection<{ _id: ObjectId }>("cloud_campaigns")
+      .findOne({ projectId, campaignId }, { projection: { _id: 1 } });
+    blastIds.set(key, campaign?._id ?? null);
+  }
+  const blastId = blastIds.get(key);
+  return { ...(blastId ? { blastId } : {}), projectId, campaignId, source: "cloud" as const };
+}
+
 export type CloudTrackingOptions = {
   trackOpens: boolean;
   trackClicks: boolean;
@@ -37,6 +56,7 @@ export async function prepareCloudSend(input: {
 }) {
   const collection = await sends();
   const existing = await collection.findOne({
+    blastId: input.campaignObjectId,
     projectId: input.projectId,
     campaignId: input.campaignId,
     cloudRow: input.row,
@@ -87,11 +107,12 @@ export async function trackCloudHtml(
   });
 }
 
-export async function markCloudSendSent(sendId: ObjectId) {
+export async function markCloudSendSent(sendId: ObjectId, gmailMessageId?: string) {
   const collection = await sends();
   await collection.updateOne(
     { _id: sendId },
-    { $set: { status: "sent", sentAt: new Date() } },
+    // The Gmail message id lets follow-ups open the thread directly.
+    { $set: { status: "sent", sentAt: new Date(), ...(gmailMessageId ? { gmailMessageId } : {}) } },
   );
 }
 
@@ -103,7 +124,7 @@ export async function discardCloudSend(sendId: ObjectId) {
 
 export async function deleteCloudSends(projectId: ObjectId, campaignId: string) {
   const collection = await sends();
-  await collection.deleteMany({ projectId, campaignId, source: "cloud" });
+  await collection.deleteMany(await cloudSendsFilter(projectId, campaignId));
 }
 
 /** Mark replies / bounces found in the sender's inbox. Returns how many were new. */
@@ -113,18 +134,19 @@ export async function recordCloudInboxEvents(
   events: { replied: string[]; bounced: string[] },
 ) {
   const collection = await sends();
+  const base = await cloudSendsFilter(projectId, campaignId);
   const now = new Date();
   const replied = events.replied.map((e) => e.toLowerCase());
   const bounced = events.bounced.map((e) => e.toLowerCase());
   const r = replied.length
     ? await collection.updateMany(
-        { projectId, campaignId, source: "cloud", status: "sent", email: { $in: replied }, repliedAt: { $exists: false } },
+        { ...base, status: "sent", email: { $in: replied }, repliedAt: { $exists: false } },
         { $set: { repliedAt: now } },
       )
     : { modifiedCount: 0 };
   const b = bounced.length
     ? await collection.updateMany(
-        { projectId, campaignId, source: "cloud", status: "sent", email: { $in: bounced }, bouncedAt: { $exists: false } },
+        { ...base, status: "sent", email: { $in: bounced }, bouncedAt: { $exists: false } },
         { $set: { bouncedAt: now } },
       )
     : { modifiedCount: 0 };
@@ -156,7 +178,7 @@ const iso = (value?: Date) => (value ? new Date(value).toISOString() : undefined
 export async function cloudCampaignReport(projectId: ObjectId, campaignId: string) {
   const collection = await sends();
   const docs = await collection
-    .find({ projectId, campaignId, source: "cloud", status: "sent" })
+    .find({ ...(await cloudSendsFilter(projectId, campaignId)), status: "sent" })
     .sort({ sentAt: -1 })
     .limit(5000)
     .toArray();
@@ -204,7 +226,7 @@ export async function cloudSentEmails(projectId: ObjectId, campaignId: string) {
   const collection = await sends();
   const docs = await collection
     .find(
-      { projectId, campaignId, source: "cloud", status: "sent" },
+      { ...(await cloudSendsFilter(projectId, campaignId)), status: "sent" },
       { projection: { email: 1, sentAt: 1, subjectLine: 1 } },
     )
     .toArray();

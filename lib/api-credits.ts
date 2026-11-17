@@ -11,7 +11,8 @@ export type ApiFeature =
   | "kanban"
   | "lookup"
   | "email"
-  | "computer";
+  | "computer"
+  | "cloud";
 
 export const API_FEATURE_LABELS: Record<ApiFeature, string> = {
   assistant: "Assistant",
@@ -26,6 +27,7 @@ export const API_FEATURE_LABELS: Record<ApiFeature, string> = {
   lookup: "Domain lookup",
   email: "Email API",
   computer: "Virtual machine",
+  cloud: "Cloud campaigns",
 };
 
 /**

@@ -41,9 +41,14 @@ import {
 } from "@/lib/cloud-campaigns";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
+import CloudFollowupsPanel, {
+  type CloudFollowupPreview,
+  type CloudFollowupSummary,
+} from "@/app/components/portal/CloudFollowupsPanel";
+import type { CloudFollowupSettings } from "@/lib/cloud-campaigns";
 import { useRouter } from "next/navigation";
 
-type StepId = "computer" | "sender" | "signature" | "sheet" | "review";
+type StepId = "computer" | "sender" | "signature" | "sheet" | "followups" | "review";
 
 
 
@@ -110,6 +115,7 @@ export default function PortalCloudCampaignDetailPage({
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
+  const [followupSummary, setFollowupSummary] = useState<CloudFollowupSummary | null>(null);
   const [desktopUrl, setDesktopUrl] = useState("");
   const [sheetUrl, setSheetUrl] = useState("");
   const [signatureHtml, setSignatureHtml] = useState("");
@@ -183,6 +189,7 @@ export default function PortalCloudCampaignDetailPage({
         senderVerified: false,
         signature: false,
         sheet: false,
+        followups: false,
         review: false,
       };
     }
@@ -211,7 +218,8 @@ export default function PortalCloudCampaignDetailPage({
       senderVerified,
       signature,
       sheet,
-      review: computer && senderVerified && signature && sheet,
+      followups: Boolean(campaign.followups?.savedAt),
+      review: computer && senderVerified && signature && sheet && Boolean(campaign.followups?.savedAt),
     };
   }, [campaign, profiles, selectedProfileEmail]);
 
@@ -362,7 +370,7 @@ export default function PortalCloudCampaignDetailPage({
         setNotice(
           profile?.scriptEmail
             ? `Sender selected (signed in as ${profile.scriptEmail}). Click “Check sign-in” to confirm.`
-            : "Sender selected. Click “Open sender Chrome to sign in” — a one-time Gmail sign-in for this sender.",
+            : `Sender selected. Click “Open sender Chrome to sign in” — a one-time ${formatCloudSenderProvider(profile?.provider)} sign-in for this sender.`,
         );
       } else if (verified) {
         setAwaitingLoginConfirm(false);
@@ -420,6 +428,7 @@ export default function PortalCloudCampaignDetailPage({
   }
 
   async function addProfile() {
+    let openScriptSender = false;
     await withBusy("Creating Chrome profile…", async () => {
       const label =
         newSenderProvider === "outlook" ? "New Outlook" : "New Gmail";
@@ -431,7 +440,7 @@ export default function PortalCloudCampaignDetailPage({
       if (usesScriptSender(newSenderProvider)) {
         const refreshedProfiles = await fetchCloudProfiles();
         setProfiles(refreshedProfiles);
-        setNotice("New Gmail sender created. Click “Open sender Chrome to sign in”.");
+        openScriptSender = true;
         return;
       }
       if (created.needsLogin) {
@@ -451,6 +460,8 @@ export default function PortalCloudCampaignDetailPage({
       const refreshed = await fetchCloudProfiles();
       setProfiles(refreshed);
     });
+    // New sender: open its own Chrome straight away, in front, at the sign-in page.
+    if (openScriptSender) await checkScriptSender(true, newSenderProvider);
   }
 
   async function confirmLoginFromDesktop() {
@@ -462,13 +473,18 @@ export default function PortalCloudCampaignDetailPage({
   }
 
   /** No-AI sender: start its dedicated Chrome and check which Gmail account is signed in. */
-  async function checkScriptSender(openForSignIn: boolean) {
-    if (!campaign?.profileId) {
+  async function checkScriptSender(openForSignIn: boolean, justAddedProvider?: CloudSenderProvider) {
+    if (!justAddedProvider && !campaign?.profileId) {
       setNotice("Pick a sender first.");
       return;
     }
-    await withBusy(openForSignIn ? "Opening the sender Chrome…" : "Checking Gmail sign-in…", async () => {
-      const data = await runCloudCampaignAction(campaignId, "sender_check");
+    const mailName = formatCloudSenderProvider(
+      justAddedProvider ||
+        profiles.find((item) => item.id === campaign?.profileId)?.provider ||
+        campaign?.profileProvider,
+    );
+    await withBusy(openForSignIn ? `Opening the sender Chrome at ${mailName}…` : `Checking ${mailName} sign-in…`, async () => {
+      const data = await runCloudCampaignAction(campaignId, "sender_check", { focus: openForSignIn });
       const sender = (data.sender || {}) as Record<string, unknown>;
       if (typeof data.desktopUrl === "string" && data.desktopUrl) setDesktopUrl(data.desktopUrl);
       const [nextCampaign, nextProfiles] = await Promise.all([
@@ -497,7 +513,7 @@ export default function PortalCloudCampaignDetailPage({
         setAwaitingLoginConfirm(true);
         setDesktopLayout("maximized");
         setNotice(
-          `Take control and sign in to Gmail${expected ? ` as ${expected}` : ""} in the Chrome window, then click “Check sign-in”. You only do this once per sender.`,
+          `Take control and sign in to ${mailName}${expected ? ` as ${expected}` : ""} in the Chrome window, then click “Check sign-in”. You only do this once per sender.`,
         );
         return;
       }
@@ -555,6 +571,44 @@ export default function PortalCloudCampaignDetailPage({
       const data = await runCloudCampaignAction(campaignId, "save_column_map", { columnMap: map });
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
     });
+  }
+
+  /** Counts of queued / sent / stopped follow-ups (from the report). */
+  async function loadFollowupSummary() {
+    try {
+      const response = await fetch(`/api/cloud-campaigns/${encodeURIComponent(campaignId)}/report`, { cache: "no-store" });
+      const data = (await response.json().catch(() => null)) as {
+        report?: { followups?: { items?: { status: string }[]; nextDueAt?: string } };
+      } | null;
+      const items = data?.report?.followups?.items || [];
+      const count = (status: string) => items.filter((item) => item.status === status).length;
+      setFollowupSummary({
+        scheduled: count("scheduled") + count("sending"),
+        sent: count("sent"),
+        skipped: count("skipped"),
+        failed: count("failed"),
+        nextDueAt: data?.report?.followups?.nextDueAt,
+      });
+    } catch {
+      setFollowupSummary(null);
+    }
+  }
+
+  async function saveFollowups(settings: CloudFollowupSettings) {
+    const next = await patchCloudCampaign(campaignId, { followups: settings });
+    setCampaign(next);
+    setNotice(
+      next.followups?.enabled
+        ? `Follow-ups saved: ${next.followups.steps.length} after the pitch, stopped by any reply.`
+        : "Saved without follow-ups.",
+    );
+    void loadFollowupSummary();
+    setOpenStep("review");
+  }
+
+  async function previewFollowup(row: number, step: number): Promise<CloudFollowupPreview> {
+    const data = await runCloudCampaignAction(campaignId, "followup_preview", { row, step });
+    return data.preview as CloudFollowupPreview;
   }
 
   async function previewRow(row?: number): Promise<CloudRowPreview | null> {
@@ -868,6 +922,7 @@ export default function PortalCloudCampaignDetailPage({
     stepsDone.senderVerified,
     stepsDone.signature,
     stepsDone.sheet,
+    stepsDone.followups,
   ].filter(Boolean).length;
   // Steps unlock one at a time: each needs every earlier step fully done.
   const STEP_NAMES: Record<Exclude<StepId, "review">, string> = {
@@ -875,14 +930,16 @@ export default function PortalCloudCampaignDetailPage({
     sender: "2 (Email sender — signed in and checked)",
     signature: "3 (Signature — save it, even if empty)",
     sheet: "4 (People — list added and columns mapped)",
+    followups: "5 (Follow-ups — save them, on or off)",
   };
   const stepComplete: Record<Exclude<StepId, "review">, boolean> = {
     computer: stepsDone.computer,
     sender: stepsDone.senderVerified,
     signature: stepsDone.signature,
     sheet: stepsDone.sheet,
+    followups: stepsDone.followups,
   };
-  const STEP_ORDER: StepId[] = ["computer", "sender", "signature", "sheet", "review"];
+  const STEP_ORDER: StepId[] = ["computer", "sender", "signature", "sheet", "followups", "review"];
   /** The first earlier step that isn't finished, or null when this step is open to use. */
   const blockingStep = (step: StepId) => {
     for (const earlier of STEP_ORDER.slice(0, STEP_ORDER.indexOf(step))) {
@@ -914,7 +971,9 @@ export default function PortalCloudCampaignDetailPage({
           ? campaign.sheetVerifiedAt
             ? "map the email, subject and body columns (step 4)."
             : "add people with a CSV, Excel file or Google Sheet (step 4)."
-          : undefined;
+          : !stepsDone.followups
+            ? "save the follow-ups step — on or off (step 5)."
+            : undefined;
   const signaturePreview = cleanSignatureHtml(signatureHtml);
   const sheetHeaders = campaign.sheetHeaders ?? [];
 
@@ -1032,12 +1091,12 @@ export default function PortalCloudCampaignDetailPage({
             <div className="drip-setup-intro-copy">
               <strong>Set up this cloud campaign</strong>
               <span>
-                Five steps, in order — each unlocks when the one before it is fully done. Recommended people columns:{" "}
+                Six steps, in order — each unlocks when the one before it is fully done. Recommended people columns:{" "}
                 {CLOUD_SHEET_COLUMNS.join(", ")}.
               </span>
             </div>
             <div className="drip-setup-intro-meter" aria-hidden="true">
-              {[0, 1, 2, 3].map((index) => (
+              {[0, 1, 2, 3, 4].map((index) => (
                 <span key={index} className={index < requiredDone ? "done" : ""} />
               ))}
             </div>
@@ -1553,12 +1612,54 @@ export default function PortalCloudCampaignDetailPage({
               ) : null}
             </section>
             <section
+              className={`cloud-step${openStep === "followups" ? " open" : ""}${
+                stepsDone.followups && !blockingStep("followups") ? " done" : ""
+              }${blockingStep("followups") ? " locked" : ""}`}
+            >
+              <button
+                type="button"
+                className="cloud-step-head"
+                onClick={() => {
+                  goToStep("followups");
+                  if (!blockingStep("followups")) void loadFollowupSummary();
+                }}
+              >
+                <span className="cloud-step-title">
+                  <i className="cloud-step-num" aria-hidden="true">
+                    {stepsDone.followups && !blockingStep("followups") ? "✓" : "5"}
+                  </i>
+                  Follow-ups
+                </span>
+                <em>
+                  {lockedLabel("followups") ||
+                    (!campaign.followups?.savedAt
+                      ? "Save to continue (on or off)"
+                      : campaign.followups.enabled
+                        ? `${campaign.followups.steps.length} follow-up${campaign.followups.steps.length === 1 ? "" : "s"}`
+                        : "Off")}
+                </em>
+              </button>
+              {openStep === "followups" && !blockingStep("followups") ? (
+                <div className="cloud-step-body">
+                  <CloudFollowupsPanel
+                    key={campaign.followups?.savedAt || "new"}
+                    campaign={campaign}
+                    headers={sheetHeaders}
+                    busy={Boolean(busy)}
+                    summary={followupSummary}
+                    onSave={saveFollowups}
+                    onPreview={previewFollowup}
+                  />
+                </div>
+              ) : null}
+            </section>
+            <section
               className={`cloud-step${openStep === "review" ? " open" : ""}${stepsDone.review && !blockingStep("review") ? " done" : ""}${
                 blockingStep("review") ? " locked" : ""
               }`}
             >
               <button type="button" className="cloud-step-head" onClick={() => goToStep("review")}>
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review && !blockingStep("review") ? "✓" : "5"}</i>Review &amp; start</span>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review && !blockingStep("review") ? "✓" : "6"}</i>Review &amp; start</span>
                 <em>
                   {lockedLabel("review") ||
                     (stepsDone.review

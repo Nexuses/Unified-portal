@@ -22,6 +22,17 @@ type Recipient = {
   botClicks: number;
 };
 
+type FollowupItem = {
+  row: number;
+  step: number;
+  email: string;
+  status: "scheduled" | "sending" | "sent" | "skipped" | "failed";
+  dueAt?: string;
+  sentAt?: string;
+  reason?: string;
+  source?: "sheet" | "ai";
+};
+
 type Report = {
   totals: {
     sent: number;
@@ -37,7 +48,28 @@ type Report = {
   recipients: Recipient[];
   tracking: { opens: boolean; clicks: boolean; unsubscribe: boolean };
   inboxCheckedAt?: string;
+  followups?: { enabled: boolean; steps: number; items: FollowupItem[]; nextDueAt?: string };
 };
+
+function followupChip(item: FollowupItem) {
+  const n = `FU${item.step}`;
+  switch (item.status) {
+    case "sent":
+      return { text: `${n} sent ${short(item.sentAt)}`, tone: "is-ok", title: item.source === "ai" ? "Written by AI" : "From the sheet" };
+    case "scheduled":
+      return { text: `${n} due ${short(item.dueAt)}`, tone: "", title: item.reason || "Scheduled" };
+    case "sending":
+      return { text: `${n} sending…`, tone: "", title: "Sending now" };
+    case "skipped":
+      return { text: `Stopped · ${item.reason || "no more follow-ups"}`, tone: "", title: item.reason || "" };
+    default:
+      return { text: `${n} failed`, tone: "is-bad", title: item.reason || "Failed" };
+  }
+}
+
+function followupText(items: FollowupItem[]) {
+  return items.map((item) => followupChip(item).text).join("; ");
+}
 
 type Filter = "all" | "opened" | "clicked" | "replied" | "bounced" | "not_opened";
 
@@ -140,6 +172,23 @@ export default function CloudCampaignReport({
     }
   }
 
+  async function sendNow(row: number, step: number) {
+    setMessage("");
+    try {
+      const response = await fetch(`/api/cloud-campaigns/${encodeURIComponent(campaignId)}/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "followup_send_now", row, step }),
+      });
+      const data = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (!response.ok) throw new Error(data?.error || "Couldn't queue the follow-up");
+      setMessage(`Follow-up ${step} for row ${row + 1} goes out within a minute (if no reply has come in).`);
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Couldn't queue the follow-up");
+    }
+  }
+
   async function toggle(patch: { trackOpens?: boolean; trackClicks?: boolean; unsubscribeFooter?: boolean }) {
     await onTrackingChange(patch);
     await load();
@@ -147,9 +196,11 @@ export default function CloudCampaignReport({
 
   function exportCsv() {
     if (!report) return;
-    const header = ["Row", "Email", "Name", "Company", "Subject", "Sent", "Opened", "Opens", "Clicked", "Clicks", "Bot clicks", "Replied", "Bounced", "Unsubscribed"];
+    const header = ["Row", "Email", "Name", "Company", "Subject", "Sent", "Opened", "Opens", "Clicked", "Clicks", "Bot clicks", "Replied", "Bounced", "Unsubscribed", "Follow-ups"];
+    const byRow = new Map<number, FollowupItem[]>();
+    for (const item of report.followups?.items || []) byRow.set(item.row, [...(byRow.get(item.row) || []), item]);
     const lines = report.recipients.map((r) =>
-      [r.row + 1, r.email, r.name, r.company, r.subject, r.sentAt, r.openedAt, r.openCount, r.clickedAt, r.clickCount, r.botClicks, r.repliedAt, r.bouncedAt, r.unsubscribedAt]
+      [r.row + 1, r.email, r.name, r.company, r.subject, r.sentAt, r.openedAt, r.openCount, r.clickedAt, r.clickCount, r.botClicks, r.repliedAt, r.bouncedAt, r.unsubscribedAt, followupText(byRow.get(r.row) || [])]
         .map(csvCell)
         .join(","),
     );
@@ -166,6 +217,16 @@ export default function CloudCampaignReport({
   if (!report) return <p className="cloud-muted">Loading report…</p>;
 
   const t = report.totals;
+  const fu = report.followups;
+  const fuItems = fu?.items || [];
+  const fuByRow = new Map<number, FollowupItem[]>();
+  for (const item of fuItems) {
+    const list = fuByRow.get(item.row) || [];
+    list.push(item);
+    fuByRow.set(item.row, list);
+  }
+  const fuCount = (status: FollowupItem["status"]) => fuItems.filter((item) => item.status === status).length;
+  const showFollowups = Boolean(fu?.enabled || fuItems.length);
   const stages: EngagementFunnelStage[] = [
     { key: "sent", label: "Sent", value: t.sent, onClick: () => setFilter("all") },
     ...(report.tracking.opens ? [{ key: "opened", label: "Opened", value: t.opened, onClick: () => setFilter("opened") }] : []),
@@ -187,6 +248,18 @@ export default function CloudCampaignReport({
     { key: "replied", label: "Replied", value: t.replied, rate: pct(t.replied, t.sent) },
     { key: "bounced", label: "Bounced", value: t.bounced, rate: pct(t.bounced, t.sent), bad: t.bounced > 0 },
     { key: "skipped", label: "Skipped", value: t.skipped, rate: "", hint: "Rows that couldn't be sent" },
+    ...(showFollowups
+      ? [
+          {
+            key: "followups",
+            label: "Follow-ups sent",
+            value: fuCount("sent"),
+            rate: `${fuCount("scheduled") + fuCount("sending")} queued`,
+            hint: fu?.nextDueAt ? `Next follow-up ${short(fu.nextDueAt)}` : "Replies in the same thread",
+            bad: false,
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -287,6 +360,7 @@ export default function CloudCampaignReport({
                 <th>Opened</th>
                 <th>Clicked</th>
                 <th>Replied</th>
+                {showFollowups ? <th>Follow-ups</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -310,6 +384,30 @@ export default function CloudCampaignReport({
                   <td>{r.openedAt ? `${short(r.openedAt)}${r.openCount > 1 ? ` · ${r.openCount}×` : ""}` : "—"}</td>
                   <td>{r.clickedAt ? `${short(r.clickedAt)}${r.clickCount > 1 ? ` · ${r.clickCount}×` : ""}` : "—"}</td>
                   <td>{r.repliedAt ? <span className="cloud-tag is-ok">Replied</span> : "—"}</td>
+                  {showFollowups ? (
+                    <td className="cloud-report-fu">
+                      {(fuByRow.get(r.row) || []).length
+                        ? (fuByRow.get(r.row) || []).map((item) => {
+                            const chip = followupChip(item);
+                            return (
+                              <span key={item.step} className={`cloud-tag ${chip.tone}`} title={chip.title}>
+                                {chip.text}
+                                {item.status === "scheduled" ? (
+                                  <button
+                                    type="button"
+                                    className="cloud-report-fu-now"
+                                    title="Send this follow-up now"
+                                    onClick={() => void sendNow(item.row, item.step)}
+                                  >
+                                    Send now
+                                  </button>
+                                ) : null}
+                              </span>
+                            );
+                          })
+                        : "—"}
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>

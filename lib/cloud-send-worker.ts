@@ -1,6 +1,7 @@
 import { getDb } from "@/lib/mongodb";
 import { stopCloudBoat } from "@/lib/boat";
-import { sendNextCloudRow, startCloudSending } from "@/lib/cloud-boat-runner";
+import { cloudFollowupHooks, sendNextCloudRow, startCloudSending } from "@/lib/cloud-boat-runner";
+import { runCloudFollowupTick } from "@/lib/cloud-followups";
 import { patchCloudCampaignDoc, type CloudCampaignDoc } from "@/lib/cloud-campaigns-server";
 import { isSendAllowed, nextAllowedTime, type CloudSchedule } from "@/lib/cloud-schedule";
 
@@ -149,6 +150,10 @@ export async function runCloudSendTick() {
   try {
     await startDueScheduled();
     await sendDueRows();
+    // Follow-ups (replies in thread) after the main sends, on the same computer.
+    await runCloudFollowupTick(cloudFollowupHooks).catch((error) =>
+      console.error("[cloud-send] follow-ups failed:", error),
+    );
   } catch (error) {
     console.error("[cloud-send] tick failed:", error);
   } finally {

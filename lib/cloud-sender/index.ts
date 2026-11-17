@@ -20,6 +20,8 @@ export type SenderCommand =
   | "version"
   | "check"
   | "send"
+  | "reply"
+  | "focus"
   | "find_sent"
   | "read_sheet"
   | "probe_outlook"
@@ -226,6 +228,22 @@ export async function prepareAndCheckSender(
   return { ...check, stage: "check", port: chrome.port, chromeStarted: chrome.started };
 }
 
+/** Close this sender's Chrome and empty its folder (a brand-new sender must start signed out). */
+export async function resetSenderChromeDir(sandboxId: string, directoryName: string) {
+  const dir = `${CHROME_ROOT}/${senderSlug(directoryName)}`;
+  const result = await runBoatCommand(
+    sandboxId,
+    `pkill -f -- "--user-data-dir=${dir}" 2>/dev/null; sleep 1; rm -rf ${dir} && echo reset-ok`,
+    30,
+  );
+  return /reset-ok/.test(result.stdout);
+}
+
+/** Raise this sender's Chrome window above other senders' windows (for signing in). */
+export async function focusSenderChrome(sandboxId: string, port: number, provider: SenderProvider = "gmail") {
+  return runSenderScript(sandboxId, "focus", { port, provider }, 30);
+}
+
 export type ScriptSendInput = {
   provider?: SenderProvider;
   to: string;
@@ -316,6 +334,48 @@ export async function sendViaScript(
       expectStrong,
     },
     // Runs in the background: attachments can push a send past the 90 s command limit.
+    240,
+    { background: true },
+  );
+}
+
+/**
+ * Send a follow-up as a reply in the original thread (opened by Gmail message id when known,
+ * else found in Sent by recipient + subject). No AI.
+ */
+export async function replyViaScript(
+  sandboxId: string,
+  directoryName: string,
+  input: Omit<ScriptSendInput, "attachments"> & { messageId?: string },
+): Promise<SenderResult> {
+  const toolkit = await ensureSenderToolkit(sandboxId);
+  if (!toolkit.ok) {
+    return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail, sendPressed: false };
+  }
+  const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl(input.provider));
+  if (!chrome.ok) {
+    return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail, sendPressed: false };
+  }
+  const { expectText, expectStrong } = bodyExpectations(input.plain, input.html);
+  return runSenderScript(
+    sandboxId,
+    "reply",
+    {
+      port: chrome.port,
+      provider: input.provider || "gmail",
+      to: input.to,
+      subject: input.subject,
+      messageId: input.messageId || "",
+      html: input.html,
+      plain: input.plain,
+      expectedEmail: input.expectedEmail,
+      replaceSignature: input.replaceSignature,
+      dupCheck: Boolean(input.dupCheck),
+      sensitivityLabel: input.sensitivityLabel || "",
+      dryRun: Boolean(input.dryRun),
+      expectText,
+      expectStrong,
+    },
     240,
     { background: true },
   );
