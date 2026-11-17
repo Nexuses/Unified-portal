@@ -12492,6 +12492,9 @@ a.an-kanban-card-name.is-link:hover{
   border-radius:999px;padding:3px 10px;white-space:nowrap;max-width:55%;overflow:hidden;text-overflow:ellipsis;
 }
 .cloud-step.done .cloud-step-head em{background:#f0fdf4;color:#166534;}
+.cloud-step.locked .cloud-step-head{cursor:not-allowed;}
+.cloud-step.locked .cloud-step-title{opacity:.55;}
+.cloud-step.locked .cloud-step-head em{background:#f4f4f5;color:#71717a;}
 .cloud-step-head:hover{background:#fafafa;}
 .cloud-step-head:focus-visible{outline:2px solid #111827;outline-offset:-2px;}
 .cloud-step{transition:border-color .2s ease, box-shadow .2s ease;}

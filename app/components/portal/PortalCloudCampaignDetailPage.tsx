@@ -211,8 +211,7 @@ export default function PortalCloudCampaignDetailPage({
       senderVerified,
       signature,
       sheet,
-      // The computer starts by itself when sending starts, and the signature is optional.
-      review: senderVerified && sheet,
+      review: computer && senderVerified && signature && sheet,
     };
   }, [campaign, profiles, selectedProfileEmail]);
 
@@ -870,16 +869,52 @@ export default function PortalCloudCampaignDetailPage({
     stepsDone.signature,
     stepsDone.sheet,
   ].filter(Boolean).length;
-  // Steps can be done in any order; only what sending really needs is listed here.
-  const missingForStart = [
-    !stepsDone.senderVerified ? "sign in the sender and click Check sign-in (step 2)" : "",
-    !stepsDone.sheet
-      ? campaign.sheetVerifiedAt
-        ? "map the email, subject and body columns (step 4)"
-        : "add people with a CSV, Excel file or Google Sheet (step 4)"
-      : "",
-  ].filter(Boolean);
-  const blockedReason = missingForStart.length ? `${missingForStart.join("; and ")}.` : undefined;
+  // Steps unlock one at a time: each needs every earlier step fully done.
+  const STEP_NAMES: Record<Exclude<StepId, "review">, string> = {
+    computer: "1 (Computer)",
+    sender: "2 (Email sender — signed in and checked)",
+    signature: "3 (Signature — save it, even if empty)",
+    sheet: "4 (People — list added and columns mapped)",
+  };
+  const stepComplete: Record<Exclude<StepId, "review">, boolean> = {
+    computer: stepsDone.computer,
+    sender: stepsDone.senderVerified,
+    signature: stepsDone.signature,
+    sheet: stepsDone.sheet,
+  };
+  const STEP_ORDER: StepId[] = ["computer", "sender", "signature", "sheet", "review"];
+  /** The first earlier step that isn't finished, or null when this step is open to use. */
+  const blockingStep = (step: StepId) => {
+    for (const earlier of STEP_ORDER.slice(0, STEP_ORDER.indexOf(step))) {
+      const key = earlier as Exclude<StepId, "review">;
+      if (!stepComplete[key]) return key;
+    }
+    return null;
+  };
+  const goToStep = (step: StepId) => {
+    const blocker = blockingStep(step);
+    if (blocker) {
+      setNotice(`Finish step ${STEP_NAMES[blocker]} first.`);
+      setOpenStep(blocker);
+      return;
+    }
+    setOpenStep(step);
+  };
+  const lockedLabel = (step: StepId) => {
+    const blocker = blockingStep(step);
+    return blocker ? `Locked · finish step ${STEP_ORDER.indexOf(blocker) + 1}` : null;
+  };
+  const blockedReason = !stepsDone.computer
+    ? "start the computer (step 1)."
+    : !stepsDone.senderVerified
+      ? "sign in the sender and click Check sign-in (step 2)."
+      : !stepsDone.signature
+        ? "save the signature step — it can be empty (step 3)."
+        : !stepsDone.sheet
+          ? campaign.sheetVerifiedAt
+            ? "map the email, subject and body columns (step 4)."
+            : "add people with a CSV, Excel file or Google Sheet (step 4)."
+          : undefined;
   const signaturePreview = cleanSignatureHtml(signatureHtml);
   const sheetHeaders = campaign.sheetHeaders ?? [];
 
@@ -997,7 +1032,7 @@ export default function PortalCloudCampaignDetailPage({
             <div className="drip-setup-intro-copy">
               <strong>Set up this cloud campaign</strong>
               <span>
-                Do the steps in any order — only a signed-in sender and a people list are required to start. Recommended people columns:{" "}
+                Five steps, in order — each unlocks when the one before it is fully done. Recommended people columns:{" "}
                 {CLOUD_SHEET_COLUMNS.join(", ")}.
               </span>
             </div>
@@ -1036,22 +1071,23 @@ export default function PortalCloudCampaignDetailPage({
 
             <section
               className={`cloud-step${openStep === "sender" ? " open" : ""}${
-                stepsDone.senderVerified ? " done" : ""
-              }`}
+                stepsDone.senderVerified && !blockingStep("sender") ? " done" : ""
+              }${blockingStep("sender") ? " locked" : ""}`}
             >
-              <button type="button" className="cloud-step-head" onClick={() => setOpenStep("sender")}>
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.senderVerified ? "✓" : "2"}</i>Email sender</span>
+              <button type="button" className="cloud-step-head" onClick={() => goToStep("sender")}>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.senderVerified && !blockingStep("sender") ? "✓" : "2"}</i>Email sender</span>
                 <em>
-                  {!campaign.profileId
+                  {lockedLabel("sender") ||
+                    (!campaign.profileId
                     ? "Pick profile"
                     : stepsDone.senderVerified
                       ? `${formatCloudSenderProvider(campaign.profileProvider)} · ${
                           selectedProfile?.label || campaign.profileGmail
                         }`
-                      : "Selected — confirm inbox"}
+                      : "Selected — confirm inbox")}
                 </em>
               </button>
-              {openStep === "sender" ? (
+              {openStep === "sender" && !blockingStep("sender") ? (
                 <div className="cloud-step-body">
                   <p>
                     Each sender has its own Chrome on the computer. Sign in once (Take control →
@@ -1342,23 +1378,22 @@ export default function PortalCloudCampaignDetailPage({
             </section>
 
             <section
-              className={`cloud-step${openStep === "signature" ? " open" : ""}${stepsDone.signature ? " done" : ""}`}
+              className={`cloud-step${openStep === "signature" ? " open" : ""}${stepsDone.signature && !blockingStep("signature") ? " done" : ""}${
+                blockingStep("signature") ? " locked" : ""
+              }`}
             >
               <button
                 type="button"
                 className="cloud-step-head"
-                onClick={() => setOpenStep("signature")}
+                onClick={() => goToStep("signature")}
               >
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.signature ? "✓" : "3"}</i>Signature &amp; attachments</span>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.signature && !blockingStep("signature") ? "✓" : "3"}</i>Signature &amp; attachments</span>
                 <em>
-                  {stepsDone.signature
-                      ? signaturePreview
-                        ? "Saved"
-                        : "None"
-                      : "Optional"}
+                  {lockedLabel("signature") ||
+                    (stepsDone.signature ? (signaturePreview ? "Saved" : "None") : "Save to continue (can be empty)")}
                 </em>
               </button>
-              {openStep === "signature" ? (
+              {openStep === "signature" && !blockingStep("signature") ? (
                 <div className="cloud-step-body">
                   <p>
                     Paste signature HTML for this campaign. It is appended under each pitch when
@@ -1431,24 +1466,29 @@ export default function PortalCloudCampaignDetailPage({
               ) : null}
             </section>
 
-            <section className={`cloud-step${openStep === "sheet" ? " open" : ""}${stepsDone.sheet ? " done" : ""}`}>
+            <section
+              className={`cloud-step${openStep === "sheet" ? " open" : ""}${stepsDone.sheet && !blockingStep("sheet") ? " done" : ""}${
+                blockingStep("sheet") ? " locked" : ""
+              }`}
+            >
               <button
                 type="button"
                 className="cloud-step-head"
-                onClick={() => setOpenStep("sheet")}
+                onClick={() => goToStep("sheet")}
               >
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.sheet ? "✓" : "4"}</i>People</span>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.sheet && !blockingStep("sheet") ? "✓" : "4"}</i>People</span>
                 <em>
-                  {stepsDone.sheet
+                  {lockedLabel("sheet") ||
+                    (stepsDone.sheet
                       ? campaign.columnStats
                         ? `${campaign.columnStats.ready}/${campaign.columnStats.total} ready`
                         : `${campaign.sheetRowCount} rows`
                       : campaign.sheetVerifiedAt
                         ? "Map columns"
-                        : "Add people"}
+                        : "Add people")}
                 </em>
               </button>
-              {openStep === "sheet" ? (
+              {openStep === "sheet" && !blockingStep("sheet") ? (
                 <div className="cloud-step-body">
                   <p>
                     Upload a CSV, or paste a Google Sheet. A sheet shared as “anyone with the link
@@ -1512,18 +1552,23 @@ export default function PortalCloudCampaignDetailPage({
                 </div>
               ) : null}
             </section>
-            <section className={`cloud-step${openStep === "review" ? " open" : ""}${stepsDone.review ? " done" : ""}`}>
-              <button type="button" className="cloud-step-head" onClick={() => setOpenStep("review")}>
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review ? "✓" : "5"}</i>Review &amp; start</span>
+            <section
+              className={`cloud-step${openStep === "review" ? " open" : ""}${stepsDone.review && !blockingStep("review") ? " done" : ""}${
+                blockingStep("review") ? " locked" : ""
+              }`}
+            >
+              <button type="button" className="cloud-step-head" onClick={() => goToStep("review")}>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review && !blockingStep("review") ? "✓" : "5"}</i>Review &amp; start</span>
                 <em>
-                  {stepsDone.review
+                  {lockedLabel("review") ||
+                    (stepsDone.review
                     ? "Ready"
                     : stepsDone.sender && !stepsDone.senderVerified
                       ? "Confirm inbox to start"
-                      : "Finish setup"}
+                      : "Finish setup")}
                 </em>
               </button>
-              {openStep === "review" ? (
+              {openStep === "review" && !blockingStep("review") ? (
                 <div className="cloud-step-body">
                   {stepsDone.sender && !stepsDone.senderVerified ? (
                     <p className="cloud-auth-hint">

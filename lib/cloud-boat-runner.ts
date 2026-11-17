@@ -2026,6 +2026,9 @@ async function assertCampaignReady(projectId: ObjectId, campaignId: string, doc:
   if (!doc.profileGmail || !doc.profileGmail.includes("@")) {
     throw new Error("Sign in the sender and click Check sign-in (step 2) before starting.");
   }
+  if (!doc.signatureReady) {
+    throw new Error("Save the signature step first — it can be empty (step 3).");
+  }
   if (!campaignHasPeopleList(doc)) {
     throw new Error("Add people with a CSV or Google Sheet first (step 4).");
   }
