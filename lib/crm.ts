@@ -145,6 +145,8 @@ export type CrmList = {
   companyCount: number;
   createdAt: string;
   importFileName?: string;
+  /** When true, a client-share login can see this list. */
+  clientVisible?: boolean;
 };
 
 export type ContactListMembership = {
@@ -367,6 +369,8 @@ export type ListDoc = {
   companyCount?: number;
   importFileName?: string;
   createdBy: ObjectId | null;
+  /** When true, this list is shown in the client portal. */
+  clientVisible?: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -425,6 +429,7 @@ export function mapList(doc: ListDoc): CrmList {
     companyCount: doc.companyCount ?? 0,
     createdAt: doc.createdAt.toISOString(),
     importFileName: doc.importFileName,
+    clientVisible: doc.clientVisible === true,
   };
 }
 
