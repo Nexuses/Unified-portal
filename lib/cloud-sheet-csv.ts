@@ -509,6 +509,52 @@ export function parseCloudCsvText(csvText: string): ParsedCloudCsv {
   return recordsToCloudList(records);
 }
 
+/**
+ * Sample people list offered as a download on the People step. Headers match the
+ * auto-mapping aliases, so an unedited copy maps every column (and both follow-ups) on its own.
+ */
+export const CLOUD_SAMPLE_SHEET = {
+  fileName: "cloud-campaign-sample.csv",
+  headers: [
+    "Email",
+    "First Name",
+    "Last Name",
+    "Company",
+    "Job Title",
+    "Industry",
+    "Subject",
+    "Pitch",
+    "Follow-up 1",
+    "Follow-up 2",
+  ],
+  rows: [
+    [
+      "priya.sharma@example.com",
+      "Priya",
+      "Sharma",
+      "Acme Logistics",
+      "Head of Operations",
+      "Logistics",
+      "Quick idea for Acme Logistics",
+      "Hi Priya,\n\nI noticed Acme Logistics is expanding its warehouse network this year. We help operations teams cut **order-to-dispatch time by 30%** without new headcount.\n\nWould a 15-minute call next week be useful? You can pick a slot here: https://calendly.com/your-team/15min\n\nThanks,",
+      "Hi Priya, just bringing this back to the top of your inbox. Happy to share a 2-minute case study if that's easier than a call.",
+      "Hi Priya, I'll close the loop here. If timing is better next quarter, just reply and I'll reach out then.",
+    ],
+    [
+      "daniel.ortiz@example.com",
+      "Daniel",
+      "Ortiz",
+      "Brightline Health",
+      "VP Marketing",
+      "Healthcare",
+      "Brightline Health + patient outreach",
+      "Hi Daniel,\n\nCongrats on the new clinic launches. Teams like yours use us to **double appointment bookings from email** while staying fully compliant.\n\nOpen to a short chat this week?\n\nBest,",
+      "",
+      "",
+    ],
+  ],
+} as const;
+
 export type CloudResolvedRow = {
   email: string;
   subject: string;
