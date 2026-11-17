@@ -2,6 +2,7 @@ import { ObjectId } from "mongodb";
 import { NextRequest, NextResponse } from "next/server";
 import { cloudCampaignReport } from "@/lib/cloud-campaign-tracking";
 import { getCloudCampaign } from "@/lib/cloud-campaigns-server";
+import { listCloudFollowups } from "@/lib/cloud-followups";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
 type Params = { params: Promise<{ id: string }> };
@@ -16,6 +17,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
     const campaign = await getCloudCampaign(projectId, id);
     if (!campaign) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     const report = await cloudCampaignReport(projectId, id);
+    const followups = await listCloudFollowups(projectId, id);
     const skipped = campaign.sendLog.filter((entry) => entry.status === "skipped").length;
     return NextResponse.json({
       report: {
@@ -27,6 +29,11 @@ export async function GET(_request: NextRequest, { params }: Params) {
           unsubscribe: campaign.unsubscribeFooter === true,
         },
         inboxCheckedAt: campaign.inboxCheckedAt,
+        followups: {
+          enabled: campaign.followups?.enabled === true,
+          steps: campaign.followups?.steps.length || 0,
+          ...followups,
+        },
       },
     });
   } catch (error) {

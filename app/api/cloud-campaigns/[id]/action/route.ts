@@ -23,8 +23,10 @@ import {
   testScriptSend,
   verifyCloudCsv,
   verifyCloudSheet,
+  dryRunCloudFollowup,
 } from "@/lib/cloud-boat-runner";
 import { learnBoatMemoryFromSender } from "@/lib/boat-memory";
+import { previewCloudFollowup, sendCloudFollowupNow } from "@/lib/cloud-followups";
 import {
   getChromeProfile,
   getCloudCampaign,
@@ -66,6 +68,7 @@ type ActionBody = {
   fileName?: string;
   columnMap?: Record<string, unknown>;
   row?: number;
+  step?: number;
 };
 
 function isValidEmail(value: string) {
@@ -272,6 +275,24 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (action === "save_column_map") {
       const campaign = await saveCloudColumnMap(projectId, id, body?.columnMap ?? {});
       return NextResponse.json({ campaign });
+    }
+
+    if (action === "followup_send_now") {
+      const row = typeof body?.row === "number" ? Math.max(0, Math.floor(body.row)) : -1;
+      const step = typeof body?.step === "number" ? Math.max(1, Math.floor(body.step)) : 1;
+      await sendCloudFollowupNow(projectId, id, row, step);
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === "followup_preview" || action === "followup_dry_run") {
+      const row = typeof body?.row === "number" ? Math.max(0, Math.floor(body.row)) : 0;
+      const step = typeof body?.step === "number" ? Math.max(1, Math.floor(body.step)) : 1;
+      if (action === "followup_preview") {
+        const preview = await previewCloudFollowup(projectId, id, row, step);
+        return NextResponse.json({ preview });
+      }
+      const sender = await dryRunCloudFollowup(projectId, id, row, step);
+      return NextResponse.json({ sender });
     }
 
     if (action === "preview_row") {

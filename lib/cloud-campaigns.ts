@@ -18,6 +18,27 @@ export function formatCloudSenderProvider(provider?: CloudSenderProvider) {
   return cloudMailProductName(provider === "outlook" ? "outlook" : "gmail");
 }
 
+/** One automatic follow-up: sent `delayDays` after the previous email if there's no reply. */
+export type CloudFollowupStep = {
+  id: string;
+  delayDays: number;
+  /** Sheet column with this follow-up's text; empty cells (or no column) fall back to AI. */
+  column?: string;
+  /** Optional guidance for the AI writer ("mention the case study", "keep it to 2 lines"). */
+  instructions?: string;
+};
+
+export type CloudFollowupSettings = {
+  enabled: boolean;
+  steps: CloudFollowupStep[];
+  /** Set when the user saves the follow-up step (on or off): the step counts as done. */
+  savedAt?: string;
+};
+
+export const CLOUD_FOLLOWUP_MAX_STEPS = 4;
+
+export type CloudFollowupStatus = "scheduled" | "sending" | "sent" | "skipped" | "failed";
+
 /** Recommended sheet columns — expected hints, not hard requirements. */
 export const CLOUD_SHEET_COLUMNS = [
   "firstname",
@@ -96,6 +117,8 @@ export type CloudCampaign = {
   inboxCheckedAt?: string;
   /** Start time, timezone, excluded weekdays and daily window. */
   schedule?: CloudSchedule;
+  /** Automatic follow-ups (replies in the same thread). */
+  followups?: CloudFollowupSettings;
   /** When the server will send the next email (respects gap, days and window). */
   nextSendAt?: string;
   attachments?: { id: string; name: string; size: number; type: string }[];
@@ -236,6 +259,7 @@ export async function patchCloudCampaign(
       | "trackClicks"
       | "unsubscribeFooter"
       | "schedule"
+      | "followups"
     >
   >,
 ): Promise<CloudCampaign> {
@@ -376,6 +400,9 @@ export async function runCloudCampaignAction(
     | "check_inbox"
     | "schedule"
     | "cancel_schedule"
+    | "followup_preview"
+    | "followup_dry_run"
+    | "followup_send_now"
     | "tick",
   body?: Record<string, unknown>,
 ) {

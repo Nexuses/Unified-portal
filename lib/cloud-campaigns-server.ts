@@ -11,7 +11,7 @@ import type {
   CloudSenderProvider,
   CloudSheetSample,
 } from "@/lib/cloud-campaigns";
-import { cloudMailProductName } from "@/lib/cloud-campaigns";
+import { cloudMailProductName, type CloudFollowupSettings } from "@/lib/cloud-campaigns";
 
 export type CloudCampaignDoc = {
   _id: ObjectId;
@@ -57,6 +57,9 @@ export type CloudCampaignDoc = {
   /** Last confirmed send (drives the 7-day reply-check window). */
   lastSentAt?: Date;
   schedule?: CloudSchedule;
+  followups?: CloudFollowupSettings;
+  /** Short claim so only one server works on this campaign's follow-ups at a time. */
+  followupClaimUntil?: Date;
   /** Files attached to every email. */
   attachments?: CloudAttachment[];
   /** Server send worker: when the next row is due, and a short claim so only one server sends. */
@@ -184,6 +187,7 @@ function mapCampaign(doc: WithId<CloudCampaignDoc>): CloudCampaign {
     unsubscribeFooter: doc.unsubscribeFooter === true,
     inboxCheckedAt: doc.inboxCheckedAt ? doc.inboxCheckedAt.toISOString() : undefined,
     schedule: doc.schedule,
+    followups: doc.followups,
     attachments: doc.attachments || [],
     nextSendAt: doc.nextSendAt ? doc.nextSendAt.toISOString() : undefined,
     sheetRowCount: doc.sheetRowCount,

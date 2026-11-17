@@ -13,6 +13,7 @@ import {
 } from "@/lib/cloud-campaigns-server";
 import { columnMapStats, reconcileColumnMap } from "@/lib/cloud-sheet-csv";
 import { deleteCloudSends } from "@/lib/cloud-campaign-tracking";
+import { deleteCloudFollowups, normalizeFollowupSettings, planCloudFollowups } from "@/lib/cloud-followups";
 import { deleteCloudAttachment } from "@/lib/cloud-attachments";
 import { isValidTimezone } from "@/lib/cloud-schedule";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
@@ -92,7 +93,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         if (typeof defaults.gapMinutes === "number" && body.gapMinutes === undefined && existing.gapMinutes === undefined) {
           patch.gapMinutes = defaults.gapMinutes;
         }
-        const headers = Array.isArray(existing.sheetHeaders) ? existing.sheetHeaders.map(String) : [];
+        const current = await getCloudCampaignDoc(projectId, id);
+      const headers = Array.isArray(current?.sheetHeaders) ? current.sheetHeaders.map(String) : [];
         const rows = Array.isArray(existing.sheetRows) ? existing.sheetRows : [];
         if (!existing.columnMap && defaults.columnMap && headers.length) {
           const columnMap = reconcileColumnMap(defaults.columnMap, headers, rows);
@@ -100,6 +102,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           patch.columnStats = columnMapStats(rows, columnMap);
         }
       }
+    }
+    if (body.followups && typeof body.followups === "object") {
+      const current = await getCloudCampaignDoc(projectId, id);
+      const headers = Array.isArray(current?.sheetHeaders) ? current.sheetHeaders.map(String) : [];
+      patch.followups = normalizeFollowupSettings(body.followups, headers);
     }
     if (body.schedule && typeof body.schedule === "object") {
       const raw = body.schedule as Record<string, unknown>;
@@ -158,6 +165,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     if (!campaign) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
+    if (patch.followups || patch.schedule) {
+      // Book / re-time / drop queued follow-ups to match the new settings.
+      await planCloudFollowups(projectId, id).catch((error) => console.error("Plan follow-ups failed:", error));
+    }
     // Remember the sender's signature and gap for its next campaign.
     if (campaign.profileId && typeof body.profileId !== "string") {
       if (body.signatureReady === true) {
@@ -189,6 +200,7 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
     const ok = await deleteCloudCampaign(new ObjectId(session.projectId), id);
     if (ok) {
       await deleteCloudSends(new ObjectId(session.projectId), id);
+      await deleteCloudFollowups(new ObjectId(session.projectId), id);
       for (const attachment of before?.attachments || []) await deleteCloudAttachment(attachment.id);
     }
     if (!ok) {

@@ -12,6 +12,7 @@ import {
   runBoatDesktopTask,
   shellQuote,
   stopCloudBoat,
+  stampCloudActivity,
   type BoatSandbox,
 } from "@/lib/boat";
 import {
@@ -36,10 +37,19 @@ import {
   CLOUD_CSV_MAX_CHARS,
   parseCloudCsvText,
   resolveCloudRowFields,
+  htmlToPlainApprox,
 } from "@/lib/cloud-sheet-csv";
 import { applyContactVariables } from "@/lib/email-variables";
 import { nextAllowedTime, type CloudSchedule } from "@/lib/cloud-schedule";
 import { ensureAttachmentsOnVm } from "@/lib/cloud-attachments";
+import {
+  deleteCloudFollowups,
+  followupBody,
+  nextFollowupDueForProject,
+  previewCloudFollowup,
+  type FollowupHooks,
+  type FollowupSender,
+} from "@/lib/cloud-followups";
 import {
   cloudSentEmails,
   deleteCloudSends,
@@ -55,6 +65,7 @@ import {
   readSheetViaScript,
   scanInboxViaScript,
   sendViaScript,
+  replyViaScript,
   type SenderResult,
 } from "@/lib/cloud-sender";
 import {
@@ -672,7 +683,9 @@ async function sendRowWithScript(input: {
     result.code === "COMMAND_TIMEOUT" ||
     result.code === "NO_RESULT" ||
     result.code === "COMMAND_FAILED";
-  if (sentForSure) await markCloudSendSent(record.sendId);
+  if (sentForSure) {
+    await markCloudSendSent(record.sendId, typeof result.messageId === "string" ? result.messageId : undefined);
+  }
   else if (!possiblySent) await discardCloudSend(record.sendId);
 
   // Restart/pause while we were working: don't overwrite that state.
@@ -764,11 +777,15 @@ async function sendRowWithScript(input: {
  * Look in the sender's own inbox for replies from, and bounces for, this campaign's recipients.
  * Read-only; runs on the email computer through the sender's signed-in Chrome (no AI).
  */
-export async function checkCloudInbox(projectId: ObjectId, campaignId: string) {
+export async function checkCloudInbox(
+  projectId: ObjectId,
+  campaignId: string,
+  options: { allowWhileSending?: boolean } = {},
+) {
   const doc = await getCloudCampaignDoc(projectId, campaignId);
   if (!doc) throw new Error("Campaign not found");
   if (!doc.profileDirectory) throw new Error("This campaign has no sender");
-  if (doc.status === "sending") {
+  if (doc.status === "sending" && !options.allowWhileSending) {
     throw new Error("Wait until sending stops — replies are checked on the same computer.");
   }
   const sent = await cloudSentEmails(projectId, campaignId);
@@ -811,6 +828,76 @@ export async function checkCloudInbox(projectId: ObjectId, campaignId: string) {
   }
   await patchCloudCampaignDoc(projectId, campaignId, { inboxCheckedAt: new Date() });
   return { checked: emails.length, newReplies, newBounces };
+}
+
+/* ------------------------------------------------------------------ Follow-ups */
+
+/** Send one follow-up as a reply in the original thread (used by the follow-up worker). */
+const sendCloudFollowup: FollowupSender = async ({ campaign, item, html, plain, dupCheck }) => {
+  if (!campaign.profileDirectory) return { ok: false, code: "NO_SENDER", sendPressed: false };
+  const sandbox = await readySandbox(campaign.projectId, campaign.campaignId);
+  await stampCloudActivity(campaign.projectId).catch(() => undefined);
+  const profile = campaign.profileId ? await getChromeProfile(campaign.projectId, campaign.profileId) : null;
+  const signatureHtml = String(campaign.signatureHtml || "").trim();
+  return replyViaScript(sandbox.id, campaign.profileDirectory, {
+    provider: resolveSenderProvider(campaign.profileProvider),
+    to: item.email,
+    subject: item.threadSubject,
+    messageId: item.messageId,
+    html,
+    plain,
+    expectedEmail: String(campaign.profileGmail || "").trim().toLowerCase() || undefined,
+    replaceSignature: Boolean(signatureHtml),
+    dupCheck,
+    sensitivityLabel: profile?.sensitivityLabel,
+  });
+};
+
+/** Hooks the follow-up worker uses to reach the computer. */
+export const cloudFollowupHooks: FollowupHooks = {
+  send: sendCloudFollowup,
+  checkInbox: async (campaign) => {
+    await checkCloudInbox(campaign.projectId, campaign.campaignId, { allowWhileSending: true });
+  },
+  busyWith: async (campaign) => {
+    const lock = await getBoatDesktopLock(campaign.projectId);
+    return lock && lock.campaignId !== campaign.campaignId ? lock.campaignName || "another campaign" : null;
+  },
+  idle: async (projectId) => {
+    // Keep the computer on if a campaign is mid-send or another follow-up is due soon.
+    const lock = await getBoatDesktopLock(projectId);
+    if (lock) return;
+    const next = await nextFollowupDueForProject(projectId);
+    if (next && next.getTime() - Date.now() < 15 * 60 * 1000) return;
+    await stopCloudBoat(projectId).catch(() => undefined);
+  },
+};
+
+/**
+ * Write follow-up `step` for the first sent row (or row 1) and fill it in the sender's thread
+ * without sending, so the user can see it in place. Needs that row's original email in Sent.
+ */
+export async function dryRunCloudFollowup(projectId: ObjectId, campaignId: string, row: number, step: number) {
+  const doc = await getCloudCampaignDoc(projectId, campaignId);
+  if (!doc?.profileDirectory) throw new Error("Pick a sender first");
+  const preview = await previewCloudFollowup(projectId, campaignId, row, step);
+  const sandbox = await readySandbox(projectId, campaignId);
+  const profile = doc.profileId ? await getChromeProfile(projectId, doc.profileId) : null;
+  const sent = await cloudSentEmails(projectId, campaignId);
+  const original = sent.find((s) => s.email === String(preview.to).toLowerCase());
+  if (!original) throw new Error("Row's original email hasn't been sent yet, so there's no thread to reply in.");
+  const body = followupBody(doc, row, htmlToPlainApprox(preview.html));
+  return replyViaScript(sandbox.id, doc.profileDirectory, {
+    provider: resolveSenderProvider(doc.profileProvider),
+    to: original.email,
+    subject: original.subject,
+    html: preview.html,
+    plain: body.plain,
+    expectedEmail: String(doc.profileGmail || "").trim().toLowerCase() || undefined,
+    replaceSignature: Boolean(String(doc.signatureHtml || "").trim()),
+    dryRun: true,
+    sensitivityLabel: profile?.sensitivityLabel,
+  });
 }
 
 /** Diagnostics: list Outlook compose controls for this campaign's sender (no send). */
@@ -2171,6 +2258,7 @@ export async function restartCloudSending(projectId: ObjectId, campaignId: strin
     await interruptBoatAgent(sandboxId, null).catch(() => undefined);
   }
   await deleteCloudSends(projectId, campaignId);
+  await deleteCloudFollowups(projectId, campaignId);
   await patchCloudCampaignDoc(projectId, campaignId, {
     status: "ready",
     nextRow: 0,

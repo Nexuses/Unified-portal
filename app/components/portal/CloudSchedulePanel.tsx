@@ -56,8 +56,13 @@ type Props = {
 
 /** When to send: start time, recipients' timezone, days to skip, and an optional daily window. */
 export default function CloudSchedulePanel({ schedule, nextSendAt, status, busy, onSave }: Props) {
-  const zones = useMemo(() => allZones(), []);
   const initialZone = schedule?.timezone || browserZone();
+  // Browsers list some zones under old names (Asia/Calcutta for Asia/Kolkata). Always include the
+  // saved and local zones so the select never silently shows (and saves) a different one.
+  const zones = useMemo(
+    () => Array.from(new Set([...allZones(), ...COMMON_ZONES, initialZone, browserZone()])).sort(),
+    [initialZone],
+  );
   const [timezone, setTimezone] = useState(initialZone);
   const [excluded, setExcluded] = useState<number[]>(schedule?.excludedDays ?? []);
   const [useWindow, setUseWindow] = useState(Boolean(schedule && hasWindow(schedule)));

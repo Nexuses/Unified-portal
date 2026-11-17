@@ -20,6 +20,7 @@ export type SenderCommand =
   | "version"
   | "check"
   | "send"
+  | "reply"
   | "find_sent"
   | "read_sheet"
   | "probe_outlook"
@@ -316,6 +317,48 @@ export async function sendViaScript(
       expectStrong,
     },
     // Runs in the background: attachments can push a send past the 90 s command limit.
+    240,
+    { background: true },
+  );
+}
+
+/**
+ * Send a follow-up as a reply in the original thread (opened by Gmail message id when known,
+ * else found in Sent by recipient + subject). No AI.
+ */
+export async function replyViaScript(
+  sandboxId: string,
+  directoryName: string,
+  input: Omit<ScriptSendInput, "attachments"> & { messageId?: string },
+): Promise<SenderResult> {
+  const toolkit = await ensureSenderToolkit(sandboxId);
+  if (!toolkit.ok) {
+    return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail, sendPressed: false };
+  }
+  const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl(input.provider));
+  if (!chrome.ok) {
+    return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail, sendPressed: false };
+  }
+  const { expectText, expectStrong } = bodyExpectations(input.plain, input.html);
+  return runSenderScript(
+    sandboxId,
+    "reply",
+    {
+      port: chrome.port,
+      provider: input.provider || "gmail",
+      to: input.to,
+      subject: input.subject,
+      messageId: input.messageId || "",
+      html: input.html,
+      plain: input.plain,
+      expectedEmail: input.expectedEmail,
+      replaceSignature: input.replaceSignature,
+      dupCheck: Boolean(input.dupCheck),
+      sensitivityLabel: input.sensitivityLabel || "",
+      dryRun: Boolean(input.dryRun),
+      expectText,
+      expectStrong,
+    },
     240,
     { background: true },
   );
