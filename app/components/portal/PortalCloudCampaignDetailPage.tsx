@@ -23,6 +23,7 @@ import CloudSenderSignInPanel, {
 } from "@/app/components/portal/CloudSenderSignInPanel";
 import {
   CLOUD_SHEET_COLUMNS,
+  CLOUD_FONT_OPTIONS,
   createCloudProfile,
   deleteCloudProfile,
   duplicateCloudCampaign,
@@ -41,14 +42,15 @@ import {
 } from "@/lib/cloud-campaigns";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
+import CloudEmailStylePanel from "@/app/components/portal/CloudEmailStylePanel";
 import CloudFollowupsPanel, {
   type CloudFollowupPreview,
   type CloudFollowupSummary,
 } from "@/app/components/portal/CloudFollowupsPanel";
-import type { CloudFollowupSettings } from "@/lib/cloud-campaigns";
+import type { CloudEmailStyle, CloudFollowupSettings } from "@/lib/cloud-campaigns";
 import { useRouter } from "next/navigation";
 
-type StepId = "computer" | "sender" | "signature" | "sheet" | "followups" | "review";
+type StepId = "computer" | "sender" | "signature" | "sheet" | "style" | "followups" | "review";
 
 
 
@@ -189,6 +191,7 @@ export default function PortalCloudCampaignDetailPage({
         senderVerified: false,
         signature: false,
         sheet: false,
+        style: false,
         followups: false,
         review: false,
       };
@@ -218,8 +221,15 @@ export default function PortalCloudCampaignDetailPage({
       senderVerified,
       signature,
       sheet,
+      style: Boolean(campaign.emailStyle?.savedAt),
       followups: Boolean(campaign.followups?.savedAt),
-      review: computer && senderVerified && signature && sheet && Boolean(campaign.followups?.savedAt),
+      review:
+        computer &&
+        senderVerified &&
+        signature &&
+        sheet &&
+        Boolean(campaign.emailStyle?.savedAt) &&
+        Boolean(campaign.followups?.savedAt),
     };
   }, [campaign, profiles, selectedProfileEmail]);
 
@@ -594,6 +604,13 @@ export default function PortalCloudCampaignDetailPage({
     }
   }
 
+  async function saveEmailStyle(style: CloudEmailStyle) {
+    const next = await patchCloudCampaign(campaignId, { emailStyle: style });
+    setCampaign(next);
+    setNotice("Email style saved. It applies to the pitch and every follow-up.");
+    setOpenStep("followups");
+  }
+
   async function saveFollowups(settings: CloudFollowupSettings) {
     const next = await patchCloudCampaign(campaignId, { followups: settings });
     setCampaign(next);
@@ -922,6 +939,7 @@ export default function PortalCloudCampaignDetailPage({
     stepsDone.senderVerified,
     stepsDone.signature,
     stepsDone.sheet,
+    stepsDone.style,
     stepsDone.followups,
   ].filter(Boolean).length;
   // Steps unlock one at a time: each needs every earlier step fully done.
@@ -930,16 +948,18 @@ export default function PortalCloudCampaignDetailPage({
     sender: "2 (Email sender — signed in and checked)",
     signature: "3 (Signature — save it, even if empty)",
     sheet: "4 (People — list added and columns mapped)",
-    followups: "5 (Follow-ups — save them, on or off)",
+    style: "5 (Email style — save it, or click Use standard)",
+    followups: "6 (Follow-ups — save them, on or off)",
   };
   const stepComplete: Record<Exclude<StepId, "review">, boolean> = {
     computer: stepsDone.computer,
     sender: stepsDone.senderVerified,
     signature: stepsDone.signature,
     sheet: stepsDone.sheet,
+    style: stepsDone.style,
     followups: stepsDone.followups,
   };
-  const STEP_ORDER: StepId[] = ["computer", "sender", "signature", "sheet", "followups", "review"];
+  const STEP_ORDER: StepId[] = ["computer", "sender", "signature", "sheet", "style", "followups", "review"];
   /** The first earlier step that isn't finished, or null when this step is open to use. */
   const blockingStep = (step: StepId) => {
     for (const earlier of STEP_ORDER.slice(0, STEP_ORDER.indexOf(step))) {
@@ -971,9 +991,11 @@ export default function PortalCloudCampaignDetailPage({
           ? campaign.sheetVerifiedAt
             ? "map the email, subject and body columns (step 4)."
             : "add people with a CSV, Excel file or Google Sheet (step 4)."
-          : !stepsDone.followups
-            ? "save the follow-ups step — on or off (step 5)."
-            : undefined;
+          : !stepsDone.style
+            ? "save the email style, or click Use standard (step 5)."
+            : !stepsDone.followups
+              ? "save the follow-ups step — on or off (step 6)."
+              : undefined;
   const signaturePreview = cleanSignatureHtml(signatureHtml);
   const sheetHeaders = campaign.sheetHeaders ?? [];
 
@@ -1091,12 +1113,12 @@ export default function PortalCloudCampaignDetailPage({
             <div className="drip-setup-intro-copy">
               <strong>Set up this cloud campaign</strong>
               <span>
-                Six steps, in order — each unlocks when the one before it is fully done. Recommended people columns:{" "}
+                Seven steps, in order — each unlocks when the one before it is fully done. Recommended people columns:{" "}
                 {CLOUD_SHEET_COLUMNS.join(", ")}.
               </span>
             </div>
             <div className="drip-setup-intro-meter" aria-hidden="true">
-              {[0, 1, 2, 3, 4].map((index) => (
+              {[0, 1, 2, 3, 4, 5].map((index) => (
                 <span key={index} className={index < requiredDone ? "done" : ""} />
               ))}
             </div>
@@ -1612,6 +1634,39 @@ export default function PortalCloudCampaignDetailPage({
               ) : null}
             </section>
             <section
+              className={`cloud-step${openStep === "style" ? " open" : ""}${
+                stepsDone.style && !blockingStep("style") ? " done" : ""
+              }${blockingStep("style") ? " locked" : ""}`}
+            >
+              <button type="button" className="cloud-step-head" onClick={() => goToStep("style")}>
+                <span className="cloud-step-title">
+                  <i className="cloud-step-num" aria-hidden="true">
+                    {stepsDone.style && !blockingStep("style") ? "✓" : "5"}
+                  </i>
+                  Email style
+                </span>
+                <em>
+                  {lockedLabel("style") ||
+                    (campaign.emailStyle?.savedAt
+                      ? `${
+                          CLOUD_FONT_OPTIONS.find((font) => font.value === campaign.emailStyle?.fontFamily)?.label || "Custom"
+                        } ${campaign.emailStyle.fontSize}px`
+                      : "Font, size, colours")}
+                </em>
+              </button>
+              {openStep === "style" && !blockingStep("style") ? (
+                <div className="cloud-step-body">
+                  <CloudEmailStylePanel
+                    key={campaign.emailStyle?.savedAt || "new"}
+                    campaign={campaign}
+                    signatureHtml={signatureHtml}
+                    busy={Boolean(busy)}
+                    onSave={saveEmailStyle}
+                  />
+                </div>
+              ) : null}
+            </section>
+            <section
               className={`cloud-step${openStep === "followups" ? " open" : ""}${
                 stepsDone.followups && !blockingStep("followups") ? " done" : ""
               }${blockingStep("followups") ? " locked" : ""}`}
@@ -1626,7 +1681,7 @@ export default function PortalCloudCampaignDetailPage({
               >
                 <span className="cloud-step-title">
                   <i className="cloud-step-num" aria-hidden="true">
-                    {stepsDone.followups && !blockingStep("followups") ? "✓" : "5"}
+                    {stepsDone.followups && !blockingStep("followups") ? "✓" : "6"}
                   </i>
                   Follow-ups
                 </span>
@@ -1659,7 +1714,7 @@ export default function PortalCloudCampaignDetailPage({
               }`}
             >
               <button type="button" className="cloud-step-head" onClick={() => goToStep("review")}>
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review && !blockingStep("review") ? "✓" : "6"}</i>Review &amp; start</span>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review && !blockingStep("review") ? "✓" : "7"}</i>Review &amp; start</span>
                 <em>
                   {lockedLabel("review") ||
                     (stepsDone.review

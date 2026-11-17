@@ -1,5 +1,10 @@
 import { parseCsvRecords, uniquifyCsvHeaders } from "@/lib/csv";
-import { CLOUD_SHEET_COLUMNS, type CloudSheetSample } from "@/lib/cloud-campaigns";
+import {
+  CLOUD_LEGACY_STYLE,
+  CLOUD_SHEET_COLUMNS,
+  type CloudEmailStyle,
+  type CloudSheetSample,
+} from "@/lib/cloud-campaigns";
 import { applyContactVariables } from "@/lib/email-variables";
 import {
   personaliseEmphasizeTerms,
@@ -535,22 +540,56 @@ export function resolveCloudRowFields(
  * Same HTML path as Personalise: pitchToHtml + emphasize company/product terms,
  * then merge tags from the row. Signature is baked into the HTML when provided.
  */
+/** Put the body font on a signature (keeps its sizes, colours and layout). */
+export function signatureWithFont(signatureHtml: string, fontFamily: string) {
+  // Unquoted family names are valid CSS and safe inside both style="…" and style='…'.
+  const font = fontFamily.replace(/["']/g, "");
+  return signatureHtml
+    .replace(/font-family\s*:\s*(?:'[^'"<>]*'|&quot;[^"<>]*?&quot;|[^;"'<>])+/gi, `font-family:${font}`)
+    .replace(/(<font\b[^>]*?)\sface\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "$1");
+}
+
+/** Render options for a campaign's style (older campaigns without one keep the original look). */
+export function cloudPitchOptions(style?: CloudEmailStyle) {
+  const look = style || CLOUD_LEGACY_STYLE;
+  return {
+    look: {
+      fontFamily: look.fontFamily,
+      fontSize: look.fontSize,
+      color: look.color,
+      lineHeight: look.lineHeight,
+      linkColor: look.linkColor,
+    },
+    explicitBold: look.bold === "markdown",
+    noBold: look.bold === "none",
+    linkify: true,
+  };
+}
+
+/** Wrap a signature for the email, in the body font when the style asks for it. */
+export function cloudSignatureBlock(signatureHtml: string, style?: CloudEmailStyle) {
+  const cleaned = String(signatureHtml || "").trim();
+  if (!cleaned) return "";
+  const sig = style?.signatureFont ? signatureWithFont(cleaned, style.fontFamily) : cleaned;
+  // Marked so desktop paste verification can confirm it was not dropped.
+  return `<div data-cloud-signature="1" style="margin:18px 0 0">${sig}</div>`;
+}
+
 export function buildCloudPitchHtml(
   cells: Record<string, string>,
   signatureHtml = "",
   map?: CloudColumnMap,
+  style?: CloudEmailStyle,
 ) {
   const fields = resolveCloudRowFields(cells, map);
-  const emphasize = personaliseEmphasizeTerms({
-    companyName: fields.company,
-    steps: fields.pitch ? [{ body: fields.pitch }] : [],
-  });
-  const cleanedSig = String(signatureHtml || "").trim();
-  // Mark signature so desktop paste verification can confirm it was not dropped.
-  const markedSignature = cleanedSig
-    ? `<div data-cloud-signature="1" style="margin:18px 0 0">${cleanedSig}</div>`
-    : "";
-  const html = pitchToHtml(fields.pitch, markedSignature, { emphasize, linkify: true });
+  const options = cloudPitchOptions(style);
+  const emphasize = options.explicitBold || options.noBold
+    ? []
+    : personaliseEmphasizeTerms({
+        companyName: fields.company,
+        steps: fields.pitch ? [{ body: fields.pitch }] : [],
+      });
+  const html = pitchToHtml(fields.pitch, cloudSignatureBlock(signatureHtml, style), { ...options, emphasize });
   return applyContactVariables(
     html,
     {

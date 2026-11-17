@@ -14,6 +14,7 @@ import {
 import { columnMapStats, reconcileColumnMap } from "@/lib/cloud-sheet-csv";
 import { deleteCloudSends } from "@/lib/cloud-campaign-tracking";
 import { deleteCloudFollowups, normalizeFollowupSettings, planCloudFollowups } from "@/lib/cloud-followups";
+import { normalizeEmailStyle } from "@/lib/cloud-campaigns";
 import { deleteCloudAttachment } from "@/lib/cloud-attachments";
 import { isValidTimezone } from "@/lib/cloud-schedule";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
@@ -102,6 +103,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           patch.columnStats = columnMapStats(rows, columnMap);
         }
       }
+    }
+    if (body.emailStyle && typeof body.emailStyle === "object") {
+      patch.emailStyle = { ...normalizeEmailStyle(body.emailStyle), savedAt: new Date().toISOString() };
     }
     if (body.followups && typeof body.followups === "object") {
       const current = await getCloudCampaignDoc(projectId, id);

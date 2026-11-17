@@ -7,6 +7,8 @@ import { cleanSignatureHtml, personaliseEmphasizeTerms, pitchToHtml } from "@/li
 import {
   applyColumnTokens,
   cleanCell,
+  cloudPitchOptions,
+  cloudSignatureBlock,
   resolveCloudRowFields,
   type CloudColumnMap,
   type CloudResolvedRow,
@@ -380,8 +382,8 @@ export async function followupText(
 /** HTML + plain text for a follow-up body (same rendering and signature as the pitch). */
 export function followupBody(doc: CloudCampaignDoc, row: number, text: string) {
   const { fields } = fieldsFor(doc, row);
-  const signature = cleanSignatureHtml(String(doc.signatureHtml || "").trim());
-  const marked = signature ? `<div data-cloud-signature="1" style="margin:18px 0 0">${signature}</div>` : "";
+  const marked = cloudSignatureBlock(cleanSignatureHtml(String(doc.signatureHtml || "").trim()), doc.emailStyle);
+  const options = cloudPitchOptions(doc.emailStyle);
   const contact = {
     firstName: fields.firstname,
     lastName: fields.lastname,
@@ -389,8 +391,11 @@ export function followupBody(doc: CloudCampaignDoc, row: number, text: string) {
     companyName: fields.company,
     position: fields.position,
   };
-  const emphasize = personaliseEmphasizeTerms({ companyName: fields.company, steps: [{ body: text }] });
-  const html = applyContactVariables(pitchToHtml(text, marked, { emphasize, linkify: true }), contact, true);
+  const emphasize =
+    options.explicitBold || options.noBold
+      ? []
+      : personaliseEmphasizeTerms({ companyName: fields.company, steps: [{ body: text }] });
+  const html = applyContactVariables(pitchToHtml(text, marked, { ...options, emphasize }), contact, true);
   const plain = applyContactVariables(text, contact, false).trim();
   return { html, plain, fields };
 }
