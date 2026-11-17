@@ -1,7 +1,9 @@
 import { ObjectId } from "mongodb";
 import { NextRequest, NextResponse } from "next/server";
 import {
+  captureLinkedinAccountPhoto,
   confirmLinkedinLogin,
+  disconnectLinkedinLogin,
   getLinkedinSession,
   openLinkedinComputer,
   watchLinkedinComputer,
@@ -32,6 +34,14 @@ export async function POST(request: NextRequest) {
       action?: string;
       accountName?: string;
     } | null;
+    if (body?.action === "photo") {
+      const linkedin = await captureLinkedinAccountPhoto(projectId);
+      return NextResponse.json({ session: linkedin });
+    }
+    if (body?.action === "disconnect") {
+      const linkedin = await disconnectLinkedinLogin(projectId);
+      return NextResponse.json({ session: linkedin });
+    }
     if (body?.action === "confirm") {
       const linkedin = await confirmLinkedinLogin(projectId, String(body.accountName || ""));
       return NextResponse.json({ session: linkedin });

@@ -27,7 +27,7 @@ export type BoatCommandResult = {
 type BoatLinkDoc = {
   projectId: ObjectId;
   sandboxId?: string;
-  /** Separate desktop for LinkedIn. Email and Cloud Campaign stay on sandboxId. */
+  /** LinkedIn's own computer. Email and Cloud Campaign stay on sandboxId. */
   linkedinSandboxId?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -577,7 +577,7 @@ export async function getSnapshotAllowance() {
 export async function ensureLinkedinBoat(projectId: ObjectId) {
   const collection = await boatLinks();
   const saved = await collection.findOne({ projectId });
-  if (saved?.linkedinSandboxId) {
+  if (saved?.linkedinSandboxId && saved.linkedinSandboxId !== saved.sandboxId) {
     try {
       return await reviveBoat(saved.linkedinSandboxId);
     } catch (error) {
@@ -798,6 +798,7 @@ async function latestAgentReport(
         ? data
         : [];
   let report = "";
+  let streaming = "";
   for (const event of events) {
     if (!event || typeof event !== "object") continue;
     const eventType = (event as { type?: unknown }).type;
@@ -818,11 +819,18 @@ async function latestAgentReport(
         }
       }
     }
-    if (!body || body.is_streaming === true) continue;
+    if (!body) continue;
     const content = typeof body.content === "string" ? body.content.trim() : "";
-    if (content) report = content;
+    if (!content) continue;
+    if (body.is_streaming === true) {
+      if (/^(?:PENDING|REJECTED|CONNECTED|REPLIED|SENT|STATUS)\s*:/im.test(content)) {
+        streaming = content;
+      }
+      continue;
+    }
+    report = content;
   }
-  return clip(report, 4000);
+  return clip(report || streaming, 4000);
 }
 
 /** Stop a running agent turn (one conversation, or everything when null). */

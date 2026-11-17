@@ -152,7 +152,11 @@ export default function ApiCreditButton({ onOpen }: ApiCreditButtonProps) {
                       {credits.items.map((item) => (
                         <tr key={item.feature}>
                           <td>{item.label}</td>
-                          <td>{item.calls}</td>
+                          <td>
+                            {item.feature === "computer"
+                              ? `${item.calls} computer${item.calls === 1 ? "" : "s"}`
+                              : item.calls}
+                          </td>
                           <td>{formatApiCreditUsd(item.costUsd)}</td>
                         </tr>
                       ))}

@@ -14,6 +14,8 @@ import {
 } from "@/lib/master-inbox-server";
 import { processDueLinkedinMessages } from "@/lib/linkedin-campaigns-server";
 
+type LinkedinFollowUp = typeof processDueLinkedinMessages;
+
 const DEFAULT_INTERVAL_MS = 15_000;
 
 type WorkerGlobal = typeof globalThis & {
@@ -158,7 +160,10 @@ export async function runCampaignSendTick() {
   state.running = true;
   try {
     const result = await processAllDueCampaignSends();
-    const linkedin = await processDueLinkedinMessages().catch((error) => {
+    const followLinkedin =
+      (globalThis as typeof globalThis & { __nexusesLinkedinFollowUp?: LinkedinFollowUp }).__nexusesLinkedinFollowUp ||
+      processDueLinkedinMessages;
+    const linkedin = await followLinkedin().catch((error) => {
       console.error("[campaign-worker] linkedin follow-up failed:", error);
       return { sent: 0 };
     });

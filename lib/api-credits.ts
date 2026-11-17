@@ -11,6 +11,7 @@ export type ApiFeature =
   | "kanban"
   | "lookup"
   | "email"
+  | "computer"
   | "cloud";
 
 export const API_FEATURE_LABELS: Record<ApiFeature, string> = {
@@ -25,22 +26,26 @@ export const API_FEATURE_LABELS: Record<ApiFeature, string> = {
   kanban: "Kanban chat",
   lookup: "Domain lookup",
   email: "Email API",
+  computer: "Virtual machine",
   cloud: "Cloud campaigns",
 };
 
 /**
  * Only these features count against the API credit limit.
- * Email sends (SendGrid / Resend / SMTP), domain lookup, Personalise,
- * social-post, pitch, Enrich, Automation and Kanban calls must never
- * deduct from this credit.
+ * Email sends, domain lookup, Personalise, social-post, pitch, Enrich,
+ * Automation and Kanban calls must never deduct from this credit.
+ * Virtual machine is the Box computer charge, added from Box's own usage.
  */
-export const BILLABLE_API_FEATURES = ["assistant", "edm", "crm"] as const;
+export const BILLABLE_API_FEATURES = ["assistant", "edm", "crm", "computer"] as const;
 
 export function isBillableApiFeature(
   feature: string | undefined | null,
 ): feature is (typeof BILLABLE_API_FEATURES)[number] {
   return (
-    feature === "assistant" || feature === "edm" || feature === "crm"
+    feature === "assistant" ||
+    feature === "edm" ||
+    feature === "crm" ||
+    feature === "computer"
   );
 }
 

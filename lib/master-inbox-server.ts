@@ -504,6 +504,13 @@ async function syncGmailSender(
     secure: true,
     auth: { user, pass },
     logger: false,
+    socketTimeout: 10 * 60 * 1000,
+  });
+  // ImapFlow emits socket timeouts as an "error" event. With no listener, Node
+  // reports that as an uncaught exception and can restart the process.
+  client.on("error", (error: unknown) => {
+    const message = error instanceof Error ? error.message : "IMAP connection error";
+    console.error(`[inbox-sync] ${user}: ${message}`);
   });
 
   let imported = 0;
@@ -516,14 +523,15 @@ async function syncGmailSender(
       return { imported: 0, skipped: 0 };
     }
 
-    const db = await getDb();
     const uids = await client.search({ since }, { uid: true });
     if (!uids || uids.length === 0) {
       return { imported: 0, skipped: 0 };
     }
 
-    // Cap per sync to avoid long requests
+    // Cap per sync to avoid long requests. Download first, then talk to the
+    // database, so the Gmail socket is not idle during those queries.
     const limited = uids.slice(-200);
+    const downloaded: { uid: number; source: Buffer }[] = [];
 
     for await (const message of client.fetch(
       limited,
@@ -534,7 +542,18 @@ async function syncGmailSender(
         skipped += 1;
         continue;
       }
+      downloaded.push({ uid: message.uid, source: message.source });
+    }
 
+    try {
+      await client.logout();
+    } catch {
+      // The finally block closes anything still open.
+    }
+
+    const db = await getDb();
+
+    for (const message of downloaded) {
       const existing = await db.collection<InboxMessageDoc>("inbox_messages").findOne({
         projectId,
         senderId: sender._id,
