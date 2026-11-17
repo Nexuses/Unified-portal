@@ -698,6 +698,8 @@ export type PitchRenderOptions = {
   emphasize?: string[];
   /** Keep only **markdown** bold. Do not auto-bold sentences, labels, or names. */
   explicitBold?: boolean;
+  /** Make http(s) URLs and [text](url) markdown links clickable. */
+  linkify?: boolean;
 };
 
 /** Turns plain pitch text into paragraphs, bullet lists, and a sign-off. */
@@ -819,10 +821,43 @@ function escapeHtml(value: string) {
     .replace(/"/g, "&quot;");
 }
 
-function inlineHtml(parts: PitchInline[]) {
+const LINK_STYLE = "color:#1a5fd0;text-decoration:underline";
+const LINK_RE = /\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<>"']+/gi;
+
+/** Escape text, turning URLs and [text](url) into links. Trailing punctuation stays outside. */
+function linkifiedHtml(text: string) {
+  let out = "";
+  let last = 0;
+  for (const match of text.matchAll(LINK_RE)) {
+    const start = match.index ?? 0;
+    let url = match[2] || match[0];
+    let label = match[1] || "";
+    let tail = "";
+    if (!match[2]) {
+      // "…see https://x.com/a." or "(https://x.com)": keep the dot / bracket out of the link.
+      const trimmed = url.match(/^(.*?)([.,;:!?]+|\)+)?$/);
+      if (trimmed?.[2]) {
+        const closers = trimmed[2];
+        const opens = (trimmed[1].match(/\(/g) || []).length;
+        const closes = (trimmed[1].match(/\)/g) || []).length;
+        if (!/^\)+$/.test(closers) || opens <= closes) {
+          url = trimmed[1];
+          tail = closers;
+        }
+      }
+      label = url;
+    }
+    out += escapeHtml(text.slice(last, start));
+    out += `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" style="${LINK_STYLE}">${escapeHtml(label)}</a>${escapeHtml(tail)}`;
+    last = start + match[0].length;
+  }
+  return out + escapeHtml(text.slice(last));
+}
+
+function inlineHtml(parts: PitchInline[], linkify = false) {
   return parts
     .map((part) => {
-      let html = escapeHtml(part.text);
+      let html = linkify ? linkifiedHtml(part.text) : escapeHtml(part.text);
       if (part.underline) html = `<u>${html}</u>`;
       if (part.italic) html = `<em>${html}</em>`;
       if (part.bold) html = `<strong>${html}</strong>`;
@@ -893,7 +928,7 @@ export function pitchToHtml(
         const items = block.items
           .map(
             (item) =>
-              `<li style="display:list-item;list-style-type:disc;margin:0 0 6px">${item.label ? `<strong>${escapeHtml(item.label)}:</strong> ` : ""}${inlineHtml(item.text)}</li>`,
+              `<li style="display:list-item;list-style-type:disc;margin:0 0 6px">${item.label ? `<strong>${escapeHtml(item.label)}:</strong> ` : ""}${inlineHtml(item.text, options?.linkify)}</li>`,
           )
           .join("");
         return `<ul style="list-style-type:disc;list-style-position:outside;margin:0 0 14px;padding-left:24px">${items}</ul>`;
@@ -905,7 +940,7 @@ export function pitchToHtml(
         }
         return `<p style="margin:18px 0 0">${block.lines.map(escapeHtml).join("<br>")}</p>`;
       }
-      return `<p style="margin:0 0 14px">${inlineHtml(block.text)}</p>`;
+      return `<p style="margin:0 0 14px">${inlineHtml(block.text, options?.linkify)}</p>`;
     })
     .join("")
     .concat(signature && !signed ? `<div style="margin:18px 0 0">${signature}</div>` : "");

@@ -390,7 +390,7 @@ export function followupBody(doc: CloudCampaignDoc, row: number, text: string) {
     position: fields.position,
   };
   const emphasize = personaliseEmphasizeTerms({ companyName: fields.company, steps: [{ body: text }] });
-  const html = applyContactVariables(pitchToHtml(text, marked, { emphasize }), contact, true);
+  const html = applyContactVariables(pitchToHtml(text, marked, { emphasize, linkify: true }), contact, true);
   const plain = applyContactVariables(text, contact, false).trim();
   return { html, plain, fields };
 }
