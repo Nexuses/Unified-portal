@@ -23,4 +23,7 @@ export async function register() {
 
   const { startAircallSyncWorker } = await import("./lib/aircall-sync-worker");
   startAircallSyncWorker();
+
+  const { startPlatformStatusWorker } = await import("./lib/platform-status-worker");
+  startPlatformStatusWorker();
 }

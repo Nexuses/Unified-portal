@@ -12,10 +12,10 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const SITE_URL = "https://unified.nexuses.xyz";
-const SITE_NAME = "Nexuses Unified Portal";
+const SITE_URL = "https://app.nexgos.com";
+const SITE_NAME = "Nexgos Platform";
 const SITE_DESCRIPTION =
-  "Nexuses Unified Portal for drip and 1-1 campaigns, CRM, automations, SMTP senders, and analytics.";
+  "Nexgos Platform for drip and 1-1 campaigns, CRM, automations, SMTP senders, and analytics.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -25,12 +25,12 @@ export const metadata: Metadata = {
   },
   description: SITE_DESCRIPTION,
   applicationName: SITE_NAME,
-  authors: [{ name: "Nexuses" }],
-  creator: "Nexuses",
-  publisher: "Nexuses",
+  authors: [{ name: "Nexgos" }],
+  creator: "Nexgos",
+  publisher: "Nexgos",
   keywords: [
-    "Nexuses",
-    "Unified Portal",
+    "Nexgos",
+    "Nexgos Platform",
     "email campaigns",
     "drip campaigns",
     "CRM",

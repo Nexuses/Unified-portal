@@ -1,0 +1,440 @@
+body:has(.nxs-status) {
+  background: #f6f7f9 !important;
+  color: #1b2430 !important;
+}
+
+.nxs-status {
+  flex: 1;
+  width: min(720px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 28px 0 64px;
+  font-family: var(--font-geist-sans), "Segoe UI", sans-serif;
+  color: #1b2430;
+}
+
+.nxs-status-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+
+.nxs-status-logo {
+  height: 34px;
+  width: auto;
+}
+
+.nxs-status h1,
+.nxs-status h2,
+.nxs-status h3,
+.nxs-status strong {
+  font-weight: 500;
+}
+
+.nxs-status-top > span {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #5c6b7c;
+}
+
+.nxs-status-banner {
+  border-radius: 14px;
+  margin-bottom: 22px;
+  overflow: hidden;
+  background: white;
+  border: 1px solid #d5efe2;
+  box-shadow: 0 1px 2px rgba(20, 83, 45, 0.04);
+}
+
+.nxs-status-banner-top {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 16px 20px;
+}
+
+.nxs-status-banner h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.nxs-status-banner p {
+  margin: 0;
+  padding: 15px 20px 17px 58px;
+  font-size: 15px;
+  line-height: 1.45;
+  color: #3e4c5e;
+}
+
+.nxs-status-banner .nxs-status-check.lg {
+  width: 26px;
+  height: 26px;
+  box-shadow: none;
+}
+
+.nxs-status-banner .nxs-status-check.lg svg {
+  width: 15px;
+  height: 15px;
+}
+
+.nxs-status-banner.operational {
+  border-color: #c9e8d6;
+}
+
+.nxs-status-banner.operational .nxs-status-banner-top {
+  background: #e7f6ee;
+  color: #14663c;
+}
+
+.nxs-status-banner.degraded {
+  border-color: #f3d48a;
+}
+
+.nxs-status-banner.degraded .nxs-status-banner-top {
+  background: #fff4d6;
+  color: #8a5a00;
+}
+
+.nxs-status-banner.partial {
+  border-color: #f6c7a8;
+}
+
+.nxs-status-banner.partial .nxs-status-banner-top {
+  background: #ffefe4;
+  color: #9a3412;
+}
+
+.nxs-status-banner.major {
+  border-color: #f6c1c7;
+}
+
+.nxs-status-banner.major .nxs-status-banner-top {
+  background: #fdecec;
+  color: #9f1239;
+}
+
+.nxs-status-board,
+.nxs-status-incidents article {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 28px rgba(15, 23, 42, 0.05);
+}
+
+.nxs-status-mark {
+  display: none;
+}
+
+.nxs-status-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: baseline;
+  margin: 28px 0 14px;
+}
+
+.nxs-status-section-head h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.nxs-status-board {
+  background: white;
+  border: 1px solid #e6eaf0;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.nxs-status-board-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: baseline;
+  padding: 20px 22px 8px;
+}
+
+.nxs-status-board-head h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.nxs-status-board-head p,
+.nxs-status-count,
+.nxs-status-uptime,
+.nxs-status-detail {
+  margin: 0;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.nxs-status-cat {
+  border-top: 1px solid #eef2f6;
+}
+
+.nxs-status-cat > button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 22px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.nxs-status-cat > button strong {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.nxs-status-count {
+  margin-left: auto;
+}
+
+.nxs-status-cat > button:hover {
+  background: #f7faf8;
+}
+
+.nxs-status-cat.open > button {
+  background: #f8fbf9;
+}
+
+.nxs-status-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid #8b98a8;
+  border-bottom: 1.5px solid #8b98a8;
+  transform: rotate(-45deg);
+  margin: 0 2px 2px 0;
+  flex: none;
+  transition: transform 0.15s ease;
+}
+
+.nxs-status-cat.open .nxs-status-chevron {
+  transform: rotate(45deg);
+}
+
+.nxs-status-check {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: white;
+  flex: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.nxs-status-check svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.nxs-status-check path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.nxs-status-check circle {
+  fill: currentColor;
+}
+
+.nxs-status-check.lg {
+  width: 32px;
+  height: 32px;
+}
+
+.nxs-status-check.lg svg {
+  width: 18px;
+  height: 18px;
+}
+
+.nxs-status-check.operational {
+  background: #1f9d55;
+}
+
+.nxs-status-check.degraded {
+  background: #d08900;
+}
+
+.nxs-status-check.down,
+.nxs-status-check.partial,
+.nxs-status-check.major {
+  background: #e11d48;
+}
+
+.nxs-status-check.partial {
+  background: #ea580c;
+}
+
+.nxs-status-cat ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 22px 8px 56px;
+}
+
+.nxs-status-cat li {
+  padding: 8px 0 14px;
+}
+
+.nxs-status-component {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.nxs-status-bars {
+  display: grid;
+  grid-template-columns: repeat(90, minmax(0, 1fr));
+  gap: 3px;
+  height: 16px;
+  margin: 10px 0 2px 34px;
+}
+
+.nxs-status-bars i {
+  display: block;
+  border-radius: 3px;
+  background: #e6edf3;
+}
+
+.nxs-status-bars i.operational {
+  background: #2fbe6a;
+}
+
+.nxs-status-bars i.degraded {
+  background: #f0b429;
+}
+
+.nxs-status-bars i.down {
+  background: #ef4d5d;
+}
+
+.nxs-status-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 92px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.nxs-status-state.operational {
+  color: #157a40;
+  background: #e7f8ee;
+}
+
+.nxs-status-state.degraded {
+  color: #8a5a00;
+  background: #fff4d6;
+}
+
+.nxs-status-state.down {
+  color: #be123c;
+  background: #fde8ec;
+}
+
+.nxs-status-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nxs-status-name strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.nxs-status-name span {
+  color: #7b8796;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nxs-status-incidents article {
+  background: white;
+  border: 1px solid #e6eaf0;
+  border-radius: 14px;
+  padding: 16px 18px;
+  margin-bottom: 12px;
+}
+
+.nxs-status-incidents header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nxs-status-incidents h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.nxs-status-incidents header span,
+.nxs-status-incidents p,
+.nxs-status-incidents time {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.nxs-status-incidents ul {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.nxs-status-incidents li {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid #f1f4f8;
+}
+
+.nxs-status-empty,
+.nxs-status-foot {
+  color: #64748b;
+  font-size: 14px;
+}
+
+.nxs-status-foot {
+  margin-top: 28px;
+}
+
+@media (max-width: 700px) {
+  .nxs-status-banner h1 {
+    font-size: 22px;
+  }
+
+  .nxs-status-board-head,
+  .nxs-status-incidents header,
+  .nxs-status-incidents li {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .nxs-status-cat ul {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .nxs-status-bars {
+    margin-left: 34px;
+  }
+}

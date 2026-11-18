@@ -11,7 +11,7 @@ const inter = localFont({
 export const metadata: Metadata = {
   title: "Workspace",
   description:
-    "Manage drip and 1-1 campaigns, CRM contacts, automations, SMTP senders, and analytics in Nexuses Unified Portal.",
+    "Manage drip and 1-1 campaigns, CRM contacts, automations, SMTP senders, and analytics in Nexgos Platform.",
 };
 
 export default function PortalLayout({ children }: LayoutProps<"/portal">) {

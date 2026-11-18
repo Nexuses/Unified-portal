@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "Shared project performance",
-  description: "Shared Nexuses all-projects performance report.",
+  description: "Shared Nexgos Platform project performance report.",
 };
 
 export default function PublicAllProjectsLayout({

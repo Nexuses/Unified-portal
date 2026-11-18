@@ -3,7 +3,7 @@ import AdminLayoutClient from "./AdminLayoutClient";
 
 export const metadata: Metadata = {
   title: "Admin",
-  description: "Nexuses Unified Portal admin console for projects and users.",
+  description: "Nexgos Platform admin console for projects and users.",
 };
 
 export default function AdminLayout({

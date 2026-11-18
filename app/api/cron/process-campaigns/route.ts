@@ -16,7 +16,7 @@ export const maxDuration = 300;
  *
  * Vultr crontab example (every minute as backup to the in-process worker):
  *   * * * * * curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" \
- *     https://unified.nexuses.xyz/api/cron/process-campaigns >/dev/null
+ *     https://app.nexgos.com/api/cron/process-campaigns >/dev/null
  */
 export async function POST(request: NextRequest) {
   const auth = authorizeCronRequest(request);

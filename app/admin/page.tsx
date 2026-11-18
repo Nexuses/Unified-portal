@@ -3,7 +3,7 @@ import BrevoAuthCard from "../components/BrevoAuthCard";
 
 export const metadata: Metadata = {
   title: "Admin sign in",
-  description: "Sign in to the Nexuses Unified Portal admin console.",
+  description: "Sign in to the Nexgos Platform admin console.",
 };
 
 export default function AdminLoginPage() {

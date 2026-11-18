@@ -8,11 +8,12 @@
 #
 # Required env (export in the script or the crontab environment):
 #   CRON_SECRET=...
-#   APP_URL=https://unified.nexuses.xyz
+#   APP_URL=https://app.nexgos.com
 
 set -euo pipefail
 
-APP_URL="${APP_URL:-https://unified.nexuses.xyz}"
+APP_URL="${APP_URL:-https://app.nexgos.com}"
+APP_URL="${APP_URL//unified.nexuses.xyz/app.nexgos.com}"
 CRON_SECRET="${CRON_SECRET:-}"
 
 if [[ -z "$CRON_SECRET" ]]; then

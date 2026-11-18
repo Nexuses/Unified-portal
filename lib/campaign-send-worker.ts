@@ -12,6 +12,7 @@ import {
   processDueInboxReplies,
   type InboxScheduledReplyDoc,
 } from "@/lib/master-inbox-server";
+import { publicAppOrigin } from "@/lib/campaign-tracking";
 import { processDueLinkedinMessages } from "@/lib/linkedin-campaigns-server";
 
 type LinkedinFollowUp = typeof processDueLinkedinMessages;
@@ -40,10 +41,7 @@ export function resolveAppOrigin() {
     process.env.APP_URL?.trim() ||
     process.env.NEXT_PUBLIC_SERVER_URL?.trim() ||
     process.env.NEXT_PUBLIC_APP_URL?.trim();
-  if (fromEnv) {
-    return fromEnv.replace(/\/$/, "");
-  }
-  return "https://unified.nexuses.xyz";
+  return publicAppOrigin(fromEnv);
 }
 
 export function isCampaignWorkerEnabled() {

@@ -1,16 +1,25 @@
 import { replaceUnsubscribeVariables } from "@/lib/email-variables";
 
-export const DEFAULT_TRACKING_HOST = "unified.nexuses.xyz";
+export const DEFAULT_TRACKING_HOST = "app.nexgos.com";
+export const PUBLIC_APP_ORIGIN = `https://${DEFAULT_TRACKING_HOST}`;
 /** Hub hosts a custom tracking CNAME may point at (same app origin). */
-export const TRACKING_HUB_HOSTS = [
-  DEFAULT_TRACKING_HOST,
-  "app.nexgos.com",
-] as const;
-export const DEFAULT_TRACKING_ORIGIN = `https://${DEFAULT_TRACKING_HOST}`;
+export const TRACKING_HUB_HOSTS = [DEFAULT_TRACKING_HOST] as const;
+/** Older hub. Still accepted so existing tracking CNAMEs keep working. */
+const LEGACY_TRACKING_HUB_HOSTS = ["unified.nexuses.xyz"] as const;
+export const DEFAULT_TRACKING_ORIGIN = PUBLIC_APP_ORIGIN;
+
+export function publicAppOrigin(value?: string | null, fallback = PUBLIC_APP_ORIGIN) {
+  const cleaned = String(value ?? "").trim().replace(/\/$/, "");
+  if (!cleaned || /unified\.nexuses\.xyz/i.test(cleaned)) return fallback;
+  return cleaned;
+}
 
 export function isTrackingHubHost(host: string) {
   const normalized = normalizeTrackingDomain(host);
-  return (TRACKING_HUB_HOSTS as readonly string[]).includes(normalized);
+  return (
+    (TRACKING_HUB_HOSTS as readonly string[]).includes(normalized) ||
+    (LEGACY_TRACKING_HUB_HOSTS as readonly string[]).includes(normalized)
+  );
 }
 
 export function trackingHubHostsLabel() {
@@ -38,7 +47,10 @@ export function normalizeTrackingDomain(value: string | undefined | null) {
 
 export function trackingOrigin(trackingDomain?: string | null) {
   const host = normalizeTrackingDomain(trackingDomain);
-  return host ? `https://${host}` : DEFAULT_TRACKING_ORIGIN;
+  if (!host || (LEGACY_TRACKING_HUB_HOSTS as readonly string[]).includes(host)) {
+    return DEFAULT_TRACKING_ORIGIN;
+  }
+  return `https://${host}`;
 }
 
 const trackingProbeCache = new Map<string, { ok: boolean; at: number; detail?: string }>();
@@ -99,7 +111,7 @@ export async function resolveUsableTrackingOrigin(trackingDomain?: string | null
     return DEFAULT_TRACKING_ORIGIN;
   }
   if (isTrackingHubHost(host)) {
-    return `https://${host}`;
+    return DEFAULT_TRACKING_ORIGIN;
   }
   const probe = await probeTrackingHost(host);
   return probe.ok ? `https://${host}` : DEFAULT_TRACKING_ORIGIN;
@@ -129,7 +141,7 @@ export function trackingDnsRecords(domain: string): TrackingDnsRecord[] {
     type: "CNAME" as const,
     host,
     value,
-    purpose: `Open, click, and unsubscribe tracking (CNAME to either ${trackingHubHostsLabel()})`,
+    purpose: `Open, click, and unsubscribe tracking (CNAME to ${trackingHubHostsLabel()})`,
   }));
 }
 

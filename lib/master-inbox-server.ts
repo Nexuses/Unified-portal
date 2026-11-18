@@ -124,7 +124,7 @@ function isBounceOrDeliveryNotice(input: {
 
 /** Generate a stable Message-ID for outbound campaign mail (Gmail IMAP matching). */
 export function createOutboundMessageId() {
-  const id = `${Date.now().toString(36)}.${randomBytes(8).toString("hex")}@unified.nexuses.xyz`;
+  const id = `${Date.now().toString(36)}.${randomBytes(8).toString("hex")}@app.nexgos.com`;
   return `<${id}>`;
 }
 
@@ -328,7 +328,7 @@ async function matchOutboundSend(
   }
 
   // SES (and some relays) rewrite Message-ID to @email.amazonses.com, so
-  // In-Reply-To often won't match our stored @unified.nexuses.xyz id. Fall back
+  // In-Reply-To often won't match our stored @app.nexgos.com id. Fall back
   // to the contact's most recent sent campaign email so 1-1 follow-ups still stop.
   const fromEmail = String(options?.fromEmail ?? "")
     .trim()

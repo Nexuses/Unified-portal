@@ -4,7 +4,7 @@
 
 | Environment | Base URL |
 |-------------|----------|
-| Production | `https://unified.nexuses.xyz` |
+| Production | `https://app.nexgos.com` |
 | Local | `http://localhost:3000` |
 
 This is a Next.js App Router app. Portal data is scoped to the logged-in user’s **project**. Drip campaigns and 1-1 campaigns are separate (`kind`: `"drip"` vs `"oneone"`). Numeric IDs for each kind start at `1` independently — **always pass `?kind=`** on campaign id routes.
@@ -20,7 +20,7 @@ Error shape (most routes): `{ "error": "message" }`.
 
 ```bash
 curl -H "Authorization: Bearer up_live_…" \
-  https://unified.nexuses.xyz/api/crm/contacts
+  https://app.nexgos.com/api/crm/contacts
 ```
 
 3. Typical drip send flow:
@@ -32,7 +32,7 @@ curl -H "Authorization: Bearer up_live_…" \
 4. **Auto-detect new campaigns (Attio / CRM sync):**
    - Preferred: register a webhook (`POST /api/integrations/webhooks`) for `campaign.created`, `campaign.launched`, `send.opened`, `send.clicked`
    - Fallback poll: `GET /api/campaigns?updatedSince=ISO` (both kinds), then `GET /api/campaigns/{id}/recipients?filter=audience|opens|clicks&kind=`
-   - Tracking links use `https://unified.nexuses.xyz` by default. Custom CNAMEs are only used after DNS **and** HTTPS checks pass (Cloudflare Error 1014 blocks many cross-account CNAMEs).
+   - Tracking links use `https://app.nexgos.com` by default. Custom CNAMEs are only used after DNS **and** HTTPS checks pass (Cloudflare Error 1014 blocks many cross-account CNAMEs).
 
 `GET /api/auth/me` is **cookie-only** — Bearer keys do **not** work there. Use CRM/campaigns/SMTP/automations/webhooks routes with the key instead.
 
@@ -766,7 +766,7 @@ Create/update fields:
 - sendgrid / resend: `apiKey`, `fromEmail`
 - cloudflare: `cloudflareAccountId`, `cloudflareEmailApiToken`, `fromEmail`
 
-Secrets are masked in responses. Default tracking host: `unified.nexuses.xyz`.
+Secrets are masked in responses. Default tracking host: `app.nexgos.com`.
 
 ### GET `/api/smtp/senders`
 ### POST `/api/smtp/senders` — 201 sender (runs DNS verification unless `noInbox: true`)

@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 /**
  * Amazon SNS endpoint for SES bounce events.
  * Subscribe the configuration-set topic to:
- * https://unified.nexuses.xyz/api/webhooks/ses
+ * https://app.nexgos.com/api/webhooks/ses
  */
 export async function POST(request: NextRequest) {
   let envelope: SnsEnvelope;

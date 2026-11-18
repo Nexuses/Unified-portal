@@ -1,4 +1,5 @@
 import { ObjectId } from "mongodb";
+import { publicAppOrigin } from "@/lib/campaign-tracking";
 import { getDb } from "@/lib/mongodb";
 import type { ListDoc } from "@/lib/crm";
 import { createList } from "@/lib/crm-import";
@@ -234,10 +235,11 @@ function setupChecklist(campaign: DripCampaign) {
 }
 
 function appOrigin() {
-  return (
-    process.env.APP_URL?.trim() ||
-    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-    "http://localhost:3000"
+  return publicAppOrigin(
+    process.env.NEXT_PUBLIC_SERVER_URL?.trim() ||
+      process.env.NEXT_PUBLIC_APP_URL?.trim() ||
+      process.env.APP_URL?.trim(),
+    "http://localhost:3000",
   );
 }
 
