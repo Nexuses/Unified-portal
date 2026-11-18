@@ -171,13 +171,15 @@ export default function PortalLinkedinBoardPage({ campaignId }: { campaignId: st
         <p className="li-board-sending">This campaign is paused. Nothing is sent until you resume it.</p>
       ) : campaign.status === "complete" ? (
         <p className="li-board-sending">
-          All messages are sent. This campaign is complete and still checks for replies.
+          All messages are sent. The messaging tab watches for replies, and the network tab watches for accepts. Both show up here.
         </p>
       ) : campaign.sending ? (
-        <p className="li-board-sending">Checking LinkedIn and sending the messages that are due.</p>
+        <p className="li-board-sending">
+          The campaign tab sends one person at a time, five minutes apart. The messaging and network tabs stay open and are only read.
+        </p>
       ) : campaign.contacts.some((contact) => contact.stage === "request_sent") ? (
         <p className="li-board-sending">
-          Connection requests stay here until the person accepts or rejects. Accepted people get their messages after the delay.
+          Connection requests go out one at a time, five minutes apart, and stay here until the person accepts or rejects.
         </p>
       ) : null}
       <div className="li-board-metrics">
@@ -263,7 +265,7 @@ export default function PortalLinkedinBoardPage({ campaignId }: { campaignId: st
                       </a>
                       {contact.note ? <span className="li-board-note">{contact.note}</span> : null}
                       {contact.message ? <span className="li-board-note">{contact.message}</span> : null}
-                      {column.id === "reply" ? (
+                      {column.id === "reply" && !contact.note ? (
                         <span className="li-board-note">They replied.</span>
                       ) : null}
                       {column.id === "connection_rejected" && !contact.note ? (

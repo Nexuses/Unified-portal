@@ -12,7 +12,7 @@ export const maxDuration = 300;
  *
  * Vultr crontab example (every 10 minutes; in-process worker also runs this):
  *   curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" \
- *     https://unified.nexuses.xyz/api/cron/aircall-sync
+ *     https://app.nexgos.com/api/cron/aircall-sync
  *   (schedule with cron every 10 minutes)
  */
 export async function POST(request: NextRequest) {

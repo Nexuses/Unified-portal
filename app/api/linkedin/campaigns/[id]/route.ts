@@ -16,7 +16,7 @@ export async function GET(_request: Request, context: RouteContext) {
     const session = await requirePortalSession();
     if (isSessionError(session)) return session;
     const { id } = await context.params;
-    await processDueLinkedinMessages().catch((error) => {
+    void processDueLinkedinMessages().catch((error) => {
       console.error("LinkedIn follow-up check failed:", error);
     });
     const campaign = await getLinkedinCampaign(new ObjectId(session.projectId), id);

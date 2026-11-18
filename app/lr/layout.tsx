@@ -10,7 +10,7 @@ const inter = localFont({
 
 export const metadata: Metadata = {
   title: "Shared lead reports",
-  description: "Shared Nexuses project lead reports list.",
+  description: "Shared Nexgos Platform lead reports.",
 };
 
 export default function PublicLeadReportsRootLayout({

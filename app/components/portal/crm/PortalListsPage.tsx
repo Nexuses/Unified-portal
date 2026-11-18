@@ -124,6 +124,8 @@ export default function PortalListsPage() {
   const [deleting, setDeleting] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [splitting, setSplitting] = useState(false);
+  const [isClient, setIsClient] = useState(false);
+  const [clientBusyId, setClientBusyId] = useState<string | null>(null);
   const [deletePrompt, setDeletePrompt] = useState<{
     ids: string[];
     label: string;
@@ -163,6 +165,12 @@ export default function PortalListsPage() {
 
   useEffect(() => {
     void loadLists();
+    void fetch("/api/auth/me", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { accountType?: string } | null) => {
+        setIsClient(data?.accountType === "client_share");
+      })
+      .catch(() => setIsClient(false));
   }, []);
 
   useEffect(() => {
@@ -442,6 +450,35 @@ export default function PortalListsPage() {
     }
   }
 
+  async function toggleClientVisible(list: CrmList) {
+    const next = !list.clientVisible;
+    setClientBusyId(list.id);
+    setError("");
+    setLists((current) =>
+      current.map((item) => (item.id === list.id ? { ...item, clientVisible: next } : item)),
+    );
+    try {
+      const response = await fetch(`/api/crm/lists/${list.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientVisible: next }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Could not update client access");
+      }
+    } catch (err) {
+      setLists((current) =>
+        current.map((item) =>
+          item.id === list.id ? { ...item, clientVisible: list.clientVisible } : item,
+        ),
+      );
+      setError(err instanceof Error ? err.message : "Could not update client access");
+    } finally {
+      setClientBusyId(null);
+    }
+  }
+
   async function confirmDeleteLists(deleteContacts: boolean) {
     if (!deletePrompt || deleting) {
       return;
@@ -574,6 +611,7 @@ export default function PortalListsPage() {
               <th className="lists-id-cell">ID</th>
               <th className="lists-count-cell">Contacts</th>
               <th className="lists-accounts-cell">Account</th>
+              {isClient ? null : <th className="lists-client-cell">Client view</th>}
               <th className="lists-date-cell">
                 <span className="th-sort">
                   Creation date{" "}
@@ -593,13 +631,13 @@ export default function PortalListsPage() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} className="crm-empty">
+                <td colSpan={isClient ? 7 : 8} className="crm-empty">
                   Loading lists...
                 </td>
               </tr>
             ) : filteredLists.length === 0 ? (
               <tr>
-                <td colSpan={7} className="crm-empty">
+                <td colSpan={isClient ? 7 : 8} className="crm-empty">
                   {search.trim()
                     ? "No lists match that search."
                     : "No lists yet. Create a list and upload a CSV to get started."}
@@ -634,6 +672,19 @@ export default function PortalListsPage() {
                   <td className="lists-accounts-cell">
                     {list.companyCount ?? 0}
                   </td>
+                  {isClient ? null : (
+                    <td className="lists-client-cell">
+                      <button
+                        type="button"
+                        className={`lists-client-flag${list.clientVisible ? " is-yes" : ""}`}
+                        disabled={clientBusyId === list.id}
+                        onClick={() => void toggleClientVisible(list)}
+                        aria-pressed={list.clientVisible === true}
+                      >
+                        {list.clientVisible ? "Yes" : "No"}
+                      </button>
+                    </td>
+                  )}
                   <td className="lists-date-cell">
                     {formatListDate(list.createdAt)}
                   </td>

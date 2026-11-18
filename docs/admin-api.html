@@ -39,7 +39,7 @@
 <main>
   <h1>Admin API</h1>
   <p>Create a key in <strong>Admin → Integrations</strong>. Every key has full <strong>read and write</strong> access and can work in any project.</p>
-  <p class="note">Base URL: <code>https://unified.nexuses.xyz</code>. The full key is shown only once, as <code>up_live_…</code>.</p>
+  <p class="note">Base URL: <code>https://app.nexgos.com</code>. The full key is shown only once, as <code>up_live_…</code>.</p>
 
   <h2>Authentication</h2>
   <p>Send the key on every portal request, and name the project with <code>X-Project-Id</code> (project id or slug).</p>
@@ -49,7 +49,7 @@ X-Project-Id: PROJECT_ID</pre>
 
   <h2>Projects</h2>
   <p><code>GET /api/projects</code> returns every project. Use <code>id</code> as <code>X-Project-Id</code>.</p>
-  <pre>curl https://unified.nexuses.xyz/api/projects</pre>
+  <pre>curl https://app.nexgos.com/api/projects</pre>
 
   <h2>Senders</h2>
   <p>All sender calls use the two headers above. Secrets in responses are masked.</p>
@@ -64,7 +64,7 @@ X-Project-Id: PROJECT_ID</pre>
   </table>
 
   <h3>Add an AWS SES sender</h3>
-  <pre>curl -X POST https://unified.nexuses.xyz/api/smtp/senders \
+  <pre>curl -X POST https://app.nexgos.com/api/smtp/senders \
   -H "Authorization: Bearer up_live_…" \
   -H "X-Project-Id: PROJECT_ID" \
   -H "Content-Type: application/json" \
@@ -95,14 +95,14 @@ X-Project-Id: PROJECT_ID</pre>
 
   <h3>Update</h3>
   <p>Send the same fields. Password and API-key fields can be omitted to keep the stored secret.</p>
-  <pre>curl -X PATCH https://unified.nexuses.xyz/api/smtp/senders/SENDER_ID \
+  <pre>curl -X PATCH https://app.nexgos.com/api/smtp/senders/SENDER_ID \
   -H "Authorization: Bearer up_live_…" \
   -H "X-Project-Id: PROJECT_ID" \
   -H "Content-Type: application/json" \
   -d '{ "fromEmail": "new@company.com", "smtpHost": "email-smtp.us-east-1.amazonaws.com", "smtpUser": "SMTP_USER", "smtpPort": 587 }'</pre>
 
   <h3>Delete</h3>
-  <pre>curl -X DELETE https://unified.nexuses.xyz/api/smtp/senders/SENDER_ID \
+  <pre>curl -X DELETE https://app.nexgos.com/api/smtp/senders/SENDER_ID \
   -H "Authorization: Bearer up_live_…" \
   -H "X-Project-Id: PROJECT_ID"</pre>
   <p>Success: <code>{ "success": true }</code>.</p>

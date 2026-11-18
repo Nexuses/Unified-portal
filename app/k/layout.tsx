@@ -10,7 +10,7 @@ const inter = localFont({
 
 export const metadata: Metadata = {
   title: "Shared kanban",
-  description: "Shared Nexuses kanban board.",
+  description: "Shared Nexgos Platform pipeline board.",
 };
 
 export default function PublicKanbanLayout({ children }: { children: React.ReactNode }) {

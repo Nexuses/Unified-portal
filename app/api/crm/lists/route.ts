@@ -22,7 +22,11 @@ export async function GET() {
     const projectId = new ObjectId(session.projectId);
     const lists = await db
       .collection<ListDoc>("lists")
-      .find({ projectId })
+      .find(
+        session.accountType === "client_share"
+          ? { projectId, clientVisible: true }
+          : { projectId },
+      )
       .sort({ createdAt: -1 })
       .toArray();
 

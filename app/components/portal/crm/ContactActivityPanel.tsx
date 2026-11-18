@@ -8,6 +8,7 @@ import {
   formatCompanyDate,
   formatListDate,
   formatRelativeTime,
+  linkedinActivityOrder,
   type ContactDetail,
   type ContactHistoryEvent,
   type ContactProfile,
@@ -27,6 +28,14 @@ import {
 export type ActivityFilter = "all" | "email" | "call" | "message";
 
 const ACTIVITY_PAGE_SIZE = 10;
+
+function linkedinActivityText(body: string) {
+  if (!/^Message \d+ sent in /.test(body)) return null;
+  const [summary, ...rest] = body.split("\n\n");
+  const message = rest.join("\n\n").trim();
+  if (!summary || !message) return null;
+  return { summary, message };
+}
 
 type BuiltinKind = "call" | "whatsapp" | "message";
 
@@ -418,6 +427,9 @@ function buildActivities(contact: ContactDetail): UnifiedActivity[] {
     if (bTime !== aTime) {
       return bTime - aTime;
     }
+    const aStep = a.source === "manual" && a.kind === "linkedin" ? linkedinActivityOrder(a.item.body) : 0;
+    const bStep = b.source === "manual" && b.kind === "linkedin" ? linkedinActivityOrder(b.item.body) : 0;
+    if (aStep !== bStep) return bStep - aStep;
     const aRank =
       a.source === "history" && a.event.type === "company_associated"
         ? 0
@@ -923,7 +935,21 @@ export default function ContactActivityPanel({
                       ) : null}
                     </span>
                   </div>
-                  <p className="lr-tl-body">{entry.item.body || "—"}</p>
+                  {(() => {
+                    const linkedinMessage =
+                      entry.kind === "linkedin"
+                        ? linkedinActivityText(entry.item.body || "")
+                        : null;
+                    if (!linkedinMessage) {
+                      return <p className="lr-tl-body">{entry.item.body || "—"}</p>;
+                    }
+                    return (
+                      <details className="lr-tl-message">
+                        <summary className="lr-tl-body">{linkedinMessage.summary}</summary>
+                        <p className="lr-tl-message-text">{linkedinMessage.message}</p>
+                      </details>
+                    );
+                  })()}
                   {entry.kind === "linkedin" ? null : entry.item.recordingUrl ? (
                     <div className="cd-activity-call-card">
                       <AircallAudioPlayer

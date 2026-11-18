@@ -41,7 +41,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       projectId,
     });
 
-    if (!list) {
+    if (!list || (session.accountType === "client_share" && list.clientVisible !== true)) {
       return NextResponse.json({ error: "List not found" }, { status: 404 });
     }
 
@@ -176,6 +176,25 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const body = await request.json().catch(() => ({}));
     const projectId = new ObjectId(session.projectId);
     const listId = new ObjectId(id);
+    const db = await getDb();
+
+    if (typeof body.clientVisible === "boolean") {
+      if (session.accountType === "client_share") {
+        return NextResponse.json(
+          { error: "Only the workspace can change client access." },
+          { status: 403 },
+        );
+      }
+      const updated = await db.collection<ListDoc>("lists").findOneAndUpdate(
+        { _id: listId, projectId },
+        { $set: { clientVisible: body.clientVisible, updatedAt: new Date() } },
+        { returnDocument: "after" },
+      );
+      if (!updated) {
+        return NextResponse.json({ error: "List not found" }, { status: 404 });
+      }
+      return NextResponse.json({ list: mapList(updated) });
+    }
 
     if (body.name !== undefined) {
       try {

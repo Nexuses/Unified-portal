@@ -15,7 +15,7 @@ export const maxDuration = 300;
  *
  * Vultr crontab (Friday 4:30 PM IST = 11:00 UTC):
  *   0 11 * * 5 curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" \
- *     https://unified.nexuses.xyz/api/cron/weekly-report >/dev/null
+ *     https://app.nexgos.com/api/cron/weekly-report >/dev/null
  *
  * Or if the server clock is already IST:
  *   30 16 * * 5 ...

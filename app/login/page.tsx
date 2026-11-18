@@ -3,7 +3,7 @@ import BrevoAuthCard from "../components/BrevoAuthCard";
 
 export const metadata: Metadata = {
   title: "Log in",
-  description: "Sign in to Nexuses Unified Portal to manage campaigns, CRM, and analytics.",
+  description: "Sign in to Nexgos Platform to manage campaigns, CRM, and analytics.",
 };
 
 export default function UserLoginPage() {

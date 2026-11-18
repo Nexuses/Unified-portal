@@ -28,7 +28,7 @@ function formatWhen(value?: string) {
   }).format(date);
 }
 
-const SENDER_SAMPLE = `curl -X POST https://unified.nexuses.xyz/api/smtp/senders \\
+const SENDER_SAMPLE = `curl -X POST https://app.nexgos.com/api/smtp/senders \\
   -H "Authorization: Bearer up_live_…" \\
   -H "X-Project-Id: PROJECT_ID" \\
   -H "Content-Type: application/json" \\

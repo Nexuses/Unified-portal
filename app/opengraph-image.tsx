@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 
-export const alt = "Nexuses Unified Portal";
+export const alt = "Nexgos Platform";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -50,7 +50,7 @@ export default function OpenGraphImage() {
               color: "#006b52",
             }}
           >
-            Nexuses
+            Nexgos
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -63,7 +63,7 @@ export default function OpenGraphImage() {
               maxWidth: 900,
             }}
           >
-            Unified Portal
+            Nexgos Platform
           </div>
           <div
             style={{

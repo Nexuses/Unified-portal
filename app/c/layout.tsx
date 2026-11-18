@@ -10,7 +10,7 @@ const inter = localFont({
 
 export const metadata: Metadata = {
   title: "Shared contact",
-  description: "Shared Nexuses CRM contact.",
+  description: "Shared Nexgos Platform CRM contact.",
 };
 
 export default function PublicContactRootLayout({

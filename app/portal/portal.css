@@ -2349,6 +2349,18 @@ a.camp-row:hover .camp-name{color:var(--purple);}
 .lists-index-table td.lists-accounts-cell{
   width:12%;
 }
+.lists-index-table th.lists-client-cell,
+.lists-index-table td.lists-client-cell{
+  width:10%;
+}
+.lists-client-flag{
+  border:1px solid #e5e7eb;background:#f3f4f6;color:#6b7280;
+  border-radius:999px;padding:4px 12px;font-size:12px;font-weight:700;cursor:pointer;
+}
+.lists-client-flag.is-yes{
+  background:#eaf7f2;border-color:#c6ebe0;color:#047857;
+}
+.lists-client-flag:disabled{opacity:.6;cursor:default;}
 .lists-index-table th.lists-date-cell,
 .lists-index-table td.lists-date-cell{
   width:22%;
@@ -3983,6 +3995,18 @@ a.lr-tl-email-btn.lr-tl-campaign-link:hover,
 }
 .cd-activity-remove:hover{color:#b42318;}
 .cd-activity-item .lr-tl-body{white-space:pre-wrap;}
+.cd-activity-item .lr-tl-message{margin:0;}
+.cd-activity-item .lr-tl-message summary{
+  cursor:pointer;list-style:none;
+}
+.cd-activity-item .lr-tl-message summary:hover{
+  color:#1d4ed8;text-decoration:underline;
+}
+.cd-activity-item .lr-tl-message summary::-webkit-details-marker{display:none;}
+.cd-activity-item .lr-tl-message summary::marker{content:"";}
+.cd-activity-item .lr-tl-message-text{
+  margin:8px 0 0;white-space:pre-wrap;font-size:13.5px;line-height:1.5;color:#4b5563;
+}
 .cd-activity-call-card{
   margin-top:10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   padding:10px 12px;border:1px solid #e5e7eb;border-radius:12px;background:#f8fafc;

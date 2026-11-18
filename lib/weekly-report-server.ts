@@ -14,6 +14,7 @@ import {
 import type { ContactDoc } from "@/lib/crm";
 import { getDb } from "@/lib/mongodb";
 import { sendCountsAsOpen } from "@/lib/open-pixel";
+import { publicAppOrigin } from "@/lib/campaign-tracking";
 import { NEXUSES_LOGO_URL } from "@/lib/nexuses-logo";
 
 export type {
@@ -557,11 +558,9 @@ function metricCard(label: string, value: string, hint?: string, width = "25%") 
 }
 
 export function buildWeeklyReportHtml(report: WeeklyReportPayload) {
-  const appUrl = (
-    process.env.APP_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    "https://unified.nexuses.xyz"
-  ).replace(/\/$/, "");
+  const appUrl = publicAppOrigin(
+    process.env.NEXT_PUBLIC_SERVER_URL || process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL,
+  );
 
   const rowsHtml = report.projects
     .map((project, index) => {

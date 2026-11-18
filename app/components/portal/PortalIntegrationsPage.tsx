@@ -205,7 +205,7 @@ export default function PortalIntegrationsPage() {
       <section className="api-docs-card">
         <h3>How to use</h3>
         <pre className="api-code-sample">{`curl -H "Authorization: Bearer up_live_…" \\
-  https://unified.nexuses.xyz/api/crm/contacts`}</pre>
+  https://app.nexgos.com/api/crm/contacts`}</pre>
         <p className="api-docs-note">
           Scope: <strong>read + write</strong> for this workspace. Revoke a key anytime to
           cut off access.
