@@ -680,6 +680,8 @@ export type BoatTaskOptions = {
   strict?: boolean;
   /** When the watch window ends before the turn finishes, interrupt it. */
   interruptOnTimeout?: boolean;
+  /** Use this harness instead of the default order. */
+  provider?: string;
 };
 
 function agentModelOptions() {
@@ -731,17 +733,18 @@ async function queueBoatPrompt(
   task: string,
   conversationId: string | null,
   strict = false,
+  provider?: string,
 ) {
   const prompt = strict
     ? `${STRICT_TASK_PREFACE}${task.trim()}`
     : `${DESKTOP_TASK_PREFACE}${task.trim()}\n\nWhen you finish, report the rows you read, who you emailed, and any row that failed.`;
   let lastError: unknown;
-  for (const provider of agentProviders()) {
+  for (const providerName of provider ? [provider] : agentProviders()) {
     try {
       const data = await boatFetch(`/sandboxes/${encodeURIComponent(sandboxId)}/prompt`, {
         method: "POST",
         body: JSON.stringify({
-          provider,
+          provider: providerName,
           prompt,
           ...agentModelOptions(),
           ...(conversationId ? { conversationId } : { new: true }),
@@ -860,7 +863,13 @@ export async function runBoatDesktopTask(
   }
   let queued: Awaited<ReturnType<typeof queueBoatPrompt>>;
   try {
-    queued = await queueBoatPrompt(sandboxId, task, conversationId, options.strict);
+    queued = await queueBoatPrompt(
+      sandboxId,
+      task,
+      conversationId,
+      options.strict,
+      options.provider,
+    );
   } catch (error) {
     if (conversationId && error instanceof BoatError && error.status === 404) {
       return runBoatDesktopTask(sandboxId, task, null, watchMs, projectId, options);

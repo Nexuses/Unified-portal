@@ -163,13 +163,15 @@ export async function runCampaignSendTick() {
     const followLinkedin =
       (globalThis as typeof globalThis & { __nexusesLinkedinFollowUp?: LinkedinFollowUp }).__nexusesLinkedinFollowUp ||
       processDueLinkedinMessages;
-    const linkedin = await followLinkedin().catch((error) => {
-      console.error("[campaign-worker] linkedin follow-up failed:", error);
-      return { sent: 0 };
-    });
-    if (linkedin.sent > 0) {
-      console.info(`[campaign-worker] linkedin messages=${linkedin.sent}`);
-    }
+    void followLinkedin()
+      .then((linkedin) => {
+        if (linkedin.sent > 0) {
+          console.info(`[campaign-worker] linkedin messages=${linkedin.sent}`);
+        }
+      })
+      .catch((error) => {
+        console.error("[campaign-worker] linkedin follow-up failed:", error);
+      });
     if (result.projects > 0 || result.errors.length > 0) {
       console.info(
         `[campaign-worker] tick projects=${result.projects} reports=${result.reports} followUps=${result.followUps} errors=${result.errors.length}`,

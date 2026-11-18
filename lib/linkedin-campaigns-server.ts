@@ -8,6 +8,23 @@ import {
   runBoatCommand,
   shellQuote,
 } from "@/lib/boat";
+import {
+  campaignTabMarker,
+  focusLinkedinTab,
+  LINKEDIN_MESSAGING_URL,
+  LINKEDIN_NETWORK_TAB,
+  LINKEDIN_NETWORK_URL,
+  LINKEDIN_REPLIES_TAB,
+  linkedinNetworkTask,
+  linkedinProfileSlug,
+  linkedinProfileTask,
+  linkedinRepliesTask,
+  parseLinkedinBoatReport,
+  runLinkedinBoatTask,
+  sameLinkedinName,
+  type LinkedinBoatReport,
+  type LinkedinInboxRow,
+} from "@/lib/linkedin-boat";
 import { getDb } from "@/lib/mongodb";
 import {
   launchLinkedinStage,
@@ -24,6 +41,10 @@ import {
   recordLinkedinCampaignStart,
   saveLinkedinCampaignList,
 } from "@/lib/linkedin-crm";
+
+const REQUEST_WAITING_NOTE = "Connection request sent. Waiting for them to accept.";
+const BUTTONS_HIDDEN_NOTE =
+  "Opened the profile, but the buttons were not visible yet. It will try again.";
 
 /** LinkedIn's computer. Email and Cloud Campaign stay on the other computer. */
 async function linkedinComputer(projectId: ObjectId) {
@@ -86,535 +107,6 @@ type ProfileVisit = {
   liked?: boolean;
 };
 
-const PROFILE_READER_PY = `
-import json, os, socket, base64, time, urllib.request
-
-people = json.loads(os.environ["PEOPLE"])
-campaign_id = "".join(ch for ch in (os.environ.get("CAMPAIGN_ID") or "campaign") if ch.isalnum()) or "campaign"
-tab_marker = "nexuses-li-" + campaign_id
-EXPR = """(() => {
-  const label = (el) => ((el.innerText || "") + " " + (el.getAttribute("aria-label") || "")).replace(/\\\\s+/g, " ").trim();
-  const main = document.querySelector("main");
-  const h1 = document.querySelector("h1");
-  const card = (h1 && h1.closest("section")) || (main && main.querySelector("section")) || main;
-  const text = ((card && card.innerText) || "").replace(/\\\\s+/g, " ").slice(0, 500);
-  const buttons = [...((card && card.querySelectorAll("button")) || [])].slice(0, 12).map(label).filter(Boolean);
-  const joined = buttons.join(" | ");
-  const title = document.title || "";
-  if (/sign in|s.identifier|join linkedin|authwall/i.test(title) && !/\\\\b1st\\\\b|\\\\b1er\\\\b/i.test(text)) return "login|" + joined;
-  const pending = /\\\\bpending\\\\b|en attente/i.test(joined);
-  const first = /\\\\b1st\\\\b|\\\\b1er\\\\b/i.test(text);
-  const connect = buttons.some((item) => /^(connect|se connecter)\\\\b/i.test(item));
-  let state = "unknown";
-  if (pending) state = "pending";
-  else if (first) state = "connected";
-  else if (connect) state = "connect";
-  const name = ((h1 && h1.innerText) || "").replace(/\\s+/g, " ").trim();
-  return state + "|" + joined + "|" + text.slice(0, 160) + "|" + name.slice(0, 60);
-})()"""
-
-CLICK_REPLY = """(() => {
-  const label = (el) => ((el.innerText || "") + " " + (el.getAttribute("aria-label") || "")).replace(/\\\\s+/g, " ").trim();
-  const button = [...document.querySelectorAll("button, a, [role='button']")].find((el) => /reply to this message|r.pondre . ce message/i.test(label(el)));
-  if (!button) return "no-reply";
-  button.scrollIntoView({block: "center"});
-  button.click();
-  const rect = button.getBoundingClientRect();
-  return [Math.round(rect.left + rect.width / 2), Math.round(rect.top + rect.height / 2)].join(",");
-})()"""
-
-CLICK_LIKE = """(() => {
-  const label = (el) => ((el.getAttribute("aria-label") || "") + " " + (el.innerText || "")).replace(/\\\\s+/g, " ").trim();
-  const buttons = [...document.querySelectorAll("button")];
-  const already = buttons.find((el) => {
-    const text = label(el);
-    if (!/unlike|liked|je n.aime plus/i.test(text)) return false;
-    const rect = el.getBoundingClientRect();
-    return rect.width > 8 && rect.top > 60 && rect.top < window.innerHeight - 20;
-  });
-  if (already) return "already";
-  const like = buttons.find((el) => {
-    const text = label(el);
-    if (!/^(like|j.aime|react like|r.agir)( |$)/i.test(text)) return false;
-    const rect = el.getBoundingClientRect();
-    return rect.width > 8 && rect.top > 60 && rect.top < window.innerHeight - 20;
-  });
-  if (!like) return "no-like";
-  like.scrollIntoView({block: "center"});
-  const rect = like.getBoundingClientRect();
-  return [Math.round(rect.left + rect.width / 2), Math.round(rect.top + rect.height / 2)].join(",");
-})()"""
-
-CLICK_MESSAGE = """(() => {
-  const label = (el) => ((el.innerText || "") + " " + (el.getAttribute("aria-label") || "")).replace(/\\\\s+/g, " ").trim();
-  const nodes = [...document.querySelectorAll("main button, main a, main [role='button']")];
-  const info = nodes.filter((el) => /message|envoyer/i.test(label(el))).slice(0, 6).map((el) => {
-    const rect = el.getBoundingClientRect();
-    return label(el).slice(0, 24) + "@" + Math.round(rect.top);
-  });
-  const button = nodes.find((el) => {
-    const rect = el.getBoundingClientRect();
-    const text = label(el);
-    return /^message\\\\b|^envoyer\\\\b/i.test(text) && !/^messaging\\\\b/i.test(text) && rect.top > 100 && rect.top < 900 && rect.width > 20 && rect.height > 10;
-  });
-  if (!button) return "no-visible-message " + info.join(";");
-  button.scrollIntoView({block: "center"});
-  button.click();
-  const rect = button.getBoundingClientRect();
-  const href = button.href || button.getAttribute("href") || "";
-  return [Math.round(rect.left + rect.width / 2), Math.round(rect.top + rect.height / 2), Math.round(rect.width), Math.round(rect.height)].join(",") + "|" + button.tagName + "|" + String(href).slice(0, 180);
-})()"""
-
-CLICK_CONNECT = """(() => {
-  const label = (el) => ((el.innerText || "") + " " + (el.getAttribute("aria-label") || "")).replace(/\\\\s+/g, " ").trim();
-  const h1 = document.querySelector("h1");
-  const card = (h1 && h1.closest("section")) || document.querySelector("main") || document;
-  const menu = document.querySelector("[role='menu']");
-  const visible = (el) => {
-    const rect = el.getBoundingClientRect();
-    return rect.width > 20 && rect.height > 10 && rect.top > 40 && rect.top < 900;
-  };
-  const connect = [...(menu || card).querySelectorAll("button, [role='menuitem']")].find((el) => visible(el) && /^(connect|se connecter)\\\\b/i.test(label(el)));
-  if (connect) { connect.click(); return "clicked"; }
-  const more = [...card.querySelectorAll("button")].find((el) => visible(el) && /^(more|plus)$/i.test(label(el)));
-  if (more) { more.click(); return "more"; }
-  return "no-connect";
-})()"""
-
-CLICK_INVITE = """(() => {
-  const label = (el) => ((el.innerText || "") + " " + (el.getAttribute("aria-label") || "")).replace(/\\\\s+/g, " ").trim();
-  const dialog = document.querySelector("[role='dialog']");
-  if (!dialog) return "no-dialog";
-  const buttons = [...dialog.querySelectorAll("button")];
-  const send = buttons.find((el) => /send without a note|envoyer sans note|send now/i.test(label(el)))
-    || buttons.find((el) => /^(send|envoyer)$/i.test(label(el)) && !el.disabled);
-  if (send) { send.click(); return "sent"; }
-  const other = buttons.find((el) => /^(other|autre)$/i.test(label(el)));
-  if (other) { other.click(); return "other"; }
-  return "no-invite " + buttons.map(label).filter(Boolean).slice(0, 6).join(";");
-})()"""
-
-FOCUS_BOX = """(() => {
-  const box = document.querySelector(".msg-form__contenteditable") || document.querySelector("[contenteditable='true'][role='textbox']") || document.querySelector("[contenteditable='true']");
-  if (!box) {
-    const fields = [...document.querySelectorAll("[contenteditable], [role='textbox'], textarea")].slice(0, 4).map((el) => el.tagName + ":" + (el.getAttribute("aria-label") || el.getAttribute("role") || "").slice(0, 30));
-    return "no-composer " + fields.join(",");
-  }
-  box.focus();
-  document.execCommand("selectAll", false, null);
-  return "focused";
-})()"""
-
-CLICK_SEND = """(() => {
-  const label = (el) => ((el.innerText || "") + " " + (el.getAttribute("aria-label") || "")).replace(/\\\\s+/g, " ").trim();
-  const buttons = [...document.querySelectorAll("button")];
-  const button = buttons.find((el) => el.className && String(el.className).indexOf("msg-form__send-button") >= 0 && !el.disabled) || buttons.find((el) => /^(send|envoyer)\\\\b/i.test(label(el)) && !el.disabled);
-  if (!button) return "no-send";
-  button.click();
-  return "clicked";
-})()"""
-
-BOX_TEXT = """(() => {
-  const box = document.querySelector(".msg-form__contenteditable") || document.querySelector("[contenteditable='true'][role='textbox']");
-  return ((box && box.innerText) || "").trim().slice(0, 80);
-})()"""
-
-REPLY_EXPR = """(() => {
-  const own = __OWN__;
-  const who = __WHO__;
-  const norm = (value) => (value || "").replace(/\\\\s+/g, " ").trim().toLowerCase();
-  const ownNorm = own.map(norm).filter(Boolean);
-  const blob = norm(document.body ? document.body.innerText : "").slice(0, 2500);
-  if (who && blob.indexOf(who) < 0) return "unknown";
-  const events = [...document.querySelectorAll(".msg-s-message-list__event, .msg-s-message-group")];
-  if (!events.length) return "empty";
-  let reply = false;
-  let sawOwn = false;
-  for (const el of events) {
-    const cls = String(el.className || "");
-    if (/time-heading|system|date-heading/.test(cls)) continue;
-    const self = cls.indexOf("self") >= 0 || !!el.querySelector("[class*='--self']");
-    const body = el.querySelector(".msg-s-event-listitem__body, .msg-s-event__content");
-    const text = norm(body ? body.innerText : "");
-    if (!text || text.length < 2) continue;
-    if (/is now a connection|you are now connected|linkedin member|seen by|write a message|suggested recipients|sent the following|view .+ profile|inmail|sponsored/.test(text)) continue;
-    const ours = ownNorm.some((item) => text === item || (item.length > 20 && (text.indexOf(item.slice(0, 40)) === 0 || item.indexOf(text.slice(0, 40)) === 0)));
-    if (self || ours) {
-      sawOwn = true;
-      continue;
-    }
-    reply = true;
-  }
-  if (reply) return "yes";
-  if (sawOwn) return "no";
-  return "unknown";
-})()"""
-
-class Reader:
-    def __init__(self, sock, rest=b""):
-        self.sock = sock
-        self.rest = rest
-    def recvn(self, size):
-        buf = self.rest
-        while len(buf) < size:
-            chunk = self.sock.recv(max(4096, size - len(buf)))
-            if not chunk:
-                raise RuntimeError("closed")
-            buf += chunk
-        self.rest = buf[size:]
-        return buf[:size]
-    def sendall(self, data):
-        self.sock.sendall(data)
-
-def ws_connect(url):
-    rest = url.split("://", 1)[1]
-    hostport, path = rest.split("/", 1)
-    host, port = hostport.split(":")
-    sock = socket.create_connection((host, int(port)), 15)
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(("GET /%s HTTP/1.1\\r\\nHost: %s\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Key: %s\\r\\nSec-WebSocket-Version: 13\\r\\n\\r\\n" % (path, hostport, key)).encode())
-    buf = b""
-    while b"\\r\\n\\r\\n" not in buf:
-        chunk = sock.recv(4096)
-        if not chunk:
-            raise RuntimeError("closed")
-        buf += chunk
-    _header, _, leftover = buf.partition(b"\\r\\n\\r\\n")
-    return Reader(sock, leftover)
-
-def send(reader, payload):
-    data = json.dumps(payload).encode()
-    mask = os.urandom(4)
-    header = bytearray([0x81])
-    size = len(data)
-    if size < 126:
-        header.append(0x80 | size)
-    else:
-        header.append(0xFE)
-        header.extend(size.to_bytes(2, "big"))
-    header.extend(mask)
-    reader.sendall(bytes(header) + bytes(byte ^ mask[index % 4] for index, byte in enumerate(data)))
-
-def recv_text(reader):
-    parts = []
-    while True:
-        header = reader.recvn(2)
-        opcode = header[0] & 15
-        length = header[1] & 127
-        if length == 126:
-            length = int.from_bytes(reader.recvn(2), "big")
-        elif length == 127:
-            length = int.from_bytes(reader.recvn(8), "big")
-        data = reader.recvn(length)
-        if opcode == 8:
-            raise RuntimeError("closed")
-        if opcode == 9:
-            continue
-        if opcode in (0, 1):
-            parts.append(data)
-            if header[0] & 128:
-                return b"".join(parts).decode("utf-8", "replace")
-
-def call(sock, ident, method, params):
-    send(sock, {"id": ident, "method": method, "params": params})
-    deadline = time.time() + 20
-    while time.time() < deadline:
-        message = json.loads(recv_text(sock))
-        if message.get("id") == ident:
-            return message
-    raise TimeoutError(method)
-
-done = []
-try:
-    def page_targets():
-        with urllib.request.urlopen("http://127.0.0.1:9222/json/list", timeout=5) as response:
-            return [item for item in json.load(response) if item.get("type") == "page"]
-    def browser_socket():
-        with urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=5) as response:
-            return ws_connect(json.load(response)["webSocketDebuggerUrl"])
-    def window_name(item):
-        try:
-            probe = ws_connect(item["webSocketDebuggerUrl"])
-            result = call(probe, 1, "Runtime.evaluate", {"expression": "window.name", "returnByValue": True})
-            return (((result.get("result") or {}).get("result") or {}).get("value")) or ""
-        except Exception:
-            return ""
-    pages = page_targets()
-    page = next((item for item in pages if window_name(item) == tab_marker), None)
-    if page is None:
-        browser = browser_socket()
-        created = call(browser, 1, "Target.createTarget", {"url": "about:blank"})
-        target_id = (created.get("result") or {}).get("targetId")
-        for _wait in range(10):
-            time.sleep(0.3)
-            pages = page_targets()
-            page = next((item for item in pages if item.get("id") == target_id), None)
-            if page:
-                break
-        if page is None:
-            raise RuntimeError("no-tab")
-        sock = ws_connect(page["webSocketDebuggerUrl"])
-        call(sock, 2, "Runtime.evaluate", {"expression": "window.name = %s" % json.dumps(tab_marker), "returnByValue": True})
-    else:
-        sock = ws_connect(page["webSocketDebuggerUrl"])
-    try:
-        browser = browser_socket()
-        call(browser, 3, "Target.activateTarget", {"targetId": page.get("id")})
-    except Exception:
-        pass
-    call(sock, 4, "Page.bringToFront", {})
-    call(sock, 1, "Page.enable", {})
-    print("TAB\\t%s" % tab_marker, flush=True)
-    seq = [10]
-    def evaluate(expression):
-        seq[0] += 1
-        result = call(sock, seq[0], "Runtime.evaluate", {"expression": expression, "returnByValue": True})
-        return (((result.get("result") or {}).get("result") or {}).get("value"))
-    def like_recent(person):
-        activity = person["url"].split("?")[0].rstrip("/") + "/recent-activity/all/"
-        seq[0] += 1
-        call(sock, seq[0], "Page.bringToFront", {})
-        seq[0] += 1
-        call(sock, seq[0], "Page.navigate", {"url": activity})
-        opened = False
-        for _wait in range(8):
-            time.sleep(1)
-            href = str(evaluate("location.href") or "")
-            if "recent-activity" in href:
-                opened = True
-                break
-        if not opened:
-            print("LIKE_FAIL\\t%s\\tno-activity" % person["id"], flush=True)
-            return
-        time.sleep(1)
-        evaluate("window.scrollTo(0, 280)")
-        time.sleep(1)
-        point = str(evaluate(CLICK_LIKE) or "")
-        if point == "already":
-            print("LIKED\\t%s" % person["id"], flush=True)
-            return
-        xy = point.split(",")
-        if len(xy) < 2 or not xy[0].lstrip("-").isdigit():
-            print("LIKE_FAIL\\t%s\\t%s" % (person["id"], point[:80].replace("\\t", " ")), flush=True)
-            return
-        x, y = int(xy[0]), int(xy[1])
-        seq[0] += 1
-        call(sock, seq[0], "Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-        seq[0] += 1
-        call(sock, seq[0], "Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-        time.sleep(1)
-        print("LIKED\\t%s" % person["id"], flush=True)
-    for person in people:
-        seq[0] += 1
-        call(sock, seq[0], "Page.bringToFront", {})
-        for key_type in ("keyDown", "keyUp"):
-            seq[0] += 1
-            call(sock, seq[0], "Input.dispatchKeyEvent", {"type": key_type, "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})
-        evaluate("""(() => {
-          const label = (el) => ((el.getAttribute("aria-label") || "") + " " + (el.innerText || "")).replace(/\\s+/g, " ").trim();
-          const close = [...document.querySelectorAll("button")].find((el) => /close your conversation|close conversation|dismiss/i.test(label(el)));
-          if (close) close.click();
-          return "closed";
-        })()""")
-        seq[0] += 1
-        call(sock, seq[0], "Page.navigate", {"url": person["url"]})
-        slug = person["url"].rstrip("/").split("/")[-1].split("?")[0]
-        first = (person.get("name") or "").split(" ")[0].lower()
-        landed = False
-        for _wait in range(12):
-            time.sleep(1)
-            href = str(evaluate("location.href") or "")
-            body = str(evaluate("(document.body && document.body.innerText || '').slice(0, 600).toLowerCase()") or "")
-            if slug and slug in href and (not first or first in body):
-                landed = True
-                break
-        if not landed:
-            done.append(person["id"])
-            print("RESULT\\t%s\\tunknown" % person["id"], flush=True)
-            if person.get("checkReply"):
-                print("REPLY\\t%s\\tunknown" % person["id"], flush=True)
-            continue
-        time.sleep(1)
-        evaluate("window.scrollTo(0,0)")
-        time.sleep(1)
-        for _see in range(3):
-            seen = str(evaluate("(() => { const h1 = document.querySelector('h1'); if (!h1) return 'no'; h1.scrollIntoView({block:'center'}); const box = h1.getBoundingClientRect(); return box.width > 20 && box.height > 10 ? 'yes' : 'no'; })()") or "")
-            if seen == "yes":
-                break
-            time.sleep(1)
-        found = "unknown"
-        detail = ""
-        allowed = ("pending", "connected", "connect", "rejected", "login")
-        for _attempt in (1, 2):
-            value = str(evaluate(EXPR) or "unknown")
-            found, _, detail = value.partition("|")
-            if found not in allowed:
-                found = "unknown"
-            if found != "unknown":
-                break
-            time.sleep(3)
-        done.append(person["id"])
-        print("DETAIL\\t%s\\t%s\\t%s" % (person["id"], found, detail.replace("\\t", " ")[:180]), flush=True)
-        print("RESULT\\t%s\\t%s" % (person["id"], found), flush=True)
-        if person.get("sendConnect") and found == "connect":
-            action = str(evaluate(CLICK_CONNECT) or "")
-            if action == "more":
-                time.sleep(0.8)
-                action = str(evaluate(CLICK_CONNECT) or "")
-            if action == "clicked":
-                time.sleep(1.2)
-                invite = str(evaluate(CLICK_INVITE) or "")
-                if invite in ("other", "email"):
-                    time.sleep(0.6)
-                    invite = str(evaluate(CLICK_INVITE) or "")
-                time.sleep(1.2)
-                value = str(evaluate(EXPR) or "unknown")
-                found, _, detail = value.partition("|")
-                if found not in allowed:
-                    found = "unknown"
-                print("DETAIL\\t%s\\t%s\\t%s" % (person["id"], found, detail.replace("\\t", " ")[:180]), flush=True)
-                print("RESULT\\t%s\\t%s" % (person["id"], found), flush=True)
-                if found in ("pending", "connected"):
-                    print("REQUESTED\\t%s" % person["id"], flush=True)
-                else:
-                    print("CONNECT_FAIL\\t%s\\t%s" % (person["id"], str(invite)[:80].replace("\\t", " ")), flush=True)
-                    page = str(evaluate("(document.body && document.body.innerText || '').slice(0, 800).toLowerCase()") or "")
-                    if "invitation limit" in page or "weekly limit" in page or "limit reached" in page:
-                        print("LIMITED", flush=True)
-                        for later in people:
-                            later["sendConnect"] = False
-            else:
-                print("CONNECT_FAIL\\t%s\\t%s" % (person["id"], action[:80].replace("\\t", " ")), flush=True)
-        if person.get("checkReply"):
-            opened = ""
-            point = []
-            for _try in range(6):
-                opened = str(evaluate(CLICK_MESSAGE) or "")
-                point = opened.split(",")
-                if len(point) >= 2 and point[0].lstrip("-").isdigit():
-                    break
-                time.sleep(1)
-            if len(point) < 2 or not point[0].lstrip("-").isdigit():
-                opened = str(evaluate(CLICK_REPLY) or "") + " | " + opened[:80]
-                point = opened.split(",")
-            if len(point) >= 2 and point[0].lstrip("-").isdigit():
-                coords, _, extra = opened.partition("|")
-                xy = coords.split(",")
-                x, y = int(xy[0]), int(xy[1])
-                seq[0] += 1
-                call(sock, seq[0], "Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-                seq[0] += 1
-                call(sock, seq[0], "Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-                href = extra.split("|", 1)[-1] if extra else ""
-                if href.startswith("http") and "/messaging/thread/" in href:
-                    seq[0] += 1
-                    call(sock, seq[0], "Page.navigate", {"url": href})
-                time.sleep(2)
-                verdict = "unknown"
-                expression = REPLY_EXPR.replace("__OWN__", json.dumps(person.get("ownMessages") or []), 1).replace("__WHO__", json.dumps(first), 1)
-                for _look in (1, 2, 3, 4):
-                    verdict = str(evaluate(expression) or "unknown")
-                    if verdict in ("yes", "no"):
-                        break
-                    time.sleep(1)
-                if verdict not in ("yes", "no"):
-                    reply_click = str(evaluate(CLICK_REPLY) or "")
-                    reply_point = reply_click.split(",")
-                    if len(reply_point) >= 2 and reply_point[0].lstrip("-").isdigit():
-                        rx, ry = int(reply_point[0]), int(reply_point[1])
-                        seq[0] += 1
-                        call(sock, seq[0], "Input.dispatchMouseEvent", {"type": "mousePressed", "x": rx, "y": ry, "button": "left", "clickCount": 1})
-                        seq[0] += 1
-                        call(sock, seq[0], "Input.dispatchMouseEvent", {"type": "mouseReleased", "x": rx, "y": ry, "button": "left", "clickCount": 1})
-                        time.sleep(2)
-                        for _look in (1, 2, 3, 4):
-                            verdict = str(evaluate(expression) or "unknown")
-                            if verdict in ("yes", "no"):
-                                break
-                            time.sleep(1)
-                if verdict not in ("yes", "no") and "linkedin.com/messaging" in href:
-                    seq[0] += 1
-                    call(sock, seq[0], "Page.navigate", {"url": href})
-                    time.sleep(3)
-                    for _look in (1, 2, 3, 4, 5):
-                        verdict = str(evaluate(expression) or "unknown")
-                        if verdict in ("yes", "no"):
-                            break
-                        time.sleep(1)
-                if verdict not in ("yes", "no"):
-                    verdict = "unknown"
-            else:
-                verdict = "unknown"
-            print("REPLY\\t%s\\t%s" % (person["id"], verdict), flush=True)
-            if verdict == "yes":
-                if person.get("likeRecent") and found == "connected":
-                    like_recent(person)
-                continue
-        messages = person.get("messages") or []
-        if found != "connected":
-            messages = []
-        for message in messages:
-            number = int(message.get("number") or 0)
-            text = message.get("text") or ""
-            if not text:
-                continue
-            focused = str(evaluate(FOCUS_BOX) or "")
-            opened = ""
-            if not focused.startswith("focused"):
-                opened = str(evaluate(CLICK_MESSAGE) or "")
-                point = opened.split(",")
-                if len(point) < 2 or not point[0].lstrip("-").isdigit():
-                    opened = str(evaluate(CLICK_REPLY) or "")
-                    point = opened.split(",")
-                    if len(point) < 2 or not point[0].lstrip("-").isdigit():
-                        print("SEND_FAIL\\t%s\\t%s\\t%s" % (person["id"], number, opened[:120]), flush=True)
-                        break
-                coords, _, extra = opened.partition("|")
-                point = coords.split(",")
-                x, y = int(point[0]), int(point[1])
-                seq[0] += 1
-                call(sock, seq[0], "Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-                seq[0] += 1
-                call(sock, seq[0], "Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-                href = extra.split("|", 1)[-1] if extra else ""
-                if href.startswith("http") and "messaging" in href:
-                    seq[0] += 1
-                    call(sock, seq[0], "Page.navigate", {"url": href})
-                    time.sleep(3)
-                focused = ""
-                for _wait in (1, 2, 3):
-                    time.sleep(1.5)
-                    focused = str(evaluate(FOCUS_BOX) or "")
-                    if focused.startswith("focused"):
-                        break
-                if not focused.startswith("focused"):
-                    print("SEND_FAIL\\t%s\\t%s\\t%s | %s" % (person["id"], number, opened[:160], focused[:120]), flush=True)
-                    break
-            seq[0] += 1
-            call(sock, seq[0], "Input.insertText", {"text": text})
-            time.sleep(0.4)
-            evaluate("""(() => { const box = document.querySelector(".msg-form__contenteditable") || document.querySelector("[contenteditable='true'][role='textbox']"); if (box) box.dispatchEvent(new InputEvent("input", {bubbles: true})); return "ok"; })()""")
-            time.sleep(0.4)
-            if evaluate(CLICK_SEND) != "clicked":
-                print("SEND_FAIL\\t%s\\t%s\\tno-send" % (person["id"], number), flush=True)
-                break
-            time.sleep(1.5)
-            left = str(evaluate(BOX_TEXT) or "")
-            if left and text.strip()[:40] == left[:40]:
-                print("SEND_FAIL\\t%s\\t%s\\tstill-in-box" % (person["id"], number), flush=True)
-                break
-            print("SENT\\t%s\\t%s" % (person["id"], number), flush=True)
-            time.sleep(1)
-        if person.get("likeRecent") and found == "connected":
-            like_recent(person)
-except Exception as error:
-    print("READ_ERROR", type(error).__name__, flush=True)
-    for person in people:
-        if person["id"] in done:
-            continue
-        print("RESULT\\t%s\\tunknown" % person["id"], flush=True)
-`.trim();
-
 async function chromeDebugOpen(sandboxId: string) {
   const result = await runBoatCommand(
     sandboxId,
@@ -622,114 +114,6 @@ async function chromeDebugOpen(sandboxId: string) {
     10,
   ).catch(() => null);
   return Boolean(result?.stdout.includes("open"));
-}
-
-/** Read the profile header, and send any messages included for someone who is already 1st. */
-export async function readLinkedinProfileStates(
-  sandboxId: string,
-  campaignId: string,
-  people: {
-    id: string;
-    url: string;
-    messages?: { number: number; text: string }[];
-    checkReply?: boolean;
-    ownMessages?: string[];
-    name?: string;
-    sendConnect?: boolean;
-    likeRecent?: boolean;
-  }[],
-) {
-  const states = new Map<string, ProfileVisit>();
-  if (!people.length) return { states, limited: false };
-  if (!(await chromeDebugOpen(sandboxId))) {
-    await openLinkedinChrome(sandboxId, "https://www.linkedin.com/feed/", true);
-    for (let attempt = 0; attempt < 10 && !(await chromeDebugOpen(sandboxId)); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-  }
-  if (!(await chromeDebugOpen(sandboxId))) return { states, limited: false };
-  await fillLinkedinChrome(sandboxId);
-  const result = await runBoatCommand(
-    sandboxId,
-    `CAMPAIGN_ID=${shellQuote(campaignId)} PEOPLE=${shellQuote(JSON.stringify(people))} python3 -c ${shellQuote(PROFILE_READER_PY)}`,
-    90,
-  );
-  for (const line of result.stdout.split("\n")) {
-    if (
-      line.startsWith("DETAIL\t") ||
-      line.startsWith("SENT\t") ||
-      line.startsWith("SEND_FAIL\t") ||
-      line.startsWith("REPLY\t") ||
-      line.startsWith("REQUESTED\t") ||
-      line.startsWith("CONNECT_FAIL\t") ||
-      line.startsWith("LIKED\t") ||
-      line.startsWith("LIKE_FAIL\t") ||
-      line.startsWith("TAB\t") ||
-      line.startsWith("LIMITED")
-    ) {
-      console.info("[linkedin]", line.slice(0, 500));
-    }
-    const match = line.match(/^RESULT\t(\S+)\t(pending|connected|connect|rejected|login|unknown)$/);
-    if (match) {
-      const visit = states.get(match[1]) || {
-        state: match[2] as ProfileRead,
-        sent: [],
-        replied: null,
-        requested: false,
-      };
-      visit.state = match[2] as ProfileRead;
-      states.set(match[1], visit);
-    }
-    const sent = line.match(/^SENT\t(\S+)\t(\d+)$/);
-    if (sent) {
-      const visit = states.get(sent[1]) || {
-        state: "connected" as ProfileRead,
-        sent: [],
-        replied: null,
-        requested: false,
-      };
-      visit.sent.push(Number(sent[2]));
-      states.set(sent[1], visit);
-    }
-    const requested = line.match(/^REQUESTED\t(\S+)$/);
-    if (requested) {
-      const visit = states.get(requested[1]) || {
-        state: "pending" as ProfileRead,
-        sent: [],
-        replied: null,
-        requested: false,
-      };
-      visit.requested = true;
-      if (visit.state === "connect" || visit.state === "unknown") visit.state = "pending";
-      states.set(requested[1], visit);
-    }
-    const liked = line.match(/^LIKED\t(\S+)$/);
-    if (liked) {
-      const visit = states.get(liked[1]) || {
-        state: "connected" as ProfileRead,
-        sent: [],
-        replied: null,
-        requested: false,
-      };
-      visit.liked = true;
-      states.set(liked[1], visit);
-    }
-    const reply = line.match(/^REPLY\t(\S+)\t(yes|no|unknown)$/);
-    if (reply) {
-      const visit = states.get(reply[1]) || {
-        state: "connected" as ProfileRead,
-        sent: [],
-        replied: null,
-        requested: false,
-      };
-      visit.replied = reply[2] === "yes" ? true : reply[2] === "no" ? false : null;
-      states.set(reply[1], visit);
-    }
-  }
-  if (result.stdout.includes("READ_ERROR") || !result.stdout.includes("RESULT")) {
-    console.error("[linkedin] profile read failed", result.stdout.slice(0, 500), result.stderr.slice(0, 300));
-  }
-  return { states, limited: /(^|\n)LIMITED(\n|$)/.test(result.stdout) };
 }
 
 async function fillLinkedinChrome(sandboxId: string) {
@@ -747,6 +131,16 @@ type SessionDoc = {
   accountName: string;
   accountPhoto?: string;
   connectedAt?: Date;
+  /** Last time a new connection request was actually sent from this login. */
+  lastConnectionRequestAt?: Date;
+  /** Last time the Messaging inbox was read for replies. */
+  inboxCheckedAt?: Date;
+  /** Last time the messaging tab was read for replies. */
+  repliesCheckedAt?: Date;
+  /** Last time the network tab was read for accepts. */
+  acceptsCheckedAt?: Date;
+  /** Do not touch the computer again until LinkedIn is signed in. */
+  loginHoldUntil?: Date;
   updatedAt: Date;
 };
 
@@ -801,6 +195,7 @@ type CampaignDoc = {
   activePromptAt?: Date;
   activeTargets?: string[];
   connectionCheckAt?: Date;
+  lastBoatAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -1291,7 +686,10 @@ function mapContact(person: PersonDoc, index: number): LinkedinContact {
     stage,
     alreadyConnected: person.alreadyConnected === true,
     message: messageIndex >= 0 ? person.messages[messageIndex] || "" : "",
-    note: person.statusNote || "",
+    note:
+      stage === "request_sent" && (person.connectionRequested || person.inviteSent)
+        ? REQUEST_WAITING_NOTE
+        : person.statusNote || "",
     crmContactId: person.crmContactId || "",
   };
 }
@@ -1523,7 +921,9 @@ export async function applyLinkedinRelationshipReport(
 
 function messageDue(person: PersonDoc, now: Date) {
   const stage = personStage(person);
-  if (stage === "reply" || stage.startsWith("custom_")) return false;
+  if (stage === "reply" || stage.startsWith("custom_") || person.statusNote === "They replied.") {
+    return false;
+  }
   if (stage !== "connected" && !stage.startsWith("message_")) return false;
   if (!person.nextActionAt || person.nextActionAt.getTime() > now.getTime()) return false;
   const sent = person.messagesSent || 0;
@@ -1532,7 +932,11 @@ function messageDue(person: PersonDoc, now: Date) {
 
 const PROFILE_READ_WAIT_MS = 60 * 1000;
 const COMPLETE_REPLY_WAIT_MS = 15 * 60 * 1000;
-const VISIT_BATCH = 2;
+const CONNECTION_GAP_MS = 5 * 60 * 1000;
+const WATCH_QUIET_MS = 10 * 60 * 1000;
+const LOGIN_HOLD_MS = 30 * 60 * 1000;
+const PROFILE_WATCH_MS = 150_000;
+const INBOX_WATCH_MS = 90_000;
 const STALE_MESSAGE_NOTES = new Set([
   "They accepted the connection request.",
   "They replied.",
@@ -1652,7 +1056,7 @@ export async function moveLinkedinContact(
   return getLinkedinCampaign(projectId, campaignId);
 }
 
-/** Check accepts and replies, and send every message whose wait is already over. */
+/** One desktop-agent step: a single profile in that campaign's tab, or the LinkedIn inbox. */
 export function processDueLinkedinMessages(now = new Date()) {
   if (followUpRun) return followUpRun;
   followUpRun = runLinkedinFollowUps(now).finally(() => {
@@ -1664,6 +1068,671 @@ export function processDueLinkedinMessages(now = new Date()) {
 (globalThis as typeof globalThis & { __nexusesLinkedinFollowUp?: typeof processDueLinkedinMessages }).__nexusesLinkedinFollowUp =
   processDueLinkedinMessages;
 
+type BoatTarget = {
+  id: string;
+  url: string;
+  name: string;
+  messages: { number: number; text: string }[];
+  sendConnect?: boolean;
+};
+
+type LinkedinAction = {
+  priority: number;
+  kind: "connect" | "status" | "message" | "like";
+  doc: CampaignDoc;
+  index: number;
+  person: PersonDoc;
+  like: boolean;
+  message?: { number: number; text: string };
+};
+
+type ReadyCampaign = { doc: CampaignDoc; sandboxId: string };
+
+function boatLockFresh(doc: CampaignDoc, now: Date) {
+  if (!doc.activePromptId) return false;
+  return now.getTime() - (doc.activePromptAt?.getTime() || 0) < 3 * 60 * 1000;
+}
+
+function pickCampaignAction(doc: CampaignDoc, now: Date, connectGapOpen: boolean): LinkedinAction | null {
+  const limitHold = Boolean(
+    doc.connectionCheckAt && doc.connectionCheckAt.getTime() > now.getTime() + PROFILE_READ_WAIT_MS,
+  );
+  let best: LinkedinAction | null = null;
+  const consider = (action: LinkedinAction) => {
+    if (!best || action.priority < best.priority) best = action;
+  };
+  doc.people.forEach((person, index) => {
+    if (!person.linkedinUrl) return;
+    const stage = personStage(person);
+    const sinceLook = person.replyCheckedAt ? now.getTime() - person.replyCheckedAt.getTime() : Infinity;
+    if (messageDue(person, now)) {
+      const message = messagesToSend(person, doc.delayAfterMessageDays)[0];
+      if (message) {
+        consider({ priority: 0, kind: "message", doc, index, person, like: false, message });
+      }
+    }
+    const needsRequest =
+      stage === "request_sent" && !person.connectionRequested && (person.messagesSent || 0) === 0;
+    const lookFailed = person.statusNote === BUTTONS_HIDDEN_NOTE;
+    if (needsRequest && (connectGapOpen || lookFailed) && !limitHold && (lookFailed || sinceLook >= CONNECTION_GAP_MS)) {
+      consider({ priority: 1, kind: "connect", doc, index, person, like: false });
+    }
+  });
+  return best;
+}
+
+function replyCandidates(items: ReadyCampaign[]) {
+  return items.flatMap((item) =>
+    item.doc.people.filter((person) => {
+      const stage = personStage(person);
+      return (
+        stage === "connected" ||
+        stage.startsWith("message_") ||
+        (person.messagesSent || 0) > 0 ||
+        (stage === "request_sent" && Boolean(person.connectionRequested))
+      );
+    }),
+  );
+}
+
+function watchWait(items: ReadyCampaign[], activeMs: number) {
+  return items.every((item) => item.doc.status === "complete") ? COMPLETE_REPLY_WAIT_MS : activeMs;
+}
+
+function repliesDue(items: ReadyCampaign[], session: SessionDoc, now: Date) {
+  if (!replyCandidates(items).length) return false;
+  if (!session.repliesCheckedAt) return true;
+  return now.getTime() - session.repliesCheckedAt.getTime() >= watchWait(items, WATCH_QUIET_MS);
+}
+
+function acceptsDue(items: ReadyCampaign[], session: SessionDoc, now: Date) {
+  const waiting = items.some((item) =>
+    item.doc.people.some(
+      (person) => personStage(person) === "request_sent" && person.connectionRequested,
+    ),
+  );
+  if (!waiting) return false;
+  if (!session.acceptsCheckedAt) return true;
+  return now.getTime() - session.acceptsCheckedAt.getTime() >= watchWait(items, WATCH_QUIET_MS);
+}
+
+function visitFromReport(report: LinkedinBoatReport, messageNumber: number) {
+  const status = report.status;
+  let state: ProfileRead = "unknown";
+  if (
+    status === "pending" ||
+    status === "connected" ||
+    status === "connect" ||
+    status === "rejected" ||
+    status === "login"
+  ) {
+    state = status;
+  } else if (status === "sent" || status === "replied") {
+    state = "connected";
+  }
+  const replied = status === "replied";
+  const limited = status === "limited";
+  const sentNumber = status === "sent" && !replied ? report.message || messageNumber : 0;
+  const visit: ProfileVisit = {
+    state,
+    sent: sentNumber > 0 ? [sentNumber] : [],
+    replied: replied ? true : null,
+    requested: !limited && (report.sentRequest || state === "pending"),
+    liked: report.liked,
+  };
+  return { visit, limited, sentRequest: report.sentRequest && !limited };
+}
+
+function peopleAfterVisit(
+  doc: CampaignDoc,
+  targets: BoatTarget[],
+  states: Map<string, ProfileVisit>,
+  now: Date,
+  limited: boolean,
+) {
+  const people = doc.people.map((person, index) => {
+    const id = person.id || `p${index + 1}`;
+    const visit = states.get(id);
+    if (!visit) return person;
+    console.info(
+      `[linkedin] ${person.name}: ${visit.state} sent=${visit.sent.join(",") || "none"}`,
+    );
+    const stage = personStage(person);
+    if (limited && targets.some((target) => target.id === id && target.sendConnect)) {
+      return {
+        ...person,
+        replyCheckedAt: now,
+        statusNote: "LinkedIn is limiting connection requests. It will try again later.",
+      };
+    }
+    if (visit.replied === true) {
+      return withoutNextAction(person, {
+        stage: "reply",
+        alreadyConnected: true,
+        connectedAt: person.connectedAt || now,
+        connectionRequested: true,
+        replyCheckedAt: now,
+        statusNote: "They replied.",
+      });
+    }
+    if (visit.replied === false && stage.startsWith("message_") && !visit.sent.length) {
+      const allSent = !(person.messages[person.messagesSent || 0] || "").trim();
+      const note =
+        allSent && (!person.statusNote || STALE_MESSAGE_NOTES.has(person.statusNote))
+          ? "All messages were sent."
+          : person.statusNote;
+      return { ...person, connectionRequested: true, replyCheckedAt: now, statusNote: note };
+    }
+    const triedMessage = targets.some((target) => target.id === id && target.messages.length > 0);
+    if ((visit.state === "unknown" || visit.state === "login") && stage.startsWith("message_") && !visit.sent.length) {
+      return {
+        ...person,
+        replyCheckedAt: now,
+        ...(triedMessage
+          ? {
+              statusNote: "The message could not be sent. It will try again.",
+              nextActionAt: new Date(now.getTime() + CONNECTION_GAP_MS),
+            }
+          : {}),
+      };
+    }
+    if (visit.sent.length) {
+      const maxSent = Math.max(...visit.sent);
+      const hasNext = Boolean(person.messages[maxSent]?.trim());
+      return {
+        ...person,
+        stage: `message_${maxSent}`,
+        messagesSent: maxSent,
+        alreadyConnected: true,
+        connectedAt: person.connectedAt || now,
+        connectionRequested: true,
+        replyCheckedAt: now,
+        statusNote: hasNext ? `Message ${maxSent} was sent.` : "All messages were sent.",
+        nextActionAt: hasNext ? nextOpenSendAt(addDays(now, doc.delayAfterMessageDays), doc) : undefined,
+      };
+    }
+    const state = visit.state;
+    if (state === "pending" || visit.requested) {
+      return withoutNextAction(person, {
+        stage: "request_sent",
+        connectionRequested: true,
+        inviteSent: true,
+        replyCheckedAt: now,
+        statusNote: REQUEST_WAITING_NOTE,
+      });
+    }
+    if (state === "connect" || state === "rejected") {
+      if (person.connectionRequested) {
+        return withoutNextAction(person, {
+          stage: "connection_rejected",
+          replyCheckedAt: now,
+          statusNote: "They rejected the connection request.",
+        });
+      }
+      return {
+        ...person,
+        stage: "request_sent",
+        replyCheckedAt: now,
+        statusNote: "The connection request could not be sent. It will try again.",
+      };
+    }
+    if (state === "connected") {
+      const marked = markConnected(person, doc.delayAfterAcceptDays, now, doc);
+      const unsent = messagesToSend(marked, doc.delayAfterMessageDays);
+      if (unsent.length && triedMessage) {
+        return {
+          ...marked,
+          connectionRequested: true,
+          replyCheckedAt: now,
+          statusNote: "They accepted. The message could not be sent. It will try again.",
+          nextActionAt: new Date(now.getTime() + CONNECTION_GAP_MS),
+        };
+      }
+      if (stage.startsWith("message_") || stage === "connected") {
+        return {
+          ...person,
+          connectionRequested: true,
+          alreadyConnected: true,
+          connectedAt: person.connectedAt || now,
+          replyCheckedAt: now,
+        };
+      }
+      const accepted = {
+        ...marked,
+        connectionRequested: true,
+        replyCheckedAt: now,
+        statusNote: "They accepted the connection request.",
+      };
+      if ((person.messages[person.messagesSent || 0] || "").trim()) return accepted;
+      return withoutNextAction(accepted, {});
+    }
+    if (stage !== "request_sent") return person;
+    if (person.connectionRequested || person.inviteSent) {
+      return { ...person, replyCheckedAt: now, statusNote: REQUEST_WAITING_NOTE };
+    }
+    return {
+      ...person,
+      replyCheckedAt: now,
+      statusNote: state === "login"
+        ? "LinkedIn needs a sign-in before this profile can be checked."
+        : BUTTONS_HIDDEN_NOTE,
+    };
+  });
+  people.forEach((person, index) => {
+    const id = person.id || `p${index + 1}`;
+    if (!states.get(id)?.liked) return;
+    person.likedRecentPost = true;
+  });
+  return people;
+}
+
+function withInboxReply(
+  person: PersonDoc,
+  replies: { name: string; text: string }[],
+  accountName: string,
+  now: Date,
+) {
+  const stage = personStage(person);
+  if (stage.startsWith("custom_")) return person;
+  const hit = replies.find(
+    (reply) => sameLinkedinName(person.name, reply.name) && !sameLinkedinName(accountName, reply.name),
+  );
+  if (!hit) return person;
+  const watching =
+    stage === "reply" ||
+    stage === "connected" ||
+    stage.startsWith("message_") ||
+    (stage === "request_sent" && Boolean(person.connectionRequested)) ||
+    (person.messagesSent || 0) > 0;
+  if (!watching) return person;
+  const statusNote = hit.text || "They replied.";
+  if (stage === "reply") {
+    if (person.statusNote === statusNote) return person;
+    if (!hit.text && person.statusNote && person.statusNote !== "They replied.") return person;
+    return { ...person, replyCheckedAt: now, statusNote };
+  }
+  return withoutNextAction(person, {
+    stage: "reply",
+    alreadyConnected: true,
+    connectedAt: person.connectedAt || now,
+    connectionRequested: true,
+    replyCheckedAt: now,
+    statusNote,
+  });
+}
+
+function withAccepted(
+  person: PersonDoc,
+  names: string[],
+  accountName: string,
+  now: Date,
+  doc: CampaignDoc,
+) {
+  if (personStage(person) !== "request_sent" || !person.connectionRequested) return person;
+  const hit = names.some(
+    (name) => sameLinkedinName(person.name, name) && !sameLinkedinName(accountName, name),
+  );
+  if (!hit) return person;
+  const marked = markConnected(person, doc.delayAfterAcceptDays, now, doc);
+  const accepted = {
+    ...marked,
+    connectionRequested: true,
+    replyCheckedAt: now,
+    statusNote: "They accepted the connection request.",
+  };
+  if ((person.messages[person.messagesSent || 0] || "").trim()) return accepted;
+  return withoutNextAction(accepted, {});
+}
+
+function cleanReplyText(personName: string, snippet: string) {
+  let text = snippet.replace(/\s+/g, " ").trim();
+  text = text.replace(/^\d{1,2}:\d{2}\s*(am|pm)?\s*/i, "");
+  const labels = [personName, ...personName.split(/\s+/).filter((part) => part.length > 1)];
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`^${escaped}\\s*:\\s*`, "i"), "");
+  }
+  return text.slice(0, 280);
+}
+
+function inboxReplies(rows: LinkedinInboxRow[], people: PersonDoc[]) {
+  const replies: { name: string; text: string }[] = [];
+  for (const row of rows) {
+    const person = people.find((item) => sameLinkedinName(item.name, row.name));
+    if (!person || replies.some((item) => item.name === person.name)) continue;
+    const stage = personStage(person);
+    const messaged =
+      stage.startsWith("message_") ||
+      stage === "connected" ||
+      stage === "reply" ||
+      (person.messagesSent || 0) > 0;
+    const snippet = row.snippet.trim();
+    const fromUs = /^you\s*:/i.test(snippet);
+    const fromThem = row.unread || (Boolean(snippet) && !fromUs);
+    if (!fromThem || fromUs) continue;
+    if (!(messaged || row.unread)) continue;
+    replies.push({ name: person.name, text: cleanReplyText(person.name, snippet) });
+  }
+  return replies;
+}
+
+function campaignMarkers(items: ReadyCampaign[]) {
+  return items.map((item) => campaignTabMarker(item.doc._id.toString()));
+}
+
+function linkedinKeepTabs(items: ReadyCampaign[]) {
+  return [...campaignMarkers(items), LINKEDIN_REPLIES_TAB, LINKEDIN_NETWORK_TAB];
+}
+
+async function commitLinkedinPeople(
+  doc: CampaignDoc,
+  now: Date,
+  people: PersonDoc[],
+  options: { limited?: boolean; sentRequest?: boolean; schedule?: boolean },
+) {
+  const db = await getDb();
+  const previous = doc.people;
+  let sent = 0;
+  for (let index = 0; index < people.length; index += 1) {
+    const before = previous[index];
+    const after = people[index];
+    if (!before || !after?.crmContactId) continue;
+    const events = linkedinTimelineChanges({
+      campaignId: doc._id.toString(),
+      campaignName: doc.name,
+      personId: after.id || `p${index + 1}`,
+      previous: before,
+      next: after,
+      at: now,
+    });
+    if (!events.length) continue;
+    await appendLinkedinTimeline(doc.projectId, after.crmContactId, events).catch((error) => {
+      console.error("[linkedin] could not write the contact activity", error);
+    });
+  }
+  sent += people.filter((person, index) => (person.messagesSent || 0) > (previous[index]?.messagesSent || 0)).length;
+  const stored = await db.collection<CampaignDoc>("linkedin_campaigns").findOne(
+    { _id: doc._id },
+    { projection: { people: 1 } },
+  );
+  const merged = people.map((person, index) => {
+    const earlier = stored?.people[index];
+    if (!earlier || earlier.linkedinUrl !== person.linkedinUrl) return person;
+    return {
+      ...person,
+      startedConnected: person.startedConnected === true || earlier.startedConnected === true,
+      inviteSent: person.inviteSent === true || earlier.inviteSent === true,
+      likedRecentPost: person.likedRecentPost === true || earlier.likedRecentPost === true,
+    };
+  });
+  const schedule = options.schedule !== false;
+  await db.collection<CampaignDoc>("linkedin_campaigns").updateOne(
+    { _id: doc._id },
+    {
+      $set: {
+        people: merged,
+        status: campaignStatus(merged),
+        updatedAt: now,
+        ...(schedule
+          ? {
+              lastBoatAt: now,
+              connectionCheckAt: options.limited ? new Date(now.getTime() + 30 * 60 * 1000) : now,
+            }
+          : {}),
+      },
+      $unset: { activePromptId: "", activePromptAt: "", activeTargets: "" },
+    },
+  );
+  if (options.sentRequest) {
+    await db.collection<SessionDoc>("linkedin_sessions").updateOne(
+      { projectId: doc.projectId },
+      { $set: { lastConnectionRequestAt: now, updatedAt: now } },
+    );
+  }
+  return sent;
+}
+
+async function ensureLinkedinChrome(sandboxId: string) {
+  if (await chromeDebugOpen(sandboxId)) return true;
+  await openLinkedinChrome(sandboxId, LINKEDIN_MESSAGING_URL, true);
+  for (let attempt = 0; attempt < 10 && !(await chromeDebugOpen(sandboxId)); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return chromeDebugOpen(sandboxId);
+}
+
+async function clearBoatLock(doc: CampaignDoc) {
+  const db = await getDb();
+  await db.collection<CampaignDoc>("linkedin_campaigns").updateOne(
+    { _id: doc._id },
+    { $unset: { activePromptId: "", activePromptAt: "", activeTargets: "" } },
+  );
+}
+
+async function runLinkedinProfileStep(
+  action: LinkedinAction,
+  sandboxId: string,
+  now: Date,
+  keep: string[],
+) {
+  const doc = action.doc;
+  const person = action.person;
+  const id = person.id || `p${action.index + 1}`;
+  const db = await getDb();
+  let saved = false;
+  await db.collection<CampaignDoc>("linkedin_campaigns").updateOne(
+    { _id: doc._id },
+    { $set: { activePromptId: "boat", activePromptAt: now, updatedAt: now } },
+  );
+  try {
+    const slug = linkedinProfileSlug(person.linkedinUrl);
+    const focus = await focusLinkedinTab(
+      sandboxId,
+      campaignTabMarker(doc._id.toString()),
+      person.linkedinUrl,
+      slug || "/in/",
+      keep,
+    );
+    const messages = action.message ? [action.message] : [];
+    const target: BoatTarget = {
+      id,
+      url: person.linkedinUrl,
+      name: person.name,
+      messages,
+      ...(action.kind === "connect" ? { sendConnect: true } : {}),
+    };
+    let visit: ProfileVisit = { state: focus.state === "login" ? "login" : "unknown", sent: [], replied: null, requested: false };
+    let limited = false;
+    let sentRequest = false;
+    if (focus.state === "ready") {
+      const result = await runLinkedinBoatTask(
+        sandboxId,
+        linkedinProfileTask({
+          campaignName: doc.name,
+          personName: person.name,
+          url: person.linkedinUrl,
+          kind: action.kind,
+          message: action.message,
+          like: action.like,
+        }),
+        PROFILE_WATCH_MS,
+      );
+      console.info("[linkedin] boat", (result.report || result.status || "").slice(0, 400));
+      const report = parseLinkedinBoatReport(result.report || "");
+      const read = visitFromReport(report, action.kind === "message" ? action.message?.number || 0 : 0);
+      visit = read.visit;
+      if (action.kind !== "message") visit.sent = [];
+      limited = read.limited;
+      sentRequest =
+        action.kind === "connect" &&
+        !limited &&
+        visit.state !== "unknown" &&
+        visit.state !== "login" &&
+        (read.sentRequest || visit.state === "pending");
+    }
+    const people = peopleAfterVisit(doc, [target], new Map([[id, visit]]), now, limited);
+    const sent = await commitLinkedinPeople(doc, now, people, { limited, sentRequest });
+    saved = true;
+    return sent;
+  } finally {
+    await focusLinkedinTab(sandboxId, campaignTabMarker(doc._id.toString()), "", "", keep).catch(
+      () => "failed" as const,
+    );
+    if (!saved) await clearBoatLock(doc).catch(() => undefined);
+  }
+}
+
+async function runLinkedinWatchStep(
+  items: ReadyCampaign[],
+  session: SessionDoc,
+  sandboxId: string,
+  now: Date,
+  watch: {
+    marker: string;
+    url: string;
+    expect: string;
+    task: string;
+    label: string;
+    stamp: "repliesCheckedAt" | "acceptsCheckedAt";
+  },
+) {
+  const db = await getDb();
+  const lockDoc = items[0].doc;
+  const keep = linkedinKeepTabs(items);
+  let saved = false;
+  await db.collection<CampaignDoc>("linkedin_campaigns").updateOne(
+    { _id: lockDoc._id },
+    { $set: { activePromptId: "boat", activePromptAt: now, updatedAt: now } },
+  );
+  try {
+    const focus = await focusLinkedinTab(sandboxId, watch.marker, watch.url, watch.expect, keep, true);
+    if (focus.state === "login") {
+      await db.collection<SessionDoc>("linkedin_sessions").updateOne(
+        { projectId: session.projectId },
+        {
+          $set: {
+            [watch.stamp]: now,
+            loginHoldUntil: new Date(now.getTime() + LOGIN_HOLD_MS),
+            updatedAt: now,
+          },
+        },
+      );
+      console.info("[linkedin] LinkedIn is asking for a sign-in. The computer will stay still.");
+      saved = true;
+      return 0;
+    }
+    let accepted: string[] = [];
+    let replies: { name: string; text: string }[] = [];
+    if (focus.state === "ready" && watch.stamp === "repliesCheckedAt") {
+      const people = items.flatMap((item) => item.doc.people);
+      replies = inboxReplies(focus.inbox, people);
+      console.info(
+        "[linkedin] inbox",
+        focus.inbox
+          .map((row) => `${row.name} | ${row.snippet || "no preview"} | ${row.unread ? "unread" : "read"}`)
+          .join(" || ")
+          .slice(0, 500) || "no conversations",
+      );
+      if (replies.length) console.info("[linkedin] replies found", replies.map((reply) => reply.name).join(", "));
+      await db.collection<SessionDoc>("linkedin_sessions").updateOne(
+        { projectId: session.projectId },
+        { $set: { repliesCheckedAt: now, updatedAt: now } },
+      );
+    } else if (focus.state === "ready") {
+      accepted = focus.accepted;
+      if (accepted.length) console.info("[linkedin] accepts found", accepted.join(", "));
+      await db.collection<SessionDoc>("linkedin_sessions").updateOne(
+        { projectId: session.projectId },
+        { $set: { [watch.stamp]: now, updatedAt: now } },
+      );
+    }
+    let sent = 0;
+    const accountName = session.accountName || "";
+    for (const item of items) {
+      const people = item.doc.people
+        .map((person) => withAccepted(person, accepted, accountName, now, item.doc))
+        .map((person) => withInboxReply(person, replies, accountName, now));
+      const changed = people.some((person, index) => {
+        const before = item.doc.people[index];
+        return person.stage !== before?.stage || person.statusNote !== before?.statusNote;
+      });
+      if (!changed) continue;
+      sent += await commitLinkedinPeople(item.doc, now, people, { schedule: false });
+    }
+    saved = true;
+    return sent;
+  } finally {
+    if (!saved) await clearBoatLock(lockDoc).catch(() => undefined);
+    else {
+      await db
+        .collection<CampaignDoc>("linkedin_campaigns")
+        .updateOne({ _id: lockDoc._id }, { $unset: { activePromptId: "", activePromptAt: "", activeTargets: "" } })
+        .catch(() => undefined);
+    }
+  }
+}
+
+async function runProjectLinkedinStep(items: ReadyCampaign[], now: Date) {
+  const projectId = items[0].doc.projectId;
+  const sandboxId = items[0].sandboxId;
+  if (items.some((item) => boatLockFresh(item.doc, now))) return 0;
+  const db = await getDb();
+  const session = await db.collection<SessionDoc>("linkedin_sessions").findOne({
+    projectId,
+    connected: true,
+  });
+  if (!session) return 0;
+  if (session.loginHoldUntil && session.loginHoldUntil.getTime() > now.getTime()) return 0;
+  const connectGapOpen =
+    !session.lastConnectionRequestAt ||
+    now.getTime() - session.lastConnectionRequestAt.getTime() >= CONNECTION_GAP_MS;
+  const ordered = [...items].sort(
+    (a, b) => (a.doc.lastBoatAt?.getTime() || 0) - (b.doc.lastBoatAt?.getTime() || 0),
+  );
+  let best: LinkedinAction | null = null;
+  for (const item of ordered) {
+    const action = pickCampaignAction(item.doc, now, connectGapOpen);
+    if (action && (!best || action.priority < best.priority)) best = action;
+  }
+  const readReplies = repliesDue(ordered, session, now);
+  const readAccepts = acceptsDue(ordered, session, now);
+  if (!best && !readReplies && !readAccepts) return 0;
+  if (!(await ensureLinkedinChrome(sandboxId))) return 0;
+  const keep = linkedinKeepTabs(ordered);
+  const accountName = session.accountName || "";
+  if (readReplies) {
+    console.info("[linkedin] reading the messaging tab for replies");
+    return runLinkedinWatchStep(ordered, session, sandboxId, now, {
+      marker: LINKEDIN_REPLIES_TAB,
+      url: LINKEDIN_MESSAGING_URL,
+      expect: "linkedin.com/messaging",
+      task: linkedinRepliesTask(
+        accountName,
+        replyCandidates(ordered).map((person) => person.name),
+      ),
+      label: "replies",
+      stamp: "repliesCheckedAt",
+    });
+  }
+  if (readAccepts && best?.kind !== "message") {
+    console.info("[linkedin] reading the network tab for accepts");
+    return runLinkedinWatchStep(ordered, session, sandboxId, now, {
+      marker: LINKEDIN_NETWORK_TAB,
+      url: LINKEDIN_NETWORK_URL,
+      expect: "linkedin.com/notifications",
+      task: linkedinNetworkTask(accountName, []),
+      label: "network",
+      stamp: "acceptsCheckedAt",
+    });
+  }
+  if (!best) return 0;
+  await fillLinkedinChrome(sandboxId);
+  console.info(
+    `[linkedin] ${best.doc.name}: ${best.kind} ${best.person.name} in ${campaignTabMarker(best.doc._id.toString())}`,
+  );
+  return runLinkedinProfileStep(best, sandboxId, now, keep);
+}
+
 async function runLinkedinFollowUps(now = new Date()) {
   await sessions();
   const db = await getDb();
@@ -1672,9 +1741,8 @@ async function runLinkedinFollowUps(now = new Date()) {
     .find({ status: { $in: ["running", "complete"] } })
     .toArray();
   docs.sort((a, b) => Number(a.status !== "running") - Number(b.status !== "running"));
-  let sent = 0;
-  const busyProjects = new Set<string>();
-  if (!boatConfigured()) return { sent };
+  if (!boatConfigured()) return { sent: 0 };
+  const ready: ReadyCampaign[] = [];
   for (const doc of docs) {
     if (doc.paused) continue;
     const statusNow = campaignStatus(doc.people);
@@ -1689,10 +1757,7 @@ async function runLinkedinFollowUps(now = new Date()) {
     if (!sandbox || !isBoatRunning(sandbox.state)) continue;
     if (sandbox.replacedDeletedDisk) {
       if (doc.activePromptId) {
-        await db.collection<CampaignDoc>("linkedin_campaigns").updateOne(
-          { _id: doc._id },
-          { $unset: { activePromptId: "", activePromptAt: "", activeTargets: "" }, $set: { updatedAt: now } },
-        );
+        await clearBoatLock(doc);
         doc.activePromptId = undefined;
       }
       continue;
@@ -1703,247 +1768,24 @@ async function runLinkedinFollowUps(now = new Date()) {
     });
     if (!signedIn) continue;
     if (!linkedinWindowOpen(doc, now)) continue;
-    if (doc.status === "complete" && busyProjects.has(String(doc.projectId))) continue;
-
-    if (doc.activePromptId === "desktop-send") {
-      const age = now.getTime() - (doc.activePromptAt?.getTime() || 0);
-      if (age < 3 * 60 * 1000) continue;
-      doc.activePromptId = undefined;
-    }
-
-    if (doc.activePromptId) {
-      await db.collection<CampaignDoc>("linkedin_campaigns").updateOne(
-        { _id: doc._id },
-        { $unset: { activePromptId: "", activePromptAt: "", activeTargets: "" }, $set: { updatedAt: now } },
-      );
-      doc.activePromptId = undefined;
-    }
-
-    const headerWaitOver =
-      !doc.connectionCheckAt || now.getTime() - doc.connectionCheckAt.getTime() >= PROFILE_READ_WAIT_MS;
-    const replyWaitMs = doc.status === "complete" ? COMPLETE_REPLY_WAIT_MS : PROFILE_READ_WAIT_MS;
-    const targets = doc.people
-      .flatMap((person, index) => {
-        if (!person.linkedinUrl) return [];
-        const id = person.id || `p${index + 1}`;
-        const stage = personStage(person);
-        const needsRequest =
-          stage === "request_sent" &&
-          !person.connectionRequested &&
-          (person.messagesSent || 0) === 0 &&
-          headerWaitOver;
-        const waiting = stage === "request_sent" && Boolean(person.connectionRequested) && headerWaitOver;
-        const recheck =
-          stage === "connection_rejected" &&
-          (person.messagesSent || 0) === 0 &&
-          person.statusNote === "They rejected the connection request." &&
-          headerWaitOver;
-        const due = messageDue(person, now);
-        const replyDue =
-          stage.startsWith("message_") &&
-          (person.messagesSent || 0) > 0 &&
-          (!person.replyCheckedAt || now.getTime() - person.replyCheckedAt.getTime() >= replyWaitMs);
-        const likeDue =
-          person.likeRecentPost === true &&
-          person.likedRecentPost !== true &&
-          (stage === "connected" || stage.startsWith("message_") || stage === "reply");
-        if (!needsRequest && !waiting && !recheck && !due && !replyDue && !likeDue) return [];
-        const messages =
-          due || ((needsRequest || waiting || recheck) && doc.delayAfterAcceptDays === 0)
-            ? messagesToSend(person, doc.delayAfterMessageDays)
-            : [];
-        const priority = needsRequest || due ? 0 : waiting || recheck || likeDue ? 1 : 2;
-        return [
-          {
-            priority,
-            id,
-            url: person.linkedinUrl,
-            name: person.name,
-            messages,
-            ...(needsRequest ? { sendConnect: true } : {}),
-            ...(person.likeRecentPost && !person.likedRecentPost ? { likeRecent: true } : {}),
-            ...(replyDue
-              ? {
-                  checkReply: true,
-                  ownMessages: person.messages
-                    .slice(0, person.messagesSent || 0)
-                    .map((text) => text.trim())
-                    .filter(Boolean),
-                }
-              : {}),
-          },
-        ];
-      })
-      .sort((a, b) => a.priority - b.priority)
-      .slice(0, VISIT_BATCH)
-      .map(({ priority: _priority, ...target }) => target);
-    if (!targets.length) continue;
-    if (doc.status === "running") busyProjects.add(String(doc.projectId));
-    await db.collection<CampaignDoc>("linkedin_campaigns").updateOne(
-      { _id: doc._id },
-      { $set: { activePromptId: "desktop-send", activePromptAt: now, updatedAt: now } },
-    );
-    const read = await readLinkedinProfileStates(sandbox.id, doc._id.toString(), targets).catch((error) => {
-      console.error("[linkedin] profile read failed:", error);
-      return { states: new Map<string, ProfileVisit>(), limited: false };
-    });
-    const states = read.states;
-    const people = doc.people.map((person, index) => {
-      const id = person.id || `p${index + 1}`;
-      const visit = states.get(id);
-      if (!visit) return person;
-      console.info(
-        `[linkedin] ${person.name}: ${visit.state} sent=${visit.sent.join(",") || "none"} replied=${visit.replied === true ? "yes" : visit.replied === false ? "no" : "unknown"}`,
-      );
-      const stage = personStage(person);
-      if (visit.replied === true && stage.startsWith("message_")) {
-        return withoutNextAction(person, {
-          stage: "reply",
-          alreadyConnected: true,
-          connectedAt: person.connectedAt || now,
-          connectionRequested: true,
-          replyCheckedAt: now,
-          statusNote: "They replied.",
-        });
-      }
-      if (visit.replied === false && stage.startsWith("message_") && !visit.sent.length) {
-        const allSent = !(person.messages[person.messagesSent || 0] || "").trim();
-        const note =
-          allSent && (!person.statusNote || STALE_MESSAGE_NOTES.has(person.statusNote))
-            ? "All messages were sent."
-            : person.statusNote;
-        return { ...person, connectionRequested: true, replyCheckedAt: now, statusNote: note };
-      }
-      if ((visit.state === "unknown" || visit.state === "login") && stage.startsWith("message_") && !visit.sent.length) {
-        return { ...person, replyCheckedAt: now };
-      }
-      if (visit.sent.length) {
-        const maxSent = Math.max(...visit.sent);
-        const hasNext = Boolean(person.messages[maxSent]?.trim());
-        return {
-          ...person,
-          stage: `message_${maxSent}`,
-          messagesSent: maxSent,
-          alreadyConnected: true,
-          connectedAt: person.connectedAt || now,
-          connectionRequested: true,
-          replyCheckedAt: now,
-          statusNote: hasNext ? `Message ${maxSent} was sent.` : "All messages were sent.",
-          nextActionAt: hasNext ? nextOpenSendAt(addDays(now, doc.delayAfterMessageDays), doc) : undefined,
-        };
-      }
-      const state = visit.state;
-      if (state === "pending" || visit.requested) {
-        return withoutNextAction(person, {
-          stage: "request_sent",
-          connectionRequested: true,
-          inviteSent: true,
-          replyCheckedAt: now,
-          statusNote: "Connection request sent. Waiting for them to accept.",
-        });
-      }
-      if (state === "connect" || state === "rejected") {
-        if (person.connectionRequested) {
-          return withoutNextAction(person, {
-            stage: "connection_rejected",
-            replyCheckedAt: now,
-            statusNote: "Opened the profile header. Connect is showing, so the request was not accepted.",
-          });
-        }
-        return {
-          ...person,
-          stage: "request_sent",
-          replyCheckedAt: now,
-          statusNote: "The connection request could not be sent. It will try again.",
-        };
-      }
-      if (state === "connected") {
-        const marked = markConnected(person, doc.delayAfterAcceptDays, now, doc);
-        const unsent = messagesToSend(marked, doc.delayAfterMessageDays);
-        const triedToSend = targets.some((target) => target.id === id && target.messages.length > 0);
-        if (unsent.length && triedToSend) {
-          return {
-            ...marked,
-            connectionRequested: true,
-            replyCheckedAt: now,
-            statusNote: "They accepted. The message could not be sent. It will try again.",
-            nextActionAt: new Date(now.getTime() + PROFILE_READ_WAIT_MS),
-          };
-        }
-        if (stage.startsWith("message_")) {
-          if (unsent.length) return { ...person, connectionRequested: true, replyCheckedAt: now };
-          const note =
-            !person.statusNote || STALE_MESSAGE_NOTES.has(person.statusNote)
-              ? "All messages were sent."
-              : person.statusNote;
-          return { ...person, connectionRequested: true, replyCheckedAt: now, statusNote: note };
-        }
-        return withoutNextAction(marked, {
-          connectionRequested: true,
-          replyCheckedAt: now,
-          statusNote: "They accepted the connection request.",
-        });
-      }
-      if (stage !== "request_sent") return person;
-      return {
-        ...person,
-        replyCheckedAt: now,
-        statusNote:
-          state === "login"
-            ? "LinkedIn needs a sign-in before this profile can be checked."
-            : "Opened the profile, but the buttons were not visible yet. It will try again.",
-      };
-    });
-    people.forEach((person, index) => {
-      const id = person.id || `p${index + 1}`;
-      if (!states.get(id)?.liked) return;
-      person.likedRecentPost = true;
-    });
-    const previous = doc.people;
-    sent += people.filter((person, index) => (person.messagesSent || 0) > (previous[index]?.messagesSent || 0)).length;
-    for (let index = 0; index < people.length; index += 1) {
-      const before = previous[index];
-      const after = people[index];
-      if (!before || !after?.crmContactId) continue;
-      const events = linkedinTimelineChanges({
-        campaignId: doc._id.toString(),
-        campaignName: doc.name,
-        personId: after.id || `p${index + 1}`,
-        previous: before,
-        next: after,
-        at: now,
-      });
-      if (!events.length) continue;
-      await appendLinkedinTimeline(doc.projectId, after.crmContactId, events).catch((error) => {
-        console.error("[linkedin] could not write the contact activity", error);
-      });
-    }
-    const stored = await db.collection<CampaignDoc>("linkedin_campaigns").findOne(
-      { _id: doc._id },
-      { projection: { people: 1 } },
-    );
-    const merged = people.map((person, index) => {
-      const earlier = stored?.people[index];
-      if (!earlier || earlier.linkedinUrl !== person.linkedinUrl) return person;
-      return {
-        ...person,
-        startedConnected: person.startedConnected === true || earlier.startedConnected === true,
-        inviteSent: person.inviteSent === true || earlier.inviteSent === true,
-        likedRecentPost: person.likedRecentPost === true || earlier.likedRecentPost === true,
-      };
-    });
-    await db.collection<CampaignDoc>("linkedin_campaigns").updateOne(
-      { _id: doc._id },
-      {
-        $set: {
-          people: merged,
-          status: campaignStatus(merged),
-          connectionCheckAt: read.limited ? new Date(now.getTime() + 30 * 60 * 1000) : now,
-          updatedAt: now,
-        },
-        $unset: { activePromptId: "", activePromptAt: "", activeTargets: "" },
-      },
-    );
+    ready.push({ doc, sandboxId: sandbox.id });
   }
-  return { sent };
+  const groups = new Map<string, ReadyCampaign[]>();
+  for (const item of ready) {
+    const key = String(item.doc.projectId);
+    const list = groups.get(key) || [];
+    list.push(item);
+    groups.set(key, list);
+  }
+  const counts = await Promise.all(
+    [...groups.values()].map(async (items) => {
+      try {
+        return await runProjectLinkedinStep(items, now);
+      } catch (error) {
+        console.error("[linkedin] step failed", error);
+        return 0;
+      }
+    }),
+  );
+  return { sent: counts.reduce((sum, count) => sum + count, 0) };
 }

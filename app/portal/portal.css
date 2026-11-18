@@ -3995,6 +3995,18 @@ a.lr-tl-email-btn.lr-tl-campaign-link:hover,
 }
 .cd-activity-remove:hover{color:#b42318;}
 .cd-activity-item .lr-tl-body{white-space:pre-wrap;}
+.cd-activity-item .lr-tl-message{margin:0;}
+.cd-activity-item .lr-tl-message summary{
+  cursor:pointer;list-style:none;
+}
+.cd-activity-item .lr-tl-message summary:hover{
+  color:#1d4ed8;text-decoration:underline;
+}
+.cd-activity-item .lr-tl-message summary::-webkit-details-marker{display:none;}
+.cd-activity-item .lr-tl-message summary::marker{content:"";}
+.cd-activity-item .lr-tl-message-text{
+  margin:8px 0 0;white-space:pre-wrap;font-size:13.5px;line-height:1.5;color:#4b5563;
+}
 .cd-activity-call-card{
   margin-top:10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   padding:10px 12px;border:1px solid #e5e7eb;border-radius:12px;background:#f8fafc;

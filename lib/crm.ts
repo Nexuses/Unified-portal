@@ -248,6 +248,17 @@ export type ContactProfileTimelineItem = {
   durationSec?: number;
 };
 
+/** Same timestamp: the later step stays above the earlier one. */
+export function linkedinActivityOrder(body: string) {
+  if (/^Replied on LinkedIn/i.test(body)) return 50;
+  const message = body.match(/^Message (\d+) sent/i);
+  if (message) return 30 + Number(message[1]);
+  if (/^Liked their recent post/i.test(body)) return 25;
+  if (/^Accepted the connection request|^Connected on LinkedIn/i.test(body)) return 20;
+  if (/^Connection request sent/i.test(body)) return 10;
+  return 0;
+}
+
 export type ContactProfile = {
   title?: string;
   phone?: string;
