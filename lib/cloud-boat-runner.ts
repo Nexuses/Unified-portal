@@ -294,20 +294,28 @@ export async function assertBoatUnlocked(
   );
 }
 
+/** How long readying the computer may take before we say so, instead of spinning for minutes. */
+const READY_DEADLINE_MS = 2 * 60 * 1000;
+
 async function readySandbox(projectId: ObjectId, allowCampaignId?: string) {
   if (!boatConfigured()) {
     throw new Error("Boat is not set up. An admin needs to add BOAT_API_KEY.");
   }
   await assertBoatUnlocked(projectId, allowCampaignId);
   // Cloud campaigns' own computer; resumes archived disks, poll until running after stop/restart.
+  // One overall limit: when Boat is slow, retrying the whole wake-up 8 times took 6+ minutes.
+  const deadline = Date.now() + READY_DEADLINE_MS;
   let sandbox = await ensureCloudBoat(projectId);
-  for (let attempt = 0; attempt < 8 && !isBoatRunning(sandbox.state); attempt += 1) {
+  while (!isBoatRunning(sandbox.state) && Date.now() + 3000 < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     sandbox = await ensureCloudBoat(projectId);
   }
   if (!isBoatRunning(sandbox.state)) {
+    console.warn(`Cloud computer ${sandbox.id} for project ${projectId} still ${sandbox.state} after ${Math.round(READY_DEADLINE_MS / 1000)} s.`);
     throw new Error(
-      `The computer is ${sandbox.state}. Wait a few seconds, then try Start computer or Resume again.`,
+      sandbox.state === "archiving" || sandbox.state === "stopping"
+        ? `The computer is still shutting down on Boat's side (${sandbox.state}), so it cannot start yet. Try Start computer again in a few minutes.`
+        : `The computer is ${sandbox.state}. Wait a minute, then try Start computer or Resume again.`,
     );
   }
   // Project VPN (NordVPN India): connect before anything runs; throws rather than send unprotected.

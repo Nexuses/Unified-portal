@@ -11,6 +11,10 @@ export type BoatSandbox = {
   name: string;
   state: string;
   error: string | null;
+  /** When Boat last changed this computer (ISO). */
+  updatedAt?: string;
+  /** A stop Boat accepted but has not carried out yet: when it was asked for (ISO). */
+  stopPendingSince?: string;
   /** True when the saved disk was gone and this call created a blank desktop. */
   replacedDeletedDisk?: boolean;
 };
@@ -62,7 +66,7 @@ export class BoatError extends Error {
 }
 
 const TRANSIENT_BOAT_MESSAGE =
-  /boat request failed \((502|503|504)\)|briefly unavailable|did not respond|fetch failed|econnreset|etimedout|socket hang up|bad gateway|gateway time-?out/i;
+  /boat request failed \((500|502|503|504)\)|briefly unavailable|did not respond|internal error|fetch failed|econnreset|etimedout|socket hang up|bad gateway|gateway time-?out/i;
 
 /**
  * A short Boat outage (gateway 502/503/504 or a dropped connection), not a real problem with
@@ -70,7 +74,7 @@ const TRANSIENT_BOAT_MESSAGE =
  */
 export function isTransientBoatError(error: unknown) {
   if (error instanceof BoatError) {
-    return [502, 503, 504].includes(error.status) || error.code === "boat_unreachable";
+    return [500, 502, 503, 504].includes(error.status) || error.code === "boat_unreachable";
   }
   const message = error instanceof Error ? error.message : String(error ?? "");
   return TRANSIENT_BOAT_MESSAGE.test(message);
@@ -97,6 +101,15 @@ function sandboxDiskGone(error: unknown) {
 }
 
 const BOAT_READ_RETRIES = 2;
+/**
+ * Give up on one Boat call after this long. Without it a slow Boat holds a request open for
+ * minutes (seen: 2.7 min for usage, >60 s for backups). Commands carry their own limit (≤90 s).
+ */
+const BOAT_READ_TIMEOUT_MS = 25_000;
+const BOAT_WRITE_TIMEOUT_MS = 60_000;
+const BOAT_COMMAND_TIMEOUT_MS = 150_000;
+/** Boat's catch-all error text, which says nothing to a portal user on its own. */
+const GENERIC_BOAT_MESSAGE = /^(something went wrong|internal (server )?error)\.?$/i;
 const BOAT_RETRY_STATUS = new Set([502, 503, 504]);
 
 async function boatFetch(path: string, init?: RequestInit) {
@@ -112,10 +125,17 @@ async function boatFetch(path: string, init?: RequestInit) {
   // Boat's gateway has short blips (502/503/504 or a dropped connection). Reads are safe to
   // repeat, so retry them; writes (start, exec, prompt) are not retried so nothing runs twice.
   const attempts = method === "GET" ? BOAT_READ_RETRIES + 1 : 1;
+  const timeoutMs =
+    method === "GET"
+      ? BOAT_READ_TIMEOUT_MS
+      : /\/commands(\?|$)/.test(path)
+        ? BOAT_COMMAND_TIMEOUT_MS
+        : BOAT_WRITE_TIMEOUT_MS;
   let response: Response | null = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       response = await fetch(`${BOAT_API_BASE}${path}`, {
+        signal: AbortSignal.timeout(timeoutMs),
         ...init,
         headers: {
           Authorization: `Bearer ${key}`,
@@ -125,8 +145,11 @@ async function boatFetch(path: string, init?: RequestInit) {
       });
     } catch (error) {
       if (attempt >= attempts) {
+        const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
         throw new BoatError(
-          `The cloud computer service did not respond (${error instanceof Error ? error.message : "network error"}). Try again in a minute.`,
+          timedOut
+            ? `The cloud computer service did not respond within ${Math.round(timeoutMs / 1000)} s. Boat is running slowly — try again in a minute.`
+            : `The cloud computer service did not respond (${error instanceof Error ? error.message : "network error"}). Try again in a minute.`,
           502,
           "boat_unreachable",
         );
@@ -156,11 +179,14 @@ async function boatFetch(path: string, init?: RequestInit) {
       code?: string;
       error?: { message?: string; code?: string };
     };
+    const raw = record.error?.message || record.message || "";
     throw new BoatError(
-      record.error?.message ||
-        (BOAT_RETRY_STATUS.has(response.status)
-          ? `The cloud computer service is briefly unavailable (${response.status}). Try again in a minute.`
-          : record.message || `Boat request failed (${response.status})`),
+      GENERIC_BOAT_MESSAGE.test(raw.trim()) || (!raw && response.status >= 500)
+        ? `The cloud computer service (Boat) had an internal error (${response.status}${raw ? `: ${raw.trim()}` : ""}). Try again in a minute.`
+        : raw ||
+          (BOAT_RETRY_STATUS.has(response.status)
+            ? `The cloud computer service is briefly unavailable (${response.status}). Try again in a minute.`
+            : `Boat request failed (${response.status})`),
       response.status,
       record.error?.code || record.code || "boat_error",
     );
@@ -178,11 +204,16 @@ function readSandbox(data: unknown): BoatSandbox {
   if (!id) {
     throw new BoatError("Boat did not return a sandbox id", 502, "missing_sandbox");
   }
+  const stop = nested.stop && typeof nested.stop === "object" ? (nested.stop as Record<string, unknown>) : null;
   return {
     id,
     name: typeof nested.name === "string" && nested.name.trim() ? nested.name : "LinkedIn computer",
     state: typeof nested.state === "string" ? nested.state : "unknown",
     error: typeof nested.error === "string" ? nested.error : null,
+    ...(typeof nested.updatedAt === "string" ? { updatedAt: nested.updatedAt } : {}),
+    ...(stop?.status === "pending" && typeof stop.requestedAt === "string"
+      ? { stopPendingSince: stop.requestedAt }
+      : {}),
   };
 }
 
@@ -310,9 +341,15 @@ const WAITING_STATES = new Set([
   "unknown",
 ]);
 
-export async function waitForBoat(sandboxId: string, attempts = 20) {
+export async function waitForBoat(sandboxId: string, attempts = 20, maxMs = 90_000) {
+  // Bounded by time as well as attempts: when Boat is slow each poll can take 10 s+.
+  const deadline = Date.now() + maxMs;
   let sandbox = await getBoatSandbox(sandboxId);
-  for (let attempt = 0; attempt < attempts && !isBoatRunning(sandbox.state); attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < attempts && !isBoatRunning(sandbox.state) && Date.now() < deadline;
+    attempt += 1
+  ) {
     // Permanent failures — stop waiting. Otherwise keep polling through resume-from-archive.
     if (!WAITING_STATES.has(sandbox.state)) {
       break;
@@ -335,6 +372,20 @@ async function boatLinks() {
   return collection;
 }
 
+/** A stop that should take a minute or two has been pending this long: Boat lost it. */
+const STUCK_STOP_MS = 10 * 60 * 1000;
+/**
+ * Stuck this long, the cloud computer is given up on and replaced (from the saved backup when
+ * there is one). Seen: a stop pending for 3 hours that neither a resume nor a force stop cleared.
+ */
+const STUCK_REPLACE_MS = 30 * 60 * 1000;
+
+function stuckStopping(sandbox: BoatSandbox, forMs = STUCK_STOP_MS) {
+  if (sandbox.state !== "archiving" && sandbox.state !== "stopping") return false;
+  const since = Date.parse(sandbox.stopPendingSince || sandbox.updatedAt || "");
+  return Number.isFinite(since) && Date.now() - since > forMs;
+}
+
 async function reviveBoat(sandboxId: string) {
   const sandbox = await getBoatSandbox(sandboxId);
   if (isBoatRunning(sandbox.state)) {
@@ -353,6 +404,13 @@ async function reviveBoat(sandboxId: string) {
     sandbox.state === "stopping"
   ) {
     await resumeBoatSandbox(sandboxId);
+  } else if (stuckStopping(sandbox)) {
+    // Boat accepted a stop long ago but never carried it out, so the computer sits in
+    // "archiving" for hours. Ask it to resume instead; if Boat refuses, we wait as before.
+    console.warn(`Boat computer ${sandboxId} stuck ${sandbox.state} since ${sandbox.stopPendingSince || sandbox.updatedAt}; asking it to resume.`);
+    await resumeBoatSandbox(sandboxId).catch((error) =>
+      console.warn(`Boat resume of stuck computer ${sandboxId} failed:`, error instanceof Error ? error.message : error),
+    );
   }
   return waitForBoat(sandboxId);
 }
@@ -505,8 +563,17 @@ async function waitForSnapshotReady(projectId: ObjectId, timeoutMs = 4 * 60 * 10
 export async function ensureCloudBoat(projectId: ObjectId) {
   const collection = await boatLinks();
   const saved = await collection.findOne({ projectId });
+  /** The old computer cannot come back (disk deleted, or stuck shutting down on Boat's side). */
   let diskGone = false;
-  if (saved?.cloudSandboxId) {
+  const current = saved?.cloudSandboxId
+    ? await getBoatSandbox(saved.cloudSandboxId).catch(() => null)
+    : null;
+  if (current && stuckStopping(current, STUCK_REPLACE_MS)) {
+    console.warn(
+      `Cloud computer ${current.id} for project ${projectId} stuck ${current.state} since ${current.stopPendingSince || current.updatedAt}; replacing it.`,
+    );
+    diskGone = true;
+  } else if (saved?.cloudSandboxId) {
     try {
       const sandbox = await reviveBoat(saved.cloudSandboxId);
       await collection.updateOne({ projectId }, { $set: { cloudActivityAt: new Date() } });
@@ -518,6 +585,16 @@ export async function ensureCloudBoat(projectId: ObjectId) {
   }
 
   let snapshot = await getProjectSnapshot(projectId).catch(() => null);
+  const savingSince = Date.parse(snapshot?.createdAt || "");
+  if (
+    snapshot?.status === "saving" &&
+    Number.isFinite(savingSince) &&
+    Date.now() - savingSince > STUCK_REPLACE_MS
+  ) {
+    // A backup still "saving" after half an hour is stuck too (seen with a stuck computer): don't wait on it.
+    console.warn(`Backup ${snapshot.name} stuck saving since ${snapshot.createdAt}; starting without it.`);
+    snapshot = null;
+  }
   if (snapshot?.status === "saving") snapshot = await waitForSnapshotReady(projectId);
   if (snapshot?.status !== "ready" && !saved?.cloudSandboxId && saved?.sandboxId) {
     // First cloud computer for an existing project: copy the shared computer (sender logins).
