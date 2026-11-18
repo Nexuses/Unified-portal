@@ -1,0 +1,58 @@
+# Check every change to master, and deploy master to the VPS when the check passes.
+# One-time setup and rollback: docs/deploy.md
+name: Check and deploy
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch: # "Run workflow" button: redeploy master by hand
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Type-check and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Type-check
+        run: npx tsc --noEmit
+      # Lint already has errors on master, so it is reported but does not block a deploy yet.
+      - name: Lint (report only)
+        continue-on-error: true
+        run: npx eslint .
+
+  deploy:
+    name: Deploy to VPS
+    needs: check
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A second merge waits for the deploy in progress instead of cancelling it.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Build and switch on the server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The key can only run "deploy <sha>" on the server (forced command).
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 "$DEPLOY_USER@$DEPLOY_HOST" "deploy $GITHUB_SHA"
