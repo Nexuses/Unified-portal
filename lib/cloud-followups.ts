@@ -312,7 +312,8 @@ async function writeFollowupWithAi(input: {
   const angle =
     input.stepNumber === input.totalSteps && input.totalSteps > 1
       ? FOLLOWUP_ANGLES[3]
-      : FOLLOWUP_ANGLES[Math.min(input.stepNumber - 1, 2)];
+      : // Rotate the first three angles so a long sequence doesn't repeat the same note.
+        FOLLOWUP_ANGLES[(input.stepNumber - 1) % 3];
   const system = [
     "You write short B2B follow-up emails. Each one is sent as a reply in the same thread as an earlier cold email that has had no response.",
     "Rules:",
@@ -416,14 +417,27 @@ async function previousTexts(projectId: ObjectId, campaignId: string, row: numbe
   return docs.map((doc) => doc.bodyText || "").filter(Boolean);
 }
 
-/** Preview follow-up `stepNumber` for a row: subject, html and where the text came from. */
-export async function previewCloudFollowup(projectId: ObjectId, campaignId: string, row: number, stepNumber: number) {
-  const doc = await getCloudCampaignDoc(projectId, campaignId);
-  if (!doc) throw new Error("Campaign not found");
+/**
+ * Preview follow-up `stepNumber` for a row: subject, html and where the text came from.
+ * `draft` is the unsaved follow-up setup on screen: it is previewed as-is and nothing is cached,
+ * so a draft can never change what a queued follow-up will send.
+ */
+export async function previewCloudFollowup(
+  projectId: ObjectId,
+  campaignId: string,
+  row: number,
+  stepNumber: number,
+  draft?: unknown,
+) {
+  const saved = await getCloudCampaignDoc(projectId, campaignId);
+  if (!saved) throw new Error("Campaign not found");
+  const headers = Array.isArray(saved.sheetHeaders) ? saved.sheetHeaders.map(String) : [];
+  const doc: CloudCampaignDoc =
+    draft && typeof draft === "object" ? { ...saved, followups: normalizeFollowupSettings(draft, headers) } : saved;
   const rows = Array.isArray(doc.sheetRows) ? doc.sheetRows : [];
   if (!rows[row]) throw new Error("That row doesn't exist");
   const collection = await followups();
-  const queued = await collection.findOne({ projectId, campaignId, row, step: stepNumber });
+  const queued = doc === saved ? await collection.findOne({ projectId, campaignId, row, step: stepNumber }) : null;
   let text = queued?.bodyText || "";
   let source = queued?.source;
   if (!text) {

@@ -1,5 +1,6 @@
 import { parseCsvRecords, uniquifyCsvHeaders } from "@/lib/csv";
 import {
+  followupColumnNumber,
   CLOUD_LEGACY_STYLE,
   CLOUD_SHEET_COLUMNS,
   type CloudEmailStyle,
@@ -173,7 +174,8 @@ function valueScore(profile: ColumnProfile, field: CloudField) {
  * is used once; fields with no convincing match stay unmapped (the user picks them).
  */
 export function detectColumnMap(headers: string[], rows: CloudSheetSample[]): CloudColumnMap {
-  const profiles = profileColumns(headers, rows);
+  // Follow-up columns ("Followup body 1") belong to the follow-up step, never to a field here.
+  const profiles = profileColumns(headers, rows).filter((p) => followupColumnNumber(p.header) === null);
   const candidates: { field: CloudField; header: string; score: number }[] = [];
   for (const field of CLOUD_FIELDS) {
     for (const profile of profiles) {
