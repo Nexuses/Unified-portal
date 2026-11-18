@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/mongodb";
-import { stopCloudBoat } from "@/lib/boat";
+import { isTransientBoatError, stopCloudBoat } from "@/lib/boat";
 import { cloudFollowupHooks, sendNextCloudRow, startCloudSending } from "@/lib/cloud-boat-runner";
 import { runCloudFollowupTick } from "@/lib/cloud-followups";
 import {
@@ -20,6 +20,12 @@ const TICK_MS = 20_000;
 const CLAIM_MS = 6 * 60 * 1000;
 /** Waits longer than this stop the computer until the next send (it resumes on its own). */
 const STOP_COMPUTER_AFTER_MS = 15 * 60 * 1000;
+/**
+ * A Boat blip (502/503/504, dropped connection) retries the same row this much later instead of
+ * pausing the campaign; after MAX in a row it pauses so a real outage still gets noticed.
+ */
+const TRANSIENT_RETRY_MS = 3 * 60 * 1000;
+const MAX_TRANSIENT_RETRIES = 5;
 
 type WorkerGlobal = typeof globalThis & {
   __nexusesCloudSendWorker?: { started: boolean; running: boolean; timer?: ReturnType<typeof setInterval> };
@@ -105,7 +111,12 @@ async function noteStopped(doc: CloudCampaignDoc, kind: CloudStopKind, message: 
 }
 
 /** Book the next send; stop the computer if the wait is long. */
-async function bookNext(doc: CloudCampaignDoc, earliest: Date, reason: string) {
+async function bookNext(
+  doc: CloudCampaignDoc,
+  earliest: Date,
+  reason: string,
+  extra: Partial<CloudCampaignDoc> = {},
+) {
   const schedule = scheduleOf(doc);
   const next = nextAllowedTime(earliest, schedule);
   if (!next) {
@@ -115,6 +126,7 @@ async function bookNext(doc: CloudCampaignDoc, earliest: Date, reason: string) {
     return;
   }
   await release(doc, {
+    ...extra,
     nextSendAt: next,
     ...(next.getTime() - Date.now() > 60_000
       ? { lastReport: `${reason} Next email ${friendly(next, schedule.timezone)}.` }
@@ -166,10 +178,26 @@ async function sendDueRows() {
       const gapMs = Math.max(0, Number(doc.gapMinutes) || 0) * 60_000;
       const jitter = gapMs * (Math.random() * 0.4 - 0.2);
       const wait = Math.max(20_000, gapMs + jitter);
-      await bookNext(doc, new Date(Date.now() + wait), "Waiting between emails.");
+      await bookNext(doc, new Date(Date.now() + wait), "Waiting between emails.", {
+        transientRetries: undefined,
+      });
     } catch (error) {
       const lastError = error instanceof Error ? error.message : "Sending stopped unexpectedly.";
-      await release(doc, { status: "paused", lastError });
+      const retries = (doc.transientRetries || 0) + 1;
+      if (isTransientBoatError(error) && retries <= MAX_TRANSIENT_RETRIES) {
+        // Don't pause for a Boat blip: try the same row again shortly. A row that may have gone
+        // out stays "in flight", so the retry checks Sent first and never sends it twice.
+        const row = (doc.nextRow || 0) + 1;
+        console.warn(`[cloud-send] ${doc.campaignId}: Boat blip on row ${row} (${lastError}); retry ${retries}/${MAX_TRANSIENT_RETRIES}`);
+        await bookNext(
+          doc,
+          new Date(Date.now() + TRANSIENT_RETRY_MS),
+          `The cloud computer service had a short outage on row ${row} (${lastError}). Trying again automatically (${retries} of ${MAX_TRANSIENT_RETRIES}).`,
+          { transientRetries: retries },
+        );
+        continue;
+      }
+      await release(doc, { status: "paused", lastError, transientRetries: undefined });
       await noteStopped(doc, SIGNED_OUT.test(lastError) ? "signed_out" : "error", lastError);
     }
   }
