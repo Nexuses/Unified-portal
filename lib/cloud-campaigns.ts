@@ -495,10 +495,28 @@ export async function createCloudProfile(
   };
 }
 
+/** The project's cloud computer VPN (NordVPN), as the campaign page shows it. */
+export type CloudVpnInfo = {
+  enabled: boolean;
+  country: string;
+  configured: boolean;
+  status: {
+    connected: boolean;
+    country?: string;
+    city?: string;
+    ip?: string;
+    checkedAt: string;
+    error?: string;
+  } | null;
+};
+
 export async function runCloudCampaignAction(
   id: string,
   action:
     | "start_computer"
+    | "vpn_status"
+    | "vpn_enable"
+    | "vpn_disable"
     | "verify_sender"
     | "verify_sheet"
     | "sign_in_sender"

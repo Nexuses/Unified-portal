@@ -34,7 +34,8 @@ import {
   patchCloudCampaignDoc,
   resolveChromeProfileEmail,
 } from "@/lib/cloud-campaigns-server";
-import { openBoatDesktop } from "@/lib/boat";
+import { cloudBoatStatus, isBoatRunning, openBoatDesktop } from "@/lib/boat";
+import { ensureCloudVpn, getCloudVpnSetting, setCloudVpnEnabled } from "@/lib/cloud-vpn";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
 async function maybeLearnSenderMemory(
@@ -104,10 +105,43 @@ export async function POST(request: NextRequest, { params }: Params) {
       return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
     }
 
+    if (action === "vpn_status") {
+      return NextResponse.json({ vpn: await getCloudVpnSetting(projectId) });
+    }
+
+    if (action === "vpn_enable") {
+      await setCloudVpnEnabled(projectId, true, session.email);
+      // Readying the computer installs, signs in and connects NordVPN (or explains why not).
+      const result = await startCloudComputer(projectId, id).catch(async (error) => {
+        return NextResponse.json(
+          {
+            error: error instanceof Error ? error.message : "Could not connect the VPN",
+            vpn: await getCloudVpnSetting(projectId),
+          },
+          { status: 502 },
+        );
+      });
+      if (result instanceof NextResponse) return result;
+      return NextResponse.json({
+        campaign: await getCloudCampaign(projectId, id),
+        desktopUrl: result.desktopUrl,
+        vpn: await getCloudVpnSetting(projectId),
+      });
+    }
+
+    if (action === "vpn_disable") {
+      await setCloudVpnEnabled(projectId, false, session.email);
+      // Disconnect now if the computer is on; otherwise the next start does it.
+      const { sandbox } = await cloudBoatStatus(projectId);
+      if (sandbox && isBoatRunning(sandbox.state)) await ensureCloudVpn(projectId, sandbox.id);
+      return NextResponse.json({ vpn: await getCloudVpnSetting(projectId) });
+    }
+
     if (action === "start_computer") {
       const result = await startCloudComputer(projectId, id);
       const campaign = await getCloudCampaign(projectId, id);
       return NextResponse.json({
+        vpn: await getCloudVpnSetting(projectId),
         campaign,
         desktopUrl: result.desktopUrl,
         sandboxId: result.sandbox.id,

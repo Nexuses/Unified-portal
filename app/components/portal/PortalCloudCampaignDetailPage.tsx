@@ -35,6 +35,7 @@ import {
   patchCloudCampaign,
   renameCloudProfile,
   runCloudCampaignAction,
+  type CloudVpnInfo,
   setCloudProfileSensitivityLabel,
   type CloudCampaign,
   type CloudChromeProfile,
@@ -120,6 +121,7 @@ export default function PortalCloudCampaignDetailPage({
   const [notice, setNotice] = useState("");
   const [followupSummary, setFollowupSummary] = useState<CloudFollowupSummary | null>(null);
   const [desktopUrl, setDesktopUrl] = useState("");
+  const [vpn, setVpn] = useState<CloudVpnInfo | null>(null);
   const [sheetUrl, setSheetUrl] = useState("");
   const [signatureHtml, setSignatureHtml] = useState("");
   const [signatureTab, setSignatureTab] = useState<"code" | "preview">("code");
@@ -171,6 +173,19 @@ export default function PortalCloudCampaignDetailPage({
       cancelled = true;
     };
   }, [refresh]);
+
+  // The project's VPN setting (read from the server only; does not start the computer).
+  useEffect(() => {
+    let cancelled = false;
+    void runCloudCampaignAction(campaignId, "vpn_status")
+      .then((data) => {
+        if (!cancelled && data.vpn) setVpn(data.vpn as CloudVpnInfo);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [campaignId]);
 
   const selectedProfileEmail = useMemo(() => {
     if (!campaign?.profileId) return "";
@@ -307,10 +322,27 @@ export default function PortalCloudCampaignDetailPage({
     }
   }
 
+  async function toggleVpn(enabled: boolean) {
+    await withBusy(enabled ? `Connecting VPN (${vpn?.country || "India"})…` : "Turning VPN off…", async () => {
+      try {
+        const data = await runCloudCampaignAction(campaignId, enabled ? "vpn_enable" : "vpn_disable");
+        if (data.vpn) setVpn(data.vpn as CloudVpnInfo);
+        if (data.campaign) setCampaign(data.campaign as CloudCampaign);
+        if (typeof data.desktopUrl === "string") setDesktopUrl(data.desktopUrl);
+        setNotice(enabled ? "VPN connected. The computer now browses and sends from India." : "VPN is off.");
+      } finally {
+        // The setting may have changed even when connecting failed; show what is true now.
+        const latest = await runCloudCampaignAction(campaignId, "vpn_status").catch(() => null);
+        if (latest?.vpn) setVpn(latest.vpn as CloudVpnInfo);
+      }
+    });
+  }
+
   async function startComputer() {
     await withBusy("Starting computer…", async () => {
       const data = await runCloudCampaignAction(campaignId, "start_computer");
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
+      if (data.vpn) setVpn(data.vpn as CloudVpnInfo);
       if (typeof data.desktopUrl === "string") {
         setDesktopUrl(data.desktopUrl);
         setDesktopLayout("floating");
@@ -1169,6 +1201,32 @@ export default function PortalCloudCampaignDetailPage({
                   >
                     {stepsDone.computer ? "Refresh computer" : "Start computer"}
                   </button>
+                  <div className="cloud-vpn-row">
+                    <label className="cloud-vpn-toggle">
+                      <input
+                        type="checkbox"
+                        checked={vpn?.enabled === true}
+                        disabled={Boolean(busy) || !vpn || (!vpn.configured && !vpn.enabled)}
+                        onChange={(event) => void toggleVpn(event.target.checked)}
+                      />
+                      <span>Connect through NordVPN ({vpn?.country || "India"})</span>
+                    </label>
+                    <p className="cloud-auth-hint">
+                      {!vpn
+                        ? "Checking VPN…"
+                        : !vpn.configured && !vpn.enabled
+                          ? "NordVPN is not set up on the server yet (an admin needs to add NORDVPN_TOKEN)."
+                          : !vpn.enabled
+                            ? "Off. Applies to every campaign in this project, since they share this computer."
+                            : vpn.status?.connected
+                              ? `Connected · ${[vpn.status.city, vpn.status.country].filter(Boolean).join(", ")}${
+                                  vpn.status.ip ? ` · ${vpn.status.ip}` : ""
+                                }. Nothing runs on the computer unless this connection is up.`
+                              : vpn.status?.error
+                                ? `Not connected: ${vpn.status.error}`
+                                : "On. Connects when the computer starts; nothing is sent until it does."}
+                    </p>
+                  </div>
                 </div>
               ) : null}
             </section>
