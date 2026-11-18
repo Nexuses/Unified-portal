@@ -599,7 +599,7 @@ export async function listProjectAircallCalls(
   options?: { limit?: number },
 ) {
   await ensureIndexes();
-  const limit = Math.min(200, Math.max(1, options?.limit ?? 200));
+  const limit = Math.min(1000, Math.max(1, options?.limit ?? 1000));
   const db = await getDb();
   const docs = await db
     .collection<AircallCallDoc>(CALLS_COLLECTION)
@@ -614,7 +614,7 @@ export async function syncAircallCallsForProject(
   projectId: ObjectId,
   options?: { perPage?: number },
 ) {
-  const target = Math.min(200, Math.max(1, options?.perPage ?? 200));
+  const target = Math.min(1000, Math.max(1, options?.perPage ?? 1000));
   // Aircall typically caps a single page around 50 — page until we hit target.
   const pageSize = Math.min(50, target);
   const calls: AircallApiCall[] = [];
@@ -635,7 +635,7 @@ export async function syncAircallCallsForProject(
       break;
     }
     page += 1;
-    if (page > 10) {
+    if (page > 20) {
       break;
     }
   }

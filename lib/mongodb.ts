@@ -36,19 +36,31 @@ if (process.env.NODE_ENV !== "production") {
   global._mongoClientPromise = clientPromise;
 }
 
+let reconnecting: Promise<MongoClient> | null = null;
+
 async function resetClient() {
+  if (reconnecting) return reconnecting;
+  const run = (async () => {
+    const previous = global._mongoClient;
+    global._mongoClient = undefined;
+    global._mongoClientPromise = undefined;
+    try {
+      await previous?.close();
+    } catch {
+      /* already closed */
+    }
+    clientPromise = connectClient();
+    if (process.env.NODE_ENV !== "production") {
+      global._mongoClientPromise = clientPromise;
+    }
+    return clientPromise;
+  })();
+  reconnecting = run;
   try {
-    await global._mongoClient?.close();
-  } catch {
-    /* ignore */
+    return await run;
+  } finally {
+    if (reconnecting === run) reconnecting = null;
   }
-  global._mongoClient = undefined;
-  global._mongoClientPromise = undefined;
-  clientPromise = connectClient();
-  if (process.env.NODE_ENV !== "production") {
-    global._mongoClientPromise = clientPromise;
-  }
-  return clientPromise;
 }
 
 function isStaleTopologyError(error: unknown) {

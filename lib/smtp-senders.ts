@@ -43,6 +43,19 @@ export type SenderCredentials = {
   trackingDomain?: string;
 };
 
+export type SenderConnection = {
+  status: "connected" | "disconnected";
+  checkedAt: string;
+  error?: string;
+};
+
+/** A mailbox can be chosen on a campaign only after a successful connection test. */
+export function isConnectedSender(sender: { connection?: { status?: string } | null }) {
+  return sender.connection?.status === "connected";
+}
+
+export const SENDER_PROBE_EMAIL = "neeraj@nexuses.online";
+
 export type SenderDoc = {
   _id: ObjectId;
   projectId: ObjectId;
@@ -60,6 +73,7 @@ export type SenderDoc = {
   /** Gmail only: max emails this sender may send per UTC day. */
   dailyLimit?: number;
   verification?: SenderAuthVerification;
+  connection?: SenderConnection;
   createdBy: ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
@@ -83,6 +97,7 @@ export type SmtpSender = {
   noInbox?: boolean;
   dailyLimit?: number;
   verification?: SenderAuthVerification;
+  connection?: SenderConnection;
   createdAt: string;
   updatedAt: string;
   trackingDomain?: string;
@@ -316,8 +331,7 @@ export function mapSender(doc: SenderDoc): SmtpSender {
         ? normalizeGmailDailyLimit(doc.dailyLimit ?? GMAIL_DAILY_LIMIT_DEFAULT)
         : undefined,
     verification: doc.verification,
-    trackingDomain: doc.trackingDomain,
-    pendingTrackingDomain: doc.pendingTrackingDomain,
+    connection: doc.connection,
     trackingVerification: doc.trackingVerification,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),

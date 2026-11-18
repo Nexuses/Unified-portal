@@ -784,6 +784,11 @@ export default function PortalSmtpPage() {
                       onClick={(event) => event.stopPropagation()}
                       onKeyDown={(event) => event.stopPropagation()}
                     >
+                      <span
+                        className={`vs-connection ${sender.connection?.status === "connected" ? "is-connected" : "is-disconnected"}`}
+                      >
+                        {sender.connection?.status === "connected" ? "Connected" : "Disconnected"}
+                      </span>
                       <button
                         type="button"
                         className="vs-edit"

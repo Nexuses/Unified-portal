@@ -32,7 +32,7 @@ export async function POST() {
 
     const result = await syncAircallCallsForProject(
       new ObjectId(session.projectId),
-      { perPage: 200 },
+      { perPage: 1000 },
     );
 
     return NextResponse.json({

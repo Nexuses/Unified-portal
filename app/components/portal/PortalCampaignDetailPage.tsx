@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { isGmailOrOutlookProvider, type SmtpSender } from "@/lib/smtp-senders";
+import { isConnectedSender, isGmailOrOutlookProvider, type SmtpSender } from "@/lib/smtp-senders";
 import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
 import SmtpSenderSelect from "@/app/components/portal/SmtpSenderSelect";
 import type { Contact, CrmList } from "@/lib/crm";
@@ -4800,15 +4800,16 @@ function senderDisplayName(sender: SmtpSender) {
   return match?.[1]?.trim() || sender.providerName;
 }
 
-/** Drip cannot use Gmail SMTP. 1-1 can use any sender. */
+/** Drip cannot use Gmail SMTP. Disconnected mailboxes stay off every campaign. */
 function sendersAllowedForKind(
   senders: SmtpSender[],
   kind: "drip" | "oneone" | undefined,
 ) {
+  const connected = senders.filter((sender) => isConnectedSender(sender));
   if (kind === "oneone") {
-    return senders;
+    return connected;
   }
-  return senders.filter((sender) => sender.provider !== "gmail");
+  return connected.filter((sender) => sender.provider !== "gmail");
 }
 
 function SettingsSavedCard({

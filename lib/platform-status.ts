@@ -100,6 +100,7 @@ const COMPONENTS: StatusComponent[] = [
   { id: "linkedin", group: "Marketing", name: "LinkedIn campaigns", path: "/api/linkedin/campaigns", checks: ["database", "boat"] },
   { id: "linkedin-session", group: "Marketing", name: "LinkedIn sign-in", path: "/api/linkedin/session", checks: ["database", "boat"] },
   { id: "edm", group: "Marketing", name: "EDM", path: "/api/edm", checks: ["s3"] },
+  { id: "events", group: "Marketing", name: "Event campaigns", path: "/portal/marketing/events", checks: ["database"] },
   { id: "unsubscribe", group: "Marketing", name: "Unsubscribe", path: "/api/unsubscribe", checks: ["database"] },
   { id: "pitch", group: "Marketing", name: "Pitch research", path: "/api/pitch-research", checks: ["xai", "openai"], need: "any" },
   { id: "inbox", group: "Inbox", name: "Master Inbox", path: "/api/inbox", checks: ["database"] },
