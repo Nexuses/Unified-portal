@@ -19,8 +19,14 @@ import {
   type CloudFollowupStatus,
   type CloudFollowupStep,
 } from "@/lib/cloud-campaigns";
-import { getCloudCampaignDoc, patchCloudCampaignDoc, type CloudCampaignDoc } from "@/lib/cloud-campaigns-server";
+import {
+  getCloudCampaignDoc,
+  markChromeProfileScriptState,
+  patchCloudCampaignDoc,
+  type CloudCampaignDoc,
+} from "@/lib/cloud-campaigns-server";
 import { cloudSendsFilter } from "@/lib/cloud-campaign-tracking";
+import { alertFollowups, resolveFollowupAlert } from "@/lib/cloud-alerts";
 import { isSendAllowed, nextAllowedTime, type CloudSchedule } from "@/lib/cloud-schedule";
 
 /**
@@ -437,9 +443,10 @@ export async function previewCloudFollowup(projectId: ObjectId, campaignId: stri
 /** Move one queued follow-up to now (the worker sends it within a minute). */
 export async function sendCloudFollowupNow(projectId: ObjectId, campaignId: string, row: number, step: number) {
   const collection = await followups();
+  // Waiting ones go now; failed ones are retried (a possibly-sent one checks the thread first).
   const result = await collection.updateOne(
-    { projectId, campaignId, row, step, status: "scheduled" },
-    { $set: { dueAt: new Date(), reason: "Sending now (requested).", updatedAt: new Date() } },
+    { projectId, campaignId, row, step, status: { $in: ["scheduled", "failed"] } },
+    { $set: { status: "scheduled", attempts: 0, dueAt: new Date(), reason: "Sending now (requested).", updatedAt: new Date() } },
   );
   if (!result.matchedCount) throw new Error("That follow-up isn't waiting to be sent.");
 }
@@ -593,6 +600,7 @@ async function processOne(item: CloudFollowupDoc, hooks: FollowupHooks, touched:
 
   if (result.ok && (result.status === "sent" || result.status === "already_sent")) {
     await settle(item, { status: "sent", sentAt: new Date(), reason: undefined, uncertain: false, bodyText: text, source });
+    await resolveFollowupAlert(item.projectId, item.campaignId).catch(() => undefined);
     await planCloudFollowups(item.projectId, item.campaignId);
     return;
   }
@@ -610,16 +618,31 @@ async function processOne(item: CloudFollowupDoc, hooks: FollowupHooks, touched:
   if (code === "LOGIN_REQUIRED" || code === "WRONG_ACCOUNT") {
     await postpone(item, new Date(now.getTime() + 2 * 60 * 60 * 1000), FAILURE_TEXT[code]);
     await patchCloudCampaignDoc(campaign.projectId, campaign.campaignId, { lastError: `Follow-ups waiting: ${FAILURE_TEXT[code]}` });
+    if (campaign.profileId) {
+      await markChromeProfileScriptState(campaign.projectId, campaign.profileId, null).catch(() => undefined);
+    }
+    await alertFollowups({
+      projectId: campaign.projectId,
+      campaignId: campaign.campaignId,
+      name: campaign.name,
+      signedOut: true,
+      message: FAILURE_TEXT[code],
+    }).catch(() => undefined);
     return;
   }
   if (TRANSIENT.has(code) && item.attempts < 3) {
     await postpone(item, new Date(now.getTime() + 15 * 60 * 1000), `Retrying (${code}).`);
     return;
   }
-  await settle(item, {
-    status: "failed",
-    reason: FAILURE_TEXT[code] || `${code}${result.message ? `: ${String(result.message).slice(0, 140)}` : ""}`,
-  });
+  const reason = FAILURE_TEXT[code] || `${code}${result.message ? `: ${String(result.message).slice(0, 140)}` : ""}`;
+  await settle(item, { status: "failed", reason });
+  await alertFollowups({
+    projectId: campaign.projectId,
+    campaignId: campaign.campaignId,
+    name: campaign.name,
+    signedOut: false,
+    message: `Follow-up ${item.step} to ${item.email} didn't go out: ${reason} Open the Report to send it again.`,
+  }).catch(() => undefined);
 }
 
 /** Plan follow-ups for recent campaigns, then send what's due. Called by the send worker. */

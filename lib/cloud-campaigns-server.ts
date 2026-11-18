@@ -59,6 +59,9 @@ export type CloudCampaignDoc = {
   schedule?: CloudSchedule;
   followups?: CloudFollowupSettings;
   emailStyle?: CloudEmailStyle;
+  /** Why the campaign stopped on its own (cleared when it runs again). */
+  stopKind?: "signed_out" | "error" | "schedule";
+  stoppedAt?: Date;
   /** Short claim so only one server works on this campaign's follow-ups at a time. */
   followupClaimUntil?: Date;
   /** Files attached to every email. */
@@ -195,6 +198,8 @@ function mapCampaign(doc: WithId<CloudCampaignDoc>): CloudCampaign {
     schedule: doc.schedule,
     followups: doc.followups,
     emailStyle: doc.emailStyle,
+    stopKind: doc.stopKind,
+    stoppedAt: doc.stoppedAt ? doc.stoppedAt.toISOString() : undefined,
     attachments: doc.attachments || [],
     nextSendAt: doc.nextSendAt ? doc.nextSendAt.toISOString() : undefined,
     sheetRowCount: doc.sheetRowCount,

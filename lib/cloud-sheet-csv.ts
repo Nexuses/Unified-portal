@@ -460,21 +460,13 @@ export function recordsToCloudList(records: string[][]): ParsedCloudCsv {
   if (rows.length === 0) throw new Error("The list has no people rows under the header");
   if (rows.length > CLOUD_CSV_MAX_ROWS) throw new Error(`The list has too many rows (max ${CLOUD_CSV_MAX_ROWS})`);
 
-  const emailHeader = detectColumnMap(headers, rows).email || "";
-  const normalizedHeaders = headers.map(normHeader);
-  const missingExpected = CLOUD_SHEET_COLUMNS.filter((column) => {
-    const key = normHeader(column);
-    return !normalizedHeaders.some(
-      (header) =>
-        header === key ||
-        header.includes(key) ||
-        key.includes(header) ||
-        (key === "industry" && (header.includes("dept") || header.includes("department"))) ||
-        (key === "pitch" && (header.includes("body") || header.includes("message"))) ||
-        (key === "firstname" && header.includes("first")) ||
-        (key === "lastname" && header.includes("last")),
-    );
-  });
+  // Recommended columns the mapper could not find (same matching as the column map, so
+  // "Job Title" counts as the job title and "Full name" as the first name).
+  const detected = detectColumnMap(headers, rows);
+  const emailHeader = detected.email || "";
+  const missingExpected = CLOUD_SHEET_COLUMNS.filter((column) => !detected[column]).map(
+    (column) => CLOUD_FIELD_LABELS[column],
+  );
 
   return {
     headers,
@@ -508,6 +500,52 @@ export function parseCloudCsvText(csvText: string): ParsedCloudCsv {
   }
   return recordsToCloudList(records);
 }
+
+/**
+ * Sample people list offered as a download on the People step. Headers match the
+ * auto-mapping aliases, so an unedited copy maps every column (and both follow-ups) on its own.
+ */
+export const CLOUD_SAMPLE_SHEET = {
+  fileName: "cloud-campaign-sample.csv",
+  headers: [
+    "Email",
+    "First Name",
+    "Last Name",
+    "Company",
+    "Job Title",
+    "Industry",
+    "Subject",
+    "Pitch",
+    "Follow-up 1",
+    "Follow-up 2",
+  ],
+  rows: [
+    [
+      "priya.sharma@example.com",
+      "Priya",
+      "Sharma",
+      "Acme Logistics",
+      "Head of Operations",
+      "Logistics",
+      "Quick idea for Acme Logistics",
+      "Hi Priya,\n\nI noticed Acme Logistics is expanding its warehouse network this year. We help operations teams cut **order-to-dispatch time by 30%** without new headcount.\n\nWould a 15-minute call next week be useful? You can pick a slot here: https://calendly.com/your-team/15min\n\nThanks,",
+      "Hi Priya, just bringing this back to the top of your inbox. Happy to share a 2-minute case study if that's easier than a call.",
+      "Hi Priya, I'll close the loop here. If timing is better next quarter, just reply and I'll reach out then.",
+    ],
+    [
+      "daniel.ortiz@example.com",
+      "Daniel",
+      "Ortiz",
+      "Brightline Health",
+      "VP Marketing",
+      "Healthcare",
+      "Brightline Health + patient outreach",
+      "Hi Daniel,\n\nCongrats on the new clinic launches. Teams like yours use us to **double appointment bookings from email** while staying fully compliant.\n\nOpen to a short chat this week?\n\nBest,",
+      "",
+      "",
+    ],
+  ],
+} as const;
 
 export type CloudResolvedRow = {
   email: string;

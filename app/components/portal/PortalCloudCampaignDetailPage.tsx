@@ -13,7 +13,8 @@ import type { CloudSchedule } from "@/lib/cloud-schedule";
 import CloudColumnMapPanel, {
   type CloudRowPreview,
 } from "@/app/components/portal/CloudColumnMapPanel";
-import { CLOUD_REQUIRED_FIELDS, type CloudColumnMap } from "@/lib/cloud-sheet-csv";
+import { CLOUD_REQUIRED_FIELDS, CLOUD_SAMPLE_SHEET, type CloudColumnMap } from "@/lib/cloud-sheet-csv";
+import { downloadCsv } from "@/lib/csv";
 import { useConfirmDialog } from "@/app/components/portal/useConfirmDialog";
 import CloudDesktopViewer, {
   type CloudDesktopLayout,
@@ -874,10 +875,20 @@ export default function PortalCloudCampaignDetailPage({
   }
 
   async function resumeSending() {
-    await withBusy("Resuming…", async () => {
+    if (!campaign) return;
+    const total = campaign.sheetRowCount || 0;
+    const row = Math.min(total || Infinity, (campaign.nextRow || 0)) + 1;
+    const left = Math.max(0, total - (campaign.nextRow || 0));
+    const sender = campaign.profileGmail || "the sender";
+    const ok = await confirm(
+      `Sending continues from row ${row}${total ? ` of ${total}` : ""} (${left} email${left === 1 ? "" : "s"} left). Before anything goes out, ${sender}'s sign-in is checked again, and a row that may already have gone out is looked up in Sent so it's never sent twice.`,
+      { title: "Resume sending?", confirmLabel: `Resume from row ${row}` },
+    );
+    if (!ok) return;
+    await withBusy("Checking the sender and resuming…", async () => {
       const data = await runCloudCampaignAction(campaignId, "resume");
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
-      setNotice("Resumed from the next people row.");
+      setNotice(`Resumed from row ${row}. Sending runs on the server — you can close this page.`);
     });
   }
 
@@ -1078,6 +1089,10 @@ export default function PortalCloudCampaignDetailPage({
           onStart={() => void startSending()}
           onStop={() => void stopSending()}
           onResume={() => void resumeSending()}
+          senderSignedIn={stepsDone.senderVerified}
+          senderEmail={campaign.profileGmail}
+          onOpenSender={() => void checkScriptSender(true)}
+          onCheckSender={() => void checkScriptSender(false)}
           onRestart={() => void restartSending()}
           onClearLog={() => void clearSendLog()}
           onSendTest={(to) => void sendTestToSelf(to)}
@@ -1577,6 +1592,29 @@ export default function PortalCloudCampaignDetailPage({
                     Hide unused columns so only people fields stay visible (email, subject, pitch,
                     etc.).
                   </p>
+                  <div className="cloud-sample-sheet">
+                    <div>
+                      <strong>Not sure which columns to add?</strong>
+                      <small>
+                        Needed: <b>Email</b>, <b>Subject</b> and <b>Pitch</b> (the email body). Optional: First
+                        Name, Last Name, Company, Job Title, Industry, and Follow-up 1, 2… for your own follow-up
+                        text. Use **double stars** for bold; links become clickable.
+                      </small>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-soft btn-sm"
+                      onClick={() =>
+                        downloadCsv(
+                          CLOUD_SAMPLE_SHEET.fileName,
+                          [...CLOUD_SAMPLE_SHEET.headers],
+                          CLOUD_SAMPLE_SHEET.rows.map((row) => [...row]),
+                        )
+                      }
+                    >
+                      Download sample sheet
+                    </button>
+                  </div>
                   <label className="crm-field">
                     <span>
                       Upload CSV or Excel

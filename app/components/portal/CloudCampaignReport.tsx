@@ -392,14 +392,14 @@ export default function CloudCampaignReport({
                             return (
                               <span key={item.step} className={`cloud-tag ${chip.tone}`} title={chip.title}>
                                 {chip.text}
-                                {item.status === "scheduled" ? (
+                                {item.status === "scheduled" || item.status === "failed" ? (
                                   <button
                                     type="button"
                                     className="cloud-report-fu-now"
-                                    title="Send this follow-up now"
+                                    title={item.status === "failed" ? "Try this follow-up again now" : "Send this follow-up now"}
                                     onClick={() => void sendNow(item.row, item.step)}
                                   >
-                                    Send now
+                                    {item.status === "failed" ? "Retry" : "Send now"}
                                   </button>
                                 ) : null}
                               </span>

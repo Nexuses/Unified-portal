@@ -62,6 +62,8 @@ type Snapshot = {
   checks: CheckResult[];
   tracks: Track[];
   days: Record<string, Record<string, StatusLevel>>;
+  /** Per day, per component: [checks that were up, checks run]. */
+  counts?: Record<string, Record<string, [number, number]>>;
   incidents: Incident[];
 };
 
@@ -373,9 +375,17 @@ async function probeBoat(): Promise<CheckResult> {
   const key = process.env.BOAT_API_KEY?.trim();
   if (!key) return result("boat", "down");
   const base = process.env.BOAT_API_BASE?.trim() || "https://boat.dev/api/v1";
-  const level = await httpLevel(`${base}/sandboxes`, {
-    headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
-  });
+  // One sandbox is enough to know the API answers; the full list is large and grows with
+  // every archived box. Boat has short gateway blips (502s), so try twice before calling it down.
+  const probe = () =>
+    httpLevel(`${base}/sandboxes?limit=1`, {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+    });
+  let level = await probe();
+  if (level !== "operational") {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    level = await probe();
+  }
   return result("boat", level);
 }
 
@@ -580,7 +590,11 @@ async function loadSnapshot(): Promise<Snapshot | null> {
     const db = await withTimeout(getDb(), PROBE_MS);
     const current = await db.collection("status_current").findOne({ _id: "current" as never });
     const dayDocs = await db
-      .collection<{ _id: string; worst?: Record<string, StatusLevel> }>("status_days")
+      .collection<{
+        _id: string;
+        worst?: Record<string, StatusLevel>;
+        counts?: Record<string, [number, number]>;
+      }>("status_days")
       .find({ _id: { $in: lastDays(DAY_COUNT) } })
       .toArray();
     const incidents = await db
@@ -591,8 +605,10 @@ async function loadSnapshot(): Promise<Snapshot | null> {
       .toArray();
     if (!current) return null;
     const days: Snapshot["days"] = {};
+    const counts: NonNullable<Snapshot["counts"]> = {};
     for (const doc of dayDocs) {
       days[String(doc._id)] = doc.worst || {};
+      if (doc.counts) counts[String(doc._id)] = doc.counts;
     }
     const snapshot: Snapshot = {
       version: Number(current.version) || 0,
@@ -600,6 +616,7 @@ async function loadSnapshot(): Promise<Snapshot | null> {
       checks: Array.isArray(current.checks) ? (current.checks as CheckResult[]) : [],
       tracks: Array.isArray(current.tracks) ? (current.tracks as Track[]) : [],
       days,
+      counts,
       incidents: incidents.map((incident) => ({
         id: String(incident.id || incident._id),
         title: incident.title,
@@ -634,7 +651,7 @@ async function saveSnapshot(snapshot: Snapshot) {
     );
     await db.collection("status_days").updateOne(
       { _id: today as never },
-      { $set: { worst: snapshot.days[today] || {} } },
+      { $set: { worst: snapshot.days[today] || {}, counts: snapshot.counts?.[today] || {} } },
       { upsert: true },
     );
     for (const incident of snapshot.incidents.slice(0, 20)) {
@@ -663,9 +680,12 @@ async function doRun() {
   const checks = await runChecks();
   const previousTracks = new Map(previous.tracks.map((track) => [track.id, track]));
   const tracks: Track[] = COMPONENTS.map((component) => {
-    const state = componentState(component, checks);
+    const raw = componentState(component, checks);
     const prior = previousTracks.get(component.id);
-    const failStreak = state === "operational" ? 0 : (prior?.failStreak || 0) + 1;
+    const failStreak = raw === "operational" ? 0 : (prior?.failStreak || 0) + 1;
+    // One failed check is shown as degraded; it only counts as down once it is confirmed.
+    const state: StatusLevel =
+      raw === "down" && failStreak < CONFIRM_FAILURES ? "degraded" : raw;
     return {
       id: component.id,
       state,
@@ -738,6 +758,15 @@ async function doRun() {
     worst[track.id] = worst[track.id] ? worse(worst[track.id], track.state) : track.state;
   }
   days[today] = worst;
+  const counts = { ...(previous.counts || {}) };
+  const todayCounts = { ...(counts[today] || {}) };
+  for (const track of tracks) {
+    const [up, total] = todayCounts[track.id] || [0, 0];
+    todayCounts[track.id] = [up + (track.state === "down" ? 0 : 1), total + 1];
+  }
+  counts[today] = todayCounts;
+  const keep = new Set(lastDays(DAY_COUNT));
+  for (const day of Object.keys(counts)) if (!keep.has(day)) delete counts[day];
 
   await saveSnapshot({
     version: SNAPSHOT_VERSION,
@@ -745,6 +774,7 @@ async function doRun() {
     checks,
     tracks,
     days,
+    counts,
     incidents: incidents.slice(0, 20),
   });
 }
@@ -770,11 +800,25 @@ export async function ensureFreshStatus() {
   await runPlatformStatusCheck();
 }
 
-function uptimeLabel(bars: Array<StatusLevel | "none">) {
-  const known = bars.filter((bar) => bar !== "none");
-  if (!known.length) return "100%";
-  const good = known.filter((bar) => bar === "operational").length;
-  const percent = (good / known.length) * 100;
+function uptimeLabel(
+  bars: Array<StatusLevel | "none">,
+  dayCounts: Array<[number, number] | undefined> = [],
+) {
+  // Prefer real check counts: a four-minute blip should not make a whole day read 0%.
+  let up = 0;
+  let total = 0;
+  bars.forEach((bar, index) => {
+    const counted = dayCounts[index];
+    if (counted && counted[1] > 0) {
+      up += counted[0];
+      total += counted[1];
+    } else if (bar !== "none") {
+      up += bar === "down" ? 0 : 1;
+      total += 1;
+    }
+  });
+  if (!total) return "100%";
+  const percent = (up / total) * 100;
   if (percent >= 99.95) return "100%";
   if (percent <= 0) return "0%";
   return `${percent.toFixed(2)}%`;
@@ -846,7 +890,10 @@ export async function getPlatformStatusPage() {
       ...component,
       state,
       detail: checks.length ? componentDetail(component, checks) : "Waiting for the first check.",
-      uptime: uptimeLabel(bars),
+      uptime: uptimeLabel(
+        bars,
+        days.map((day) => snapshot?.counts?.[day]?.[component.id]),
+      ),
       bars,
     };
   });

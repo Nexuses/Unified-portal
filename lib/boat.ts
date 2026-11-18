@@ -81,6 +81,9 @@ function sandboxDiskGone(error: unknown) {
   return text.includes("data was deleted") || text.includes("deleted after");
 }
 
+const BOAT_READ_RETRIES = 2;
+const BOAT_RETRY_STATUS = new Set([502, 503, 504]);
+
 async function boatFetch(path: string, init?: RequestInit) {
   const key = process.env.BOAT_API_KEY?.trim();
   if (!key) {
@@ -90,14 +93,39 @@ async function boatFetch(path: string, init?: RequestInit) {
       "not_configured",
     );
   }
-  const response = await fetch(`${BOAT_API_BASE}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+  const method = (init?.method || "GET").toUpperCase();
+  // Boat's gateway has short blips (502/503/504 or a dropped connection). Reads are safe to
+  // repeat, so retry them; writes (start, exec, prompt) are not retried so nothing runs twice.
+  const attempts = method === "GET" ? BOAT_READ_RETRIES + 1 : 1;
+  let response: Response | null = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      response = await fetch(`${BOAT_API_BASE}${path}`, {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          ...(init?.headers ?? {}),
+        },
+      });
+    } catch (error) {
+      if (attempt >= attempts) {
+        throw new BoatError(
+          `The cloud computer service did not respond (${error instanceof Error ? error.message : "network error"}). Try again in a minute.`,
+          502,
+          "boat_unreachable",
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+      continue;
+    }
+    if (!BOAT_RETRY_STATUS.has(response.status) || attempt >= attempts) break;
+    await response.text().catch(() => "");
+    await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+  }
+  if (!response) {
+    throw new BoatError("The cloud computer service did not respond. Try again in a minute.", 502, "boat_unreachable");
+  }
   const text = await response.text();
   let data: unknown = null;
   if (text) {
@@ -114,7 +142,10 @@ async function boatFetch(path: string, init?: RequestInit) {
       error?: { message?: string; code?: string };
     };
     throw new BoatError(
-      record.error?.message || record.message || `Boat request failed (${response.status})`,
+      record.error?.message ||
+        (BOAT_RETRY_STATUS.has(response.status)
+          ? `The cloud computer service is briefly unavailable (${response.status}). Try again in a minute.`
+          : record.message || `Boat request failed (${response.status})`),
       response.status,
       record.error?.code || record.code || "boat_error",
     );
