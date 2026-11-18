@@ -48,6 +48,8 @@ export type CloudCampaignDoc = {
   lockConversationId?: string | null;
   /** Row whose script send started but has no definitive outcome yet (duplicate guard). */
   inflightRow?: number;
+  /** Short Boat outages retried in a row by the send worker; reset by a good send or Resume. */
+  transientRetries?: number;
   /** Report tracking: open pixel (default on), click links (default off), unsubscribe footer (off). */
   trackOpens?: boolean;
   trackClicks?: boolean;

@@ -61,6 +61,21 @@ export class BoatError extends Error {
   }
 }
 
+const TRANSIENT_BOAT_MESSAGE =
+  /boat request failed \((502|503|504)\)|briefly unavailable|did not respond|fetch failed|econnreset|etimedout|socket hang up|bad gateway|gateway time-?out/i;
+
+/**
+ * A short Boat outage (gateway 502/503/504 or a dropped connection), not a real problem with
+ * the computer or the sender. Worth waiting a few minutes and trying again.
+ */
+export function isTransientBoatError(error: unknown) {
+  if (error instanceof BoatError) {
+    return [502, 503, 504].includes(error.status) || error.code === "boat_unreachable";
+  }
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return TRANSIENT_BOAT_MESSAGE.test(message);
+}
+
 export function boatConfigured() {
   return Boolean(process.env.BOAT_API_KEY?.trim());
 }

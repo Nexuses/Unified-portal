@@ -1,10 +1,12 @@
 import { ObjectId } from "mongodb";
 import {
   backupProjectSoon,
+  BoatError,
   boatConfigured,
   ensureCloudBoat,
   getCloudBoatMeta,
   isBoatRunning,
+  isTransientBoatError,
   openBoatDesktop,
   refreshBoatTask,
   runBoatCommand,
@@ -724,6 +726,12 @@ async function sendRowWithScript(input: {
     await setChromeProfileSensitivity(projectId, doc.profileId, { labels: result.labels as string[] });
   }
   const definitive = result.ok && (result.status === "sent" || result.status === "already_sent");
+  if (!definitive && result.code === "COMMAND_FAILED" && isTransientBoatError(String(result.message || ""))) {
+    // Boat itself blipped mid-row. Keep the row in flight (the retry checks Sent first) and let
+    // the send worker try again in a few minutes instead of pausing the campaign.
+    await patchCloudCampaignDoc(projectId, campaignId, { inflightRow: nextRow });
+    throw new BoatError(String(result.message || "Boat request failed (502)"), 502, "boat_unreachable");
+  }
   if (!definitive) {
     // sendPressed (or unknown because the command died) => possibly sent: keep in-flight.
     const maybeSent = possiblySent;
@@ -2239,6 +2247,7 @@ export async function startCloudSending(projectId: ObjectId, campaignId: string)
     stopKind: undefined,
     stoppedAt: undefined,
     computerReady: true,
+    transientRetries: undefined,
     // The server send worker picks it up at this time (now, or the next allowed slot).
     nextSendAt: firstSend,
     lastError: undefined,
