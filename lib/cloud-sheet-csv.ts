@@ -460,21 +460,13 @@ export function recordsToCloudList(records: string[][]): ParsedCloudCsv {
   if (rows.length === 0) throw new Error("The list has no people rows under the header");
   if (rows.length > CLOUD_CSV_MAX_ROWS) throw new Error(`The list has too many rows (max ${CLOUD_CSV_MAX_ROWS})`);
 
-  const emailHeader = detectColumnMap(headers, rows).email || "";
-  const normalizedHeaders = headers.map(normHeader);
-  const missingExpected = CLOUD_SHEET_COLUMNS.filter((column) => {
-    const key = normHeader(column);
-    return !normalizedHeaders.some(
-      (header) =>
-        header === key ||
-        header.includes(key) ||
-        key.includes(header) ||
-        (key === "industry" && (header.includes("dept") || header.includes("department"))) ||
-        (key === "pitch" && (header.includes("body") || header.includes("message"))) ||
-        (key === "firstname" && header.includes("first")) ||
-        (key === "lastname" && header.includes("last")),
-    );
-  });
+  // Recommended columns the mapper could not find (same matching as the column map, so
+  // "Job Title" counts as the job title and "Full name" as the first name).
+  const detected = detectColumnMap(headers, rows);
+  const emailHeader = detected.email || "";
+  const missingExpected = CLOUD_SHEET_COLUMNS.filter((column) => !detected[column]).map(
+    (column) => CLOUD_FIELD_LABELS[column],
+  );
 
   return {
     headers,
