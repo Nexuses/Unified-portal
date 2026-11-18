@@ -24,6 +24,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      # PageProps / LayoutProps are generated into .next/types; a fresh checkout has none.
+      - name: Generate Next route types
+        run: npx next typegen
       - name: Type-check
         run: npx tsc --noEmit
       # Lint already has errors on master, so it is reported but does not block a deploy yet.
