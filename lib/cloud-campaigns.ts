@@ -108,7 +108,45 @@ export type CloudFollowupSettings = {
   savedAt?: string;
 };
 
-export const CLOUD_FOLLOWUP_MAX_STEPS = 4;
+/** Practical ceiling so a typo can't book hundreds of emails per person; raise it if needed. */
+export const CLOUD_FOLLOWUP_MAX_STEPS = 20;
+
+const FOLLOWUP_WORD = "(?:follow ?up|followup|fu|f/u|fup)";
+const FOLLOWUP_TEXT_WORD = "(?:body|email|mail|message|msg|text|content|copy|pitch)";
+const FOLLOWUP_HEADER_RE = new RegExp(
+  `^(?:${FOLLOWUP_TEXT_WORD} )?${FOLLOWUP_WORD}(?: ${FOLLOWUP_TEXT_WORD}){0,2} ?(?:no |number )?(\\d{1,2})(?: ${FOLLOWUP_TEXT_WORD}){0,2}$`,
+);
+
+/**
+ * Follow-up number a sheet header holds, or null. Accepts "Follow-up 1", "Followup body 2",
+ * "follow_up_email_3", "FU4", "F/U #5 message", "Follow up 6 body", "Body follow-up 7".
+ */
+export function followupColumnNumber(header: string): number | null {
+  const key = String(header || "")
+    .toLowerCase()
+    .replace(/f\/u/g, "fu")
+    .replace(/[_\-:#().[\]]+/g, " ")
+    .replace(/([a-z])(\d)/g, "$1 $2")
+    .replace(/(\d)([a-z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\bfollow ?up\b/g, "followup")
+    .replace(/\bfu ?p\b/g, "fu");
+  const match = key.match(FOLLOWUP_HEADER_RE);
+  if (!match) return null;
+  const n = Number(match[1]);
+  return n >= 1 && n <= CLOUD_FOLLOWUP_MAX_STEPS ? n : null;
+}
+
+/** Follow-up columns in a sheet, in order: [{ n: 1, header: "Followup body 1" }, …]. */
+export function detectFollowupColumns(headers: string[]) {
+  const byNumber = new Map<number, string>();
+  for (const header of headers) {
+    const n = followupColumnNumber(header);
+    if (n && !byNumber.has(n)) byNumber.set(n, header);
+  }
+  return [...byNumber.entries()].sort((a, b) => a[0] - b[0]).map(([n, header]) => ({ n, header }));
+}
 
 export type CloudFollowupStatus = "scheduled" | "sending" | "sent" | "skipped" | "failed";
 

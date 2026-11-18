@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import {
   CLOUD_FOLLOWUP_MAX_STEPS,
+  detectFollowupColumns,
   type CloudCampaign,
   type CloudFollowupSettings,
   type CloudFollowupStep,
@@ -31,15 +32,22 @@ type Props = {
   busy: boolean;
   summary: CloudFollowupSummary | null;
   onSave: (settings: CloudFollowupSettings) => Promise<void>;
-  onPreview: (row: number, step: number) => Promise<CloudFollowupPreview>;
+  /** `draft` is sent when the steps on screen aren't saved yet, so they can be previewed first. */
+  onPreview: (row: number, step: number, draft?: CloudFollowupSettings) => Promise<CloudFollowupPreview>;
 };
 
 const DEFAULT_DELAYS = [3, 4, 7, 10];
 
-/** A sheet column that looks like it holds follow-up `n` ("Follow-up 1", "FU2", "Followup email 3"). */
+/** A sheet column that holds follow-up `n` ("Follow-up 1", "Followup body 2", "FU3"). */
 function guessColumn(headers: string[], n: number) {
-  const re = new RegExp(`^(follow\\s*-?\\s*up|fu|f/u)(\\s*(email|mail|message|text))?\\s*#?\\s*${n}$`, "i");
-  return headers.find((h) => re.test(h.trim())) || undefined;
+  return detectFollowupColumns(headers).find((c) => c.n === n)?.header;
+}
+
+/** One step per follow-up column in the sheet, keeping any delay/guidance already typed. */
+function stepsFromSheet(headers: string[], current: CloudFollowupStep[]): CloudFollowupStep[] {
+  return detectFollowupColumns(headers)
+    .slice(0, CLOUD_FOLLOWUP_MAX_STEPS)
+    .map((column, index) => ({ ...(current[index] || newStep(index, headers)), column: column.header }));
 }
 
 function newStep(index: number, headers: string[]): CloudFollowupStep {
@@ -60,9 +68,13 @@ function when(iso?: string) {
 export default function CloudFollowupsPanel({ campaign, headers, busy, summary, onSave, onPreview }: Props) {
   const saved = campaign.followups;
   const [enabled, setEnabled] = useState(saved ? saved.enabled : true);
-  const [steps, setSteps] = useState<CloudFollowupStep[]>(() =>
-    saved?.steps?.length ? saved.steps : [newStep(0, headers), newStep(1, headers)],
-  );
+  const sheetColumns = useMemo(() => detectFollowupColumns(headers), [headers]);
+  const [steps, setSteps] = useState<CloudFollowupStep[]>(() => {
+    if (saved?.steps?.length) return saved.steps;
+    const fromSheet = stepsFromSheet(headers, []);
+    return fromSheet.length ? fromSheet : [newStep(0, headers), newStep(1, headers)];
+  });
+  const unusedSheetColumns = sheetColumns.filter((c) => !steps.some((step) => step.column === c.header));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<CloudFollowupPreview | null>(null);
@@ -98,7 +110,7 @@ export default function CloudFollowupsPanel({ campaign, headers, busy, summary, 
     setLoadingPreview(true);
     setError("");
     try {
-      setPreview(await onPreview(row, step));
+      setPreview(await onPreview(row, step, dirty ? { enabled: true, steps } : undefined));
       setPreviewRow(row);
       setPreviewStep(step);
     } catch (err) {
@@ -131,6 +143,33 @@ export default function CloudFollowupsPanel({ campaign, headers, busy, summary, 
 
       {enabled ? (
         <>
+          {unusedSheetColumns.length ? (
+            <div className="cloud-fu-sheet-hint">
+              <span>
+                Your sheet has {sheetColumns.length} follow-up column{sheetColumns.length === 1 ? "" : "s"} (
+                {sheetColumns
+                  .slice(0, 3)
+                  .map((c) => `“${c.header}”`)
+                  .join(", ")}
+                {sheetColumns.length > 3 ? `, +${sheetColumns.length - 3} more` : ""}).
+              </span>
+              <button
+                type="button"
+                className="btn-soft btn-sm"
+                disabled={locked}
+                onClick={() => {
+                  setSteps((list) => stepsFromSheet(headers, list));
+                  setPreview(null);
+                }}
+              >
+                Use them as follow-ups 1–{Math.min(sheetColumns.length, CLOUD_FOLLOWUP_MAX_STEPS)}
+              </button>
+            </div>
+          ) : sheetColumns.length ? (
+            <p className="cloud-fu-sheet-note">
+              Text comes from your sheet&apos;s follow-up columns. Empty cells are written by AI.
+            </p>
+          ) : null}
           <ol className="cloud-fu-timeline">
             <li className="cloud-fu-origin">
               <span className="cloud-fu-dot" aria-hidden="true" />
@@ -219,7 +258,9 @@ export default function CloudFollowupsPanel({ campaign, headers, busy, summary, 
             >
               + Add follow-up
             </button>
-          ) : null}
+          ) : (
+            <p className="cloud-fu-max">That&apos;s the most follow-ups one campaign can have ({CLOUD_FOLLOWUP_MAX_STEPS}).</p>
+          )}
 
           <div className="cloud-fu-preview-bar">
             <span>Preview</span>
@@ -231,7 +272,7 @@ export default function CloudFollowupsPanel({ campaign, headers, busy, summary, 
                   role="tab"
                   aria-selected={previewStep === index + 1}
                   className={previewStep === index + 1 ? "is-active" : ""}
-                  disabled={loadingPreview || dirty}
+                  disabled={loadingPreview}
                   onClick={() => void showPreview(previewRow, index + 1)}
                 >
                   {index + 1}
@@ -241,8 +282,7 @@ export default function CloudFollowupsPanel({ campaign, headers, busy, summary, 
             <button
               type="button"
               className="btn-soft btn-sm"
-              disabled={loadingPreview || dirty || total === 0}
-              title={dirty ? "Save first to preview" : undefined}
+              disabled={loadingPreview || total === 0}
               onClick={() => void showPreview()}
             >
               {loadingPreview ? "Writing…" : preview ? "Refresh" : "Preview for a person"}
@@ -267,8 +307,6 @@ export default function CloudFollowupsPanel({ campaign, headers, busy, summary, 
                   Next →
                 </button>
               </span>
-            ) : dirty ? (
-              <small className="cloud-muted">Save to preview</small>
             ) : null}
           </div>
           {preview ? (
@@ -286,7 +324,13 @@ export default function CloudFollowupsPanel({ campaign, headers, busy, summary, 
                   <dt>Text</dt>
                   <dd>
                     {preview.source === "sheet" ? "From the sheet" : "Written by AI"}
-                    <small className="cloud-muted"> · this exact text is used when it sends</small>
+                    <small className="cloud-muted">
+                      {preview.source === "sheet"
+                        ? " · this exact text is used when it sends"
+                        : dirty
+                          ? " · a draft: save, then preview again to lock in the text that sends"
+                          : " · this exact text is used when it sends"}
+                    </small>
                   </dd>
                 </div>
               </dl>

@@ -624,8 +624,16 @@ export default function PortalCloudCampaignDetailPage({
     setOpenStep("review");
   }
 
-  async function previewFollowup(row: number, step: number): Promise<CloudFollowupPreview> {
-    const data = await runCloudCampaignAction(campaignId, "followup_preview", { row, step });
+  async function previewFollowup(
+    row: number,
+    step: number,
+    draft?: CloudFollowupSettings,
+  ): Promise<CloudFollowupPreview> {
+    const data = await runCloudCampaignAction(campaignId, "followup_preview", {
+      row,
+      step,
+      ...(draft ? { followups: draft } : {}),
+    });
     return data.preview as CloudFollowupPreview;
   }
 
