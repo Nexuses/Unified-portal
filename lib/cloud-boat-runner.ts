@@ -1,4 +1,5 @@
 import { ObjectId } from "mongodb";
+import { ensureCloudVpn } from "@/lib/cloud-vpn";
 import {
   backupProjectSoon,
   BoatError,
@@ -309,6 +310,8 @@ async function readySandbox(projectId: ObjectId, allowCampaignId?: string) {
       `The computer is ${sandbox.state}. Wait a few seconds, then try Start computer or Resume again.`,
     );
   }
+  // Project VPN (NordVPN India): connect before anything runs; throws rather than send unprotected.
+  await ensureCloudVpn(projectId, sandbox.id);
   return sandbox;
 }
 

@@ -11742,6 +11742,9 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-prompt-input:focus,
 .cloud-signature-input:focus{outline:none;border-color:#9ca3af;box-shadow:0 0 0 3px rgba(17,24,39,.06);}
 .cloud-muted{margin:0;font-size:12.5px;color:#6b7280;}
+.cloud-vpn-row{margin-top:14px;display:flex;flex-direction:column;gap:4px;}
+.cloud-vpn-toggle{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:#111827;cursor:pointer;}
+.cloud-vpn-toggle input{width:15px;height:15px;margin:0;}
 .cloud-samples{display:grid;gap:8px;}
 .cloud-sample{
   display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:10px;
