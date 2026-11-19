@@ -9,7 +9,7 @@ import CloudCampaignRunPanel from "@/app/components/portal/CloudCampaignRunPanel
 import CloudCampaignReport from "@/app/components/portal/CloudCampaignReport";
 import CloudSchedulePanel from "@/app/components/portal/CloudSchedulePanel";
 import CloudAttachmentsPanel from "@/app/components/portal/CloudAttachmentsPanel";
-import { describeSchedule, type CloudSchedule } from "@/lib/cloud-schedule";
+import { countSentToday, describeSchedule, type CloudSchedule } from "@/lib/cloud-schedule";
 import CloudColumnMapPanel, {
   type CloudRowPreview,
 } from "@/app/components/portal/CloudColumnMapPanel";
@@ -2094,6 +2094,8 @@ export default function PortalCloudCampaignDetailPage({
                     status={campaign.status}
                     busy={Boolean(busy)}
                     saved={campaign.scheduleReady === true}
+                    remaining={Math.max(0, (campaign.sheetRowCount ?? 0) - (campaign.nextRow || 0))}
+                    sentToday={countSentToday(campaign.sendLog || [], campaign.schedule?.timezone || "UTC")}
                     onSave={saveSchedule}
                   />
                 </div>

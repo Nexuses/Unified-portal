@@ -12563,9 +12563,13 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-run-live.is-error{background:#fef2f2;border-color:#fecaca;color:#991b1b;}
 .cloud-run-live.is-error strong{color:#991b1b;}
 .cloud-run-controls{
-  display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr);gap:12px;
+  display:grid;grid-template-columns:minmax(0,1fr);gap:12px;
   padding-top:14px;border-top:1px solid #f1f2f4;
 }
+/* Test send: "To myself", the address and "Send test" on one row (wraps on phones). */
+.cloud-run-test .cloud-run-inline{flex-wrap:nowrap;}
+.cloud-run-test .cloud-run-inline input[type="email"]{flex:1 1 260px;max-width:420px;min-width:0;}
+.cloud-run-test .cloud-run-inline .btn-sm{flex:0 0 auto;white-space:nowrap;}
 .cloud-run-control{display:flex;flex-direction:column;gap:6px;min-width:0;}
 .cloud-run-control > label{font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;}
 .cloud-run-inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
@@ -12604,6 +12608,8 @@ a.an-kanban-card-name.is-link:hover{
 @media (max-width:760px){
   .cloud-run{padding:16px;}
   .cloud-run-controls{grid-template-columns:1fr;}
+  .cloud-run-test .cloud-run-inline{flex-wrap:wrap;}
+  .cloud-run-test .cloud-run-inline input[type="email"]{flex:1 1 100%;max-width:none;}
   .cloud-run-stats-total{margin-left:0;}
 }
 
@@ -13009,3 +13015,13 @@ a.an-kanban-card-name.is-link:hover{
   .event-flow-nav button{width:auto;min-width:160px;}
   .event-flow-grid,.event-flow-split{grid-template-columns:1fr;}
 }
+
+/* Cloud campaign step 7: how the list spreads over days */
+.cloud-when-plan{display:flex;flex-direction:column;gap:8px;margin-top:4px;padding:12px;border-radius:10px;background:#f8f5ff;}
+.cloud-when-plan strong{font-size:13.5px;color:#4c1d95;}
+.cloud-when-plan ul{display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0;list-style:none;}
+.cloud-when-plan li{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:#fff;border:1px solid #e9e3fb;font-size:12.5px;color:#374151;}
+.cloud-when-plan li em{font-style:normal;font-weight:700;color:#6c3ce1;}
+.cloud-when-plan li.is-more{color:#6b7280;}
+.cloud-when-plan small{font-size:12px;color:#6b7280;}
+.cloud-run-stats li.is-done strong{color:#0b996e;}

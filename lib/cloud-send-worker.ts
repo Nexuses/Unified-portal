@@ -9,7 +9,15 @@ import {
   type CloudCampaignDoc,
 } from "@/lib/cloud-campaigns-server";
 import { alertCampaignStopped, type CloudStopKind } from "@/lib/cloud-alerts";
-import { isSendAllowed, nextAllowedTime, type CloudSchedule } from "@/lib/cloud-schedule";
+import {
+  countSentToday,
+  isSendAllowed,
+  pacedGapMinutes,
+  nextAllowedTime,
+  normalizeDailyLimit,
+  startOfNextLocalDay,
+  type CloudSchedule,
+} from "@/lib/cloud-schedule";
 
 /**
  * Sends cloud campaigns on the server, so they keep going with the page closed and can start
@@ -158,9 +166,34 @@ async function sendDueRows() {
     const doc = await claim("sending");
     if (!doc) return;
     const schedule = scheduleOf(doc);
+    const dailyLimit = normalizeDailyLimit(doc.schedule?.dailyLimit);
     if (!isSendAllowed(new Date(), schedule)) {
-      await bookNext(doc, new Date(), "Outside the sending days/hours.");
+      // A day that ended short of its target: say so. The people not reached just go next, on the
+      // next allowed day, inside the hours (nothing is skipped or sent late).
+      const sentToday = dailyLimit ? countSentToday(doc.sendLog || [], schedule.timezone) : 0;
+      const remainingRows = Math.max(0, (doc.sheetRowCount || 0) - (doc.nextRow || 0));
+      const short = dailyLimit && sentToday > 0 ? Math.min(dailyLimit - sentToday, remainingRows) : 0;
+      await bookNext(
+        doc,
+        new Date(),
+        short > 0
+          ? `Sending hours are over: ${sentToday} of ${dailyLimit} sent today. The next ${short} carry over to the next sending day.`
+          : "Outside the sending days/hours.",
+      );
       continue;
+    }
+    // Daily limit: once today's quota is out (in the campaign's timezone), the rest of the list
+    // waits for the next allowed day.
+    if (dailyLimit) {
+      const sentToday = countSentToday(doc.sendLog || [], schedule.timezone);
+      if (sentToday >= dailyLimit) {
+        await bookNext(
+          doc,
+          startOfNextLocalDay(new Date(), schedule.timezone),
+          `Daily limit reached: ${sentToday} sent today (max ${dailyLimit}/day).`,
+        );
+        continue;
+      }
     }
     try {
       const result = await sendNextCloudRow(doc.projectId, doc.campaignId);
@@ -174,13 +207,24 @@ async function sendDueRows() {
         }
         continue;
       }
-      // Human-like pacing: the gap ±20%, at least 20 s.
-      const gapMs = Math.max(0, Number(doc.gapMinutes) || 0) * 60_000;
+      // Human-like pacing: the gap ±20%, at least 20 s. With a daily target, a day that has
+      // fallen behind (an outage, a pause) closes the gap a little to catch up, never below
+      // half the gap or a minute, and never past the sending hours.
+      const paced = pacedGapMinutes({
+        gapMinutes: Number(doc.gapMinutes) || 0,
+        schedule: { ...schedule, dailyLimit },
+        sentToday: countSentToday(fresh.sendLog || [], schedule.timezone),
+        remainingRows: Math.max(0, (fresh.sheetRowCount || 0) - (fresh.nextRow || 0)),
+      });
+      const gapMs = paced.gap * 60_000;
       const jitter = gapMs * (Math.random() * 0.4 - 0.2);
       const wait = Math.max(20_000, gapMs + jitter);
-      await bookNext(doc, new Date(Date.now() + wait), "Waiting between emails.", {
-        transientRetries: undefined,
-      });
+      await bookNext(
+        doc,
+        new Date(Date.now() + wait),
+        paced.catchingUp ? "Catching up on today's target, slightly shorter gap." : "Waiting between emails.",
+        { transientRetries: undefined },
+      );
     } catch (error) {
       const lastError = error instanceof Error ? error.message : "Sending stopped unexpectedly.";
       const retries = (doc.transientRetries || 0) + 1;

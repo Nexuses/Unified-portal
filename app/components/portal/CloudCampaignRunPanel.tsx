@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { formatCloudCampaignStatus, type CloudCampaign } from "@/lib/cloud-campaigns";
+import { countSentToday, normalizeDailyLimit } from "@/lib/cloud-schedule";
 
 const LOG_PAGE_SIZE = 8;
 
@@ -81,6 +82,8 @@ export default function CloudCampaignRunPanel({
   const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
   const status = campaign.status;
   const sending = status === "sending";
+  const dailyLimit = normalizeDailyLimit(campaign.schedule?.dailyLimit);
+  const sentToday = dailyLimit ? countSentToday(campaign.sendLog || [], campaign.schedule?.timezone || "UTC") : 0;
 
   const logNewestFirst = [...campaign.sendLog].reverse();
   const pageCount = Math.max(1, Math.ceil(logNewestFirst.length / LOG_PAGE_SIZE));
@@ -185,6 +188,14 @@ export default function CloudCampaignRunPanel({
           <li>
             <strong>{remaining}</strong> to go
           </li>
+          {dailyLimit ? (
+            <li
+              className={sentToday >= dailyLimit ? "is-done" : ""}
+              title="Daily target. Anyone not reached today goes first on the next sending day."
+            >
+              Today <strong>{sentToday}</strong> / {dailyLimit}
+            </li>
+          ) : null}
           <li className="cloud-run-stats-total">
             {processed} / {total} rows
           </li>
