@@ -7,8 +7,11 @@ import {
 } from "@/lib/mxtoolbox";
 import { getDb } from "@/lib/mongodb";
 import {
+  isComposioSender,
   mapSender,
   normalizeGmailDailyLimit,
+  SENDER_PROBE_EMAIL,
+  type SenderConnection,
   type SenderDoc,
   type SmtpProviderId,
 } from "@/lib/smtp-senders";
@@ -21,6 +24,7 @@ import {
 } from "@/lib/campaign-tracking";
 import { runInApiCredit } from "@/lib/api-credits-server";
 import { createOutboundMessageId } from "@/lib/master-inbox-server";
+import { sendComposioMail } from "@/lib/composio-mail";
 
 function skippedInboxVerification(): SenderAuthVerification {
   return {
@@ -96,6 +100,83 @@ async function saveSenderVerification(
   return verification;
 }
 
+async function saveSenderConnection(
+  projectId: ObjectId,
+  senderId: ObjectId,
+  connection: SenderConnection,
+) {
+  const db = await getDb();
+  await db.collection<SenderDoc>("smtp_senders").updateOne(
+    { _id: senderId, projectId },
+    { $set: { connection, updatedAt: new Date() } },
+  );
+  return connection;
+}
+
+async function probeSenderConnection(sender: SenderDoc): Promise<SenderConnection> {
+  const checkedAt = new Date().toISOString();
+  try {
+    await withTimeout(
+      deliverWithSender(sender, {
+        to: [SENDER_PROBE_EMAIL],
+        subject: `Sender connected: ${sender.fromEmail}`,
+        html: `<p>${escapeHtml(sender.fromEmail)} can send mail from Nexgos Platform.</p>`,
+      }),
+      isComposioSender(sender) ? 45_000 : 20_000,
+    );
+    return { status: "connected", checkedAt };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The mailbox did not send.";
+    return {
+      status: "disconnected",
+      checkedAt,
+      error: message.replace(/\s+/g, " ").slice(0, 240),
+    };
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number) {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("The mailbox did not respond.")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+export async function refreshAllSenderConnections() {
+  const db = await getDb();
+  const senders = await db.collection<SenderDoc>("smtp_senders").find({}).toArray();
+  const results: Array<{ fromEmail: string; status: SenderConnection["status"]; error?: string }> = [];
+  for (const sender of senders) {
+    const connection = await probeSenderConnection(sender);
+    await saveSenderConnection(sender.projectId, sender._id, connection);
+    results.push({
+      fromEmail: sender.fromEmail,
+      status: connection.status,
+      error: connection.error,
+    });
+    console.info(
+      `[sender-check] ${results.length}/${senders.length} ${sender.fromEmail} ${connection.status}`,
+    );
+  }
+  return results;
+}
+
 export async function verifyProjectSender(
   projectId: ObjectId,
   senderId: ObjectId,
@@ -155,12 +236,14 @@ export async function createProjectSender(
     projectId,
   );
   await saveSenderVerification(projectId, doc._id, verification);
+  const connection = await probeSenderConnection({ ...doc, verification });
+  await saveSenderConnection(projectId, doc._id, connection);
 
   const saved = await db.collection<SenderDoc>("smtp_senders").findOne({
     _id: doc._id,
   });
 
-  return mapSender(saved ?? { ...doc, verification });
+  return mapSender(saved ?? { ...doc, verification, connection });
 }
 
 export async function updateProjectSender(
@@ -240,6 +323,25 @@ export async function updateProjectSender(
     projectId,
   );
   await saveSenderVerification(projectId, senderId, verification);
+
+  const credentialsChanged =
+    input.fromEmail !== undefined ||
+    input.smtpHost !== undefined ||
+    input.smtpUser !== undefined ||
+    input.smtpPort !== undefined ||
+    Boolean(input.smtpPassword) ||
+    Boolean(input.apiKey) ||
+    Boolean(input.cloudflareEmailApiToken);
+  if (credentialsChanged) {
+    const current = await db.collection<SenderDoc>("smtp_senders").findOne({
+      _id: senderId,
+      projectId,
+    });
+    if (current) {
+      const connection = await probeSenderConnection(current);
+      await saveSenderConnection(projectId, senderId, connection);
+    }
+  }
 
   const updated = await db.collection<SenderDoc>("smtp_senders").findOne({
     _id: senderId,
@@ -538,6 +640,16 @@ async function deliverWithSender(
   if (listUnsubscribeUrl) {
     extraHeaders["List-Unsubscribe"] = `<${listUnsubscribeUrl}>`;
     extraHeaders["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
+  }
+
+  if (isComposioSender(sender)) {
+    await sendComposioMail(sender, {
+      to: input.to,
+      cc,
+      subject,
+      html,
+    });
+    return { messageId };
   }
 
   if (sender.provider === "sendgrid" && sender.apiKey) {

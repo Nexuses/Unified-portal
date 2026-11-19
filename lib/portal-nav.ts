@@ -14,6 +14,7 @@ export type PortalPageId =
   | "cloud"
   | "linkedin"
   | "edm"
+  | "events"
   | "analytics"
   | "analytics-kanban"
   | "smtp"
@@ -67,6 +68,7 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   cloud: "/portal/marketing/cloud",
   linkedin: "/portal/marketing/linkedin",
   edm: "/portal/marketing/edm",
+  events: "/portal/marketing/events",
   analytics: "/portal/analytics",
   "analytics-kanban": "/portal/analytics/kanban",
   smtp: "/portal/smtp",
@@ -267,6 +269,7 @@ export const PORTAL_NAV: PortalNavItem[] = [
       { id: "automation", label: "Automation", href: PORTAL_ROUTES.automation },
       { id: "linkedin", label: "LinkedIn Automation", href: PORTAL_ROUTES.linkedin },
       { id: "edm", label: "EDM generation", href: PORTAL_ROUTES.edm },
+      { id: "events", label: "Event Campaign", href: PORTAL_ROUTES.events },
     ],
   },
   {
@@ -320,6 +323,7 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   "automation-history": "Automation history",
   linkedin: "LinkedIn Automation",
   edm: "EDM generation",
+  events: "Event Campaign",
   analytics: "Analytics",
   "analytics-kanban": "Pipeline",
   smtp: "Senders",
@@ -361,6 +365,7 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/marketing/cloud")) return "cloud";
   if (pathname.startsWith("/portal/marketing/linkedin")) return "linkedin";
   if (pathname.startsWith("/portal/marketing/edm")) return "edm";
+  if (pathname.startsWith("/portal/marketing/events")) return "events";
   if (pathname.startsWith("/portal/marketing/automation-history")) {
     return "automation-history";
   }

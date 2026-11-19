@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
       return session;
     }
 
-    const limit = Number(request.nextUrl.searchParams.get("limit") || "200");
+    const limit = Number(request.nextUrl.searchParams.get("limit") || "1000");
     const calls = await listProjectAircallCalls(
       new ObjectId(session.projectId),
       { limit },

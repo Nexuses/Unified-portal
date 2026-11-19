@@ -282,6 +282,7 @@ export default function PortalSmtpPage() {
   const [noInbox, setNoInbox] = useState(false);
   const [dailyLimit, setDailyLimit] = useState(GMAIL_DAILY_LIMIT_DEFAULT);
   const [saving, setSaving] = useState(false);
+  const [connectingComposio, setConnectingComposio] = useState(false);
   const [editingSenderId, setEditingSenderId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
@@ -349,7 +350,30 @@ export default function PortalSmtpPage() {
   }
 
   useEffect(() => {
-    void loadSenders();
+    const params = new URLSearchParams(window.location.search);
+    const flag = params.get("composio");
+    const email = params.get("email") ?? "";
+    const message = params.get("message") ?? "";
+    if (flag) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    void (async () => {
+      await loadSenders();
+      if (flag === "connected") {
+        setSuccess(
+          email
+            ? `${email} is connected through Composio.`
+            : "Mailbox connected through Composio.",
+        );
+        setError("");
+      } else if (flag === "saved") {
+        setError(
+          message || "The mailbox signed in, but the connection test did not send.",
+        );
+      } else if (flag === "error") {
+        setError(message || "Composio connection failed.");
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -447,6 +471,29 @@ export default function PortalSmtpPage() {
     }));
   }
 
+  async function connectComposio() {
+    if (!selectedProvider || (selectedProvider.id !== "gmail" && selectedProvider.id !== "outlook")) {
+      return;
+    }
+    setConnectingComposio(true);
+    setError("");
+    try {
+      const response = await fetch("/api/smtp/senders/composio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: selectedProvider.id }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.redirectUrl) {
+        throw new Error(data.error || "Could not start the Composio sign-in.");
+      }
+      window.location.href = data.redirectUrl;
+    } catch (err) {
+      setConnectingComposio(false);
+      setError(err instanceof Error ? err.message : "Could not start the Composio sign-in.");
+    }
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!selectedProvider) {
@@ -457,6 +504,10 @@ export default function PortalSmtpPage() {
     setError("");
     setSuccess("");
 
+    const editingSender = editingSenderId
+      ? senders.find((sender) => sender.id === editingSenderId)
+      : null;
+
     try {
       const isEditing = Boolean(editingSenderId);
       const response = await fetch(
@@ -464,12 +515,20 @@ export default function PortalSmtpPage() {
         {
           method: isEditing ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            provider: selectedProvider.id,
-            ...form,
-            noInbox,
-            ...(selectedProvider.id === "gmail" ? { dailyLimit } : {}),
-          }),
+          body: JSON.stringify(
+            isEditing && editingSender?.via === "composio"
+              ? {
+                  keepComposio: true,
+                  noInbox,
+                  ...(selectedProvider.id === "gmail" ? { dailyLimit } : {}),
+                }
+              : {
+                  provider: selectedProvider.id,
+                  ...form,
+                  noInbox,
+                  ...(selectedProvider.id === "gmail" ? { dailyLimit } : {}),
+                },
+          ),
         },
       );
 
@@ -708,6 +767,14 @@ export default function PortalSmtpPage() {
     }
   }
 
+  const editingSender = editingSenderId
+    ? senders.find((sender) => sender.id === editingSenderId)
+    : null;
+  const editingComposio = editingSender?.via === "composio";
+  const canConnectComposio =
+    !editingSenderId &&
+    (selectedProvider?.id === "gmail" || selectedProvider?.id === "outlook");
+
   return (
     <>
       <div className="crm-page-head">
@@ -715,7 +782,8 @@ export default function PortalSmtpPage() {
           <h2>SMTP &amp; Senders</h2>
           <p className="desc">
             Add verified senders through AWS SES, Gmail, Outlook, SendGrid,
-            Cloudflare, or Resend.
+            Cloudflare, or Resend. Gmail and Outlook can also sign in through
+            Composio.
           </p>
         </div>
         <div className="crm-actions">
@@ -767,6 +835,9 @@ export default function PortalSmtpPage() {
                         <div className="vs-email">
                           {formatSenderDisplayName(sender.fromEmail)}
                         </div>
+                        {sender.via === "composio" ? (
+                          <span className="vs-composio-tag">Composio</span>
+                        ) : null}
                       </div>
                       <span
                         className={`vs-verified ${verified ? "" : "pending"}`}
@@ -784,6 +855,11 @@ export default function PortalSmtpPage() {
                       onClick={(event) => event.stopPropagation()}
                       onKeyDown={(event) => event.stopPropagation()}
                     >
+                      <span
+                        className={`vs-connection ${sender.connection?.status === "connected" ? "is-connected" : "is-disconnected"}`}
+                      >
+                        {sender.connection?.status === "connected" ? "Connected" : "Disconnected"}
+                      </span>
                       <button
                         type="button"
                         className="vs-edit"
@@ -986,9 +1062,15 @@ export default function PortalSmtpPage() {
                   <p>
                     {modalStep === "provider"
                       ? "Select your email provider."
-                      : editingSenderId
-                        ? "Update your sender credentials."
-                        : "Enter your sender credentials."}
+                      : editingSenderId &&
+                          senders.find((sender) => sender.id === editingSenderId)?.via ===
+                            "composio"
+                        ? "This mailbox is signed in through Composio. SMTP is unchanged."
+                        : selectedProvider?.id === "gmail" || selectedProvider?.id === "outlook"
+                          ? "Enter SMTP credentials, or connect the mailbox through Composio."
+                          : editingSenderId
+                            ? "Update your sender credentials."
+                            : "Enter your sender credentials."}
                   </p>
                 </div>
               </div>
@@ -1023,7 +1105,34 @@ export default function PortalSmtpPage() {
               ) : selectedProvider ? (
                 <form id="smtp-sender-form" onSubmit={handleSubmit}>
                   <div className="smtp-form-stack">
-                    {selectedProvider.fields.map((field) => (
+                    {canConnectComposio ? (
+                      <div className="smtp-composio-connect">
+                        <button
+                          type="button"
+                          className="btn-dark"
+                          disabled={connectingComposio || saving}
+                          onClick={() => void connectComposio()}
+                        >
+                          {connectingComposio
+                            ? "Opening sign-in..."
+                            : selectedProvider?.id === "outlook"
+                              ? "Connect Outlook"
+                              : "Connect Gmail"}
+                        </button>
+                        <p>
+                          Opens Google or Microsoft sign-in through Composio.
+                          The SMTP fields below stay available.
+                        </p>
+                      </div>
+                    ) : null}
+                    {canConnectComposio ? <div className="smtp-composio-or">or use SMTP</div> : null}
+                    {editingComposio ? (
+                      <div className="crm-field">
+                        <label>Mailbox</label>
+                        <input value={editingSender?.fromEmail ?? ""} readOnly />
+                      </div>
+                    ) : (
+                      selectedProvider.fields.map((field) => (
                       <div className="crm-field" key={field.key}>
                         <label htmlFor={field.key}>{field.label}</label>
                         <input
@@ -1048,7 +1157,8 @@ export default function PortalSmtpPage() {
                           }
                         />
                       </div>
-                    ))}
+                    ))
+                    )}
                     {selectedProvider.id === "gmail" ? (
                       <div className="crm-field">
                         <label htmlFor="smtp-daily-limit">Daily limit</label>

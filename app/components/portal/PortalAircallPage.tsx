@@ -294,7 +294,7 @@ export default function PortalAircallPage() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/aircall/calls?limit=200", {
+      const response = await fetch("/api/aircall/calls?limit=1000", {
         cache: "no-store",
       });
       const data = await response.json().catch(() => null);

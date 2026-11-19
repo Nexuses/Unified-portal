@@ -26,4 +26,7 @@ export async function register() {
 
   const { startPlatformStatusWorker } = await import("./lib/platform-status-worker");
   startPlatformStatusWorker();
+
+  const { startEventInviteWorker } = await import("./lib/event-invite-worker");
+  startEventInviteWorker();
 }

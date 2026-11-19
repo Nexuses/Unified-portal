@@ -2,12 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { SmtpProviderBadge } from "@/app/components/portal/SmtpProviderBadge";
-import type { SmtpProviderId } from "@/lib/smtp-senders";
+import { isConnectedSender, type SmtpProviderId } from "@/lib/smtp-senders";
 
 export type SmtpSenderOption = {
   id: string;
   provider: string;
   fromEmail: string;
+  connection?: { status?: "connected" | "disconnected" };
 };
 
 export default function SmtpSenderSelect({
@@ -29,7 +30,8 @@ export default function SmtpSenderSelect({
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const selected = senders.find((sender) => sender.id === value) ?? senders[0] ?? null;
+  const options = senders.filter((sender) => isConnectedSender(sender));
+  const selected = options.find((sender) => sender.id === value) ?? options[0] ?? null;
 
   useEffect(() => {
     if (!open) {
@@ -69,6 +71,13 @@ export default function SmtpSenderSelect({
           <SmtpProviderBadge iconOnly providerId={selected?.provider as SmtpProviderId | undefined} />
           <span>{selected?.fromEmail || placeholder}</span>
         </span>
+        {selected ? (
+          <span
+            className={`vs-connection ${selected.connection?.status === "connected" ? "is-connected" : "is-disconnected"}`}
+          >
+            {selected.connection?.status === "connected" ? "Connected" : "Disconnected"}
+          </span>
+        ) : null}
         <svg
           className="drip-sender-select-caret"
           viewBox="0 0 24 24"
@@ -82,7 +91,7 @@ export default function SmtpSenderSelect({
       </button>
       {open ? (
         <div className="drip-sender-select-menu" role="listbox">
-          {senders.map((sender) => {
+          {options.map((sender) => {
             const isSelected = sender.id === value;
             return (
               <button

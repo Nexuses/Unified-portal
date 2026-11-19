@@ -43,6 +43,29 @@ export type SenderCredentials = {
   trackingDomain?: string;
 };
 
+export type SenderConnection = {
+  status: "connected" | "disconnected";
+  checkedAt: string;
+  error?: string;
+};
+
+/** Gmail or Outlook signed in through Composio. SMTP fields stay unused. */
+export type SenderComposio = {
+  connectedAccountId: string;
+  userId: string;
+};
+
+/** A mailbox can be chosen on a campaign only after a successful connection test. */
+export function isConnectedSender(sender: { connection?: { status?: string } | null }) {
+  return sender.connection?.status === "connected";
+}
+
+export function isComposioSender(sender: { composio?: { connectedAccountId?: string } | null }) {
+  return Boolean(sender.composio?.connectedAccountId);
+}
+
+export const SENDER_PROBE_EMAIL = "neeraj@nexuses.online";
+
 export type SenderDoc = {
   _id: ObjectId;
   projectId: ObjectId;
@@ -60,6 +83,8 @@ export type SenderDoc = {
   /** Gmail only: max emails this sender may send per UTC day. */
   dailyLimit?: number;
   verification?: SenderAuthVerification;
+  connection?: SenderConnection;
+  composio?: SenderComposio;
   createdBy: ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
@@ -83,6 +108,9 @@ export type SmtpSender = {
   noInbox?: boolean;
   dailyLimit?: number;
   verification?: SenderAuthVerification;
+  connection?: SenderConnection;
+  /** `composio` when this Gmail or Outlook mailbox signed in through Composio. */
+  via: "smtp" | "composio";
   createdAt: string;
   updatedAt: string;
   trackingDomain?: string;
@@ -316,6 +344,8 @@ export function mapSender(doc: SenderDoc): SmtpSender {
         ? normalizeGmailDailyLimit(doc.dailyLimit ?? GMAIL_DAILY_LIMIT_DEFAULT)
         : undefined,
     verification: doc.verification,
+    connection: doc.connection,
+    via: doc.composio?.connectedAccountId ? "composio" : "smtp",
     trackingDomain: doc.trackingDomain,
     pendingTrackingDomain: doc.pendingTrackingDomain,
     trackingVerification: doc.trackingVerification,

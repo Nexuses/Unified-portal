@@ -1951,11 +1951,14 @@ export default function PortalAutomationPage({
     const sendersData = sendersRes ? await sendersRes.json().catch(() => null) : null;
     const listsData = listsRes ? await listsRes.json().catch(() => null) : null;
     const senders = Array.isArray(sendersData)
-      ? sendersData.map((row: { id?: string; fromEmail?: string; fromName?: string; email?: string; name?: string }) => ({
-          id: String(row.id || ""),
-          fromEmail: String(row.fromEmail || row.email || ""),
-          fromName: String(row.fromName || row.name || ""),
-        })).filter((row: { id: string; fromEmail: string }) => row.id && row.fromEmail)
+      ? sendersData
+          .filter((row: { connection?: { status?: string } }) => row.connection?.status === "connected")
+          .map((row: { id?: string; fromEmail?: string; fromName?: string; email?: string; name?: string }) => ({
+            id: String(row.id || ""),
+            fromEmail: String(row.fromEmail || row.email || ""),
+            fromName: String(row.fromName || row.name || ""),
+          }))
+          .filter((row: { id: string; fromEmail: string }) => row.id && row.fromEmail)
       : [];
     const lists = Array.isArray(listsData)
       ? listsData.map((row: { id?: string; name?: string; contactCount?: number; contactsCount?: number }) => ({
