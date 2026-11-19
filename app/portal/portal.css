@@ -12834,3 +12834,12 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-signature-paste ol{margin:0;padding-left:20px;font-size:13px;line-height:1.6;color:#374151;}
 .cloud-signature-drop{min-height:110px;display:flex;align-items:center;justify-content:center;padding:16px;border:2px dashed #c4b5fd;border-radius:12px;background:#faf8ff;color:#6c3ce1;font-size:14px;font-weight:600;text-align:center;cursor:text;outline:none;}
 .cloud-signature-drop:focus{border-color:#6c3ce1;background:#f3eeff;}
+
+/* Cloud campaign step 1: what the computer is doing right now */
+.cloud-computer-state{display:flex;align-items:flex-start;gap:10px;margin:4px 0 12px;padding:12px 14px;border:1px solid #eef0f2;border-radius:12px;background:#fafafa;font-size:13px;line-height:1.5;color:#4b5563;}
+.cloud-computer-state strong{display:block;font-size:14px;color:#111827;}
+.cloud-computer-state i{flex:0 0 auto;width:10px;height:10px;margin-top:6px;border-radius:50%;background:#9ca3af;}
+.cloud-computer-state.is-running i{background:#0b996e;box-shadow:0 0 0 4px rgba(11,153,110,.15);}
+.cloud-computer-state.is-starting i,.cloud-computer-state.is-stopping i{background:#f59e0b;animation:cloud-computer-pulse 1.2s ease-in-out infinite;}
+.cloud-computer-state.is-stopped i,.cloud-computer-state.is-none i{background:#9ca3af;}
+@keyframes cloud-computer-pulse{0%,100%{opacity:1}50%{opacity:.35}}

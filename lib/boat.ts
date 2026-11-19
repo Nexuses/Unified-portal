@@ -92,6 +92,18 @@ export function isBoatRunning(state: string) {
   return RUNNING_STATES.has(state);
 }
 
+/** What the person needs to know about a computer, from Boat's many state names. */
+export type BoatPhase = "running" | "starting" | "stopping" | "stopped" | "none" | "unknown";
+
+export function boatPhase(state: string | null | undefined): BoatPhase {
+  if (!state) return "none";
+  if (RUNNING_STATES.has(state)) return "running";
+  if (STARTING_STATES.has(state) || state === "resuming" || state === "starting") return "starting";
+  if (state === "archiving" || state === "stopping") return "stopping";
+  if (state === "archived" || state === "stopped") return "stopped";
+  return "unknown";
+}
+
 /** Boat keeps a stopped disk for about 14 days, then resume fails while the id still exists. */
 function sandboxDiskGone(error: unknown) {
   if (!(error instanceof BoatError)) return false;

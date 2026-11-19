@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Pencil, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CloudSendersCard from "@/app/components/portal/CloudSendersCard";
 import CloudBoatUsageCard from "@/app/components/portal/CloudBoatUsageCard";
 import CloudCampaignRunPanel from "@/app/components/portal/CloudCampaignRunPanel";
@@ -51,6 +51,18 @@ import CloudFollowupsPanel, {
 } from "@/app/components/portal/CloudFollowupsPanel";
 import type { CloudEmailStyle, CloudFollowupSettings } from "@/lib/cloud-campaigns";
 import { useRouter } from "next/navigation";
+
+/** What the project's cloud computer is doing right now (from the light status check). */
+type ComputerPhase = "running" | "starting" | "stopping" | "stopped" | "none" | "unknown";
+
+const COMPUTER_PHASE_LABEL: Record<ComputerPhase, string> = {
+  running: "On",
+  starting: "Starting…",
+  stopping: "Shutting down…",
+  stopped: "Off",
+  none: "Not started",
+  unknown: "Checking…",
+};
 
 type StepId = "computer" | "sender" | "signature" | "sheet" | "style" | "followups" | "schedule" | "review";
 
@@ -164,6 +176,11 @@ export default function PortalCloudCampaignDetailPage({
   const [renameDraft, setRenameDraft] = useState("");
   const [confirm, confirmDialog] = useConfirmDialog();
   const [view, setView] = useState<"setup" | "report">("setup");
+  const [computerPhase, setComputerPhase] = useState<ComputerPhase | null>(null);
+  /** Shutting down for over 10 minutes: Boat has lost the stop, so let people try Start anyway. */
+  const [computerStuck, setComputerStuck] = useState(false);
+  /** The live view was opened by itself once already (don't keep reopening after a close). */
+  const liveAutoShown = useRef(false);
 
   function openDesktopForLogin(url?: string) {
     if (url) setDesktopUrl(url);
@@ -369,9 +386,80 @@ export default function PortalCloudCampaignDetailPage({
     });
   }
 
+  /** Light check: is the computer on? With `withDesktop`, also a fresh live-view link when it is. */
+  const loadComputerStatus = useCallback(
+    async (withDesktop: boolean) => {
+      const data = await runCloudCampaignAction(campaignId, "computer_status", { withDesktop });
+      const info = (data.computer || {}) as { phase?: ComputerPhase; stoppingSince?: string | null };
+      const phase = (info.phase || "unknown") as ComputerPhase;
+      setComputerPhase(phase);
+      const since = info.stoppingSince ? Date.parse(info.stoppingSince) : NaN;
+      setComputerStuck(phase === "stopping" && Number.isFinite(since) && Date.now() - since > 10 * 60 * 1000);
+      return { phase, desktopUrl: typeof data.desktopUrl === "string" ? data.desktopUrl : "" };
+    },
+    [campaignId],
+  );
+
+  // Keep the computer's state current: every 30 s, every 6 s while it is starting or stopping.
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      let delay = 30_000;
+      try {
+        const { phase } = await loadComputerStatus(false);
+        if (phase === "starting" || phase === "stopping") delay = 6_000;
+      } catch {
+        // Next tick tries again.
+      }
+      if (!stopped) timer = setTimeout(() => void tick(), delay);
+    };
+    void tick();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [loadComputerStatus]);
+
+  // Coming back to a campaign that is sending: show what the computer is doing without asking.
+  const campaignSending = campaign?.status === "sending";
+  useEffect(() => {
+    if (!campaignSending || liveAutoShown.current || desktopUrl) return;
+    liveAutoShown.current = true;
+    void loadComputerStatus(true)
+      .then(({ desktopUrl: url }) => {
+        if (!url) return;
+        setDesktopUrl((current) => current || url);
+        setDesktopLayout("minimized");
+      })
+      .catch(() => undefined);
+  }, [campaignSending, desktopUrl, loadComputerStatus]);
+
+  /** Open (or reconnect) the live view of a computer that is already on. No restart. */
+  async function showLiveView() {
+    await withBusy("Opening the live view…", async () => {
+      const { phase, desktopUrl: url } = await loadComputerStatus(true);
+      if (url) {
+        liveAutoShown.current = true;
+        setDesktopUrl(url);
+        setDesktopLayout("floating");
+        return;
+      }
+      setNotice(
+        phase === "running"
+          ? "The computer is on but Boat didn't return a live view link. Try again in a moment."
+          : phase === "stopping"
+            ? "The computer is shutting down, so there's nothing to show. Start it again once it's off."
+            : "The computer is off. Start it to see it.",
+      );
+    });
+  }
+
   async function startComputer() {
-    await withBusy("Starting computer…", async () => {
+    const wasRunning = computerPhase === "running";
+    await withBusy(wasRunning ? "Checking the computer, sender Chrome and VPN…" : "Starting computer…", async () => {
       const data = await runCloudCampaignAction(campaignId, "start_computer");
+      setComputerPhase("running");
       if (data.campaign) setCampaign(data.campaign as CloudCampaign);
       if (data.vpn) setVpn(data.vpn as CloudVpnInfo);
       if (typeof data.desktopUrl === "string") {
@@ -1150,6 +1238,8 @@ export default function PortalCloudCampaignDetailPage({
               : "Not set yet: check and save step 7 (When to send) before starting."
           }
           whenSaved={stepsDone.schedule}
+          liveAvailable={computerPhase === "running"}
+          onWatchLive={() => void showLiveView()}
           onEditWhen={() => {
             setView("setup");
             goToStep("schedule");
@@ -1204,7 +1294,13 @@ export default function PortalCloudCampaignDetailPage({
             <section className={`cloud-step${openStep === "computer" ? " open" : ""}${stepsDone.computer ? " done" : ""}`}>
               <button type="button" className="cloud-step-head" onClick={() => setOpenStep("computer")}>
                 <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.computer ? "✓" : "1"}</i>Computer</span>
-                <em>{stepsDone.computer ? "Ready" : "Start"}</em>
+                <em>
+                  {computerPhase
+                    ? `Computer ${COMPUTER_PHASE_LABEL[computerPhase].toLowerCase()}`
+                    : stepsDone.computer
+                      ? "Ready"
+                      : "Start"}
+                </em>
               </button>
               {openStep === "computer" ? (
                 <div className="cloud-step-body">
@@ -1214,14 +1310,63 @@ export default function PortalCloudCampaignDetailPage({
                     you pause/finish a campaign or after ~30 minutes idle. While a campaign is
                     sending, chat cannot drive the same computer.
                   </p>
-                  <button
-                    type="button"
-                    className="btn-dark"
-                    disabled={Boolean(busy)}
-                    onClick={() => void startComputer()}
-                  >
-                    {stepsDone.computer ? "Refresh computer" : "Start computer"}
-                  </button>
+                  <div className={`cloud-computer-state is-${computerPhase || "unknown"}`} role="status">
+                    <i aria-hidden="true" />
+                    <span>
+                      <strong>{computerPhase ? COMPUTER_PHASE_LABEL[computerPhase] : "Checking…"}</strong>
+                      {computerPhase === "running"
+                        ? campaign.status === "sending"
+                          ? "Sending this campaign now. Show the live view to watch it."
+                          : "The computer is on. Show the live view to see it."
+                        : computerPhase === "starting"
+                          ? "Boat is starting the computer. This usually takes under a minute."
+                          : computerPhase === "stopping"
+                            ? computerStuck
+                              ? "Boat has been switching it off for over 10 minutes, which usually means the stop got stuck on Boat's side. Try Start computer: it asks Boat to resume it, and after 30 minutes stuck it sets up a fresh computer."
+                              : "Boat is saving and switching it off. You can start it again once it's off."
+                            : computerPhase === "stopped"
+                              ? "Off to save cost (it switches off when idle). Start it here, or it starts on its own when sending."
+                              : computerPhase === "none"
+                                ? "No computer yet. Start it to create one for this project."
+                                : "Asking Boat what the computer is doing…"}
+                    </span>
+                  </div>
+                  <div className="cloud-step-actions">
+                    {computerPhase === "running" ? (
+                      <>
+                        <button
+                          type="button"
+                          className="btn-dark"
+                          disabled={Boolean(busy)}
+                          onClick={() => void showLiveView()}
+                        >
+                          {desktopUrl ? "Reconnect live view" : "Show live view"}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-soft"
+                          disabled={Boolean(busy)}
+                          title="Checks the computer, the VPN and the sender's Chrome again. Use it if something looks stuck."
+                          onClick={() => void startComputer()}
+                        >
+                          Re-check computer
+                        </button>
+                      </>
+                    ) : computerPhase === "starting" || (computerPhase === "stopping" && !computerStuck) ? (
+                      <button type="button" className="btn-dark" disabled>
+                        {computerPhase === "starting" ? "Starting…" : "Shutting down…"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn-dark"
+                        disabled={Boolean(busy)}
+                        onClick={() => void startComputer()}
+                      >
+                        Start computer
+                      </button>
+                    )}
+                  </div>
                   <div className="cloud-vpn-row">
                     <label className="cloud-vpn-toggle">
                       <input

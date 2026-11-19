@@ -18,6 +18,9 @@ type Props = {
   whenSummary: string;
   whenSaved: boolean;
   onEditWhen: () => void;
+  /** The computer is on: offer to watch it (opens or reconnects the live view). */
+  liveAvailable?: boolean;
+  onWatchLive?: () => void;
   onStart: () => void;
   onStop: () => void;
   onResume: () => void;
@@ -51,6 +54,8 @@ export default function CloudCampaignRunPanel({
   whenSummary,
   whenSaved,
   onEditWhen,
+  liveAvailable,
+  onWatchLive,
   onStart,
   onStop,
   onResume,
@@ -100,6 +105,11 @@ export default function CloudCampaignRunPanel({
           </div>
         </div>
         <div className="cloud-run-actions">
+          {liveAvailable && onWatchLive ? (
+            <button type="button" className="btn-soft" disabled={busy} onClick={onWatchLive}>
+              Watch live
+            </button>
+          ) : null}
           {sending ? (
             <button type="button" className="btn-soft" disabled={busy} onClick={onStop}>
               Stop

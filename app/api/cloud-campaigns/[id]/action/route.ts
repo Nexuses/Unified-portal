@@ -33,7 +33,7 @@ import {
   patchCloudCampaignDoc,
   resolveChromeProfileEmail,
 } from "@/lib/cloud-campaigns-server";
-import { cloudBoatStatus, isBoatRunning, openBoatDesktop } from "@/lib/boat";
+import { boatPhase, cloudBoatStatus, getCloudBoatMeta, isBoatRunning, openBoatDesktop } from "@/lib/boat";
 import { ensureCloudVpn, getCloudVpnSetting, setCloudVpnEnabled } from "@/lib/cloud-vpn";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 
@@ -57,6 +57,7 @@ export const maxDuration = 300;
 type Params = { params: Promise<{ id: string }> };
 
 type ActionBody = {
+  withDesktop?: boolean;
   action?: string;
   sheetUrl?: string;
   profileId?: string;
@@ -134,6 +135,28 @@ export async function POST(request: NextRequest, { params }: Params) {
       const { sandbox } = await cloudBoatStatus(projectId);
       if (sandbox && isBoatRunning(sandbox.state)) await ensureCloudVpn(projectId, sandbox.id);
       return NextResponse.json({ vpn: await getCloudVpnSetting(projectId) });
+    }
+
+    // Cheap: only asks Boat what the computer is doing (no start, no VPN), plus a live-view link
+    // when it is running and the page asked for one.
+    if (action === "computer_status") {
+      const [{ sandbox }, meta] = await Promise.all([cloudBoatStatus(projectId), getCloudBoatMeta(projectId)]);
+      // A saved computer Boat didn't answer for is "unknown", not "none".
+      const phase = sandbox ? boatPhase(sandbox.state) : meta.sandboxId ? "unknown" : "none";
+      const desktopUrl =
+        phase === "running" && sandbox && body?.withDesktop === true
+          ? await openBoatDesktop(sandbox.id).catch(() => "")
+          : "";
+      return NextResponse.json({
+        computer: {
+          phase,
+          state: sandbox?.state || null,
+          // When shutting down: since when, so the page can tell a stuck stop from a slow one.
+          stoppingSince: phase === "stopping" ? sandbox?.stopPendingSince || sandbox?.updatedAt || null : null,
+          checkedAt: new Date().toISOString(),
+        },
+        desktopUrl: desktopUrl || undefined,
+      });
     }
 
     if (action === "start_computer") {
