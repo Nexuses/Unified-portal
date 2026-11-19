@@ -12563,9 +12563,13 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-run-live.is-error{background:#fef2f2;border-color:#fecaca;color:#991b1b;}
 .cloud-run-live.is-error strong{color:#991b1b;}
 .cloud-run-controls{
-  display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr);gap:12px;
+  display:grid;grid-template-columns:minmax(0,1fr);gap:12px;
   padding-top:14px;border-top:1px solid #f1f2f4;
 }
+/* Test send: "To myself", the address and "Send test" on one row (wraps on phones). */
+.cloud-run-test .cloud-run-inline{flex-wrap:nowrap;}
+.cloud-run-test .cloud-run-inline input[type="email"]{flex:1 1 260px;max-width:420px;min-width:0;}
+.cloud-run-test .cloud-run-inline .btn-sm{flex:0 0 auto;white-space:nowrap;}
 .cloud-run-control{display:flex;flex-direction:column;gap:6px;min-width:0;}
 .cloud-run-control > label{font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;}
 .cloud-run-inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
@@ -12604,6 +12608,8 @@ a.an-kanban-card-name.is-link:hover{
 @media (max-width:760px){
   .cloud-run{padding:16px;}
   .cloud-run-controls{grid-template-columns:1fr;}
+  .cloud-run-test .cloud-run-inline{flex-wrap:wrap;}
+  .cloud-run-test .cloud-run-inline input[type="email"]{flex:1 1 100%;max-width:none;}
   .cloud-run-stats-total{margin-left:0;}
 }
 
