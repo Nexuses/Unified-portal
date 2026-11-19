@@ -53,14 +53,16 @@ function MetricColumn({
   value,
   pct,
   stacked = false,
+  title,
 }: {
   label: string;
   value: number | string;
   pct?: string;
   stacked?: boolean;
+  title?: string;
 }) {
   return (
-    <div className={`drip-metric${stacked ? " drip-metric-stacked" : ""}`}>
+    <div className={`drip-metric${stacked ? " drip-metric-stacked" : ""}`} title={title}>
       <div className="k">{label}</div>
       {stacked ? (
         <>
@@ -428,6 +430,16 @@ export default function PortalCloudCampaignPage() {
                 const total = campaign.sheetRowCount ?? 0;
                 const progress =
                   total > 0 ? `${campaign.nextRow} / ${total}` : campaign.status === "draft" ? "—" : "0";
+                const seq = campaign.sequence;
+                // Furthest stage anyone has reached: 1 = first email, 2 = follow-up 1, …
+                const reached = seq ? Math.max(0, ...seq.stages.filter((s) => s.sent > 0).map((s) => s.step + 1)) : 0;
+                const followingUp = campaign.status === "sent" && (seq?.queued || 0) > 0;
+                const stageText = seq
+                  ? seq.stages
+                      .filter((s) => s.step > 0 && (s.sent || s.queued))
+                      .map((s) => `FU${s.step} ${s.sent}${s.queued ? ` (+${s.queued})` : ""}`)
+                      .join(" · ")
+                  : "";
                 return (
                   <div className="drip-card" key={campaign.id}>
                     <input
@@ -442,12 +454,30 @@ export default function PortalCloudCampaignPage() {
                       <Link href={campaignPath(campaign.id)} className="drip-main">
                         <div className="drip-title">{campaign.name}</div>
                         <div className="drip-status">
-                          <span className={`dot ${campaign.status}`} />
+                          <span className={`dot ${followingUp ? "sending" : campaign.status}`} />
                           <strong>{status.label}</strong>
                           <span>{status.detail}</span>
                         </div>
                       </Link>
-                      <div className="drip-metrics">
+                      <div className="drip-metrics drip-metrics-oneone">
+                        <MetricColumn
+                          label="Sequence"
+                          value={seq && seq.totalSteps > 1 ? `${reached}/${seq.totalSteps}` : "—"}
+                          pct={
+                            seq && seq.totalSteps > 1
+                              ? stageText || (campaign.sentCount ? "No follow-ups yet" : "Not started")
+                              : "No follow-ups"
+                          }
+                          title={
+                            seq && seq.totalSteps > 1
+                              ? `First email: ${seq.stages[0]?.sent ?? 0} sent. ${seq.stages
+                                  .filter((s) => s.step > 0)
+                                  .map((s) => `Follow-up ${s.step}: ${s.sent} sent, ${s.queued} queued`)
+                                  .join(". ")}.`
+                              : undefined
+                          }
+                          stacked
+                        />
                         <MetricColumn label="Rows" value={total || "—"} />
                         <MetricColumn label="Sent" value={campaign.sentCount} />
                         <MetricColumn label="Failed" value={campaign.failedCount} />
@@ -465,6 +495,14 @@ export default function PortalCloudCampaignPage() {
                             </span>
                           ) : campaign.status === "paused" ? (
                             <span className="drip-row-status drip-row-status-paused">Paused</span>
+                          ) : followingUp ? (
+                            <span
+                              className="drip-row-status drip-row-status-running"
+                              aria-label="Follow-ups are still going out"
+                            >
+                              <RowStatusSpinner />
+                              Following up
+                            </span>
                           ) : campaign.status === "sent" ? (
                             <span className="drip-row-status drip-row-status-complete">Complete</span>
                           ) : campaign.status === "ready" ? (

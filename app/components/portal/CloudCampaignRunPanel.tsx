@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { formatCloudStatus, type CloudCampaign } from "@/lib/cloud-campaigns";
+import { formatCloudCampaignStatus, type CloudCampaign } from "@/lib/cloud-campaigns";
 
 const LOG_PAGE_SIZE = 8;
 
@@ -98,7 +98,7 @@ export default function CloudCampaignRunPanel({
         <div className="cloud-run-state">
           <span className={`cloud-run-dot is-${status}`} aria-hidden="true" />
           <div>
-            <strong>{formatCloudStatus(status)}</strong>
+            <strong>{formatCloudCampaignStatus(campaign).label}</strong>
             <small>
               {senderLabel} · {peopleLabel}
             </small>

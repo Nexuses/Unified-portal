@@ -20,6 +20,7 @@ import { deleteCloudAttachment } from "@/lib/cloud-attachments";
 import { isValidTimezone } from "@/lib/cloud-schedule";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
+import { withCloudSequence } from "@/lib/cloud-followups";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -28,10 +29,12 @@ export async function GET(_request: NextRequest, { params }: Params) {
     const session = await requirePortalSession();
     if (isSessionError(session)) return session;
     const { id } = await params;
-    const campaign = await getCloudCampaign(new ObjectId(session.projectId), id);
-    if (!campaign) {
+    const projectId = new ObjectId(session.projectId);
+    const found = await getCloudCampaign(projectId, id);
+    if (!found) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
+    const [campaign] = await withCloudSequence(projectId, [found]);
     return NextResponse.json({ campaign });
   } catch (error) {
     console.error("Get cloud campaign failed:", error);

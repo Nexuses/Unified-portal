@@ -31,7 +31,7 @@ import {
   fetchCloudCampaign,
   fetchCloudProfiles,
   formatCloudSenderProvider,
-  formatCloudStatus,
+  formatCloudCampaignStatus,
   patchCloudCampaign,
   renameCloudProfile,
   runCloudCampaignAction,
@@ -154,7 +154,18 @@ export default function PortalCloudCampaignDetailPage({
   campaignId: string;
 }) {
   const router = useRouter();
-  const [campaign, setCampaign] = useState<CloudCampaign | null>(null);
+  const [campaign, setCampaignState] = useState<CloudCampaign | null>(null);
+  // Action responses don't carry the follow-up summary; keep the last one until a fresh load.
+  const setCampaign = useCallback(
+    (next: CloudCampaign | null | ((prev: CloudCampaign | null) => CloudCampaign | null)) =>
+      setCampaignState((prev) => {
+        const value = typeof next === "function" ? next(prev) : next;
+        return value && !value.sequence && prev?.sequence && prev.id === value.id
+          ? { ...value, sequence: prev.sequence }
+          : value;
+      }),
+    [],
+  );
   const [profiles, setProfiles] = useState<CloudChromeProfile[]>([]);
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState("");
@@ -199,7 +210,7 @@ export default function PortalCloudCampaignDetailPage({
     setSheetUrl(nextCampaign.sheetUrl || "");
     setSignatureHtml(nextCampaign.signatureHtml || "");
     return nextCampaign;
-  }, [campaignId]);
+  }, [campaignId, setCampaign]);
 
   useEffect(() => {
     let cancelled = false;
@@ -328,6 +339,7 @@ export default function PortalCloudCampaignDetailPage({
     campaign?.profileGmail,
     campaignId,
     selectedProfileEmail,
+    setCampaign,
   ]);
 
   // Sending runs on the server (lib/cloud-send-worker). While a campaign is sending or
@@ -354,7 +366,7 @@ export default function PortalCloudCampaignDetailPage({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [campaign?.status, campaignId]);
+  }, [campaign?.status, campaignId, setCampaign]);
 
   async function withBusy<T>(label: string, work: () => Promise<T>) {
     setBusy(label);
@@ -1173,7 +1185,7 @@ export default function PortalCloudCampaignDetailPage({
             </Link>
             <h2>{campaign.name}</h2>
             <div className="drip-detail-badges">
-              <span className="drip-status-pill">{formatCloudStatus(campaign.status)}</span>
+              <span className="drip-status-pill">{formatCloudCampaignStatus(campaign).label}</span>
             </div>
           </div>
           <div className="drip-detail-actions">

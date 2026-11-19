@@ -15,6 +15,8 @@ import {
 } from "@/lib/cloud-sheet-csv";
 import {
   CLOUD_FOLLOWUP_MAX_STEPS,
+  type CloudCampaign,
+  type CloudSequenceSummary,
   type CloudFollowupSettings,
   type CloudFollowupStatus,
   type CloudFollowupStep,
@@ -269,6 +271,67 @@ export async function listCloudFollowups(projectId: ObjectId, campaignId: string
     .filter((doc) => doc.status === "scheduled")
     .reduce<Date | null>((min, doc) => (!min || doc.dueAt < min ? doc.dueAt : min), null);
   return { items, nextDueAt: nextDue?.toISOString() };
+}
+
+/**
+ * Sequence progress for several campaigns at once (list view): per follow-up step, how many
+ * went out and how many are still queued, plus when the next one is due.
+ */
+export async function cloudSequenceSummaries(
+  projectId: ObjectId,
+  campaigns: { id: string; sentCount: number; followupSteps: number }[],
+) {
+  const result = new Map<string, CloudSequenceSummary>();
+  if (!campaigns.length) return result;
+  const collection = await followups();
+  const rows = await collection
+    .aggregate<{ _id: { campaignId: string; step: number; status: CloudFollowupStatus }; count: number; nextDue: Date | null }>([
+      { $match: { projectId, campaignId: { $in: campaigns.map((c) => c.id) } } },
+      {
+        $group: {
+          _id: { campaignId: "$campaignId", step: "$step", status: "$status" },
+          count: { $sum: 1 },
+          nextDue: { $min: "$dueAt" },
+        },
+      },
+    ])
+    .toArray();
+  for (const campaign of campaigns) {
+    const mine = rows.filter((row) => row._id.campaignId === campaign.id);
+    const steps = Math.max(campaign.followupSteps, ...mine.map((row) => row._id.step), 0);
+    const stages = [{ step: 0, sent: campaign.sentCount, queued: 0 }];
+    for (let step = 1; step <= steps; step += 1) {
+      const at = mine.filter((row) => row._id.step === step);
+      const count = (status: CloudFollowupStatus) =>
+        at.filter((row) => row._id.status === status).reduce((sum, row) => sum + row.count, 0);
+      stages.push({ step, sent: count("sent"), queued: count("scheduled") + count("sending") });
+    }
+    const pending = mine.filter((row) => row._id.status === "scheduled" || row._id.status === "sending");
+    const nextDue = pending.reduce<Date | null>(
+      (min, row) => (row.nextDue && (!min || row.nextDue < min) ? row.nextDue : min),
+      null,
+    );
+    result.set(campaign.id, {
+      totalSteps: steps + 1,
+      stages,
+      queued: pending.reduce((sum, row) => sum + row.count, 0),
+      ...(nextDue ? { nextDueAt: nextDue.toISOString() } : {}),
+    });
+  }
+  return result;
+}
+
+/** Attach sequence progress to campaigns returned by the API. */
+export async function withCloudSequence<T extends CloudCampaign>(projectId: ObjectId, campaigns: T[]) {
+  const summaries = await cloudSequenceSummaries(
+    projectId,
+    campaigns.map((c) => ({
+      id: c.id,
+      sentCount: c.sentCount || 0,
+      followupSteps: c.followups?.enabled ? c.followups.steps.length : 0,
+    })),
+  ).catch(() => new Map<string, CloudSequenceSummary>());
+  return campaigns.map((c) => ({ ...c, sequence: summaries.get(c.id) }));
 }
 
 export async function deleteCloudFollowups(projectId: ObjectId, campaignId: string) {
