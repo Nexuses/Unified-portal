@@ -9,7 +9,14 @@ import {
   type CloudCampaignDoc,
 } from "@/lib/cloud-campaigns-server";
 import { alertCampaignStopped, type CloudStopKind } from "@/lib/cloud-alerts";
-import { isSendAllowed, nextAllowedTime, type CloudSchedule } from "@/lib/cloud-schedule";
+import {
+  countSentToday,
+  isSendAllowed,
+  nextAllowedTime,
+  normalizeDailyLimit,
+  startOfNextLocalDay,
+  type CloudSchedule,
+} from "@/lib/cloud-schedule";
 
 /**
  * Sends cloud campaigns on the server, so they keep going with the page closed and can start
@@ -161,6 +168,20 @@ async function sendDueRows() {
     if (!isSendAllowed(new Date(), schedule)) {
       await bookNext(doc, new Date(), "Outside the sending days/hours.");
       continue;
+    }
+    // Daily limit: once today's quota is out (in the campaign's timezone), the rest of the list
+    // waits for the next allowed day.
+    const dailyLimit = normalizeDailyLimit(doc.schedule?.dailyLimit);
+    if (dailyLimit) {
+      const sentToday = countSentToday(doc.sendLog || [], schedule.timezone);
+      if (sentToday >= dailyLimit) {
+        await bookNext(
+          doc,
+          startOfNextLocalDay(new Date(), schedule.timezone),
+          `Daily limit reached: ${sentToday} sent today (max ${dailyLimit}/day).`,
+        );
+        continue;
+      }
     }
     try {
       const result = await sendNextCloudRow(doc.projectId, doc.campaignId);

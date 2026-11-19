@@ -17,7 +17,7 @@ import { deleteCloudFollowups, normalizeFollowupSettings, planCloudFollowups } f
 import { normalizeEmailStyle } from "@/lib/cloud-campaigns";
 import { resolveCampaignAlerts } from "@/lib/cloud-alerts";
 import { deleteCloudAttachment } from "@/lib/cloud-attachments";
-import { isValidTimezone } from "@/lib/cloud-schedule";
+import { isValidTimezone, normalizeDailyLimit } from "@/lib/cloud-schedule";
 import { cleanSignatureHtml } from "@/lib/personalise-types";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
 import { withCloudSequence } from "@/lib/cloud-followups";
@@ -136,6 +136,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         windowStart: hhmm(raw.windowStart),
         windowEnd: hhmm(raw.windowEnd),
         startAt,
+        dailyLimit: normalizeDailyLimit(raw.dailyLimit),
       };
     }
     if (typeof body.signatureHtml === "string") {
