@@ -1268,7 +1268,6 @@ export default function PortalCloudCampaignDetailPage({
               campaignId={campaignId}
               canTest={stepsDone.senderVerified && stepsDone.sheet}
               busy={Boolean(busy) || campaign.status === "sending"}
-              onDesktopUrl={(url) => setDesktopUrl((current) => current || url)}
             />
           }
           liveAvailable={computerPhase === "running"}

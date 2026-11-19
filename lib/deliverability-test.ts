@@ -67,6 +67,7 @@ export type DeliverabilityReport = {
       label: string;
       zone: string;
       listed: boolean;
+      unchecked?: boolean;
       detail?: string;
     }>;
   };

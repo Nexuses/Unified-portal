@@ -2176,6 +2176,7 @@ type DeliverabilityReport = {
       label: string;
       zone: string;
       listed: boolean;
+      unchecked?: boolean;
       detail?: string;
     }>;
   };
@@ -3137,11 +3138,15 @@ function PreviewTestModal({
                                 <li
                                   key={check.zone}
                                   className={
-                                    check.listed ? "is-failure" : "is-success"
+                                    check.listed
+                                      ? "is-failure"
+                                      : check.unchecked
+                                        ? "is-neutral"
+                                        : "is-success"
                                   }
                                 >
                                   <span>
-                                    {check.listed ? "Listed" : "Clean"}
+                                    {check.listed ? "Listed" : check.unchecked ? "N/A" : "Clean"}
                                   </span>
                                   <div>
                                     <strong>{check.label}</strong>

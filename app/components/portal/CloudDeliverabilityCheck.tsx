@@ -18,7 +18,11 @@ type Report = {
     error?: string;
   };
   authentication: { spf: CheckItem; dkim: CheckItem; dmarc: CheckItem };
-  blacklists: { ip: string | null; listedCount: number; checks: { label: string; zone: string; listed: boolean; detail?: string }[] };
+  blacklists: {
+    ip: string | null;
+    listedCount: number;
+    checks: { label: string; zone: string; listed: boolean; unchecked?: boolean; detail?: string }[];
+  };
   content: CheckItem[];
   checkedAt: string;
 };
@@ -236,8 +240,8 @@ export default function CloudDeliverabilityCheck({ campaignId, canTest, busy, on
             ) : (
               <ul className="drip-deliverability-checks">
                 {report.blacklists.checks.map((check) => (
-                  <li key={check.zone} className={check.listed ? "is-failure" : "is-success"}>
-                    <span>{check.listed ? "Listed" : "Clean"}</span>
+                  <li key={check.zone} className={check.listed ? "is-failure" : check.unchecked ? "is-neutral" : "is-success"}>
+                    <span>{check.listed ? "Listed" : check.unchecked ? "N/A" : "Clean"}</span>
                     <div>
                       <strong>{check.label}</strong>
                       <em>{check.detail || check.zone}</em>
