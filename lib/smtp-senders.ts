@@ -49,9 +49,19 @@ export type SenderConnection = {
   error?: string;
 };
 
+/** Gmail or Outlook signed in through Composio. SMTP fields stay unused. */
+export type SenderComposio = {
+  connectedAccountId: string;
+  userId: string;
+};
+
 /** A mailbox can be chosen on a campaign only after a successful connection test. */
 export function isConnectedSender(sender: { connection?: { status?: string } | null }) {
   return sender.connection?.status === "connected";
+}
+
+export function isComposioSender(sender: { composio?: { connectedAccountId?: string } | null }) {
+  return Boolean(sender.composio?.connectedAccountId);
 }
 
 export const SENDER_PROBE_EMAIL = "neeraj@nexuses.online";
@@ -74,6 +84,7 @@ export type SenderDoc = {
   dailyLimit?: number;
   verification?: SenderAuthVerification;
   connection?: SenderConnection;
+  composio?: SenderComposio;
   createdBy: ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
@@ -98,6 +109,8 @@ export type SmtpSender = {
   dailyLimit?: number;
   verification?: SenderAuthVerification;
   connection?: SenderConnection;
+  /** `composio` when this Gmail or Outlook mailbox signed in through Composio. */
+  via: "smtp" | "composio";
   createdAt: string;
   updatedAt: string;
   trackingDomain?: string;
@@ -332,6 +345,9 @@ export function mapSender(doc: SenderDoc): SmtpSender {
         : undefined,
     verification: doc.verification,
     connection: doc.connection,
+    via: doc.composio?.connectedAccountId ? "composio" : "smtp",
+    trackingDomain: doc.trackingDomain,
+    pendingTrackingDomain: doc.pendingTrackingDomain,
     trackingVerification: doc.trackingVerification,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),

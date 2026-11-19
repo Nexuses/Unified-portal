@@ -3,6 +3,7 @@ import nodemailer from "nodemailer";
 import { getDb } from "@/lib/mongodb";
 import type { SenderDoc } from "@/lib/smtp-senders";
 import type { EventMailPayload } from "@/lib/event-smtp-transport";
+import { sendComposioMail } from "@/lib/composio-mail";
 
 function displayNameFromHeader(from: string, fallback: string) {
   const match = /^"?([^"<]*)"?\s*</.exec(from.trim());
@@ -95,6 +96,19 @@ export async function sendPortalEventMail(
     sender.fromEmail,
   );
 
+  if (sender.composio?.connectedAccountId) {
+    if (mail.attachments?.length) {
+      throw new Error(
+        "This Composio mailbox sends the email body. Calendar file attachments still need an SMTP sender.",
+      );
+    }
+    await sendComposioMail(sender, {
+      to: [mail.to],
+      subject: mail.subject,
+      html: mail.html || mail.text || "",
+    });
+    return;
+  }
   if (sender.provider === "resend") {
     await sendViaResend(sender, mail, from);
     return;

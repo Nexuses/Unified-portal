@@ -7,6 +7,7 @@ import {
 } from "@/lib/mxtoolbox";
 import { getDb } from "@/lib/mongodb";
 import {
+  isComposioSender,
   mapSender,
   normalizeGmailDailyLimit,
   SENDER_PROBE_EMAIL,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/campaign-tracking";
 import { runInApiCredit } from "@/lib/api-credits-server";
 import { createOutboundMessageId } from "@/lib/master-inbox-server";
+import { sendComposioMail } from "@/lib/composio-mail";
 
 function skippedInboxVerification(): SenderAuthVerification {
   return {
@@ -120,7 +122,7 @@ async function probeSenderConnection(sender: SenderDoc): Promise<SenderConnectio
         subject: `Sender connected: ${sender.fromEmail}`,
         html: `<p>${escapeHtml(sender.fromEmail)} can send mail from Nexgos Platform.</p>`,
       }),
-      20_000,
+      isComposioSender(sender) ? 45_000 : 20_000,
     );
     return { status: "connected", checkedAt };
   } catch (error) {
@@ -638,6 +640,16 @@ async function deliverWithSender(
   if (listUnsubscribeUrl) {
     extraHeaders["List-Unsubscribe"] = `<${listUnsubscribeUrl}>`;
     extraHeaders["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
+  }
+
+  if (isComposioSender(sender)) {
+    await sendComposioMail(sender, {
+      to: input.to,
+      cc,
+      subject,
+      html,
+    });
+    return { messageId };
   }
 
   if (sender.provider === "sendgrid" && sender.apiKey) {

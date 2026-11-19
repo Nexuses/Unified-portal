@@ -38,6 +38,19 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     const body = await request.json();
 
+    if (existing.via === "composio" && body.keepComposio === true) {
+      const sender = await updateProjectSender(projectId, senderId, {
+        noInbox: Boolean(body.noInbox),
+        ...(existing.provider === "gmail"
+          ? { dailyLimit: normalizeGmailDailyLimit(body.dailyLimit) }
+          : {}),
+      });
+      if (!sender) {
+        return NextResponse.json({ error: "Sender not found" }, { status: 404 });
+      }
+      return NextResponse.json(sender);
+    }
+
     // Allow Gmail daily-limit-only edits from the sender details panel.
     const bodyKeys = Object.keys(body ?? {});
     if (
