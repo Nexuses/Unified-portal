@@ -1,5 +1,6 @@
 import { runBoatCommand, shellQuote } from "@/lib/boat";
 import { SENDER_SCRIPT_SOURCE, SENDER_SCRIPT_VERSION } from "@/lib/cloud-sender/vm-script";
+import { SENDER_PROXY_MARKER } from "@/lib/cloud-vpn";
 
 /**
  * Script-first Gmail sender on the Boat email VM.
@@ -15,6 +16,7 @@ export const PLAYWRIGHT_CORE_VERSION = "1.64.1";
 const TOOLKIT_DIR = "$HOME/nexuses-sender";
 const CHROME_ROOT = "$HOME/.nexuses-chrome";
 const BASE_PORT = 9301;
+
 
 export type SenderCommand =
   | "version"
@@ -92,6 +94,15 @@ export async function ensureSenderToolkit(sandboxId: string) {
  * Make sure the sender's dedicated Chrome is running with its CDP port open.
  * Starts a separate Chrome instance (own user-data-dir); never kills any other Chrome.
  */
+/**
+ * Shell function `chpids`: PIDs of the Chrome processes using this profile folder. Looks only at
+ * processes named "chrome" and checks their arguments, because a `pgrep -f` on the folder name
+ * would also match the shell command running it (which contains the same text) and kill itself.
+ */
+function chromePidsShell(dir: string) {
+  return `chpids() { for p in $(pgrep -x chrome); do tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null | grep -qF -- "--user-data-dir=${dir} " && echo $p; done; };`;
+}
+
 export async function ensureSenderChrome(
   sandboxId: string,
   directoryName: string,
@@ -102,16 +113,23 @@ export async function ensureSenderChrome(
   const dir = `${CHROME_ROOT}/${slug}`;
   const log = `/tmp/nexuses-chrome-${slug}.log`;
   const probe = `curl -s --max-time 2 http://127.0.0.1:${port}/json/version >/dev/null`;
+  // VPN (lib/cloud-vpn): when the marker file names a proxy, this sender's Chrome (and only it)
+  // goes through the NordVPN relay. A Chrome started with the other setting is restarted once.
   const command = [
-    `if ${probe}; then echo chrome-running; exit 0; fi;`,
+    chromePidsShell(dir),
+    `WANT=""; [ -s ${SENDER_PROXY_MARKER} ] && WANT=$(head -c 200 ${SENDER_PROXY_MARKER});`,
+    `HAS=$(for p in $(chpids); do tr '\\0' '\\n' < /proc/$p/cmdline 2>/dev/null | grep -- '^--proxy-server='; done | head -1 | cut -d= -f2-);`,
+    `if ${probe}; then if [ "$WANT" = "$HAS" ]; then echo chrome-running; exit 0; fi;`,
+    `  kill $(chpids) 2>/dev/null; for i in 1 2 3 4 5 6; do [ -z "$(chpids)" ] && break; sleep 1; done; fi;`,
+    `PROXY_FLAGS=""; if [ -n "$WANT" ]; then PROXY_FLAGS="--proxy-server=$WANT --proxy-bypass-list=<-loopback> --force-webrtc-ip-handling-policy=disable_non_proxied_udp"; fi;`,
     `mkdir -p ${dir};`,
     // A computer that resumed on another machine (or was rebuilt from backup) keeps Chrome's
     // profile lock from the old host, and Chrome then refuses to start. Clear it, but only
     // when no Chrome here is using this profile.
-    `if ! pgrep -f -- "--user-data-dir=${dir}" >/dev/null 2>&1; then rm -f ${dir}/SingletonLock ${dir}/SingletonSocket ${dir}/SingletonCookie; fi;`,
+    `if [ -z "$(chpids)" ]; then rm -f ${dir}/SingletonLock ${dir}/SingletonSocket ${dir}/SingletonCookie; fi;`,
     `DISPLAY=:0 nohup google-chrome-stable --user-data-dir=${dir} --remote-debugging-port=${port}`,
     `  --remote-debugging-address=127.0.0.1 --no-first-run --no-default-browser-check`,
-    `  --disable-dev-shm-usage --password-store=basic --window-size=1400,950 ${shellQuote(openUrl)}`,
+    `  --disable-dev-shm-usage --password-store=basic --window-size=1400,950 $PROXY_FLAGS ${shellQuote(openUrl)}`,
     `  >${log} 2>&1 < /dev/null &`,
     `for i in $(seq 1 30); do sleep 1; if ${probe}; then echo chrome-started; exit 0; fi; done;`,
     `echo cdp-unreachable; tail -5 ${log}; exit 1`,
@@ -234,7 +252,7 @@ export async function resetSenderChromeDir(sandboxId: string, directoryName: str
   const dir = `${CHROME_ROOT}/${senderSlug(directoryName)}`;
   const result = await runBoatCommand(
     sandboxId,
-    `pkill -f -- "--user-data-dir=${dir}" 2>/dev/null; sleep 1; rm -rf ${dir} && echo reset-ok`,
+    `${chromePidsShell(dir)} kill $(chpids) 2>/dev/null; sleep 1; rm -rf ${dir} && echo reset-ok`,
     30,
   );
   return /reset-ok/.test(result.stdout);
