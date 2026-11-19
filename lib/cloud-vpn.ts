@@ -1,6 +1,7 @@
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import { isTransientBoatError, runBoatCommand, shellQuote } from "@/lib/boat";
+import { CLOUD_VPN_LOCATIONS } from "@/lib/cloud-campaigns";
 
 /**
  * India address for the cloud campaign senders, through NordVPN.
@@ -19,8 +20,18 @@ import { isTransientBoatError, runBoatCommand, shellQuote } from "@/lib/boat";
  * from NORDVPN_TOKEN (an access token), which also fetches the proxy credentials.
  */
 
-/** NordVPN's name for the country (its server list and IP lookup use it). */
+/** Default country when a project turns the VPN on without choosing (NordVPN's country name). */
 export const CLOUD_VPN_COUNTRY = process.env.NORDVPN_COUNTRY?.trim() || "India";
+
+/** A country this project may use, or null when it isn't one we offer. */
+export function cloudVpnCountry(value: unknown) {
+  const wanted = String(value ?? "").trim().toLowerCase();
+  if (!wanted) return null;
+  const match = CLOUD_VPN_LOCATIONS.find(
+    (l) => l.country.toLowerCase() === wanted || l.label.toLowerCase() === wanted,
+  );
+  return match ? match.country : null;
+}
 
 const NORD_API = "https://api.nordvpn.com/v1";
 const RELAY_PORT = 18089;
@@ -101,14 +112,27 @@ export async function setCloudVpnEnabled(
   projectId: ObjectId,
   enabled: boolean,
   updatedBy?: string,
+  /** One of CLOUD_VPN_LOCATIONS; keeps the project's current country when left out. */
+  country?: string,
 ) {
   if (enabled && !cloudVpnConfigured()) {
     throw new Error("NordVPN is not set up. An admin needs to add NORDVPN_TOKEN to the server.");
   }
-  await (await vpnDocs()).updateOne(
+  const chosen = country === undefined ? null : cloudVpnCountry(country);
+  if (country !== undefined && !chosen) {
+    throw new Error(`"${country}" isn't one of the VPN locations offered.`);
+  }
+  const collection = await vpnDocs();
+  const current = await collection.findOne({ projectId });
+  await collection.updateOne(
     { projectId },
     {
-      $set: { enabled, country: CLOUD_VPN_COUNTRY, updatedAt: new Date(), updatedBy },
+      $set: {
+        enabled,
+        country: chosen || cloudVpnCountry(current?.country) || CLOUD_VPN_COUNTRY,
+        updatedAt: new Date(),
+        updatedBy,
+      },
       $setOnInsert: { projectId },
     },
     { upsert: true },
@@ -146,13 +170,12 @@ async function proxyCredentials(): Promise<ProxyCredentials> {
   return credentialsCache.value;
 }
 
-let serversCache: { country: string; hosts: string[]; at: number } | null = null;
+const serversCache = new Map<string, { hosts: string[]; at: number }>();
 
 /** Least-loaded NordVPN servers in the country that offer the HTTPS proxy. */
 async function proxyServers(country: string): Promise<string[]> {
-  if (serversCache && serversCache.country === country && Date.now() - serversCache.at < 30 * 60 * 1000) {
-    return serversCache.hosts;
-  }
+  const cached = serversCache.get(country);
+  if (cached && Date.now() - cached.at < 30 * 60 * 1000) return cached.hosts;
   const countries = (await fetch(`${NORD_API}/servers/countries`, { signal: AbortSignal.timeout(20_000) })
     .then((r) => r.json())
     .catch(() => [])) as { id: number; name: string; code: string }[];
@@ -171,7 +194,7 @@ async function proxyServers(country: string): Promise<string[]> {
     .filter((s) => s.hostname && s.status !== "offline")
     .map((s) => String(s.hostname).replace(/\.nordvpn\.com$/, ".proxy.nordvpn.com"));
   if (!hosts.length) throw new Error(`NordVPN has no proxy servers online in ${country} right now.`);
-  serversCache = { country, hosts, at: Date.now() };
+  serversCache.set(country, { hosts, at: Date.now() });
   return hosts;
 }
 
@@ -265,7 +288,9 @@ async function startRelay(sandboxId: string, host: string, credentials: ProxyCre
     `echo ${shellQuote(scriptB64)} | base64 -d > ${RELAY_SCRIPT}.new;`,
     // Replace the script (and restart) only when it changed.
     `if ! cmp -s ${RELAY_SCRIPT}.new ${RELAY_SCRIPT}; then mv ${RELAY_SCRIPT}.new ${RELAY_SCRIPT}; ${STOP_RELAY} sleep 1; else rm -f ${RELAY_SCRIPT}.new; fi;`,
-    `umask 077; echo ${shellQuote(configB64)} | base64 -d > ${RELAY_CONFIG};`,
+    // New server or country: restart, so Chrome's open connections move over too.
+    `umask 077; echo ${shellQuote(configB64)} | base64 -d > ${RELAY_CONFIG}.new;`,
+    `if ! cmp -s ${RELAY_CONFIG}.new ${RELAY_CONFIG}; then mv ${RELAY_CONFIG}.new ${RELAY_CONFIG}; ${STOP_RELAY} sleep 1; else rm -f ${RELAY_CONFIG}.new; fi;`,
     `if ! (${probe}); then nohup node ${RELAY_SCRIPT} ${RELAY_CONFIG} ${RELAY_PORT} >${RELAY_LOG} 2>&1 < /dev/null & echo $! > ${RELAY_PID}; sleep 1; fi;`,
     `for i in 1 2 3 4 5; do if (${probe}); then echo relay-up; break; fi; sleep 1; done;`,
     `echo ${shellQuote(RELAY_URL)} > ${SENDER_PROXY_MARKER};`,

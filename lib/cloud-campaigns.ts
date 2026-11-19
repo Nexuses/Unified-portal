@@ -522,6 +522,20 @@ export async function createCloudProfile(
 }
 
 /** The project's cloud computer VPN (NordVPN), as the campaign page shows it. */
+/**
+ * VPN locations offered per project. Only countries whose NordVPN exit really geolocates there
+ * (checked with ipinfo and NordVPN's own lookup), since location-restricted Outlook accounts
+ * judge by IP. Off ("Default") means Boat's own address.
+ */
+export const CLOUD_VPN_LOCATIONS = [
+  { country: "United Arab Emirates", label: "UAE" },
+  { country: "India", label: "India" },
+] as const;
+
+export function cloudVpnLocationLabel(country?: string | null) {
+  return CLOUD_VPN_LOCATIONS.find((l) => l.country === country)?.label || country || "";
+}
+
 export type CloudVpnInfo = {
   enabled: boolean;
   country: string;

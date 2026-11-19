@@ -11781,8 +11781,14 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-signature-input:focus{outline:none;border-color:#9ca3af;box-shadow:0 0 0 3px rgba(17,24,39,.06);}
 .cloud-muted{margin:0;font-size:12.5px;color:#6b7280;}
 .cloud-vpn-row{margin-top:14px;display:flex;flex-direction:column;gap:4px;}
-.cloud-vpn-toggle{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:#111827;cursor:pointer;}
-.cloud-vpn-toggle input{width:15px;height:15px;margin:0;}
+.cloud-vpn-row{gap:8px;padding:12px 14px;border:1px solid #eef0f2;border-radius:12px;}
+.cloud-vpn-head strong{display:block;font-size:13.5px;color:#111827;}
+.cloud-vpn-head span{display:block;font-size:12.5px;color:#6b7280;}
+.cloud-vpn-choices{display:flex;flex-wrap:wrap;gap:8px;}
+.cloud-vpn-choice{display:inline-flex;align-items:center;gap:8px;min-width:96px;padding:8px 14px;border:1.5px solid #e5e7eb;border-radius:999px;background:#fff;font-size:13.5px;font-weight:600;color:#374151;cursor:pointer;}
+.cloud-vpn-choice.is-on{border-color:#6c3ce1;background:#f8f5ff;color:#4c1d95;}
+.cloud-vpn-choice input{margin:0;accent-color:#6c3ce1;}
+.cloud-vpn-choice:has(input:disabled){opacity:.6;cursor:not-allowed;}
 .cloud-samples{display:grid;gap:8px;}
 .cloud-sample{
   display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:10px;
