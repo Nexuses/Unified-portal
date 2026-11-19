@@ -3,27 +3,40 @@ import { getDb } from "@/lib/mongodb";
 import { isTransientBoatError, runBoatCommand, shellQuote } from "@/lib/boat";
 
 /**
- * NordVPN on the cloud campaign computer (Boat sandbox), so Gmail/Outlook see an India address.
+ * India address for the cloud campaign senders, through NordVPN.
  *
- * One setting per project, because the project has one cloud computer and every campaign's
- * senders sign in on it; switching location per campaign would look like an account takeover.
- * When the setting is on, every time a campaign readies the computer we make sure NordVPN is
- * installed, signed in (NORDVPN_TOKEN, an access token from the Nord Account dashboard) and
- * connected to India. If it cannot be connected we refuse to go on, so no email ever leaves
- * from a non-India address by accident.
+ * Only the senders' Chrome goes through NordVPN, never the whole computer. A full-computer VPN
+ * (the first version) also tunnelled Boat's own traffic: backups failed from the moment it
+ * connected, Boat then refused to stop the computer ("no snapshot in the last 30 minutes"), and
+ * eventually lost the machine. Now each computer runs a tiny relay on 127.0.0.1 that forwards
+ * Chrome's traffic to a NordVPN HTTPS proxy server in India (adding the login Chrome can't send),
+ * and the sender Chrome starts with `--proxy-server` pointing at it. Everything else, including
+ * Boat, uses the normal connection.
+ *
+ * One setting per project (the project has one cloud computer, and switching location per
+ * campaign would look like an account takeover). When it is on and India can't be confirmed, we
+ * refuse to go on, so no email leaves from the wrong place by accident. The NordVPN login comes
+ * from NORDVPN_TOKEN (an access token), which also fetches the proxy credentials.
  */
 
-/** NordVPN's country name for the CLI (`nordvpn connect India`). */
+/** NordVPN's name for the country (its server list and IP lookup use it). */
 export const CLOUD_VPN_COUNTRY = process.env.NORDVPN_COUNTRY?.trim() || "India";
 
-const RELEASE_DEB =
-  "https://repo.nordvpn.com/deb/nordvpn/debian/pool/main/n/nordvpn-release/nordvpn-release_1.0.0_all.deb";
-const INSTALL_LOG = "/tmp/nx-vpn-install.log";
-const INSTALL_DONE = "/tmp/nx-vpn-install.done";
-/** Written by the server once it can still reach the computer after connecting. */
-const ALIVE_MARK = "/tmp/nx-vpn-ok";
-/** If the server has not confirmed it can still reach the computer by then, disconnect. */
-const DEADMAN_SECONDS = 75;
+const NORD_API = "https://api.nordvpn.com/v1";
+const RELAY_PORT = 18089;
+const RELAY_URL = `http://127.0.0.1:${RELAY_PORT}`;
+const RELAY_DIR = "/var/tmp/nexuses-relay";
+const RELAY_CONFIG = `${RELAY_DIR}/config.json`;
+const RELAY_SCRIPT = `${RELAY_DIR}/relay.mjs`;
+const RELAY_LOG = `${RELAY_DIR}/relay.log`;
+/**
+ * The relay is stopped by its PID, never by `pkill -f`: the shell command that starts it
+ * contains the same text, so a pattern match would kill that command too.
+ */
+const RELAY_PID = `${RELAY_DIR}/relay.pid`;
+const STOP_RELAY = `[ -s ${RELAY_PID} ] && kill $(cat ${RELAY_PID}) 2>/dev/null; rm -f ${RELAY_PID};`;
+/** Sender Chrome reads this (lib/cloud-sender ensureSenderChrome): present = use the proxy. */
+export const SENDER_PROXY_MARKER = "/var/tmp/nexuses-sender-proxy";
 
 export type CloudVpnStatus = {
   connected: boolean;
@@ -38,9 +51,11 @@ type CloudVpnDoc = {
   projectId: ObjectId;
   enabled: boolean;
   country: string;
-  /** What the computer was last left in, so turning the VPN off knows to disconnect. */
+  /** What the computer was last left in, so turning it off knows to undo it. */
   applied?: boolean;
   status?: CloudVpnStatus;
+  /** Computers already checked for the old full-computer VPN and cleared of it. */
+  systemVpnCleared?: string[];
   updatedAt: Date;
   updatedBy?: string;
 };
@@ -66,10 +81,6 @@ async function vpnDocs() {
 
 export function cloudVpnConfigured() {
   return Boolean(process.env.NORDVPN_TOKEN?.trim());
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function errorText(error: unknown) {
@@ -111,186 +122,228 @@ async function saveStatus(projectId: ObjectId, status: CloudVpnStatus, applied: 
   );
 }
 
-/** Plain `nordvpn status` text -> fields (the CLI prints a spinner and colours we drop). */
-function parseStatus(output: string): Omit<CloudVpnStatus, "checkedAt"> {
-  const text = output.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\r/g, "\n");
-  const field = (name: string) =>
-    text.match(new RegExp(`^\\s*${name}:\\s*(.+)$`, "im"))?.[1]?.trim() || undefined;
-  return {
-    connected: /^\s*status:\s*connected/im.test(text),
-    country: field("Country"),
-    city: field("City"),
-    ip: field("IP"),
+/* ------------------------------------------------------------------ NordVPN account */
+
+type ProxyCredentials = { username: string; password: string };
+let credentialsCache: { value: ProxyCredentials; at: number } | null = null;
+
+/** The proxy login (NordVPN "service credentials"), fetched with the access token. */
+async function proxyCredentials(): Promise<ProxyCredentials> {
+  if (credentialsCache && Date.now() - credentialsCache.at < 60 * 60 * 1000) return credentialsCache.value;
+  const token = process.env.NORDVPN_TOKEN?.trim();
+  if (!token) throw new Error("NordVPN is not set up. An admin needs to add NORDVPN_TOKEN to the server.");
+  const response = await fetch(`${NORD_API}/users/services/credentials`, {
+    headers: { Authorization: `Basic ${Buffer.from(`token:${token}`).toString("base64")}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const data = (await response.json().catch(() => null)) as Partial<ProxyCredentials> | null;
+  if (!response.ok || !data?.username || !data.password) {
+    throw new Error(
+      `NordVPN didn't accept NORDVPN_TOKEN (${response.status}). Check it is a valid access token from the Nord Account dashboard.`,
+    );
+  }
+  credentialsCache = { value: { username: data.username, password: data.password }, at: Date.now() };
+  return credentialsCache.value;
+}
+
+let serversCache: { country: string; hosts: string[]; at: number } | null = null;
+
+/** Least-loaded NordVPN servers in the country that offer the HTTPS proxy. */
+async function proxyServers(country: string): Promise<string[]> {
+  if (serversCache && serversCache.country === country && Date.now() - serversCache.at < 30 * 60 * 1000) {
+    return serversCache.hosts;
+  }
+  const countries = (await fetch(`${NORD_API}/servers/countries`, { signal: AbortSignal.timeout(20_000) })
+    .then((r) => r.json())
+    .catch(() => [])) as { id: number; name: string; code: string }[];
+  const match = countries.find(
+    (c) => c.name.toLowerCase() === country.toLowerCase() || c.code.toLowerCase() === country.toLowerCase(),
+  );
+  if (!match) throw new Error(`NordVPN has no servers in "${country}".`);
+  const url =
+    `${NORD_API}/servers/recommendations?filters[country_id]=${match.id}` +
+    `&filters[servers_technologies][identifier]=proxy_ssl&limit=5`;
+  const list = (await fetch(url, { signal: AbortSignal.timeout(20_000) })
+    .then((r) => r.json())
+    .catch(() => [])) as { hostname?: string; status?: string }[];
+  // The proxy's certificate is for *.proxy.nordvpn.com, so use that name (in201.proxy.nordvpn.com).
+  const hosts = list
+    .filter((s) => s.hostname && s.status !== "offline")
+    .map((s) => String(s.hostname).replace(/\.nordvpn\.com$/, ".proxy.nordvpn.com"));
+  if (!hosts.length) throw new Error(`NordVPN has no proxy servers online in ${country} right now.`);
+  serversCache = { country, hosts, at: Date.now() };
+  return hosts;
+}
+
+/* ------------------------------------------------------------------ Relay on the computer */
+
+/**
+ * Local HTTP proxy for Chrome: CONNECT (https) and plain http requests go to the NordVPN HTTPS
+ * proxy with the login added. Reads its upstream from config.json and picks up changes live.
+ * Plain JS for the VM's Node; keep it free of backticks and "${".
+ */
+const RELAY_SOURCE = String.raw`import http from "node:http";
+import tls from "node:tls";
+import fs from "node:fs";
+const CONFIG = process.argv[2];
+let cfg = JSON.parse(fs.readFileSync(CONFIG, "utf8"));
+fs.watchFile(CONFIG, { interval: 3000 }, () => {
+  try { cfg = JSON.parse(fs.readFileSync(CONFIG, "utf8")); } catch {}
+});
+const auth = () => "Basic " + Buffer.from(cfg.username + ":" + cfg.password).toString("base64");
+
+/** Open a tunnel to target ("host:port") through the NordVPN proxy. */
+function tunnel(target, onReady, onFail) {
+  const up = tls.connect({ host: cfg.host, port: 89, servername: cfg.host });
+  let buf = Buffer.alloc(0);
+  let settled = false;
+  const fail = () => { if (settled) return; settled = true; up.destroy(); onFail(); };
+  up.setTimeout(60000, () => up.destroy());
+  up.on("error", fail);
+  up.on("secureConnect", () => {
+    up.write("CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\nProxy-Authorization: " + auth() + "\r\n\r\n");
+  });
+  const onData = (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    const end = buf.indexOf("\r\n\r\n");
+    if (end < 0) { if (buf.length > 16384) fail(); return; }
+    up.removeListener("data", onData);
+    if (!/^HTTP\/1\.[01] 200/.test(buf.slice(0, end).toString("latin1"))) return fail();
+    settled = true;
+    up.removeListener("error", fail);
+    onReady(up, buf.slice(end + 4));
   };
+  up.on("data", onData);
 }
 
-function rightCountry(status: { country?: string }, country: string) {
-  return (status.country || "").toLowerCase() === country.toLowerCase();
+const server = http.createServer((req, res) => {
+  // Plain http: tunnel to the site's port and replay the request there in origin form.
+  let url;
+  try { url = new URL(req.url); } catch { res.writeHead(400); res.end(); return; }
+  const target = url.hostname + ":" + (url.port || "80");
+  tunnel(target, (up, rest) => {
+    const lines = [req.method + " " + (url.pathname + url.search) + " HTTP/1.1"];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (!/^(proxy-|connection$)/i.test(req.rawHeaders[i])) lines.push(req.rawHeaders[i] + ": " + req.rawHeaders[i + 1]);
+    }
+    lines.push("Connection: close", "", "");
+    up.write(lines.join("\r\n"));
+    if (rest.length) req.socket.write(rest);
+    // Don't half-close the tunnel when the request ends; the reply still has to come back.
+    req.pipe(up, { end: false });
+    up.pipe(req.socket);
+    up.on("error", () => req.socket.destroy());
+    req.socket.on("error", () => up.destroy());
+  }, () => { try { res.writeHead(502); res.end(); } catch {} });
+});
+
+server.on("connect", (req, client, head) => {
+  tunnel(req.url, (up, rest) => {
+    client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (rest.length) client.write(rest);
+    if (head && head.length) up.write(head);
+    up.pipe(client);
+    client.pipe(up);
+    up.on("error", () => client.destroy());
+    client.on("error", () => up.destroy());
+  }, () => { try { client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"); } catch {} });
+  client.on("error", () => {});
+});
+
+server.on("clientError", (err, socket) => { try { socket.destroy(); } catch {} });
+server.listen(Number(process.argv[3]), "127.0.0.1");
+`;
+
+/** Write config + relay, start it if it isn't running, and point the sender Chrome at it. */
+async function startRelay(sandboxId: string, host: string, credentials: ProxyCredentials) {
+  const config = JSON.stringify({ host, username: credentials.username, password: credentials.password });
+  const scriptB64 = Buffer.from(RELAY_SOURCE, "utf8").toString("base64");
+  const configB64 = Buffer.from(config, "utf8").toString("base64");
+  const probe = `ss -ltn 2>/dev/null | grep -q ':${RELAY_PORT} '`;
+  const command = [
+    `mkdir -p ${RELAY_DIR} && chmod 700 ${RELAY_DIR};`,
+    `echo ${shellQuote(scriptB64)} | base64 -d > ${RELAY_SCRIPT}.new;`,
+    // Replace the script (and restart) only when it changed.
+    `if ! cmp -s ${RELAY_SCRIPT}.new ${RELAY_SCRIPT}; then mv ${RELAY_SCRIPT}.new ${RELAY_SCRIPT}; ${STOP_RELAY} sleep 1; else rm -f ${RELAY_SCRIPT}.new; fi;`,
+    `umask 077; echo ${shellQuote(configB64)} | base64 -d > ${RELAY_CONFIG};`,
+    `if ! (${probe}); then nohup node ${RELAY_SCRIPT} ${RELAY_CONFIG} ${RELAY_PORT} >${RELAY_LOG} 2>&1 < /dev/null & echo $! > ${RELAY_PID}; sleep 1; fi;`,
+    `for i in 1 2 3 4 5; do if (${probe}); then echo relay-up; break; fi; sleep 1; done;`,
+    `echo ${shellQuote(RELAY_URL)} > ${SENDER_PROXY_MARKER};`,
+  ].join(" ");
+  const result = await runBoatCommand(sandboxId, command, 40);
+  if (!/relay-up/.test(result.stdout)) {
+    throw new Error(`The NordVPN relay didn't start on the cloud computer. ${(result.stdout + result.stderr).trim().slice(-200)}`);
+  }
 }
 
-/** Root runs the CLI so we never depend on the desktop user being in the nordvpn group. */
-const NORD = "sudo -n nordvpn";
-
-/** nordvpnd needs a tun device and a running daemon; Boat may have neither systemd nor tun. */
-const START_DAEMON = [
-  "[ -c /dev/net/tun ] || { sudo -n mkdir -p /dev/net && sudo -n mknod /dev/net/tun c 10 200 && sudo -n chmod 600 /dev/net/tun; } || { echo tun-missing; exit 3; };",
-  "if ! pgrep -x nordvpnd >/dev/null 2>&1; then",
-  "  sudo -n systemctl start nordvpnd >/dev/null 2>&1 ||",
-  "  sudo -n sh -c 'nohup \"$(command -v nordvpnd || echo /usr/sbin/nordvpnd)\" >/tmp/nordvpnd.log 2>&1 &';",
-  "  for i in 1 2 3 4 5 6 7 8 9 10; do [ -S /run/nordvpn/nordvpnd.sock ] && break; sleep 1; done;",
-  "fi;",
-].join(" ");
-
-async function installNordvpn(sandboxId: string) {
-  const script = [
-    "set -e",
-    "export DEBIAN_FRONTEND=noninteractive",
-    "cd /tmp",
-    `curl -fsSL -o nordvpn-release.deb ${shellQuote(RELEASE_DEB)}`,
-    "sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ./nordvpn-release.deb",
-    "sudo -n apt-get update -qq",
-    "sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nordvpn",
-  ].join("\n");
-  // apt can take longer than one Boat command allows, so run it in the background and poll.
-  const start = await runBoatCommand(
+/** Ask NordVPN, through the relay, where the sender Chrome appears to be. */
+async function relayLocation(sandboxId: string) {
+  const result = await runBoatCommand(
     sandboxId,
-    [
-      "command -v nordvpn >/dev/null && { echo nordvpn-present; exit 0; };",
-      `rm -f ${INSTALL_DONE};`,
-      `nohup sh -c ${shellQuote(`( ${script} ) >${INSTALL_LOG} 2>&1; echo $? >${INSTALL_DONE}`)} >/dev/null 2>&1 &`,
-      "echo install-started",
-    ].join(" "),
+    `curl -s --max-time 25 -x ${RELAY_URL} ${NORD_API}/helpers/ips/insights`,
+    35,
+  );
+  try {
+    const data = JSON.parse(result.stdout.trim()) as {
+      ip?: string;
+      country?: string;
+      country_code?: string;
+      city?: string;
+      protected?: boolean;
+    };
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/** Stop the relay and let the sender Chrome go direct (it restarts without the proxy). */
+async function stopRelay(sandboxId: string) {
+  await runBoatCommand(
+    sandboxId,
+    `rm -f ${SENDER_PROXY_MARKER}; ${STOP_RELAY} echo relay-off`,
     20,
   );
-  if (/nordvpn-present/.test(start.stdout)) return;
-  const deadline = Date.now() + 4 * 60 * 1000;
-  while (Date.now() < deadline) {
-    await sleep(5000);
-    const poll = await runBoatCommand(
-      sandboxId,
-      `if [ -f ${INSTALL_DONE} ]; then echo "done:$(cat ${INSTALL_DONE})"; tail -5 ${INSTALL_LOG}; fi`,
-      15,
-    );
-    const done = poll.stdout.match(/done:(\d+)/);
-    if (!done) continue;
-    if (done[1] === "0") return;
-    throw new Error(
-      `NordVPN could not be installed on the cloud computer: ${poll.stdout.replace(/done:\d+\s*/, "").trim() || "apt failed"}`,
-    );
-  }
-  throw new Error("Installing NordVPN on the cloud computer took too long. Try again in a minute.");
-}
-
-async function readStatus(sandboxId: string) {
-  const result = await runBoatCommand(
-    sandboxId,
-    `command -v nordvpn >/dev/null || { echo nordvpn-missing; exit 0; }; ${START_DAEMON} ${NORD} status 2>&1`,
-    30,
-  );
-  return {
-    missing: /nordvpn-missing/.test(result.stdout),
-    tunMissing: /tun-missing/.test(result.stdout),
-    ...parseStatus(result.stdout),
-    raw: result.stdout,
-  };
-}
-
-/** Sign in and settle the options that keep the Boat connection reachable. */
-async function prepareNordvpn(sandboxId: string) {
-  const token = process.env.NORDVPN_TOKEN?.trim();
-  if (!token) {
-    throw new Error("NordVPN is not set up. An admin needs to add NORDVPN_TOKEN to the server.");
-  }
-  const result = await runBoatCommand(
-    sandboxId,
-    [
-      START_DAEMON,
-      // Never send usage analytics; it also skips the consent prompt on first login.
-      `${NORD} set analytics off >/dev/null 2>&1 || true;`,
-      `${NORD} account >/dev/null 2>&1 || ${NORD} login --token ${shellQuote(token)} 2>&1 | tail -2;`,
-      `${NORD} account >/dev/null 2>&1 || { echo login-failed; exit 4; };`,
-      `${NORD} set technology nordlynx >/dev/null 2>&1 || true;`,
-      // Kill switch would block Boat's own control traffic if the tunnel drops.
-      `${NORD} set killswitch off >/dev/null 2>&1 || true;`,
-      // Keep private networks (how Boat reaches the computer) outside the tunnel.
-      `${NORD} set lan-discovery enable >/dev/null 2>&1 || ${NORD} set lan-discovery on >/dev/null 2>&1 || true;`,
-      `${NORD} set autoconnect on ${shellQuote(CLOUD_VPN_COUNTRY)} >/dev/null 2>&1 || true;`,
-      "echo prepared",
-    ].join(" "),
-    60,
-  );
-  if (/tun-missing/.test(result.stdout)) {
-    throw new Error(
-      "This cloud computer has no network tunnel device, so NordVPN cannot run on it. Ask Boat to enable /dev/net/tun.",
-    );
-  }
-  if (/login-failed/.test(result.stdout) || !/prepared/.test(result.stdout)) {
-    throw new Error(
-      `NordVPN sign-in failed on the cloud computer. Check NORDVPN_TOKEN is a valid access token. ${result.stdout.replace(/prepared/, "").trim()}`.trim(),
-    );
-  }
 }
 
 /**
- * Connect with a dead-man switch: the computer disconnects by itself unless the server proves,
- * right after, that it can still reach it. A tunnel that swallows Boat's control traffic would
- * otherwise leave the computer unreachable.
+ * The first version ran NordVPN on the whole computer. If this computer still has it (installed
+ * and possibly auto-connecting), switch it off for good: it blocks Boat's backups and stops.
  */
-async function connectNordvpn(sandboxId: string) {
-  const connectCommand = [
-    `rm -f ${ALIVE_MARK};`,
-    `nohup sh -c ${shellQuote(`sleep ${DEADMAN_SECONDS}; [ -f ${ALIVE_MARK} ] || ${NORD} disconnect`)} >/dev/null 2>&1 &`,
-    `${NORD} connect ${shellQuote(CLOUD_VPN_COUNTRY)} 2>&1 | tail -3`,
-  ].join(" ");
-  let connectOutput = "";
-  let lostDuringConnect = false;
-  try {
-    connectOutput = (await runBoatCommand(sandboxId, connectCommand, 60)).stdout;
-  } catch (error) {
-    lostDuringConnect = true;
-    console.warn("Cloud VPN: lost the computer while connecting:", errorText(error));
-  }
-
-  // Prove the computer is still reachable; this also cancels the dead-man switch.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const alive = await runBoatCommand(sandboxId, `touch ${ALIVE_MARK}; ${NORD} status 2>&1`, 20);
-      return { ...parseStatus(alive.stdout), output: connectOutput };
-    } catch {
-      if (attempt === 2) break;
-      await sleep(4000);
-    }
-  }
-
-  // Unreachable: wait out the dead-man switch, then make sure the computer came back.
-  await sleep((DEADMAN_SECONDS + 10) * 1000);
-  try {
-    await runBoatCommand(sandboxId, "echo back", 15);
-  } catch {
-    throw new Error(
-      "Connecting NordVPN cut the server off from the cloud computer, and it has not come back yet. Turn the VPN off here, then click Refresh computer.",
-    );
-  }
-  throw new Error(
-    `Connecting NordVPN cut the server off from the cloud computer, so it was disconnected again${lostDuringConnect ? "" : ` (${connectOutput.trim()})`}. The VPN cannot be used on this computer as set up.`,
+async function clearSystemVpn(projectId: ObjectId, sandboxId: string, doc: CloudVpnDoc | null) {
+  if (doc?.systemVpnCleared?.includes(sandboxId)) return;
+  await runBoatCommand(
+    sandboxId,
+    "command -v nordvpn >/dev/null 2>&1 && { sudo -n nordvpn set autoconnect off >/dev/null 2>&1; sudo -n nordvpn disconnect >/dev/null 2>&1; }; echo cleared",
+    40,
+  );
+  await (await vpnDocs()).updateOne(
+    { projectId },
+    { $addToSet: { systemVpnCleared: sandboxId }, $setOnInsert: { enabled: false, country: CLOUD_VPN_COUNTRY, updatedAt: new Date() } },
+    { upsert: true },
   );
 }
 
+function rightCountry(location: { country?: string; country_code?: string }, country: string) {
+  const want = country.toLowerCase();
+  return (location.country || "").toLowerCase() === want || (location.country_code || "").toLowerCase() === want;
+}
+
 /**
- * Bring the cloud computer's VPN in line with the project setting. Called whenever a campaign
- * readies the computer. Throws when the VPN is on but India cannot be confirmed, so nothing is
- * sent from the wrong place.
+ * Bring the cloud computer in line with the project setting. Called whenever a campaign readies
+ * the computer. Throws when the VPN is on but India can't be confirmed, so nothing is sent from
+ * the wrong place.
  */
 export async function ensureCloudVpn(projectId: ObjectId, sandboxId: string) {
   const doc = await (await vpnDocs()).findOne({ projectId });
+  await clearSystemVpn(projectId, sandboxId, doc).catch((error) => {
+    if (isTransientBoatError(error)) throw error;
+    console.warn("Cloud VPN: couldn't check for the old full-computer VPN:", errorText(error));
+  });
+
   if (!doc?.enabled) {
     if (doc?.applied) {
-      // Turned off since last time: leave the computer on its own connection again.
-      await runBoatCommand(
-        sandboxId,
-        `command -v nordvpn >/dev/null && { ${NORD} set autoconnect off >/dev/null 2>&1; ${NORD} disconnect 2>&1 | tail -1; } || true`,
-        30,
-      ).catch((error) => console.warn("Cloud VPN: disconnect failed:", errorText(error)));
+      await stopRelay(sandboxId).catch((error) => console.warn("Cloud VPN: stopping the relay failed:", errorText(error)));
       await saveStatus(projectId, { connected: false, checkedAt: new Date().toISOString() }, false);
     }
     return null;
@@ -298,45 +351,35 @@ export async function ensureCloudVpn(projectId: ObjectId, sandboxId: string) {
 
   const country = doc.country || CLOUD_VPN_COUNTRY;
   try {
-    let status = await readStatus(sandboxId);
-    if (status.connected && rightCountry(status, country)) {
-      const ok: CloudVpnStatus = {
-        connected: true,
-        country: status.country,
-        city: status.city,
-        ip: status.ip,
-        checkedAt: new Date().toISOString(),
-      };
-      await saveStatus(projectId, ok, true);
-      return ok;
+    const credentials = await proxyCredentials();
+    const hosts = await proxyServers(country);
+    let lastProblem = "";
+    // Try the least-loaded server first, then two more.
+    for (const host of hosts.slice(0, 3)) {
+      await startRelay(sandboxId, host, credentials);
+      const location = await relayLocation(sandboxId);
+      if (location && rightCountry(location, country)) {
+        const ok: CloudVpnStatus = {
+          connected: true,
+          country: location.country,
+          city: location.city,
+          ip: location.ip,
+          checkedAt: new Date().toISOString(),
+        };
+        await saveStatus(projectId, ok, true);
+        return ok;
+      }
+      lastProblem = location
+        ? `${host} showed ${location.country || "an unknown country"}`
+        : `${host} didn't answer`;
     }
-    if (status.tunMissing) {
-      throw new Error(
-        "This cloud computer has no network tunnel device, so NordVPN cannot run on it. Ask Boat to enable /dev/net/tun.",
-      );
-    }
-    if (status.missing) await installNordvpn(sandboxId);
-    await prepareNordvpn(sandboxId);
-    const connected = await connectNordvpn(sandboxId);
-    status = { ...status, ...connected };
-    if (!connected.connected || !rightCountry(connected, country)) {
-      throw new Error(
-        `NordVPN did not connect to ${country}${connected.country ? ` (it shows ${connected.country})` : ""}. ${connected.output.trim()}`.trim(),
-      );
-    }
-    const ok: CloudVpnStatus = {
-      connected: true,
-      country: connected.country,
-      city: connected.city,
-      ip: connected.ip,
-      checkedAt: new Date().toISOString(),
-    };
-    await saveStatus(projectId, ok, true);
-    return ok;
+    throw new Error(`NordVPN didn't give an address in ${country} (${lastProblem}).`);
   } catch (error) {
     // A short Boat blip is not a VPN problem; let the caller retry it like any other blip.
     if (isTransientBoatError(error)) throw error;
     const message = errorText(error);
+    // Don't leave Chrome pointed at a relay that doesn't work.
+    await stopRelay(sandboxId).catch(() => undefined);
     await saveStatus(
       projectId,
       { connected: false, checkedAt: new Date().toISOString(), error: message },
