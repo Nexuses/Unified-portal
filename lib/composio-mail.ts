@@ -14,6 +14,7 @@ type PendingComposioLink = {
   provider: ComposioMailbox;
   connectedAccountId: string;
   composioUserId: string;
+  fromName?: string;
   createdAt: Date;
 };
 
@@ -189,11 +190,13 @@ export async function startComposioSenderLink(input: {
   portalUserId: string;
   provider: ComposioMailbox;
   origin: string;
+  fromName?: string;
 }) {
   const composioUserId = `portal-${input.portalUserId}`;
   const pendingId = new ObjectId();
   const callback = new URL("/api/smtp/senders/composio/callback", input.origin);
   callback.searchParams.set("pending", pendingId.toString());
+  const fromName = input.fromName?.trim() || undefined;
 
   const linked = await composioFetch("/connected_accounts/link", {
     method: "POST",
@@ -219,6 +222,7 @@ export async function startComposioSenderLink(input: {
     provider: input.provider,
     connectedAccountId,
     composioUserId,
+    ...(fromName ? { fromName } : {}),
     createdAt: new Date(),
   });
 
@@ -332,6 +336,7 @@ export async function completeComposioSenderLink(pendingId: string, session: { i
     portalUserId: pending.portalUserId,
     provider: pending.provider as SmtpProviderId,
     fromEmail,
+    fromName: pending.fromName?.trim() || undefined,
     composio,
   };
 }

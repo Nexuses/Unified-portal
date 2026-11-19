@@ -2,11 +2,15 @@ import { ObjectId } from "mongodb";
 import { DEFAULT_STAGE_COLOR, KANBAN_DOT_COLORS } from "@/lib/analytics-kanban";
 import {
   boatConfigured,
+  boatPhase,
   ensureLinkedinBoat,
+  getLinkedinBoatMeta,
   isBoatRunning,
+  linkedinBoatStatus,
   openBoatDesktop,
   runBoatCommand,
   shellQuote,
+  stopLinkedinBoat,
 } from "@/lib/boat";
 import {
   campaignTabMarker,
@@ -41,6 +45,12 @@ import {
   recordLinkedinCampaignStart,
   saveLinkedinCampaignList,
 } from "@/lib/linkedin-crm";
+import {
+  ensureCloudVpn,
+  getCloudVpnSetting,
+  setCloudVpnEnabled,
+  type CloudVpnSetting,
+} from "@/lib/cloud-vpn";
 
 const REQUEST_WAITING_NOTE = "Connection request sent. Waiting for them to accept.";
 const BUTTONS_HIDDEN_NOTE =
@@ -229,6 +239,81 @@ export async function getLinkedinSession(projectId: ObjectId) {
   return mapSession(doc, boatConfigured());
 }
 
+export async function getLinkedinComputerStatus(
+  projectId: ObjectId,
+  options?: { withDesktop?: boolean },
+) {
+  if (!boatConfigured()) {
+    return {
+      configured: false as const,
+      phase: "none" as const,
+      desktopUrl: "",
+    };
+  }
+  const [{ sandbox }, meta] = await Promise.all([
+    linkedinBoatStatus(projectId),
+    getLinkedinBoatMeta(projectId),
+  ]);
+  const phase = sandbox ? boatPhase(sandbox.state) : meta.sandboxId ? "unknown" : "none";
+  const desktopUrl =
+    phase === "running" && sandbox && options?.withDesktop
+      ? await openBoatDesktop(sandbox.id).catch(() => "")
+      : "";
+  return {
+    configured: true as const,
+    phase,
+    state: sandbox?.state ?? null,
+    sandboxId: sandbox?.id ?? meta.sandboxId,
+    desktopUrl,
+  };
+}
+
+export async function startLinkedinComputerOnly(projectId: ObjectId) {
+  if (!boatConfigured()) {
+    throw new Error("The virtual machine is not set up yet.");
+  }
+  const sandbox = await linkedinComputer(projectId);
+  if (!isBoatRunning(sandbox.state)) {
+    throw new Error(`The computer is ${sandbox.state}. Try again in a few seconds.`);
+  }
+  await ensureCloudVpn(projectId, sandbox.id);
+  const desktopUrl = await openBoatDesktop(sandbox.id);
+  return {
+    desktopUrl,
+    computer: await getLinkedinComputerStatus(projectId),
+    vpn: await getCloudVpnSetting(projectId),
+  };
+}
+
+export async function releaseLinkedinComputer(projectId: ObjectId) {
+  const result = await stopLinkedinBoat(projectId);
+  return {
+    ...result,
+    computer: await getLinkedinComputerStatus(projectId),
+  };
+}
+
+export async function getLinkedinVpnSetting(projectId: ObjectId): Promise<CloudVpnSetting> {
+  return getCloudVpnSetting(projectId);
+}
+
+export async function setLinkedinVpnEnabled(
+  projectId: ObjectId,
+  enabled: boolean,
+  updatedBy?: string,
+) {
+  await setCloudVpnEnabled(projectId, enabled, updatedBy);
+  if (!boatConfigured()) {
+    return getCloudVpnSetting(projectId);
+  }
+  // Apply now when the LinkedIn computer is already on; otherwise the next open does it.
+  const sandbox = await ensureLinkedinBoat(projectId).catch(() => null);
+  if (sandbox && isBoatRunning(sandbox.state) && !sandbox.replacedDeletedDisk) {
+    await ensureCloudVpn(projectId, sandbox.id);
+  }
+  return getCloudVpnSetting(projectId);
+}
+
 export async function openLinkedinComputer(projectId: ObjectId) {
   if (!boatConfigured()) {
     throw new Error("The virtual machine is not set up yet.");
@@ -237,6 +322,8 @@ export async function openLinkedinComputer(projectId: ObjectId) {
   if (!isBoatRunning(sandbox.state)) {
     throw new Error(`The computer is ${sandbox.state}. Try again in a few seconds.`);
   }
+  // Always-on project VPN: connect before Chrome opens LinkedIn.
+  await ensureCloudVpn(projectId, sandbox.id);
   const collection = await sessions();
   const saved = await collection.findOne({ projectId });
   const stillConnected = saved?.connected === true && sandbox.replacedDeletedDisk !== true;
@@ -1760,6 +1847,16 @@ async function runLinkedinFollowUps(now = new Date()) {
         await clearBoatLock(doc);
         doc.activePromptId = undefined;
       }
+      continue;
+    }
+    try {
+      await ensureCloudVpn(doc.projectId, sandbox.id);
+    } catch (error) {
+      console.warn(
+        "[linkedin] VPN not ready for project",
+        String(doc.projectId),
+        error instanceof Error ? error.message : error,
+      );
       continue;
     }
     const signedIn = await db.collection<SessionDoc>("linkedin_sessions").findOne({

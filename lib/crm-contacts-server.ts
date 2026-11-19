@@ -315,15 +315,18 @@ export async function getProjectContactDetail(
     }
   }
 
-  const { events: campaignEvents, stats: campaignStats } =
-    await getContactCampaignActivity(projectId, contact.email);
+  const [{ events: campaignEvents, stats: campaignStats }, eventInviteEvents] =
+    await Promise.all([
+      getContactCampaignActivity(projectId, contact.email),
+      getContactEventInviteActivity(projectId, contact.email),
+    ]);
 
   const history = buildContactHistory({
     contact,
     lists: contactLists,
     company,
     owner,
-    campaignEvents,
+    campaignEvents: [...campaignEvents, ...eventInviteEvents],
   });
 
   return {
@@ -932,6 +935,70 @@ async function getContactCampaignActivity(projectId: ObjectId, email: string) {
   }
 
   return { events, stats };
+}
+
+async function getContactEventInviteActivity(
+  projectId: ObjectId,
+  email: string,
+): Promise<ContactHistoryEvent[]> {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return [];
+
+  const db = await getDb();
+  const events = await db
+    .collection<{ _id: ObjectId; eventName?: string; projectId?: string }>("events")
+    .find({ projectId: projectId.toString() })
+    .project({ eventName: 1 })
+    .toArray();
+  if (events.length === 0) return [];
+
+  const eventName = new Map(events.map((event) => [event._id.toString(), event.eventName || "Event"]));
+  const submissions = await db
+    .collection<{
+      _id: ObjectId;
+      eventId: ObjectId;
+      inviteSentAt?: Date;
+      botClickedAt?: Date;
+      botClick?: boolean;
+      sourceListName?: string;
+    }>("event_submissions")
+    .find({
+      eventId: { $in: events.map((event) => event._id) },
+      emailNormalized: normalized,
+    })
+    .toArray();
+
+  const history: ContactHistoryEvent[] = [];
+  for (const submission of submissions) {
+    const name = eventName.get(submission.eventId.toString()) || "Event";
+    const listName = submission.sourceListName?.trim();
+    if (submission.inviteSentAt) {
+      history.push({
+        id: `event-invited-${submission._id.toString()}`,
+        type: "event_invited",
+        title: "Invited to an event",
+        description: listName
+          ? `Invited to ${name} from ${listName}.`
+          : `Invited to ${name}.`,
+        at: toIso(submission.inviteSentAt),
+        actor: "Event invite",
+        campaignName: name,
+      });
+    }
+    if (submission.botClick && submission.botClickedAt) {
+      history.push({
+        id: `event-bot-click-${submission._id.toString()}`,
+        type: "event_bot_click",
+        title: "Bot click on an event invite",
+        description: `Clicked the trap link in the invite for ${name}.`,
+        at: toIso(submission.botClickedAt),
+        actor: "Event invite",
+        campaignName: name,
+        clickTag: "Bot click",
+      });
+    }
+  }
+  return history;
 }
 
 /** Remove contacts from one list without deleting the CRM contact records. */

@@ -19,6 +19,7 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({}));
     const provider = String((body as { provider?: unknown }).provider ?? "");
+    const fromName = String((body as { fromName?: unknown }).fromName ?? "").trim();
     if (!isComposioMailbox(provider)) {
       return NextResponse.json(
         { error: "Connect through Composio is available for Gmail and Outlook." },
@@ -31,6 +32,7 @@ export async function POST(request: NextRequest) {
       portalUserId: session.id,
       provider,
       origin: composioCallbackOrigin(request),
+      ...(fromName ? { fromName } : {}),
     });
     return NextResponse.json(link);
   } catch (error) {

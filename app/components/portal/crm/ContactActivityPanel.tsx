@@ -145,7 +145,7 @@ function isCallKind(kind: string) {
 }
 
 function isCampaignEvent(type: ContactHistoryEvent["type"]) {
-  return type.startsWith("campaign_");
+  return type.startsWith("campaign_") || type.startsWith("event_");
 }
 
 function resolveHistorySendId(event: ContactHistoryEvent) {
@@ -170,6 +170,10 @@ function historyKindLabel(type: ContactHistoryEvent["type"]) {
       return "Clicked";
     case "campaign_unsubscribed":
       return "Unsubscribed";
+    case "event_invited":
+      return "Invited";
+    case "event_bot_click":
+      return "Bot click";
     case "company_associated":
       return "Company";
     case "list_added":
@@ -192,6 +196,10 @@ function historyKindClass(type: ContactHistoryEvent["type"]) {
       return "is-clicked";
     case "campaign_unsubscribed":
       return "is-unsubscribed";
+    case "event_invited":
+      return "is-sent";
+    case "event_bot_click":
+      return "is-clicked";
     case "company_associated":
       return "is-company";
     case "list_added":
@@ -363,6 +371,9 @@ function HistoryBody({
         {event.campaignName ? <> — {event.campaignName}</> : null}.
       </>
     );
+  }
+  if (event.type === "event_invited" || event.type === "event_bot_click") {
+    return <>{event.description}</>;
   }
   if (event.type === "campaign_clicked") {
     return (

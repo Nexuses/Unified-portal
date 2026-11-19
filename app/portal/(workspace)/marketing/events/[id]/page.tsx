@@ -1,10 +1,8 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
-import { headers } from "next/headers";
 import { EventDetailLayout, type EventViewData } from "@/components/event-detail-layout";
 import { PublishButton } from "@/components/publish-button";
 import { getSessionUser } from "@/lib/auth";
-import { eventPublicPath, eventPublicUrl } from "@/lib/event-public-url";
 import { getEventById } from "@/lib/events";
 import { serializeEventForClient } from "@/lib/serialize-event-for-client";
 import { getBookedSlotIndexesByEventId } from "@/lib/submissions";
@@ -26,15 +24,6 @@ export default async function EventPage({ params }: EventPageProps) {
   if (!event) {
     notFound();
   }
-  const headerList = await headers();
-  const host = headerList.get("x-forwarded-host") || headerList.get("host");
-  const proto =
-    headerList.get("x-forwarded-proto") ||
-    (host && host.includes("localhost") ? "http" : "https");
-  const publicUrl =
-    process.env.NODE_ENV !== "production" && host
-      ? `${proto}://${host}${eventPublicPath(event.publicId)}`
-      : eventPublicUrl(event.publicId);
   const bookedSlotIndexes = await getBookedSlotIndexesByEventId(event.id);
   const safeEvent = serializeEventForClient(
     event as unknown as Record<string, unknown>
@@ -51,14 +40,6 @@ export default async function EventPage({ params }: EventPageProps) {
           </Link>
           <div>
             <h2>{event.eventName}</h2>
-            <p>
-              <a href={publicUrl} target="_blank" rel="noreferrer">
-                {publicUrl}
-              </a>
-              {event.status === "published"
-                ? " · Live"
-                : " · Publish before visitors can open this link"}
-            </p>
           </div>
         </div>
         <div className="crm-actions">

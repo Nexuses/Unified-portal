@@ -39,8 +39,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const body = await request.json();
 
     if (existing.via === "composio" && body.keepComposio === true) {
+      const fromName = String(body.fromName ?? "").trim();
       const sender = await updateProjectSender(projectId, senderId, {
         noInbox: Boolean(body.noInbox),
+        fromName: fromName || "",
         ...(existing.provider === "gmail"
           ? { dailyLimit: normalizeGmailDailyLimit(body.dailyLimit) }
           : {}),

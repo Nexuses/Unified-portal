@@ -42,6 +42,7 @@ export async function sendSubmissionInviteForEvent(
           viewerTimeZone: submission.viewerTimeZone ?? null,
           fromInviteRoute: true,
           useEventBanner: options?.useEventBanner,
+          submissionId,
         }
       : {
           calendarInviteUid,
@@ -49,6 +50,7 @@ export async function sendSubmissionInviteForEvent(
           viewerTimeZone: submission.viewerTimeZone ?? null,
           fromInviteRoute: true,
           useEventBanner: options?.useEventBanner,
+          submissionId,
         }
   );
 

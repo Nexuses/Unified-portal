@@ -735,6 +735,37 @@ export async function ensureLinkedinBoat(projectId: ObjectId) {
   return { ...ready, replacedDeletedDisk: true };
 }
 
+export async function linkedinBoatStatus(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  if (!saved?.linkedinSandboxId || saved.linkedinSandboxId === saved.sandboxId) {
+    return { sandbox: null };
+  }
+  const sandbox = await getBoatSandbox(saved.linkedinSandboxId).catch(() => null);
+  return { sandbox };
+}
+
+export async function getLinkedinBoatMeta(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  return {
+    sandboxId:
+      saved?.linkedinSandboxId && saved.linkedinSandboxId !== saved.sandboxId
+        ? saved.linkedinSandboxId
+        : null,
+  };
+}
+
+/** Stop the LinkedIn computer (disk is kept). */
+export async function stopLinkedinBoat(projectId: ObjectId) {
+  const collection = await boatLinks();
+  const saved = await collection.findOne({ projectId });
+  if (!saved?.linkedinSandboxId || saved.linkedinSandboxId === saved.sandboxId) {
+    return { stopped: false as const, reason: "none" as const };
+  }
+  return stopSandboxIfRunning(saved.linkedinSandboxId);
+}
+
 export async function projectBoatStatus(projectId: ObjectId) {
   if (!boatConfigured()) {
     return { configured: false as const, sandbox: null };

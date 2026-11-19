@@ -1,9 +1,14 @@
 import { ObjectId } from "mongodb";
 import { after } from "next/server";
+import type { ContactDoc, ListDoc, ListMembershipDoc } from "@/lib/crm";
 import { getDb } from "@/lib/mongodb";
 import { isSharedSessionFormat, isWaitlistedWebinarFormat, isWebinarFormat, normalizeEventFormat } from "@/lib/event-format";
 import { resolveMeetingLink } from "@/lib/event-platform";
 import { getEventById, getEventByPublicId } from "@/lib/events";
+import {
+  addRegistrationContactToEventList,
+  ensureEventRegistrationList,
+} from "@/lib/event-registration-list";
 import { sendAcceptedCalendarInviteEmail } from "@/lib/invite-email";
 import {
   extractRawEventCalendarsField,
@@ -40,7 +45,12 @@ type SubmissionDocument = {
   inviteSentAt?: Date;
   inviteAcceptedAt?: Date;
   calendarInviteUid?: string;
-  source?: "csv" | "registration";
+  source?: "csv" | "registration" | "list";
+  sourceListId?: string;
+  sourceListName?: string;
+  trapToken?: string;
+  botClick?: boolean;
+  botClickedAt?: Date;
   waitlistStatus?: WaitlistStatus;
   waitlistConfirmedAt?: Date;
   waitlistRejectedAt?: Date;
@@ -67,7 +77,11 @@ export type EventSubmission = {
   createdAt: string;
   inviteSentAt: string | null;
   inviteAcceptedAt: string | null;
-  source: "csv" | "registration" | null;
+  source: "csv" | "registration" | "list" | null;
+  sourceListId: string | null;
+  sourceListName: string | null;
+  botClick: boolean;
+  botClickedAt: string | null;
   waitlistStatus: WaitlistStatus | null;
   waitlistConfirmedAt: string | null;
   waitlistRejectedAt: string | null;
@@ -225,6 +239,33 @@ export async function createSubmissionFromPublicId(input: {
     ],
   };
 
+  const registrationEventId = String(event.id ?? event._id?.toString() ?? "");
+  const registrationProjectId = String(event.projectId ?? "");
+  const registrationEventName = String(event.eventName ?? "");
+  let registrationListId = event.registrationListId;
+
+  async function syncRegistrationList(companyForList: string) {
+    try {
+      registrationListId =
+        (await ensureEventRegistrationList({
+          eventId: registrationEventId,
+          projectId: registrationProjectId,
+          eventName: registrationEventName,
+          registrationListId,
+        })) ?? registrationListId;
+      await addRegistrationContactToEventList({
+        projectId: registrationProjectId,
+        registrationListId,
+        name: input.name,
+        email: input.email,
+        companyName: companyForList,
+        phone,
+      });
+    } catch {
+      // Registration should still succeed if CRM sync fails.
+    }
+  }
+
   if (isOpenWebinar || isWaitlisted) {
     const existing = await collection.findOne({
       eventId: event._id,
@@ -251,8 +292,12 @@ export async function createSubmissionFromPublicId(input: {
             },
           }
         );
+        await syncRegistrationList(companyName);
         return;
       }
+      const nextCompany =
+        String(input.companyName ?? "").trim() ||
+        String(existing.companyName ?? "").trim();
       await collection.updateOne(
         { _id: existing._id },
         {
@@ -260,13 +305,14 @@ export async function createSubmissionFromPublicId(input: {
             name: input.name,
             email: input.email,
             emailNormalized: normalizedEmail,
-            companyName: input.companyName ?? existing.companyName ?? "",
+            companyName: nextCompany,
             source: "registration",
             inviteAcceptedAt: new Date(),
             ...(viewerTimeZone ? { viewerTimeZone } : {}),
           },
         }
       );
+      await syncRegistrationList(nextCompany);
       return;
     }
   } else {
@@ -325,19 +371,19 @@ export async function createSubmissionFromPublicId(input: {
       selectedSlot?.platformLink ?? event.platformLink
     ),
     createdAt: new Date(),
+    source: "registration",
     ...(viewerTimeZone ? { viewerTimeZone } : {}),
     ...(isWaitlisted
       ? {
-          source: "registration" as const,
           waitlistStatus: "pending" as const,
         }
       : isOpenWebinar
         ? {
-            source: "registration" as const,
             inviteAcceptedAt: new Date(),
           }
         : {}),
   });
+  await syncRegistrationList(companyName);
 }
 
 export type BulkSubmissionImportResult = {
@@ -350,6 +396,9 @@ export async function createBulkSubmissionsForEvent(input: {
   eventId: string;
   slotIndex?: number;
   rows: Array<{ name: string; email: string; companyName?: string }>;
+  source?: "csv" | "list";
+  sourceListId?: string;
+  sourceListName?: string;
 }): Promise<BulkSubmissionImportResult> {
   if (!ObjectId.isValid(input.eventId)) {
     throw new Error("Invalid event.");
@@ -433,7 +482,10 @@ export async function createBulkSubmissionsForEvent(input: {
         selectedSlot?.platformLink ?? event.platformLink
       ),
       createdAt: now,
-      source: "csv" as const,
+      source: input.source === "list" ? ("list" as const) : ("csv" as const),
+      ...(input.sourceListId
+        ? { sourceListId: input.sourceListId, sourceListName: input.sourceListName ?? "" }
+        : {}),
     }));
 
   if (docs.length === 0) {
@@ -490,7 +542,13 @@ export async function getSubmissionsByEventId(eventId: string) {
     inviteSentAt: item.inviteSentAt ? item.inviteSentAt.toISOString() : null,
     inviteAcceptedAt: item.inviteAcceptedAt ? item.inviteAcceptedAt.toISOString() : null,
     source:
-      item.source === "csv" || item.source === "registration" ? item.source : null,
+      item.source === "csv" || item.source === "registration" || item.source === "list"
+        ? item.source
+        : null,
+    sourceListId: item.sourceListId ?? null,
+    sourceListName: item.sourceListName ?? null,
+    botClick: Boolean(item.botClick),
+    botClickedAt: item.botClickedAt ? item.botClickedAt.toISOString() : null,
     waitlistStatus:
       item.waitlistStatus === "pending" ||
       item.waitlistStatus === "confirmed" ||
@@ -574,6 +632,65 @@ export async function markSubmissionInviteSent(
   );
 
   return result;
+}
+
+export async function findSubmissionIdByEventEmail(eventId: string, email: string) {
+  if (!ObjectId.isValid(eventId)) return "";
+  const collection = await submissionsCollection();
+  const doc = await collection.findOne(
+    { eventId: new ObjectId(eventId), emailNormalized: normalizeEmail(email) },
+    { sort: { createdAt: -1 }, projection: { _id: 1 } },
+  );
+  return doc?._id?.toString() ?? "";
+}
+
+export async function importProjectListIntoEvent(input: {
+  projectId: string;
+  eventId: string;
+  listId: string;
+  slotIndex?: number;
+}) {
+  if (!ObjectId.isValid(input.projectId) || !ObjectId.isValid(input.listId)) {
+    throw new Error("Choose a list.");
+  }
+  const db = await getDb();
+  const projectId = new ObjectId(input.projectId);
+  const list = await db.collection<ListDoc>("lists").findOne({
+    _id: new ObjectId(input.listId),
+    projectId,
+  });
+  if (!list) {
+    throw new Error("List not found.");
+  }
+  const memberships = await db
+    .collection<ListMembershipDoc>("list_memberships")
+    .find({ projectId, listId: list._id })
+    .toArray();
+  const contactIds = memberships.map((membership) => membership.contactId);
+  const contacts = contactIds.length
+    ? await db
+        .collection<ContactDoc>("contacts")
+        .find({ projectId, _id: { $in: contactIds } })
+        .toArray()
+    : [];
+  const rows = contacts
+    .map((contact) => ({
+      name: `${contact.firstName ?? ""} ${contact.lastName ?? ""}`.trim() || contact.email,
+      email: contact.email,
+      companyName: contact.companyName ?? "",
+    }))
+    .filter((row) => row.email.trim());
+  if (rows.length === 0) {
+    throw new Error("This list has no contacts with an email.");
+  }
+  return createBulkSubmissionsForEvent({
+    eventId: input.eventId,
+    slotIndex: input.slotIndex,
+    rows,
+    source: "list",
+    sourceListId: list._id.toString(),
+    sourceListName: list.name,
+  });
 }
 
 export async function acceptWebinarInviteFromCalendarRsvp(

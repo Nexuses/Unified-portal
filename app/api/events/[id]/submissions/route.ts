@@ -5,7 +5,11 @@ import { normalizeEventFormat } from "@/lib/event-format";
 import { getEventById } from "@/lib/events";
 import { resolveEmailBannerUrl } from "@/lib/email-banner";
 import { resolveRollingOneToOneSlotsWithExpired } from "@/lib/auto-one-to-one-slots";
-import { createBulkSubmissionsForEvent, getSubmissionsByEventId } from "@/lib/submissions";
+import {
+  createBulkSubmissionsForEvent,
+  getSubmissionsByEventId,
+  importProjectListIntoEvent,
+} from "@/lib/submissions";
 import { toWallDateYmd } from "@/lib/public-event-time";
 
 type RouteContext = {
@@ -187,18 +191,44 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     const body = (await request.json()) as {
       slotIndex?: number;
+      listId?: string;
       rows?: Array<{ name?: string; email?: string; companyName?: string }>;
     };
+    const slotIndex =
+      typeof body.slotIndex === "number" && Number.isFinite(body.slotIndex)
+        ? body.slotIndex
+        : 0;
+    if (typeof body.listId === "string" && body.listId.trim()) {
+      const importResult = await importProjectListIntoEvent({
+        projectId: access.session.projectId,
+        eventId: id,
+        listId: body.listId.trim(),
+        slotIndex,
+      });
+      const { insertedCount, skippedDuplicateCount } = importResult;
+      if (insertedCount > 0) {
+        await revalidateEventPagesByEventId(id);
+      }
+      return NextResponse.json(
+        {
+          message:
+            insertedCount > 0
+              ? `Added ${insertedCount} contact${insertedCount === 1 ? "" : "s"} from the list.`
+              : skippedDuplicateCount > 0
+                ? "Those contacts are already on this event."
+                : "No contacts were added.",
+          ...importResult,
+        },
+        { status: insertedCount === 0 && skippedDuplicateCount === 0 ? 400 : 200 },
+      );
+    }
     const rows = Array.isArray(body.rows) ? body.rows : [];
     if (rows.length === 0) {
       return NextResponse.json({ message: "No rows provided." }, { status: 400 });
     }
     const importResult = await createBulkSubmissionsForEvent({
       eventId: id,
-      slotIndex:
-        typeof body.slotIndex === "number" && Number.isFinite(body.slotIndex)
-          ? body.slotIndex
-          : 0,
+      slotIndex,
       rows: rows.map((row) => ({
         name: String(row.name ?? ""),
         email: String(row.email ?? ""),

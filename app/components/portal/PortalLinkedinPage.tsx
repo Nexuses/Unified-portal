@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import CloudDesktopViewer, {
+  type CloudDesktopLayout,
+} from "@/app/components/portal/CloudDesktopViewer";
 import {
   captureLinkedinAccountPhoto,
   confirmLinkedinSession,
@@ -9,16 +12,33 @@ import {
   disconnectLinkedinSession,
   deleteLinkedinCampaigns,
   fetchLinkedinCampaigns,
+  fetchLinkedinComputer,
   fetchLinkedinSession,
+  fetchLinkedinVpn,
   openLinkedinSession,
   parseLinkedinCsv,
+  releaseLinkedinComputer,
   setLinkedinCampaignPaused,
+  setLinkedinVpn,
   startLinkedinCampaign,
+  startLinkedinComputer,
   type LinkedinCampaign,
+  type LinkedinComputerInfo,
+  type LinkedinComputerPhase,
   type LinkedinCsvPreview,
   type LinkedinSession,
+  type LinkedinVpnInfo,
 } from "@/lib/linkedin-campaigns";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
+
+const COMPUTER_PHASE_LABEL: Record<LinkedinComputerPhase, string> = {
+  running: "On",
+  starting: "Starting…",
+  stopping: "Shutting down…",
+  stopped: "Off",
+  none: "Not started",
+  unknown: "Checking…",
+};
 
 const SAMPLE_CSV = [
   "First name,Last name,Company,LinkedIn account,Connected,Like recent post,Message 1,Message 2",
@@ -113,7 +133,10 @@ export default function PortalLinkedinPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [search, setSearch] = useState("");
   const [session, setSession] = useState<LinkedinSession | null>(null);
+  const [vpn, setVpn] = useState<LinkedinVpnInfo | null>(null);
+  const [computer, setComputer] = useState<LinkedinComputerInfo | null>(null);
   const [desktopUrl, setDesktopUrl] = useState("");
+  const [desktopLayout, setDesktopLayout] = useState<CloudDesktopLayout>("floating");
   const [accountName, setAccountName] = useState("");
   const [campaignName, setCampaignName] = useState("");
   const [listName, setListName] = useState("");
@@ -160,14 +183,18 @@ export default function PortalLinkedinPage() {
     let cancelled = false;
     void (async () => {
       try {
-        const [nextSession, nextCampaigns] = await Promise.all([
+        const [nextSession, nextCampaigns, nextVpn, nextComputer] = await Promise.all([
           fetchLinkedinSession(),
           fetchLinkedinCampaigns(),
+          fetchLinkedinVpn().catch(() => null),
+          fetchLinkedinComputer(false).catch(() => null),
         ]);
         if (cancelled) return;
         setSession(nextSession);
         setAccountName(nextSession.accountName);
         setCampaigns(nextCampaigns);
+        if (nextVpn) setVpn(nextVpn);
+        if (nextComputer) setComputer(nextComputer);
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : "Could not load campaigns");
@@ -193,6 +220,28 @@ export default function PortalLinkedinPage() {
       cancelled = true;
     };
   }, [session?.connected, session?.accountPhoto]);
+
+  useEffect(() => {
+    if (!showCreate) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      try {
+        const next = await fetchLinkedinComputer(false);
+        if (!stopped) setComputer(next);
+        const waitMs =
+          next.phase === "starting" || next.phase === "stopping" ? 6000 : 30000;
+        if (!stopped) timer = setTimeout(() => void tick(), waitMs);
+      } catch {
+        if (!stopped) timer = setTimeout(() => void tick(), 30000);
+      }
+    };
+    void tick();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [showCreate]);
 
   useEffect(() => {
     if (!openMenuId) return;
@@ -287,15 +336,122 @@ export default function PortalLinkedinPage() {
     await removeCampaigns(ids);
   }
 
+  function openFloatingDesktop(url: string) {
+    if (!url) return;
+    setDesktopUrl(url);
+    setDesktopLayout("floating");
+  }
+
+  async function refreshComputer(withDesktop = false) {
+    const next = await fetchLinkedinComputer(withDesktop);
+    setComputer(next);
+    if (withDesktop && next.desktopUrl) {
+      openFloatingDesktop(next.desktopUrl);
+    }
+    return next;
+  }
+
+  async function startComputer() {
+    setError("");
+    const wasRunning = computer?.phase === "running";
+    setBusy(
+      wasRunning
+        ? "Checking the computer and VPN…"
+        : vpn?.enabled
+          ? `Starting computer and connecting VPN (${vpn.country || "India"})…`
+          : "Starting computer…",
+    );
+    try {
+      const started = await startLinkedinComputer();
+      if (started.computer) setComputer(started.computer);
+      if (started.vpn) setVpn(started.vpn);
+      if (started.desktopUrl) openFloatingDesktop(started.desktopUrl);
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : "Could not start the computer");
+      await refreshComputer(false).catch(() => null);
+      const latestVpn = await fetchLinkedinVpn().catch(() => null);
+      if (latestVpn) setVpn(latestVpn);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function releaseComputer() {
+    setError("");
+    setBusy("Releasing the computer…");
+    try {
+      const released = await releaseLinkedinComputer();
+      if (released.computer) setComputer(released.computer);
+      setDesktopUrl("");
+      setDesktopLayout("floating");
+    } catch (releaseError) {
+      setError(
+        releaseError instanceof Error ? releaseError.message : "Could not release the computer",
+      );
+      await refreshComputer(false).catch(() => null);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function showLiveView() {
+    setError("");
+    setBusy("Opening live view…");
+    try {
+      if (session?.connected) {
+        const opened = await openLinkedinSession();
+        openFloatingDesktop(opened.desktopUrl);
+        setSession(opened.session);
+      } else {
+        const next = await refreshComputer(true);
+        if (next.desktopUrl) openFloatingDesktop(next.desktopUrl);
+      }
+    } catch (viewError) {
+      setError(viewError instanceof Error ? viewError.message : "Could not open live view");
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function openComputer() {
     setError("");
-    setBusy("Opening the virtual machine…");
+    setBusy(
+      vpn?.enabled
+        ? `Checking VPN (${vpn.country || "India"}) and opening LinkedIn…`
+        : "Opening LinkedIn…",
+    );
     try {
       const opened = await openLinkedinSession();
-      setDesktopUrl(opened.desktopUrl);
+      openFloatingDesktop(opened.desktopUrl);
       setSession(opened.session);
+      const [latestVpn, latestComputer] = await Promise.all([
+        fetchLinkedinVpn().catch(() => null),
+        fetchLinkedinComputer(false).catch(() => null),
+      ]);
+      if (latestVpn) setVpn(latestVpn);
+      if (latestComputer) setComputer(latestComputer);
     } catch (openError) {
-      setError(openError instanceof Error ? openError.message : "Could not open the virtual machine");
+      setError(openError instanceof Error ? openError.message : "Could not open LinkedIn");
+      const latestVpn = await fetchLinkedinVpn().catch(() => null);
+      if (latestVpn) setVpn(latestVpn);
+      await refreshComputer(false).catch(() => null);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function toggleVpn(enabled: boolean) {
+    setError("");
+    setBusy(enabled ? `Connecting VPN (${vpn?.country || "India"})…` : "Turning VPN off…");
+    try {
+      const next = await setLinkedinVpn(enabled);
+      if (next.vpn) setVpn(next.vpn);
+      if (next.computer) setComputer(next.computer);
+    } catch (vpnError) {
+      setError(vpnError instanceof Error ? vpnError.message : "Could not update VPN");
+      const latest = await fetchLinkedinVpn().catch(() => null);
+      if (latest) setVpn(latest);
+      await refreshComputer(false).catch(() => null);
     } finally {
       setBusy("");
     }
@@ -432,6 +588,114 @@ export default function PortalLinkedinPage() {
             </p>
             {error ? <p className="crm-error">{error}</p> : null}
             <div className="li-auto-card li-auto-card-flat">
+              <div className="li-auto-card-head">
+                <h3>Computer</h3>
+                <span className="li-auto-pill">
+                  {computer
+                    ? `Computer ${COMPUTER_PHASE_LABEL[computer.phase].toLowerCase()}`
+                    : "Checking…"}
+                </span>
+              </div>
+              <p>
+                Starts or resumes this project&apos;s LinkedIn Boat desktop (separate from Cloud
+                Campaign). Machine billing runs only while the computer is on. Release it when you
+                are done to save cost.
+              </p>
+              <div
+                className={`cloud-computer-state is-${computer?.phase || "unknown"}`}
+                role="status"
+              >
+                <i aria-hidden="true" />
+                <span>
+                  <strong>
+                    {computer ? COMPUTER_PHASE_LABEL[computer.phase] : "Checking…"}
+                  </strong>
+                  {computer?.phase === "running"
+                    ? "The computer is on. Show the live view to see LinkedIn."
+                    : computer?.phase === "starting"
+                      ? "Boat is starting the computer. This usually takes under a minute."
+                      : computer?.phase === "stopping"
+                        ? "Boat is saving and switching it off. You can start it again once it's off."
+                        : computer?.phase === "stopped"
+                          ? "Off to save cost. Start it here before logging in or launching."
+                          : computer?.phase === "none"
+                            ? "No computer yet. Start it to create one for LinkedIn."
+                            : "Asking Boat what the computer is doing…"}
+                </span>
+              </div>
+              <div className="li-auto-actions">
+                {computer?.phase === "running" ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-dark"
+                      disabled={Boolean(busy)}
+                      onClick={() => void showLiveView()}
+                    >
+                      {desktopUrl ? "Reconnect live view" : "Show live view"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-soft"
+                      disabled={Boolean(busy)}
+                      title="Checks the computer and VPN again. Use it if something looks stuck."
+                      onClick={() => void startComputer()}
+                    >
+                      Re-check computer
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-soft"
+                      disabled={Boolean(busy)}
+                      onClick={() => void releaseComputer()}
+                    >
+                      Release computer
+                    </button>
+                  </>
+                ) : computer?.phase === "starting" || computer?.phase === "stopping" ? (
+                  <button type="button" className="btn-dark" disabled>
+                    {computer.phase === "starting" ? "Starting…" : "Shutting down…"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn-dark"
+                    disabled={Boolean(busy)}
+                    onClick={() => void startComputer()}
+                  >
+                    Start computer
+                  </button>
+                )}
+              </div>
+              <div className="cloud-vpn-row">
+                <label className="cloud-vpn-toggle">
+                  <input
+                    type="checkbox"
+                    checked={vpn?.enabled === true}
+                    disabled={Boolean(busy) || !vpn || (!vpn.configured && !vpn.enabled)}
+                    onChange={(event) => void toggleVpn(event.target.checked)}
+                  />
+                  <span>Connect through NordVPN ({vpn?.country || "India"})</span>
+                </label>
+                <p className="li-auto-hint">
+                  {!vpn
+                    ? "Checking VPN…"
+                    : !vpn.configured && !vpn.enabled
+                      ? "NordVPN is not set up on the server yet (an admin needs to add NORDVPN_TOKEN)."
+                      : !vpn.enabled
+                        ? "Off. Applies to every LinkedIn campaign in this project, since they share this computer."
+                        : vpn.status?.connected
+                          ? `Connected · ${[vpn.status.city, vpn.status.country].filter(Boolean).join(", ")}${
+                              vpn.status.ip ? ` · ${vpn.status.ip}` : ""
+                            }. Nothing runs on the computer unless this connection is up.`
+                          : vpn.status?.error
+                            ? `Not connected: ${vpn.status.error}`
+                            : "On. Connects when the computer starts; nothing is sent until it does."}
+                </p>
+              </div>
+            </div>
+
+            <div className="li-auto-card li-auto-card-flat">
               {session?.connected ? (
                 <div className="li-account">
                   <span className={`li-account-photo${session.accountPhoto ? " has-photo" : ""}`} aria-hidden="true">
@@ -462,7 +726,7 @@ export default function PortalLinkedinPage() {
                     <h3>LinkedIn</h3>
                     <span className="li-auto-pill">Not connected</span>
                   </div>
-                  <p>Open the virtual machine and log in. The same computer keeps that session.</p>
+                  <p>Start the computer first, then log in. The same computer keeps that session.</p>
                   <label className="li-auto-field">
                     Account name
                     <input
@@ -474,7 +738,12 @@ export default function PortalLinkedinPage() {
                 </>
               )}
               <div className="li-auto-actions">
-                <button type="button" className="btn-dark" onClick={() => void openComputer()} disabled={Boolean(busy)}>
+                <button
+                  type="button"
+                  className="btn-dark"
+                  onClick={() => void openComputer()}
+                  disabled={Boolean(busy) || computer?.phase === "stopping"}
+                >
                   {session?.connected ? "Open LinkedIn" : "Log in on the virtual machine"}
                 </button>
                 {desktopUrl && !session?.connected ? (
@@ -483,9 +752,6 @@ export default function PortalLinkedinPage() {
                   </button>
                 ) : null}
               </div>
-              {desktopUrl ? (
-                <iframe className="li-auto-frame" title="LinkedIn virtual machine" src={desktopUrl} />
-              ) : null}
             </div>
 
             <div className="crm-field">
@@ -828,6 +1094,24 @@ export default function PortalLinkedinPage() {
           </div>
         </div>
       )}
+
+      {desktopUrl ? (
+        <CloudDesktopViewer
+          desktopUrl={desktopUrl}
+          layout={desktopLayout}
+          busy={Boolean(busy)}
+          awaitingLoginConfirm={Boolean(desktopUrl && !session?.connected)}
+          confirmLabel="Keep this LinkedIn connected"
+          onLayoutChange={setDesktopLayout}
+          onClose={() => {
+            setDesktopUrl("");
+            setDesktopLayout("floating");
+          }}
+          onConfirmLogin={
+            desktopUrl && !session?.connected ? () => void keepLogin() : undefined
+          }
+        />
+      ) : null}
     </>
   );
 }

@@ -205,6 +205,36 @@ export function countLinkedinMessages(people: LinkedinPerson[]) {
   );
 }
 
+export type LinkedinVpnInfo = {
+  enabled: boolean;
+  country: string;
+  configured: boolean;
+  status: {
+    connected: boolean;
+    country?: string;
+    city?: string;
+    ip?: string;
+    checkedAt: string;
+    error?: string;
+  } | null;
+};
+
+export type LinkedinComputerPhase =
+  | "running"
+  | "starting"
+  | "stopping"
+  | "stopped"
+  | "none"
+  | "unknown";
+
+export type LinkedinComputerInfo = {
+  configured: boolean;
+  phase: LinkedinComputerPhase;
+  state?: string | null;
+  sandboxId?: string | null;
+  desktopUrl?: string;
+};
+
 export async function fetchLinkedinSession() {
   const response = await fetch("/api/linkedin/session", { cache: "no-store" });
   const data = (await response.json().catch(() => ({}))) as {
@@ -215,6 +245,85 @@ export async function fetchLinkedinSession() {
     throw new Error(data.error || "Could not load LinkedIn");
   }
   return data.session;
+}
+
+export async function fetchLinkedinVpn() {
+  const response = await fetch("/api/linkedin/session?vpn=1", { cache: "no-store" });
+  const data = (await response.json().catch(() => ({}))) as {
+    vpn?: LinkedinVpnInfo;
+    error?: string;
+  };
+  if (!response.ok || !data.vpn) {
+    throw new Error(data.error || "Could not load VPN");
+  }
+  return data.vpn;
+}
+
+export async function setLinkedinVpn(enabled: boolean) {
+  const response = await fetch("/api/linkedin/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: enabled ? "vpn_enable" : "vpn_disable" }),
+  });
+  const data = (await response.json().catch(() => ({}))) as {
+    vpn?: LinkedinVpnInfo;
+    computer?: LinkedinComputerInfo;
+    error?: string;
+  };
+  if (!response.ok || !data.vpn) {
+    throw new Error(data.error || "Could not update VPN");
+  }
+  return data;
+}
+
+export async function fetchLinkedinComputer(withDesktop = false) {
+  const response = await fetch("/api/linkedin/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "computer_status", withDesktop }),
+  });
+  const data = (await response.json().catch(() => ({}))) as {
+    computer?: LinkedinComputerInfo;
+    error?: string;
+  };
+  if (!response.ok || !data.computer) {
+    throw new Error(data.error || "Could not check the computer");
+  }
+  return data.computer;
+}
+
+export async function startLinkedinComputer() {
+  const response = await fetch("/api/linkedin/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "start_computer" }),
+  });
+  const data = (await response.json().catch(() => ({}))) as {
+    desktopUrl?: string;
+    computer?: LinkedinComputerInfo;
+    vpn?: LinkedinVpnInfo;
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(data.error || "Could not start the computer");
+  }
+  return data;
+}
+
+export async function releaseLinkedinComputer() {
+  const response = await fetch("/api/linkedin/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "release_computer" }),
+  });
+  const data = (await response.json().catch(() => ({}))) as {
+    computer?: LinkedinComputerInfo;
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(data.error || "Could not release the computer");
+  }
+  return data;
 }
 
 export async function openLinkedinSession() {

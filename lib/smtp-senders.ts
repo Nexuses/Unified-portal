@@ -71,6 +71,8 @@ export type SenderDoc = {
   projectId: ObjectId;
   provider: SmtpProviderId;
   fromEmail: string;
+  /** Display name shown as the From name when sending. */
+  fromName?: string;
   smtpHost?: string;
   smtpUser?: string;
   smtpPassword?: string;
@@ -98,6 +100,7 @@ export type SmtpSender = {
   provider: SmtpProviderId;
   providerName: string;
   fromEmail: string;
+  fromName?: string;
   smtpHost?: string;
   smtpUser?: string;
   smtpPassword?: string;
@@ -331,6 +334,7 @@ export function mapSender(doc: SenderDoc): SmtpSender {
     provider: doc.provider,
     providerName: provider?.name ?? doc.provider,
     fromEmail: doc.fromEmail,
+    fromName: doc.fromName?.trim() || undefined,
     smtpHost: doc.smtpHost,
     smtpUser: doc.smtpUser,
     smtpPassword: maskSecret(doc.smtpPassword),
@@ -406,10 +410,13 @@ export function parseSenderInput(
     }
   }
 
+  const fromName = String(body.fromName ?? "").trim();
+
   return {
     data: {
       provider: providerId,
       fromEmail: values.fromEmail ?? "",
+      ...(fromName ? { fromName } : {}),
       smtpHost: values.smtpHost,
       smtpUser: values.smtpUser,
       smtpPassword: values.smtpPassword,

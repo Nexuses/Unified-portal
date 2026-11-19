@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import { ObjectId } from "mongodb";
 import { cache } from "react";
 import type { EventSmtpConfig } from "@/lib/event-smtp";
@@ -133,6 +134,10 @@ export type EventDocument = {
   eventFormat?: EventFormat;
   /** Custom subject/message templates for automated emails. */
   emailFlows?: EventEmailFlows;
+  /** CRM list id for "{eventName} - Registration" (public registrants). */
+  registrationListId?: string;
+  /** Opaque token for the public event report (`/er/{token}`). */
+  shareToken?: string;
   status: "draft" | "published";
   createdAt: Date;
   updatedAt: Date;
@@ -399,3 +404,61 @@ async function fetchAllEventsUncached(projectId?: string) {
 
 /** Events for one portal project. Deduped within a request. */
 export const getAllEvents = cache(fetchAllEventsUncached);
+
+export async function getEventByShareToken(shareToken: string) {
+  const token = String(shareToken ?? "").trim();
+  if (!token) {
+    return null;
+  }
+  const collection = await eventsCollection();
+  const event = await collection.findOne({ shareToken: token });
+  if (!event) {
+    return null;
+  }
+  const eventId = ensureEventId(event);
+  const rawCals = extractRawEventCalendarsField(event) ?? event.eventCalendars;
+  return withNormalizedEventFields({
+    ...event,
+    id: eventId.toString(),
+    eventCalendars: normalizeEventCalendarsArray(rawCals),
+  });
+}
+
+export async function ensureEventShareToken(
+  eventId: string,
+  projectId?: string,
+) {
+  if (!ObjectId.isValid(eventId)) {
+    return null;
+  }
+  const collection = await eventsCollection();
+  const existing = await collection.findOne(eventIdFilter(eventId, projectId));
+  if (!existing) {
+    return null;
+  }
+  if (existing.shareToken) {
+    return existing.shareToken;
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const shareToken = randomBytes(18).toString("base64url");
+    const taken = await collection.findOne(
+      { shareToken },
+      { projection: { _id: 1 } },
+    );
+    if (taken) {
+      continue;
+    }
+
+    const result = await collection.updateOne(
+      { _id: existing._id, shareToken: { $exists: false } },
+      { $set: { shareToken, updatedAt: new Date() } },
+    );
+    if (result.modifiedCount > 0 || result.matchedCount === 0) {
+      const fresh = await collection.findOne({ _id: existing._id });
+      return fresh?.shareToken ?? shareToken;
+    }
+  }
+
+  throw new Error("Could not create a share link");
+}

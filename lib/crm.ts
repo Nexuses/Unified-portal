@@ -183,7 +183,9 @@ export type ContactHistoryEvent = {
     | "campaign_delivered"
     | "campaign_opened"
     | "campaign_clicked"
-    | "campaign_unsubscribed";
+    | "campaign_unsubscribed"
+    | "event_invited"
+    | "event_bot_click";
   title: string;
   description: string;
   at: string;

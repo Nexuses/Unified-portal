@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { eventFormatLabel, type EventFormat } from "@/lib/event-format";
 
@@ -35,6 +35,32 @@ export function AllEventsBoard({ events }: { events: EventListItem[] }) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!openMenuId) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpenMenuId(null);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpenMenuId(null);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openMenuId]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -128,7 +154,7 @@ export function AllEventsBoard({ events }: { events: EventListItem[] }) {
             return (
               <div className="drip-card event-campaign-row" key={event.id}>
                 <div className="drip-card-inner">
-                  <Link href={`/portal/marketing/events/${event.id}`} className="drip-main">
+                  <Link href={`/portal/marketing/events/${event.id}/report`} className="drip-main">
                     <div className="drip-title">{event.eventName || "Untitled event"}</div>
                     <div className="drip-status">
                       <span className={`dot ${event.status === "published" ? "sent" : "draft"}`} />
@@ -148,12 +174,21 @@ export function AllEventsBoard({ events }: { events: EventListItem[] }) {
                       Submissions
                     </Link>
                     <Link
+                      href={`/portal/marketing/events/${event.id}`}
+                      className="btn-soft"
+                    >
+                      Open event
+                    </Link>
+                    <Link
                       href={`/portal/marketing/events/${event.id}/analytics`}
                       className="btn-soft"
                     >
                       Analytics
                     </Link>
-                    <div className="drip-more-wrap">
+                    <div
+                      className="drip-more-wrap"
+                      ref={openMenuId === event.id ? menuRef : undefined}
+                    >
                       <button
                         type="button"
                         className={`drip-more${openMenuId === event.id ? " active" : ""}`}

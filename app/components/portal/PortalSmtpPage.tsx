@@ -279,6 +279,7 @@ export default function PortalSmtpPage() {
   const [selectedProvider, setSelectedProvider] =
     useState<SmtpProviderDefinition | null>(null);
   const [form, setForm] = useState<SenderCredentials>(EMPTY_FORM);
+  const [fromName, setFromName] = useState("");
   const [noInbox, setNoInbox] = useState(false);
   const [dailyLimit, setDailyLimit] = useState(GMAIL_DAILY_LIMIT_DEFAULT);
   const [saving, setSaving] = useState(false);
@@ -398,6 +399,7 @@ export default function PortalSmtpPage() {
     setModalStep("provider");
     setSelectedProvider(null);
     setForm(EMPTY_FORM);
+    setFromName("");
     setNoInbox(false);
     setError("");
     setSuccess("");
@@ -414,6 +416,7 @@ export default function PortalSmtpPage() {
     setModalStep("form");
     setSelectedProvider(provider);
     setForm(buildEditForm(sender, provider));
+    setFromName(sender.fromName ?? "");
     setNoInbox(Boolean(sender.noInbox));
     setDailyLimit(
       sender.provider === "gmail"
@@ -434,6 +437,7 @@ export default function PortalSmtpPage() {
     setModalStep("provider");
     setSelectedProvider(null);
     setForm(EMPTY_FORM);
+    setFromName("");
     setNoInbox(false);
     setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
     setManualSmtpOpen(false);
@@ -453,6 +457,7 @@ export default function PortalSmtpPage() {
   function selectProvider(provider: SmtpProviderDefinition) {
     setSelectedProvider(provider);
     setForm(buildInitialForm(provider));
+    setFromName("");
     setNoInbox(false);
     setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
     setManualSmtpOpen(false);
@@ -463,6 +468,7 @@ export default function PortalSmtpPage() {
     setModalStep("provider");
     setSelectedProvider(null);
     setForm(EMPTY_FORM);
+    setFromName("");
     setNoInbox(false);
     setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
     setManualSmtpOpen(false);
@@ -485,7 +491,10 @@ export default function PortalSmtpPage() {
       const response = await fetch("/api/smtp/senders/composio", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: selectedProvider.id }),
+        body: JSON.stringify({
+          provider: selectedProvider.id,
+          fromName: fromName.trim() || undefined,
+        }),
       });
       const data = await response.json();
       if (!response.ok || !data.redirectUrl) {
@@ -523,12 +532,14 @@ export default function PortalSmtpPage() {
             isEditing && editingSender?.via === "composio"
               ? {
                   keepComposio: true,
+                  fromName: fromName.trim(),
                   noInbox,
                   ...(selectedProvider.id === "gmail" ? { dailyLimit } : {}),
                 }
               : {
                   provider: selectedProvider.id,
                   ...form,
+                  fromName: fromName.trim() || undefined,
                   noInbox,
                   ...(selectedProvider.id === "gmail" ? { dailyLimit } : {}),
                 },
@@ -837,7 +848,9 @@ export default function PortalSmtpPage() {
                       <div className="vs-email-row">
                         <SmtpProviderBadge providerId={sender.provider} />
                         <div className="vs-email">
-                          {formatSenderDisplayName(sender.fromEmail)}
+                          {sender.fromName?.trim()
+                            ? `${sender.fromName.trim()} <${sender.fromEmail}>`
+                            : formatSenderDisplayName(sender.fromEmail)}
                         </div>
                       </div>
                       <span
@@ -1109,6 +1122,19 @@ export default function PortalSmtpPage() {
               ) : selectedProvider ? (
                 <form id="smtp-sender-form" onSubmit={handleSubmit}>
                   <div className="smtp-form-stack">
+                    {canConnectComposio || editingComposio ? (
+                      <div className="crm-field">
+                        <label htmlFor="smtp-from-name">Sender name</label>
+                        <input
+                          id="smtp-from-name"
+                          type="text"
+                          value={fromName}
+                          onChange={(event) => setFromName(event.target.value)}
+                          placeholder="Name shown on outbound emails"
+                          autoComplete="name"
+                        />
+                      </div>
+                    ) : null}
                     {canConnectComposio ? (
                       <div className="smtp-composio-connect">
                         <div className="smtp-composio-copy">

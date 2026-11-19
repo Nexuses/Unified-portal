@@ -39,7 +39,7 @@ export async function POST(_: Request, context: RouteContext) {
             platform: updated.calendarPlatform ?? event.platform,
             platformLink: updated.calendarPlatformLink ?? event.platformLink ?? "",
           },
-          { viewerTimeZone: updated.viewerTimeZone }
+          { viewerTimeZone: updated.viewerTimeZone, submissionId }
         );
       } catch (emailError) {
         console.error("Failed to send waitlist confirmation email:", emailError);

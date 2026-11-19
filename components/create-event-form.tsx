@@ -6,6 +6,9 @@ import { ButtonLoadingContent } from "@/components/button-loader";
 import { ImageUploadField } from "@/components/image-upload-field";
 import { EventHtmlEditor } from "@/components/event-html-editor";
 import { EventEmailFlowPanel } from "@/components/event-email-flow-panel";
+import SmtpSenderSelect, {
+  type SmtpSenderOption,
+} from "@/app/components/portal/SmtpSenderSelect";
 import { isConnectedSender } from "@/lib/smtp-senders";
 import {
   extractRawEventCalendarsField,
@@ -255,7 +258,7 @@ export function CreateEventForm({
   }, [mode, eventId, mergedInitial]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [senders, setSenders] = useState<Array<{ id: string; fromEmail: string }>>([]);
+  const [senders, setSenders] = useState<SmtpSenderOption[]>([]);
   const [sendersLoading, setSendersLoading] = useState(true);
   const [isEmailFlowOpen, setIsEmailFlowOpen] = useState(false);
   const isWebinar = isSharedSessionFormat(form.eventFormat);
@@ -293,7 +296,8 @@ export function CreateEventForm({
         const data = (await response.json()) as Array<{
           id?: string;
           fromEmail?: string;
-          connection?: { status?: string };
+          provider?: string;
+          connection?: { status?: "connected" | "disconnected" };
         }>;
         if (!mounted || !response.ok || !Array.isArray(data)) {
           return;
@@ -301,7 +305,12 @@ export function CreateEventForm({
         setSenders(
           data
             .filter((sender) => isConnectedSender(sender) && sender.id && sender.fromEmail)
-            .map((sender) => ({ id: String(sender.id), fromEmail: String(sender.fromEmail) })),
+            .map((sender) => ({
+              id: String(sender.id),
+              fromEmail: String(sender.fromEmail),
+              provider: String(sender.provider ?? ""),
+              connection: sender.connection,
+            })),
         );
       } catch {
         if (mounted) {
@@ -632,25 +641,27 @@ export function CreateEventForm({
                 </p>
               </label>
 
-              <label className="block">
-                <span className="text-sm text-black/70">Sender</span>
-                <select
-                  className={inputClass}
-                  value={form.senderId}
-                  disabled={sendersLoading}
-                  onChange={(event) => chooseSender("invite", event.target.value)}
-                >
-                  <option value="">{sendersLoading ? "Loading senders..." : "Select a connected sender"}</option>
-                  {senders.map((sender) => (
-                    <option key={sender.id} value={sender.id}>
-                      {sender.fromEmail}
-                    </option>
-                  ))}
-                </select>
+              <div className="block">
+                <span id="event-invite-sender-label" className="text-sm text-black/70">
+                  Sender
+                </span>
+                <div className="mt-2">
+                  <SmtpSenderSelect
+                    id="event-invite-sender"
+                    labelledBy="event-invite-sender-label"
+                    senders={senders}
+                    value={form.senderId}
+                    disabled={sendersLoading}
+                    placeholder={
+                      sendersLoading ? "Loading senders..." : "Select a connected sender"
+                    }
+                    onChange={(senderId) => chooseSender("invite", senderId)}
+                  />
+                </div>
                 <p className="mt-1.5 text-xs text-black/45">
                   Invite and reminder emails send from this mailbox. Disconnected senders are not listed.
                 </p>
-              </label>
+              </div>
 
               <label className="block">
                 <span className="text-sm text-black/70">Reply-To Email</span>
@@ -695,27 +706,31 @@ export function CreateEventForm({
                 </p>
               </label>
 
-              <label className="block">
-                <span className="text-sm text-black/70">Calendar sender</span>
-                <select
-                  className={inputClass}
-                  value={form.inviteSenderId}
-                  disabled={sendersLoading}
-                  onChange={(event) => chooseSender("calendar", event.target.value)}
-                >
-                  <option value="">
-                    {sendersLoading ? "Loading senders..." : "Same as invite sender"}
-                  </option>
-                  {senders.map((sender) => (
-                    <option key={`cal-${sender.id}`} value={sender.id}>
-                      {sender.fromEmail}
-                    </option>
-                  ))}
-                </select>
+              <div className="block">
+                <span id="event-calendar-sender-label" className="text-sm text-black/70">
+                  Calendar sender
+                </span>
+                <div className="mt-2">
+                  <SmtpSenderSelect
+                    id="event-calendar-sender"
+                    labelledBy="event-calendar-sender-label"
+                    senders={senders}
+                    value={form.inviteSenderId}
+                    disabled={sendersLoading}
+                    allowEmpty
+                    emptyLabel={
+                      sendersLoading ? "Loading senders..." : "Same as invite sender"
+                    }
+                    placeholder={
+                      sendersLoading ? "Loading senders..." : "Same as invite sender"
+                    }
+                    onChange={(senderId) => chooseSender("calendar", senderId)}
+                  />
+                </div>
                 <p className="mt-1.5 text-xs text-black/45">
                   Calendar invites (.ics) send from this mailbox. Leave blank to use the invite sender.
                 </p>
-              </label>
+              </div>
 
               <label className="block">
                 <span className="text-sm text-black/70">Reply-To Email</span>

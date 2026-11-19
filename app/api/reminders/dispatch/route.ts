@@ -62,10 +62,12 @@ async function runReminderDispatch(request: Request) {
             acceptInviteUrl: `${eventPublicUrl(event.publicId)}/accept-invite?sid=${submissionId}`,
             calendarInviteUid,
             viewerTimeZone: submission.viewerTimeZone ?? null,
+            submissionId,
           }
         : {
             calendarInviteUid,
             viewerTimeZone: submission.viewerTimeZone ?? null,
+            submissionId,
           };
       const eventStart = parseIstDateTime(slotDate, slotStart);
       if (!eventStart) {

@@ -4800,6 +4800,8 @@ function DesignEmailModal({
 }
 
 function senderDisplayName(sender: SmtpSender) {
+  const saved = sender.fromName?.trim();
+  if (saved) return saved;
   const formatted = formatSenderDisplayName(sender.fromEmail);
   const match = formatted.match(/^(.+?)\s*</);
   return match?.[1]?.trim() || sender.providerName;
@@ -7931,14 +7933,19 @@ export default function PortalCampaignDetailPage({
                 scheduledFor,
               }),
             });
-            const data = await response.json();
-            if (!response.ok) {
-              throw new Error(data.error || "Failed to launch campaign");
+            const data = (await response.json().catch(() => null)) as {
+              error?: string;
+            } | null;
+            if (!response.ok || !data) {
+              throw new Error(
+                data?.error ||
+                  "The server took too long to answer. Refresh this page before sending again — the campaign may already be sending.",
+              );
             }
 
             const updated = mergeBlastReport(
               { ...campaign, kind: launchKind },
-              data,
+              data as Parameters<typeof mergeBlastReport>[1],
             );
             setCampaign(updated);
             setScheduleOpen(false);

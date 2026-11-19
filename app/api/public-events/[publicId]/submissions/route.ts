@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   createSubmissionFromPublicId,
+  findSubmissionIdByEventEmail,
   getBookedSlotIndexesByEventId,
 } from "@/lib/submissions";
 import { getEventByPublicId } from "@/lib/events";
@@ -109,7 +110,10 @@ export async function POST(request: Request, context: RouteContext) {
             platform: selectedSlot?.platform ?? event.platform,
             platformLink: selectedSlot?.platformLink ?? event.platformLink ?? "",
           },
-          { viewerTimeZone }
+          {
+            viewerTimeZone,
+            submissionId: await findSubmissionIdByEventEmail(event.id, email),
+          }
         );
       } catch (emailError) {
         console.error("Failed to send registration invite email:", emailError);

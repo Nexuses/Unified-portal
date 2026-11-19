@@ -410,6 +410,8 @@ export async function ensureCloudVpn(projectId: ObjectId, sandboxId: string) {
       { connected: false, checkedAt: new Date().toISOString(), error: message },
       true,
     );
-    throw new Error(`VPN (${country}) is on for this project but not connected, so the cloud computer was not used. ${message}`);
+    throw new Error(
+      `VPN (${country}) is on for this project but not connected, so the computer was not used. ${message}`,
+    );
   }
 }

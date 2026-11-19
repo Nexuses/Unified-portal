@@ -5,6 +5,7 @@ import { normalizeEventFormat } from "@/lib/event-format";
 import { normalizeEventEmailFlows } from "@/lib/event-email-flows";
 import { normalizeEventPlatform, resolveMeetingLink } from "@/lib/event-platform";
 import { createEvent, getAllEvents } from "@/lib/events";
+import { ensureEventRegistrationList } from "@/lib/event-registration-list";
 import { normalizeWeeklyHours } from "@/lib/one-to-one-weekly-hours";
 import { revalidateEventPagesByEventId } from "@/lib/revalidate-dashboard";
 
@@ -145,6 +146,17 @@ export async function POST(request: Request) {
       ),
       status: "draft",
     });
+
+    try {
+      await ensureEventRegistrationList({
+        eventId,
+        projectId: session.projectId,
+        eventName: String(body.eventName ?? ""),
+        userId: session.id,
+      });
+    } catch {
+      // Event create still succeeds if the Registration list could not be created.
+    }
 
     await revalidateEventPagesByEventId(eventId);
     return NextResponse.json({ message: "Event created.", eventId }, { status: 201 });

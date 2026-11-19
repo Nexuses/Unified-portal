@@ -2,12 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ButtonLoadingContent } from "@/components/button-loader";
-import {
-  CsvImportMappingPanel,
-  createInitialCsvMapping,
-} from "@/components/csv-import-mapping-panel";
 import { InviteCustomMessageEditor } from "@/components/invite-custom-message-editor";
 import {
   InviteScheduleFields,
@@ -18,14 +14,8 @@ import {
   SubmissionsCalendarCardsSkeleton,
   SubmissionsTableSkeleton,
 } from "@/components/skeleton";
-import {
-  buildSubmissionsExportCsv,
-  downloadCsvFile,
-  mapCsvToRegistrants,
-  parseCsvFile,
-  type CsvColumnMapping,
-  type ParsedCsvFile,
-} from "@/lib/csv-registrants";
+import { buildSubmissionsExportCsv, downloadCsvFile } from "@/lib/csv-registrants";
+import { portalListRoute } from "@/lib/portal-nav";
 import {
   type EventFormat,
   eventFormatLabel,
@@ -60,7 +50,10 @@ type SubmissionItem = {
   createdAt: string;
   inviteSentAt: string | null;
   inviteAcceptedAt: string | null;
-  source: "csv" | "registration" | null;
+  source: "csv" | "registration" | "list" | null;
+  sourceListId?: string | null;
+  sourceListName?: string | null;
+  botClick?: boolean;
   waitlistStatus: WaitlistStatus | null;
   waitlistConfirmedAt: string | null;
   waitlistRejectedAt: string | null;
@@ -77,29 +70,34 @@ type EventCalendarItem = {
   platform: string;
 };
 
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+      <path d="M6.5 7 7.4 19a2 2 0 0 0 2 1.8h5.2a2 2 0 0 0 2-1.8L17.5 7" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
 type EventSubmissionsBoardProps = {
   eventId: string;
   eventName: string;
   eventFormat: EventFormat;
+  registrationListId?: string;
 };
 
 export function EventSubmissionsBoard({
   eventId,
   eventName,
   eventFormat: initialEventFormat,
+  registrationListId,
 }: EventSubmissionsBoardProps) {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [activeEventFormat, setActiveEventFormat] = useState<EventFormat>(initialEventFormat);
-  const [isUploadingCsv, setIsUploadingCsv] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
-  const [csvUploadIsWarning, setCsvUploadIsWarning] = useState(false);
-  const [pendingCsvImport, setPendingCsvImport] = useState<{
-    fileName: string;
-    parsed: ParsedCsvFile;
-    mapping: CsvColumnMapping;
-  } | null>(null);
-  const csvInputRef = useRef<HTMLInputElement>(null);
   const [submissions, setSubmissions] = useState<SubmissionItem[]>([]);
   const [calendarItems, setCalendarItems] = useState<EventCalendarItem[]>([]);
   const [expiredCalendarItems, setExpiredCalendarItems] = useState<EventCalendarItem[]>([]);
@@ -137,8 +135,17 @@ export function EventSubmissionsBoard({
   const [confirmingSubmissionId, setConfirmingSubmissionId] = useState<string | null>(null);
   const [rejectingSubmissionId, setRejectingSubmissionId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [crmLists, setCrmLists] = useState<Array<{ id: string; name: string; contactCount: number }>>([]);
+  const [selectedListId, setSelectedListId] = useState("");
+  const [listMenuOpen, setListMenuOpen] = useState(false);
+  const [listSearch, setListSearch] = useState("");
+  const listPickerRef = useRef<HTMLDivElement>(null);
+  const [importingList, setImportingList] = useState(false);
+  const [showBotClicks, setShowBotClicks] = useState(false);
+  const [submissionsPage, setSubmissionsPage] = useState(1);
   const [notice, setNotice] = useState("");
   const [nowTs, setNowTs] = useState(() => Date.now());
+  const SUBMISSIONS_PAGE_SIZE = 50;
 
   const normalizeTime = (value?: string) => String(value ?? "").trim().slice(0, 5);
   const normalizePlatform = (value?: string) => String(value ?? "").trim().toLowerCase();
@@ -192,6 +199,59 @@ export function EventSubmissionsBoard({
     }, 60_000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/crm/lists")
+      .then(async (response) => {
+        if (!response.ok) return [];
+        const payload = (await response.json()) as Array<{
+          id?: string;
+          name?: string;
+          contactCount?: number;
+        }>;
+        return Array.isArray(payload) ? payload : [];
+      })
+      .then((lists) => {
+        if (cancelled) return;
+        setCrmLists(
+          lists
+            .filter((list) => list.id && list.name)
+            .map((list) => ({
+              id: list.id as string,
+              name: list.name as string,
+              contactCount: list.contactCount ?? 0,
+            })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setCrmLists([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!listMenuOpen) return;
+    function onPointerDown(event: MouseEvent) {
+      if (!listPickerRef.current?.contains(event.target as Node)) {
+        setListMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [listMenuOpen]);
+
+  useEffect(() => {
+    setSubmissionsPage(1);
+  }, [
+    webinarSubmissionTab,
+    waitlistedSubmissionTab,
+    showBotClicks,
+    activeCalendarTab,
+    eventId,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -258,136 +318,136 @@ export function EventSubmissionsBoard({
     router.push("/portal/marketing/events");
   }
 
-  async function handleCsvFileSelected(file: File) {
+  async function importSelectedList() {
+    if (!selectedListId) return;
+    setImportingList(true);
     setError("");
     setUploadMessage("");
-    setCsvUploadIsWarning(false);
     try {
-      const text = await file.text();
-      const parsed = parseCsvFile(text);
-      if (parsed.rows.length === 0) {
-        throw new Error("CSV file has no data rows.");
-      }
-      setPendingCsvImport({
-        fileName: file.name,
-        parsed,
-        mapping: createInitialCsvMapping(parsed),
-      });
-    } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "Failed to read CSV.");
-    } finally {
-      if (csvInputRef.current) {
-        csvInputRef.current.value = "";
-      }
-    }
-  }
-
-  function cancelCsvImport() {
-    setPendingCsvImport(null);
-  }
-
-  async function importMappedCsv() {
-    if (!pendingCsvImport) {
-      return;
-    }
-    setIsUploadingCsv(true);
-    setError("");
-    setUploadMessage("");
-    setCsvUploadIsWarning(false);
-    try {
-      const rows = mapCsvToRegistrants(pendingCsvImport.parsed.rows, pendingCsvImport.mapping);
-      if (rows.length === 0) {
-        throw new Error("No valid rows found. Map Name and Email columns.");
-      }
       const response = await fetch(`/api/events/${eventId}/submissions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slotIndex: 0, rows }),
+        body: JSON.stringify({ listId: selectedListId, slotIndex: 0 }),
       });
       const payload = (await response.json()) as {
         message?: string;
         insertedCount?: number;
-        skippedDuplicateCount?: number;
       };
       if (!response.ok) {
-        throw new Error(payload.message ?? "Failed to upload CSV.");
+        throw new Error(payload.message ?? "Could not add that list.");
       }
       await loadSubmissionsForEvent(eventId);
       setWebinarSubmissionTab("invite_to");
       setWaitlistedSubmissionTab("invite_to");
       setIsCalendarSelectionView(false);
-      setPendingCsvImport(null);
-      if ((payload.insertedCount ?? 0) === 0 && (payload.skippedDuplicateCount ?? 0) > 0) {
-        setCsvUploadIsWarning(true);
-        setUploadMessage(payload.message ?? "Contacts already exist in this event.");
-      } else {
-        setCsvUploadIsWarning(false);
-        setUploadMessage(
-          payload.insertedCount
-            ? `Imported ${payload.insertedCount} contact${payload.insertedCount === 1 ? "" : "s"}.`
-            : (payload.message ?? "Import complete.")
-        );
-      }
-    } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "Failed to import CSV.");
+      setUploadMessage(payload.message ?? "List added.");
+    } catch (listError) {
+      setError(listError instanceof Error ? listError.message : "Could not add that list.");
     } finally {
-      setIsUploadingCsv(false);
+      setImportingList(false);
     }
   }
 
-  function renderCsvUploadSection() {
+  const filteredCrmLists = useMemo(() => {
+    const query = listSearch.trim().toLowerCase();
+    if (!query) return crmLists;
+    return crmLists.filter((list) => list.name.toLowerCase().includes(query));
+  }, [crmLists, listSearch]);
+
+  const selectedList = crmLists.find((list) => list.id === selectedListId) ?? null;
+
+  function renderBotToggle() {
     return (
-      <div className="mb-4 rounded-xl border border-black/10 bg-[#fafaf8] p-4">
-        <p className="text-sm font-medium text-black">Upload contacts (CSV)</p>
-        <p className="mt-1 text-xs text-black/55">
-          Choose a CSV file, map columns to Name, Email, and Company Name, then import. Contacts
-          appear in Invite to until you send them an invite.
-        </p>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <input
-            ref={csvInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                void handleCsvFileSelected(file);
-              }
-            }}
-          />
+      <button
+        type="button"
+        role="switch"
+        aria-checked={showBotClicks}
+        className={`drip-report-table-toggle drip-report-bot-nav-toggle${showBotClicks ? " is-on" : ""}`}
+        onClick={() => setShowBotClicks((value) => !value)}
+        title={
+          showBotClicks
+            ? "Bot clicks shown with tags in Going"
+            : "Bot clicks hidden in Going"
+        }
+      >
+        <span className="drip-report-table-switch" aria-hidden="true" />
+        Show bot clicks
+      </button>
+    );
+  }
+
+  function renderListImport() {
+    return (
+      <>
+        <div className="drip-toolbar event-list-toolbar">
+          <div className="crm-list-picker" ref={listPickerRef}>
+            <button
+              type="button"
+              className={`crm-list-picker-trigger${listMenuOpen ? " is-open" : ""}`}
+              aria-label="From a CRM list"
+              aria-expanded={listMenuOpen}
+              disabled={importingList}
+              onClick={() => setListMenuOpen((open) => !open)}
+            >
+              <span>
+                {selectedList
+                  ? `${selectedList.name} (${selectedList.contactCount})`
+                  : "Choose a list"}
+              </span>
+              <span aria-hidden>▾</span>
+            </button>
+            {listMenuOpen ? (
+              <div className="crm-list-picker-menu" role="listbox">
+                <label className="crm-list-picker-search">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-3.5-3.5" />
+                  </svg>
+                  <input
+                    type="search"
+                    value={listSearch}
+                    onChange={(event) => setListSearch(event.target.value)}
+                    placeholder="Search lists"
+                    autoFocus
+                  />
+                </label>
+                {crmLists.length === 0 ? (
+                  <p className="crm-list-picker-empty">No lists yet.</p>
+                ) : filteredCrmLists.length === 0 ? (
+                  <p className="crm-list-picker-empty">No lists match your search.</p>
+                ) : (
+                  filteredCrmLists.map((list) => (
+                    <button
+                      key={list.id}
+                      type="button"
+                      role="option"
+                      aria-selected={list.id === selectedListId}
+                      className={list.id === selectedListId ? "is-selected" : ""}
+                      onClick={() => {
+                        setSelectedListId(list.id);
+                        setListMenuOpen(false);
+                        setListSearch("");
+                      }}
+                    >
+                      <span>{list.name}</span>
+                      <span>{list.contactCount}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
           <button
             type="button"
-            disabled={isUploadingCsv}
-            onClick={() => csvInputRef.current?.click()}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-black px-4 text-xs font-medium text-white hover:bg-black/90 disabled:opacity-60"
+            className="btn-dark"
+            disabled={!selectedListId || importingList}
+            onClick={() => void importSelectedList()}
           >
-            <ButtonLoadingContent loading={isUploadingCsv} loadingText="Importing...">
-              Choose CSV file
-            </ButtonLoadingContent>
+            {importingList ? "Adding..." : "Add list"}
           </button>
         </div>
-        {pendingCsvImport ? (
-          <CsvImportMappingPanel
-            fileName={pendingCsvImport.fileName}
-            parsed={pendingCsvImport.parsed}
-            mapping={pendingCsvImport.mapping}
-            isImporting={isUploadingCsv}
-            onMappingChange={(mapping) =>
-              setPendingCsvImport((prev) => (prev ? { ...prev, mapping } : null))
-            }
-            onCancel={cancelCsvImport}
-            onImport={() => void importMappedCsv()}
-          />
-        ) : null}
-        {uploadMessage ? (
-          <p
-            className={`mt-2 text-xs ${csvUploadIsWarning ? "text-amber-800" : "text-emerald-700"}`}
-          >
-            {uploadMessage}
-          </p>
-        ) : null}
-      </div>
+        {uploadMessage ? <p className="crm-summary">{uploadMessage}</p> : null}
+      </>
     );
   }
 
@@ -890,15 +950,63 @@ export function EventSubmissionsBoard({
     : isActiveWaitlisted
       ? waitlistedTabSubmissions
       : filteredSubmissions;
+  const goingTab =
+    (isActiveWebinar && webinarSubmissionTab === "going") ||
+    (isActiveWaitlisted && waitlistedSubmissionTab === "going");
+  const displayedSubmissions =
+    goingTab && !showBotClicks
+      ? tableSubmissions.filter((submission) => !submission.botClick)
+      : tableSubmissions;
+  const submissionsTotalPages = Math.max(
+    1,
+    Math.ceil(displayedSubmissions.length / SUBMISSIONS_PAGE_SIZE),
+  );
+  const currentSubmissionsPage = Math.min(submissionsPage, submissionsTotalPages);
+  const pagedSubmissions = displayedSubmissions.slice(
+    (currentSubmissionsPage - 1) * SUBMISSIONS_PAGE_SIZE,
+    currentSubmissionsPage * SUBMISSIONS_PAGE_SIZE,
+  );
+  const submissionsRangeStart =
+    displayedSubmissions.length === 0
+      ? 0
+      : (currentSubmissionsPage - 1) * SUBMISSIONS_PAGE_SIZE + 1;
+  const submissionsRangeEnd = Math.min(
+    currentSubmissionsPage * SUBMISSIONS_PAGE_SIZE,
+    displayedSubmissions.length,
+  );
+  const inviteHistory = submissions.reduce<
+    Array<{ key: string; name: string; added: number; sent: number; clicks: number }>
+  >((rows, submission) => {
+    const key = submission.sourceListId || submission.source || "other";
+    const name =
+      submission.sourceListName ||
+      (submission.source === "list"
+        ? "List"
+        : submission.source === "csv"
+          ? "CSV upload"
+          : "Registration");
+    const existing = rows.find((row) => row.key === key);
+    const sent = submission.inviteSentAt ? 1 : 0;
+    const clicks = submission.botClick ? 1 : 0;
+    if (existing) {
+      existing.added += 1;
+      existing.sent += sent;
+      existing.clicks += clicks;
+      return rows;
+    }
+    rows.push({ key, name, added: 1, sent, clicks });
+    return rows;
+  }, []);
   const pendingInviteSubmission = pendingInviteId
     ? submissions.find((submission) => submission.id === pendingInviteId)
     : null;
   const pendingBulkInviteTargets = pendingBulkInviteTab
-    ? submissions.filter((submission) =>
-        isActiveWaitlisted
+    ? submissions.filter((submission) => {
+        if (submission.source === "csv") return false;
+        return isActiveWaitlisted
           ? getWaitlistedSubmissionStage(submission) === pendingBulkInviteTab
-          : getWebinarSubmissionStage(submission) === pendingBulkInviteTab
-      )
+          : getWebinarSubmissionStage(submission) === pendingBulkInviteTab;
+      })
     : [];
 
   function exportSubmissionsCsv() {
@@ -957,43 +1065,29 @@ export function EventSubmissionsBoard({
     downloadCsvFile(filename, csv);
   }
 
-  const submissionTableGridClass =
-    isActiveWaitlisted && waitlistedSubmissionTab === "waitlist"
-      ? "grid grid-cols-[minmax(140px,1.3fr)_minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(220px,auto)_28px] gap-x-4"
-      : isActiveSharedSession &&
-          ((isActiveWebinar && webinarSubmissionTab === "going") ||
-            (isActiveWaitlisted &&
-              (waitlistedSubmissionTab === "going" || waitlistedSubmissionTab === "rejected")))
-        ? "grid grid-cols-[minmax(140px,1.3fr)_minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(92px,auto)_28px] gap-x-4"
-        : (isActiveWebinar && webinarSubmissionTab === "invited") ||
-            (isActiveWaitlisted && waitlistedSubmissionTab === "invited")
-          ? "grid grid-cols-[minmax(140px,1.3fr)_minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(220px,auto)_28px] gap-x-4"
-          : "grid grid-cols-[minmax(140px,1.3fr)_minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(168px,auto)_28px] gap-x-4";
-
   return (
-    <section className="rounded-3xl border border-black/10 bg-white p-7 shadow-[0_25px_80px_-60px_rgba(0,0,0,0.55)]">
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
+    <div className="event-portal-page">
+      <div className="crm-page-head drip-page-head">
+        <div className="drip-detail-title-wrap">
           <Link
             href="/portal/marketing/events"
             onClick={(event) => {
               event.preventDefault();
               goBack();
             }}
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-black/55 transition hover:text-black"
+            className="drip-back"
+            aria-label="Back to events"
           >
-            <span aria-hidden>←</span>
-            <span>All events</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <path d="m15 18-6-6 6-6" />
+            </svg>
           </Link>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-black">
-            {eventName}{" "}
-            <span className="font-normal text-black/55">Submissions</span>
-          </h1>
-          <span className="mt-2 inline-flex rounded-full border border-black/10 bg-[#fafaf8] px-3 py-1 text-xs font-medium text-black/60">
-            {eventFormatLabel(activeEventFormat)}
-          </span>
+          <div>
+            <h2>{eventName}</h2>
+            <p>Submissions · {eventFormatLabel(activeEventFormat)}</p>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="crm-actions">
           {!isReminderSettingsView ? (
             <>
               {!isCalendarSelectionView && !isActiveSharedSession ? (
@@ -1005,53 +1099,50 @@ export function EventSubmissionsBoard({
                     setIsExpiredCalendarView(false);
                     setIsCalendarSelectionView(true);
                   }}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-black/20 bg-white text-black/70 transition hover:bg-black/5"
-                  aria-label="Back to calendars"
-                  title="Back to calendars"
+                  className="btn-soft"
                 >
-                  <span aria-hidden>←</span>
+                  Calendars
                 </button>
               ) : null}
               <button
                 type="button"
                 onClick={openReminderSettingsView}
                 disabled={filteredSubmissions.length === 0 || isCalendarSelectionView}
-                className={`inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium transition ${
-                  (isActiveSharedSession ? submissions : filteredSubmissions).some(
-                    (item) => item.remindersEnabled
-                  )
-                    ? "border-black/25 bg-white text-black/75 hover:bg-black/5"
-                    : "border-black/20 bg-white text-black/70 hover:bg-black/5"
-                } disabled:cursor-not-allowed disabled:opacity-50`}
+                className="btn-soft"
               >
-                <span className="whitespace-nowrap">Reminder Settings</span>
+                Reminder settings
               </button>
               {!isCalendarSelectionView && !isReminderSettingsView && !isExpiredCalendarView ? (
                 <button
                   type="button"
                   onClick={exportSubmissionsCsv}
                   disabled={(isActiveSharedSession ? submissions : tableSubmissions).length === 0}
-                  className="inline-flex h-8 items-center rounded-full border border-black/20 bg-white px-3 text-xs font-medium text-black/70 transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="btn-soft"
                 >
                   Export CSV
                 </button>
+              ) : null}
+              {registrationListId ? (
+                <Link
+                  href={portalListRoute(registrationListId)}
+                  className="btn-soft"
+                >
+                  Registration list
+                </Link>
               ) : null}
             </>
           ) : null}
         </div>
       </div>
+      <div className="event-portal-body">
 
-      {notice ? <p className="mb-3 text-sm text-emerald-700">{notice}</p> : null}
-      {error ? <p className="mb-3 text-sm text-red-600">{error}</p> : null}
+      {notice ? <p className="crm-summary">{notice}</p> : null}
+      {error ? <p className="crm-error">{error}</p> : null}
 
       {isLoading && isCalendarSelectionView ? (
         <SubmissionsCalendarCardsSkeleton />
       ) : isLoading ? (
-        <SubmissionsTableSkeleton
-          showCsvSection={
-            isActiveWebinar || (isActiveWaitlisted && waitlistedSubmissionTab === "invite_to")
-          }
-        />
+        <SubmissionsTableSkeleton showCsvSection={false} />
       ) : isCalendarSelectionView ? (
         <div>
           {calendarItems.length === 0 ? (
@@ -1141,44 +1232,47 @@ export function EventSubmissionsBoard({
                 ? "These settings apply to all webinar registrants for this event."
                 : "These settings update only the currently selected calendar tab."}
           </p>
-          <div className="mt-4 space-y-3">
-            <label className="flex items-center justify-between rounded-lg border border-black/10 bg-white px-3 py-2.5">
-              <span className="text-sm font-medium text-black">1 day before event</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={reminderDayEnabled}
-                onClick={() => setReminderDayEnabled((prev) => !prev)}
-                className={`inline-flex h-7 w-12 items-center rounded-full p-1 transition ${
-                  reminderDayEnabled ? "bg-black/55" : "bg-black/20"
-                }`}
-              >
-                <span
-                  className={`h-5 w-5 rounded-full bg-white transition ${
-                    reminderDayEnabled ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
-              </button>
-            </label>
-
-            <label className="flex items-center justify-between rounded-lg border border-black/10 bg-white px-3 py-2.5">
-              <span className="text-sm font-medium text-black">1 hour before event</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={reminderHourEnabled}
-                onClick={() => setReminderHourEnabled((prev) => !prev)}
-                className={`inline-flex h-7 w-12 items-center rounded-full p-1 transition ${
-                  reminderHourEnabled ? "bg-black/55" : "bg-black/20"
-                }`}
-              >
-                <span
-                  className={`h-5 w-5 rounded-full bg-white transition ${
-                    reminderHourEnabled ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
-              </button>
-            </label>
+          <div className="drip-settings-section">
+            <div className="drip-settings-item">
+              <div className="drip-settings-row">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={reminderDayEnabled}
+                  aria-label="1 day before event"
+                  onClick={() => setReminderDayEnabled((prev) => !prev)}
+                  className={`drip-toggle${reminderDayEnabled ? " on" : ""}`}
+                >
+                  {reminderDayEnabled ? (
+                    <svg className="drip-toggle-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  ) : null}
+                  <span className="drip-toggle-knob" />
+                </button>
+                <span className="drip-settings-label">1 day before event</span>
+              </div>
+            </div>
+            <div className="drip-settings-item">
+              <div className="drip-settings-row">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={reminderHourEnabled}
+                  aria-label="1 hour before event"
+                  onClick={() => setReminderHourEnabled((prev) => !prev)}
+                  className={`drip-toggle${reminderHourEnabled ? " on" : ""}`}
+                >
+                  {reminderHourEnabled ? (
+                    <svg className="drip-toggle-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  ) : null}
+                  <span className="drip-toggle-knob" />
+                </button>
+                <span className="drip-settings-label">1 hour before event</span>
+              </div>
+            </div>
           </div>
 
           <div className="mt-5 flex items-center justify-between">
@@ -1322,117 +1416,74 @@ export function EventSubmissionsBoard({
           </div>
         </div>
       ) : (
-        <div>
+        <div className="drip-shell">
           {isActiveWaitlisted ? (
             <>
-              <div className="mb-4 flex flex-wrap gap-2 border-b border-black/10 pb-3">
+              <div className="drip-tabs">
                 {WAITLISTED_SUBMISSION_TABS.map((tab) => {
                   const isActive = waitlistedSubmissionTab === tab.id;
                   const count = waitlistedStageCounts[tab.id];
-                  const isGoingTab = tab.id === "going";
-                  const isRejectedTab = tab.id === "rejected";
                   return (
                     <button
                       key={tab.id}
                       type="button"
                       onClick={() => setWaitlistedSubmissionTab(tab.id)}
-                      className={`inline-flex h-9 items-center gap-2 rounded-full border px-4 text-xs font-medium transition ${
-                        isActive
-                          ? isGoingTab
-                            ? "border-emerald-600 bg-emerald-600 text-white"
-                            : isRejectedTab
-                              ? "border-red-600 bg-red-600 text-white"
-                              : "border-black bg-black text-white"
-                          : isGoingTab
-                            ? "border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
-                            : isRejectedTab
-                              ? "border-red-200 bg-red-50 text-red-800 hover:bg-red-100"
-                              : "border-black/15 bg-white text-black/70 hover:bg-black/5"
-                      }`}
+                      className={`drip-tab${isActive ? " active" : ""}`}
                     >
-                      <span>{tab.label}</span>
-                      <span
-                        className={`rounded-full px-1.5 py-0.5 text-[10px] ${
-                          isActive
-                            ? "bg-white/20 text-white"
-                            : isGoingTab
-                              ? "bg-emerald-100 text-emerald-700"
-                              : isRejectedTab
-                                ? "bg-red-100 text-red-700"
-                                : "bg-black/6 text-black/55"
-                        }`}
-                      >
-                        {count}
-                      </span>
+                      {tab.label} ({count})
                     </button>
                   );
                 })}
               </div>
 
-              {waitlistedSubmissionTab === "invite_to" ? renderCsvUploadSection() : null}
+              {waitlistedSubmissionTab === "invite_to" ? renderListImport() : null}
 
-              <p className="mb-3 text-[11px] text-black/55">
-                {waitlistedSubmissionTab === "invite_to"
-                  ? "Send invites to move contacts into Invited."
-                  : waitlistedSubmissionTab === "invited"
-                    ? "Contacts who received an invite. Resend invite reminders from here."
-                    : waitlistedSubmissionTab === "waitlist"
-                      ? "Pending public registrations. Confirm a seat to send the confirmation email, or reject."
-                      : waitlistedSubmissionTab === "going"
-                        ? "Confirmed attendees (admin confirmed or invite accepted)."
-                        : "Registrants who were not selected for a seat."}
-              </p>
+              <div className="event-stage-copy-row">
+                <p className="drip-create-copy">
+                  {waitlistedSubmissionTab === "invite_to"
+                    ? "Send invites to move contacts into Invited."
+                    : waitlistedSubmissionTab === "invited"
+                      ? "Contacts who received an invite. Resend invite reminders from here."
+                      : waitlistedSubmissionTab === "waitlist"
+                        ? "Pending public registrations. Confirm a seat to send the confirmation email, or reject."
+                        : waitlistedSubmissionTab === "going"
+                          ? "Confirmed attendees (admin confirmed or invite accepted)."
+                          : "Registrants who were not selected for a seat."}
+                </p>
+                {waitlistedSubmissionTab === "going" ? renderBotToggle() : null}
+              </div>
             </>
           ) : isActiveWebinar ? (
             <>
-              <div className="mb-4 flex flex-wrap gap-2 border-b border-black/10 pb-3">
+              <div className="drip-tabs">
                 {WEBINAR_SUBMISSION_TABS.map((tab) => {
                   const isActive = webinarSubmissionTab === tab.id;
                   const count = webinarStageCounts[tab.id];
-                  const isGoingTab = tab.id === "going";
                   return (
                     <button
                       key={tab.id}
                       type="button"
                       onClick={() => setWebinarSubmissionTab(tab.id)}
-                      className={`inline-flex h-9 items-center gap-2 rounded-full border px-4 text-xs font-medium transition ${
-                        isActive
-                          ? isGoingTab
-                            ? "border-emerald-600 bg-emerald-600 text-white"
-                            : "border-black bg-black text-white"
-                          : isGoingTab
-                            ? "border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
-                            : "border-black/15 bg-white text-black/70 hover:bg-black/5"
-                      }`}
+                      className={`drip-tab${isActive ? " active" : ""}`}
                     >
-                      <span>{tab.label}</span>
-                      <span
-                        className={`rounded-full px-1.5 py-0.5 text-[10px] ${
-                          isActive
-                            ? isGoingTab
-                              ? "bg-white/20 text-white"
-                              : "bg-white/15 text-white"
-                            : isGoingTab
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-black/6 text-black/55"
-                        }`}
-                      >
-                        {count}
-                      </span>
+                      {tab.label} ({count})
                     </button>
                   );
                 })}
               </div>
 
-              {webinarSubmissionTab === "invite_to" ? renderCsvUploadSection() : null}
+              {webinarSubmissionTab === "invite_to" ? renderListImport() : null}
 
-              <p className="mb-3 text-[11px] text-black/55">
-                {webinarSubmissionTab === "invite_to"
-                  ? "Send invites to move contacts into Invited."
-                  : webinarSubmissionTab === "invited"
-                    ? "Contacts who received an invite. Resend invite reminders from here."
-                    : "Registered attendees and contacts who accepted their invite."}
-              </p>
+              <div className="event-stage-copy-row">
+                <p className="drip-create-copy">
+                  {webinarSubmissionTab === "invite_to"
+                    ? "Send invites to move contacts into Invited."
+                    : webinarSubmissionTab === "invited"
+                      ? "Contacts who received an invite. Resend invite reminders from here."
+                      : "Registered attendees and contacts who accepted their invite."}
+                </p>
+                {webinarSubmissionTab === "going" ? renderBotToggle() : null}
+              </div>
             </>
           ) : (
             <p className="mb-3 text-[11px] text-black/55">
@@ -1440,89 +1491,76 @@ export function EventSubmissionsBoard({
             </p>
           )}
 
-          <div className="rounded-xl border border-black/10">
-            <div
-              className={`${submissionTableGridClass} border-b border-black/10 bg-[#f7f7f5] px-4 py-2.5 text-[11px] font-semibold tracking-wide text-black/55 uppercase`}
-            >
-              <p>Name</p>
-              <p>Email</p>
-              <p>{isActiveWaitlisted ? "Company / Phone" : "Company"}</p>
-              <div className="flex min-w-0 items-center justify-between gap-2">
-                <span>
-                  {isActiveWaitlisted
-                    ? waitlistedSubmissionTab === "waitlist"
-                      ? "Actions"
-                      : waitlistedSubmissionTab === "invite_to" ||
-                          waitlistedSubmissionTab === "invited"
-                        ? "Invite"
-                        : "Status"
-                    : isActiveWebinar
-                      ? webinarSubmissionTab === "going"
-                        ? "Status"
-                        : "Invite"
-                      : "Invite"}
-                </span>
-                {((isActiveWebinar &&
-                  (webinarSubmissionTab === "invite_to" || webinarSubmissionTab === "invited")) ||
-                  (isActiveWaitlisted &&
-                    (waitlistedSubmissionTab === "invite_to" ||
-                      waitlistedSubmissionTab === "invited"))) &&
-                tableSubmissions.length > 0 ? (
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const tab = isActiveWaitlisted
-                          ? waitlistedSubmissionTab
-                          : webinarSubmissionTab;
-                        if (tab === "invite_to" || tab === "invited") {
-                          openBulkInviteComposer(tab);
-                        }
-                      }}
-                      disabled={isDeletingAllInvites}
-                      className="inline-flex h-6 items-center rounded-md border border-black bg-black px-2 text-[10px] font-medium normal-case tracking-normal text-white hover:bg-black/90 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {(isActiveWaitlisted ? waitlistedSubmissionTab : webinarSubmissionTab) ===
-                      "invite_to"
-                        ? "Invite all"
-                        : "Resend all"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void deleteAllInviteTabContacts()}
-                      disabled={isDeletingAllInvites || deletingSubmissionId !== null}
-                      className="inline-flex h-6 items-center rounded-md border border-red-200 bg-white px-2 text-[10px] font-medium normal-case tracking-normal text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <ButtonLoadingContent
-                        loading={isDeletingAllInvites}
-                        loadingText="Deleting..."
-                      >
-                        Delete all
-                      </ButtonLoadingContent>
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-              <p className="text-right"> </p>
-            </div>
-            {tableSubmissions.map((submission) => (
-              <div
-                key={submission.id}
-                className={`${submissionTableGridClass} items-center border-b border-black/8 px-4 py-3 text-sm text-black/80 last:border-b-0`}
+          {((isActiveWebinar &&
+            (webinarSubmissionTab === "invite_to" || webinarSubmissionTab === "invited")) ||
+            (isActiveWaitlisted &&
+              (waitlistedSubmissionTab === "invite_to" ||
+                waitlistedSubmissionTab === "invited"))) &&
+          tableSubmissions.some((submission) => submission.source !== "csv") ? (
+            <div className="drip-toolbar">
+              <button
+                type="button"
+                className="btn-dark"
+                onClick={() => {
+                  const tab = isActiveWaitlisted ? waitlistedSubmissionTab : webinarSubmissionTab;
+                  if (tab === "invite_to" || tab === "invited") {
+                    openBulkInviteComposer(tab);
+                  }
+                }}
+                disabled={isDeletingAllInvites}
               >
-                <p className="truncate pr-1 text-[13px] font-medium text-black">
-                  {submission.name}
-                </p>
-                <p className="truncate pr-2 text-[13px] text-black/70">{submission.email}</p>
-                <div className="min-w-0 pr-2">
-                  <p className="truncate text-[13px] text-black/70">
-                    {submission.companyName || "-"}
-                  </p>
+                {(isActiveWaitlisted ? waitlistedSubmissionTab : webinarSubmissionTab) === "invite_to"
+                  ? "Invite all"
+                  : "Resend all"}
+              </button>
+              <button
+                type="button"
+                className="btn-soft"
+                onClick={() => void deleteAllInviteTabContacts()}
+                disabled={isDeletingAllInvites || deletingSubmissionId !== null}
+              >
+                <ButtonLoadingContent loading={isDeletingAllInvites} loadingText="Deleting...">
+                  Delete all
+                </ButtonLoadingContent>
+              </button>
+            </div>
+          ) : null}
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>{isActiveWaitlisted ? "Company" : "Company"}</th>
+                  <th>
+                    {isActiveWaitlisted
+                      ? waitlistedSubmissionTab === "waitlist"
+                        ? "Actions"
+                        : waitlistedSubmissionTab === "invite_to" ||
+                            waitlistedSubmissionTab === "invited"
+                          ? "Invite"
+                          : "Status"
+                      : isActiveWebinar
+                        ? webinarSubmissionTab === "going"
+                          ? "Status"
+                          : "Invite"
+                        : "Invite"}
+                  </th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+            {pagedSubmissions.map((submission) => (
+              <tr key={submission.id}>
+                <td>{submission.name}</td>
+                <td>{submission.email}</td>
+                <td>
+                  {submission.companyName || "—"}
                   {isActiveWaitlisted && submission.phone ? (
-                    <p className="truncate text-[11px] text-black/50">{submission.phone}</p>
+                    <div className="drip-status">{submission.phone}</div>
                   ) : null}
-                </div>
-                <div className="min-w-0">
+                </td>
+                <td>
                   {isActiveWaitlisted && waitlistedSubmissionTab === "waitlist" ? (
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <button
@@ -1532,7 +1570,7 @@ export function EventSubmissionsBoard({
                           confirmingSubmissionId === submission.id ||
                           rejectingSubmissionId === submission.id
                         }
-                        className="inline-flex h-7 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-emerald-600 bg-emerald-600 px-2.5 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="btn-dark"
                       >
                         <ButtonLoadingContent
                           loading={confirmingSubmissionId === submission.id}
@@ -1548,7 +1586,7 @@ export function EventSubmissionsBoard({
                           confirmingSubmissionId === submission.id ||
                           rejectingSubmissionId === submission.id
                         }
-                        className="inline-flex h-7 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-red-200 px-2.5 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="btn-soft"
                       >
                         <ButtonLoadingContent
                           loading={rejectingSubmissionId === submission.id}
@@ -1559,8 +1597,11 @@ export function EventSubmissionsBoard({
                       </button>
                     </div>
                   ) : isActiveWaitlisted && waitlistedSubmissionTab === "going" ? (
-                    <span className="text-[11px] font-medium leading-snug text-emerald-700">
-                      {submission.inviteAcceptedAt ? "Reconfirmed" : "Seat confirmed"}
+                    <span className="event-going-status">
+                      <span className="sub-badge">
+                        {submission.inviteAcceptedAt ? "Reconfirmed" : "Seat confirmed"}
+                      </span>
+                      {submission.botClick ? <span className="event-bot-pill">Bot click</span> : null}
                     </span>
                   ) : isActiveWaitlisted && waitlistedSubmissionTab === "rejected" ? (
                     <span className="text-[11px] font-medium leading-snug text-red-700">
@@ -1569,12 +1610,15 @@ export function EventSubmissionsBoard({
                   ) : isActiveWaitlisted &&
                     (waitlistedSubmissionTab === "invite_to" ||
                       waitlistedSubmissionTab === "invited") ? (
+                    submission.source === "csv" ? (
+                      <span className="drip-status">CSV upload</span>
+                    ) : (
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <button
                         type="button"
                         onClick={() => openInviteComposer(submission.id)}
                         disabled={sendingInviteId === submission.id}
-                        className="inline-flex h-7 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-black/20 px-2.5 text-[11px] font-medium text-black hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="btn-soft"
                       >
                         <ButtonLoadingContent
                           loading={sendingInviteId === submission.id}
@@ -1593,17 +1637,23 @@ export function EventSubmissionsBoard({
                         </span>
                       ) : null}
                     </div>
+                    )
                   ) : isActiveWebinar && webinarSubmissionTab === "going" ? (
-                    <span className="text-[11px] font-medium leading-snug text-emerald-700">
-                      {submission.inviteAcceptedAt ? "Reconfirmed" : "Registered"}
+                    <span className="event-going-status">
+                      <span className="sub-badge">
+                        {submission.inviteAcceptedAt ? "Reconfirmed" : "Registered"}
+                      </span>
+                      {submission.botClick ? <span className="event-bot-pill">Bot click</span> : null}
                     </span>
+                  ) : submission.source === "csv" ? (
+                    <span className="drip-status">CSV upload</span>
                   ) : (
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <button
                         type="button"
                         onClick={() => openInviteComposer(submission.id)}
                         disabled={sendingInviteId === submission.id}
-                        className="inline-flex h-7 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-black/20 px-2.5 text-[11px] font-medium text-black hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="btn-soft"
                       >
                         <ButtonLoadingContent
                           loading={sendingInviteId === submission.id}
@@ -1623,26 +1673,32 @@ export function EventSubmissionsBoard({
                       ) : null}
                     </div>
                   )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void removeSubmission(submission.id)}
-                  disabled={deletingSubmissionId === submission.id}
-                  className="justify-self-end inline-flex h-7 w-7 items-center justify-center rounded-full text-black/45 hover:bg-black/5 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label={`Remove ${submission.name}`}
-                  title="Remove submission"
-                >
-                  <ButtonLoadingContent loading={deletingSubmissionId === submission.id} iconOnly>
-                    <span className="block text-base leading-none">×</span>
-                  </ButtonLoadingContent>
-                </button>
-              </div>
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    onClick={() => void removeSubmission(submission.id)}
+                    disabled={deletingSubmissionId === submission.id}
+                    className="icon-btn event-remove-btn"
+                    aria-label={`Remove ${submission.name}`}
+                    title="Remove"
+                  >
+                    <ButtonLoadingContent
+                      loading={deletingSubmissionId === submission.id}
+                      loadingText=""
+                    >
+                      <TrashIcon />
+                    </ButtonLoadingContent>
+                  </button>
+                </td>
+              </tr>
             ))}
-            {tableSubmissions.length === 0 ? (
-              <div className="px-3 py-6 text-center text-sm text-black/55">
+            {displayedSubmissions.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="drip-empty">
                 {isActiveWaitlisted
                   ? waitlistedSubmissionTab === "invite_to"
-                    ? "No contacts to invite yet. Upload a CSV to get started."
+                    ? "No contacts to invite yet. Add a list to get started."
                     : waitlistedSubmissionTab === "invited"
                       ? "No invited contacts yet."
                       : waitlistedSubmissionTab === "waitlist"
@@ -1652,16 +1708,97 @@ export function EventSubmissionsBoard({
                           : "No rejected registrations."
                   : isActiveWebinar
                     ? webinarSubmissionTab === "invite_to"
-                      ? "No contacts to invite yet. Upload a CSV to get started."
+                      ? "No contacts to invite yet. Add a list to get started."
                       : webinarSubmissionTab === "invited"
                         ? "No invited contacts yet."
                         : "No one is going yet."
                     : "No submissions for this event calendar yet."}
-              </div>
+                </td>
+              </tr>
             ) : null}
+              </tbody>
+            </table>
+          </div>
+          {displayedSubmissions.length > SUBMISSIONS_PAGE_SIZE ? (
+            <div className="drip-pagination">
+              <span className="drip-page-range">
+                {submissionsRangeStart}-{submissionsRangeEnd} of{" "}
+                {displayedSubmissions.length.toLocaleString()}
+              </span>
+              <div className="drip-page-controls">
+                <select
+                  value={currentSubmissionsPage}
+                  onChange={(event) => setSubmissionsPage(Number(event.target.value))}
+                  aria-label="Page"
+                >
+                  {Array.from({ length: submissionsTotalPages }, (_, index) => (
+                    <option key={index + 1} value={index + 1}>
+                      {index + 1}
+                    </option>
+                  ))}
+                </select>
+                <span>of {submissionsTotalPages} pages</span>
+                <button
+                  type="button"
+                  className="drip-page-arrow"
+                  disabled={currentSubmissionsPage <= 1}
+                  onClick={() => setSubmissionsPage((page) => Math.max(1, page - 1))}
+                  aria-label="Previous page"
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  className="drip-page-arrow"
+                  disabled={currentSubmissionsPage >= submissionsTotalPages}
+                  onClick={() =>
+                    setSubmissionsPage((page) => Math.min(submissionsTotalPages, page + 1))
+                  }
+                  aria-label="Next page"
+                >
+                  ›
+                </button>
+              </div>
+            </div>
+          ) : null}
+          <div className="event-invite-history">
+            <div className="event-invite-history-head">
+              <h3>Invite history</h3>
+            </div>
+            <div className="data-table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>List</th>
+                    <th>Added</th>
+                    <th>Sent</th>
+                    <th>Bot clicks</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {inviteHistory.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="crm-empty">
+                        No invite batches yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    inviteHistory.map((row) => (
+                      <tr key={row.key}>
+                        <td>{row.name}</td>
+                        <td>{row.added}</td>
+                        <td>{row.sent}</td>
+                        <td>{row.clicks}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
-    </section>
+      </div>
+    </div>
   );
 }

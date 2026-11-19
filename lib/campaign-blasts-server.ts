@@ -1871,19 +1871,20 @@ export async function launchCampaignBlast(input: {
   const kindFilter = oneOne
     ? { kind: "oneone" as const }
     : { kind: { $ne: "oneone" as const } };
-  const previousBlasts = await db
+  const previousBlast = await db
     .collection<CampaignBlastDoc>("campaign_blasts")
     .find({ projectId, campaignId: campaign.id, ...kindFilter })
-    .project({ _id: 1 })
-    .toArray();
-  const previousIds = previousBlasts.map((item) => item._id);
-  if (previousIds.length > 0) {
-    await db.collection<CampaignSendDoc>("campaign_sends").deleteMany({
-      blastId: { $in: previousIds },
-    });
-    await db.collection<CampaignBlastDoc>("campaign_blasts").deleteMany({
-      _id: { $in: previousIds },
-    });
+    .sort({ createdAt: -1 })
+    .limit(1)
+    .next();
+  // A second click while the first launch is still answering must not wipe
+  // the queue. The dialog stays open when the proxy returns an HTML timeout.
+  if (
+    previousBlast &&
+    (previousBlast.status === "sending" || previousBlast.status === "scheduled")
+  ) {
+    const [existingReport] = await reportsFromBlasts([previousBlast]);
+    return existingReport;
   }
   await db.collection<CampaignBlastDoc>("campaign_blasts").insertOne(blast);
   const saved = blast;
@@ -1897,9 +1898,8 @@ export async function launchCampaignBlast(input: {
       )
     : new Map<string, number>();
 
-  await db.collection<CampaignSendDoc>("campaign_sends").insertMany(
-    oneOne
-      ? list.flatMap((contact) =>
+  const sendRows: CampaignSendDoc[] = oneOne
+    ? list.flatMap((contact) =>
           sequences.map((sequence, sequenceIndex) => {
             const email = contact.email.trim().toLowerCase();
             const firstAt = campaign.scheduleByOpenTime
@@ -1962,15 +1962,39 @@ export async function launchCampaignBlast(input: {
             );
           }
           return row;
-        }),
-  );
-
-  let latest = saved;
-  if (mode === "now") {
-    latest = (await sendPendingBatch(saved)) ?? { ...saved, status: "sending" as const };
+        });
+  try {
+    if (sendRows.length > 0) {
+      for (let offset = 0; offset < sendRows.length; offset += 400) {
+        await db.collection<CampaignSendDoc>("campaign_sends").insertMany(
+          sendRows.slice(offset, offset + 400),
+        );
+      }
+    }
+  } catch (error) {
+    await db.collection<CampaignSendDoc>("campaign_sends").deleteMany({ blastId: saved._id });
+    await db.collection<CampaignBlastDoc>("campaign_blasts").deleteOne({ _id: saved._id });
+    throw error;
   }
 
-  const [report] = await reportsFromBlasts([latest]);
+  if (previousBlast) {
+    await db.collection<CampaignSendDoc>("campaign_sends").deleteMany({
+      blastId: previousBlast._id,
+    });
+    await db.collection<CampaignBlastDoc>("campaign_blasts").deleteOne({
+      _id: previousBlast._id,
+    });
+  }
+
+  // Answer the browser before SMTP. A full first batch can outlast the proxy
+  // and the dialog then shows an HTML error page even though sending started.
+  if (mode === "now") {
+    void sendPendingBatch(saved).catch((error) => {
+      console.error("Launch send batch failed:", error);
+    });
+  }
+
+  const [report] = await reportsFromBlasts([saved]);
   return report;
 }
 

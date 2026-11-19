@@ -280,6 +280,9 @@ export async function updateProjectSender(
   if (input.fromEmail !== undefined) {
     updates.fromEmail = input.fromEmail;
   }
+  if (input.fromName !== undefined) {
+    updates.fromName = input.fromName.trim();
+  }
   if (input.smtpHost !== undefined) {
     updates.smtpHost = input.smtpHost;
   }

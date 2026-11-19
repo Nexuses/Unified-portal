@@ -52,6 +52,7 @@ export async function GET(request: NextRequest) {
       {
         provider: linked.provider,
         fromEmail: linked.fromEmail,
+        ...(linked.fromName ? { fromName: linked.fromName } : {}),
         composio: linked.composio,
         ...(linked.provider === "gmail"
           ? { dailyLimit: GMAIL_DAILY_LIMIT_DEFAULT }

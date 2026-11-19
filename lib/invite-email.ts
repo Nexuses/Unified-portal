@@ -13,7 +13,9 @@ import {
   isInviteMessageHtmlEmpty,
   sanitizeInviteMessageHtml,
 } from "@/lib/sanitize-invite-message-html";
+import { hiddenClickTrapHtml } from "@/lib/click-trap";
 import { sendPortalEventMail } from "@/lib/event-sender-mail";
+import { ensureSubmissionTrapToken, inviteClickTrapUrl } from "@/lib/invite-trap";
 import { eventPublicUrl } from "@/lib/event-public-url";
 import { isSharedSessionFormat } from "@/lib/event-format";
 import type { EventDocument } from "@/lib/events";
@@ -68,6 +70,7 @@ type InviteEmailOptions = {
   fromInviteRoute?: boolean;
   useEventBanner?: boolean;
   bannerUrl?: string;
+  submissionId?: string;
 };
 type InviteCalendarSlot = {
   eventDate?: string;
@@ -275,6 +278,7 @@ async function sendCalendarInviteMails(
     acceptInviteUrl?: string;
     viewerTimeZone?: string | null;
     notifyOwner?: boolean;
+    clickTrapUrl?: string;
   } = {}
 ) {
   const fromName = resolveInviteSenderName(event);
@@ -372,7 +376,7 @@ async function sendCalendarInviteMails(
       introHtml: `Hi ${escapeHtml(recipient.name)}, here is your calendar invite. Open the attached .ics file to add it to your calendar.`,
       viewEventUrl,
       footerNote: "A calendar file (.ics) is attached to this email.",
-    }),
+    }) + hiddenClickTrapHtml(options.clickTrapUrl ?? ""),
     attachments: [
       {
         filename: icsFilename,
@@ -565,20 +569,32 @@ export async function sendSubmissionInviteEmail(
     .filter(Boolean)
     .join("\n");
 
-  const guestHtml = buildInviteAnnouncementHtml({
-    brandName,
-    brandLogoUrl,
-    eventName: event.eventName,
-    eventDateYmd: effectiveDate,
-    displayDate,
-    displayTime,
-    platform: effectivePlatform,
-    assetBaseUrl: "cid",
-    messageHtml: resolvedMessageHtml,
-    acceptInviteUrl: options.acceptInviteUrl,
-    viewEventUrl,
-    declineUrl: viewEventUrl,
-  });
+  const eventId =
+    ("id" in event && typeof (event as { id?: string }).id === "string"
+      ? (event as { id?: string }).id
+      : "") ||
+    event._id?.toString() ||
+    "";
+  const trapToken =
+    options.submissionId && eventId
+      ? await ensureSubmissionTrapToken(eventId, options.submissionId)
+      : "";
+  const clickTrapUrl = inviteClickTrapUrl(trapToken);
+  const guestHtml =
+    buildInviteAnnouncementHtml({
+      brandName,
+      brandLogoUrl,
+      eventName: event.eventName,
+      eventDateYmd: effectiveDate,
+      displayDate,
+      displayTime,
+      platform: effectivePlatform,
+      assetBaseUrl: "cid",
+      messageHtml: resolvedMessageHtml,
+      acceptInviteUrl: options.acceptInviteUrl,
+      viewEventUrl,
+      declineUrl: viewEventUrl,
+    }) + hiddenClickTrapHtml(clickTrapUrl);
 
   // Registration already includes the calendar invite. Do not also send the announcement.
   if (!(includeCalendarInvite && variant === "registration")) {
@@ -600,6 +616,7 @@ export async function sendSubmissionInviteEmail(
       calendarInviteUid: options.calendarInviteUid,
       viewerTimeZone: options.viewerTimeZone,
       notifyOwner: true,
+      clickTrapUrl,
     });
   }
 }

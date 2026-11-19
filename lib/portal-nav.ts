@@ -127,6 +127,17 @@ export function publicCampaignReportPath(
   return query ? `${path}?${query}` : path;
 }
 
+export function publicEventReportPath(
+  token: string,
+  options?: { hideBotClicks?: boolean },
+) {
+  const path = `/er/${encodeURIComponent(token)}`;
+  if (options?.hideBotClicks) {
+    return `${path}?hideBotClicks=1`;
+  }
+  return path;
+}
+
 export function publicAnalyticsPath(token: string) {
   return `/a/${token}`;
 }
