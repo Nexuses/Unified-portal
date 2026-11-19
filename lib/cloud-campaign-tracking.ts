@@ -2,14 +2,13 @@ import { randomBytes } from "crypto";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import type { CampaignSendDoc } from "@/lib/campaign-blasts-server";
-import { injectCampaignTracking, resolveUsableTrackingOrigin } from "@/lib/campaign-tracking";
 
 /**
  * Cloud campaign sends are recorded in the shared `campaign_sends` collection so the existing
  * open / click / unsubscribe routes, webhooks and activity feed work for them unchanged.
  * Cloud rows are marked with `cloudRow` (the people-list row) and `source: "cloud"`.
  */
-type CloudSendDoc = CampaignSendDoc & { cloudRow: number; source: "cloud" };
+type CloudSendDoc = CampaignSendDoc & { cloudRow: number; source: "cloud"; bounceReason?: string };
 
 async function sends() {
   const db = await getDb();
@@ -34,12 +33,6 @@ export async function cloudSendsFilter(projectId: ObjectId, campaignId: string) 
   const blastId = blastIds.get(key);
   return { ...(blastId ? { blastId } : {}), projectId, campaignId, source: "cloud" as const };
 }
-
-export type CloudTrackingOptions = {
-  trackOpens: boolean;
-  trackClicks: boolean;
-  unsubscribeFooter: boolean;
-};
 
 /** Create (or reuse, on a retry of the same row) the tracking record for one email. */
 export async function prepareCloudSend(input: {
@@ -90,23 +83,6 @@ export async function prepareCloudSend(input: {
   return { sendId: doc._id, token: doc.token };
 }
 
-/** Add the open pixel / tracked links / unsubscribe footer the campaign asked for. */
-export async function trackCloudHtml(
-  html: string,
-  token: string,
-  options: CloudTrackingOptions,
-  campaignName: string,
-) {
-  if (!options.trackOpens && !options.trackClicks && !options.unsubscribeFooter) return html;
-  const origin = await resolveUsableTrackingOrigin(null);
-  return injectCampaignTracking(html, origin, token, {
-    campaignName,
-    trackOpens: options.trackOpens,
-    trackClicks: options.trackClicks,
-    autoUnsubscribeFooter: options.unsubscribeFooter,
-  });
-}
-
 export async function markCloudSendSent(sendId: ObjectId, gmailMessageId?: string) {
   const collection = await sends();
   await collection.updateOne(
@@ -131,7 +107,7 @@ export async function deleteCloudSends(projectId: ObjectId, campaignId: string) 
 export async function recordCloudInboxEvents(
   projectId: ObjectId,
   campaignId: string,
-  events: { replied: string[]; bounced: string[] },
+  events: { replied: string[]; bounced: string[]; bounceDetails?: { email: string; reason: string }[] },
 ) {
   const collection = await sends();
   const base = await cloudSendsFilter(projectId, campaignId);
@@ -150,6 +126,15 @@ export async function recordCloudInboxEvents(
         { $set: { bouncedAt: now } },
       )
     : { modifiedCount: 0 };
+  // Why it bounced, for the bounce report (kept from the first notice seen).
+  for (const detail of events.bounceDetails || []) {
+    const reason = String(detail.reason || "").trim().slice(0, 300);
+    if (!reason) continue;
+    await collection.updateMany(
+      { ...base, status: "sent", email: String(detail.email).toLowerCase(), bounceReason: { $exists: false } },
+      { $set: { bounceReason: reason } },
+    );
+  }
   return { replied: r.modifiedCount, bounced: b.modifiedCount };
 }
 
@@ -160,21 +145,18 @@ export type CloudReportRecipient = {
   company: string;
   subject: string;
   sentAt?: string;
-  openedAt?: string;
-  openCount: number;
-  clickedAt?: string;
-  clickCount: number;
   repliedAt?: string;
   bouncedAt?: string;
-  unsubscribedAt?: string;
-  botOpen?: boolean;
-  /** Clicks made by link scanners (hidden trap link or a burst of clicks). Not counted as clicks. */
-  botClicks: number;
+  /** Why it bounced, from the bounce notice in the sender's mailbox. */
+  bounceReason?: string;
 };
 
 const iso = (value?: Date) => (value ? new Date(value).toISOString() : undefined);
 
-/** Everything the Report tab needs for one cloud campaign. */
+/**
+ * Everything the Report tab needs for one cloud campaign. Cloud emails carry no tracking code,
+ * so this is what the sender's own mailbox shows: sent, replied, bounced.
+ */
 export async function cloudCampaignReport(projectId: ObjectId, campaignId: string) {
   const collection = await sends();
   const docs = await collection
@@ -182,40 +164,23 @@ export async function cloudCampaignReport(projectId: ObjectId, campaignId: strin
     .sort({ sentAt: -1 })
     .limit(5000)
     .toArray();
-  const recipients: CloudReportRecipient[] = docs.map((doc) => {
-    // Human clicks only: the hidden trap link and scanner bursts are tagged `bot` / `ignored`.
-    const events = doc.clickEvents || [];
-    const humanEvents = events.filter((e) => !e.bot && !e.ignored);
-    const botClicks = events.filter((e) => e.bot || e.ignored).length;
-    const humanClick = events.length ? humanEvents.length > 0 : Boolean(doc.clickedAt);
-    return {
+  const recipients: CloudReportRecipient[] = docs.map((doc) => ({
     row: doc.cloudRow,
     email: doc.email,
     name: doc.fullName,
     company: doc.companyName,
     subject: doc.subjectLine || "",
     sentAt: iso(doc.sentAt),
-    openedAt: doc.botOpen ? undefined : iso(doc.openedAt),
-    openCount: doc.botOpen ? 0 : doc.openCount || 0,
-    clickedAt: humanClick ? iso(humanEvents[0]?.at || doc.clickedAt) : undefined,
-    clickCount: humanClick ? (events.length ? humanEvents.length : doc.clickCount || 0) : 0,
-    botClicks,
     repliedAt: iso(doc.repliedAt),
     bouncedAt: iso(doc.bouncedAt),
-    unsubscribedAt: iso(doc.unsubscribedAt),
-    botOpen: doc.botOpen,
-    };
-  });
+    bounceReason: doc.bouncedAt ? doc.bounceReason || undefined : undefined,
+  }));
   const count = (pick: (r: CloudReportRecipient) => unknown) => recipients.filter((r) => pick(r)).length;
   return {
     totals: {
       sent: recipients.length,
-      opened: count((r) => r.openedAt),
-      clicked: count((r) => r.clickedAt),
       replied: count((r) => r.repliedAt),
       bounced: count((r) => r.bouncedAt),
-      unsubscribed: count((r) => r.unsubscribedAt),
-      botClicked: count((r) => r.botClicks > 0),
     },
     recipients,
   };

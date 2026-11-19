@@ -63,6 +63,7 @@ const CAMPAIGN_TYPE_LABEL: Record<NonNullable<InboxThread["campaignType"]>, stri
   drip: "Drip",
   oneone: "1-1",
   personalise: "Personalise",
+  cloud: "Cloud",
 };
 
 function simpleHtmlToText(html: string) {
@@ -1103,7 +1104,9 @@ export default function PortalMasterInboxPage() {
                     ) : null}
                     {selected?.relatedCampaignId ? (
                       <Link
-                        href={portalCampaignRoute(
+                        href={selected.campaignType === "cloud"
+                          ? `/portal/marketing/cloud/${encodeURIComponent(selected.relatedCampaignId)}`
+                          : portalCampaignRoute(
                           selected.relatedCampaignId,
                           selected.campaignType === "oneone" ||
                             selected.campaignType === "personalise"
@@ -1171,7 +1174,13 @@ export default function PortalMasterInboxPage() {
                   );
                 })}
               </div>
-              {!composerOpen ? (
+              {selected?.campaignType === "cloud" ? (
+                <p className="inbox-cloud-reply-note">
+                  This reply came to a cloud campaign sender. Answer it from that sender&apos;s own
+                  Gmail or Outlook, so the conversation stays in their mailbox. Open it from the
+                  campaign&apos;s computer.
+                </p>
+              ) : !composerOpen ? (
                 <div className="inbox-reply-launch">
                   <button
                     type="button"

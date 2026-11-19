@@ -200,6 +200,17 @@ export type CloudSendLogEntry = {
   at: string;
 };
 
+/** Where each person is in the sequence (first email + follow-ups), for lists and status. */
+export type CloudSequenceSummary = {
+  /** Emails per person: the first one plus each follow-up step. */
+  totalSteps: number;
+  /** Step 0 is the first email; 1..n are follow-ups. */
+  stages: { step: number; sent: number; queued: number }[];
+  /** Follow-ups still waiting to go out (scheduled or sending). */
+  queued: number;
+  nextDueAt?: string;
+};
+
 export type CloudCampaign = {
   id: string;
   name: string;
@@ -210,6 +221,10 @@ export type CloudCampaign = {
   profileDirectory?: string;
   signatureHtml?: string;
   signatureReady?: boolean;
+  /** The "When to send" step was saved (schedule + gap reviewed on purpose). */
+  scheduleReady?: boolean;
+  /** Filled by the list and campaign APIs. */
+  sequence?: CloudSequenceSummary;
   customPrompt?: string;
   customPromptReady?: boolean;
   sheetUrl?: string;
@@ -292,6 +307,16 @@ export function formatCloudCampaignStatus(campaign: CloudCampaign) {
         detail: `${campaign.sentCount} sent · row ${campaign.nextRow + 1}`,
       };
     case "sent":
+      // The first emails are out, but the campaign isn't done while follow-ups are queued.
+      if (campaign.sequence?.queued) {
+        const next = campaign.sequence.nextDueAt
+          ? ` · next ${new Date(campaign.sequence.nextDueAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+          : "";
+        return {
+          label: "Following up",
+          detail: `${campaign.sequence.queued} follow-up${campaign.sequence.queued === 1 ? "" : "s"} queued${next}`,
+        };
+      }
       return {
         label: "Sent",
         detail: `${campaign.sentCount} sent${campaign.failedCount ? ` · ${campaign.failedCount} failed` : ""}`,
@@ -369,6 +394,7 @@ export async function patchCloudCampaign(
       | "status"
       | "signatureHtml"
       | "signatureReady"
+      | "scheduleReady"
       | "customPrompt"
       | "customPromptReady"
       | "trackOpens"
@@ -514,6 +540,7 @@ export async function runCloudCampaignAction(
   id: string,
   action:
     | "start_computer"
+    | "computer_status"
     | "vpn_status"
     | "vpn_enable"
     | "vpn_disable"

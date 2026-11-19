@@ -5,12 +5,14 @@ import {
   listCloudCampaigns,
 } from "@/lib/cloud-campaigns-server";
 import { isSessionError, requirePortalSession } from "@/lib/require-portal-session";
+import { withCloudSequence } from "@/lib/cloud-followups";
 
 export async function GET() {
   try {
     const session = await requirePortalSession();
     if (isSessionError(session)) return session;
-    const campaigns = await listCloudCampaigns(new ObjectId(session.projectId));
+    const projectId = new ObjectId(session.projectId);
+    const campaigns = await withCloudSequence(projectId, await listCloudCampaigns(projectId));
     return NextResponse.json({ campaigns });
   } catch (error) {
     console.error("List cloud campaigns failed:", error);

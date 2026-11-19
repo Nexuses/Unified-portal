@@ -62,19 +62,20 @@ import {
   recordCloudInboxEvents,
   markCloudSendSent,
   prepareCloudSend,
-  trackCloudHtml,
 } from "@/lib/cloud-campaign-tracking";
 import {
   prepareAndCheckSender,
   probeOutlookViaScript,
   readSheetViaScript,
   scanInboxViaScript,
+  readRepliesViaScript,
   sendViaScript,
   replyViaScript,
   focusSenderChrome,
   resetSenderChromeDir,
   type SenderResult,
 } from "@/lib/cloud-sender";
+import { saveCloudReplies } from "@/lib/cloud-inbox-messages";
 import {
   getBoatDesktopLock,
   markSenderChromeFresh,
@@ -648,16 +649,9 @@ async function sendRowWithScript(input: {
     position: input.contact.position,
     subject: input.subject,
   });
-  const trackedHtml = await trackCloudHtml(
-    input.html,
-    record.token,
-    {
-      trackOpens: doc.trackOpens !== false,
-      trackClicks: doc.trackClicks === true,
-      unsubscribeFooter: doc.unsubscribeFooter === true,
-    },
-    doc.name,
-  );
+  // Sent exactly as written: no open pixel, no rewritten links, no unsubscribe footer, so the
+  // email looks like one a person typed (tracking code is a common bot/bulk signal).
+  const trackedHtml = input.html;
 
   let attachments: { path: string; name: string }[] = [];
   if (doc.attachments?.length) {
@@ -840,6 +834,7 @@ export async function checkCloudInbox(
   const sandbox = await readySandbox(projectId, campaignId);
   let newReplies = 0;
   let newBounces = 0;
+  const repliedEmails = new Set<string>();
   for (let i = 0; i < emails.length; i += chunk) {
     const result = await scanInboxViaScript(
       sandbox.id,
@@ -858,12 +853,41 @@ export async function checkCloudInbox(
     const counts = await recordCloudInboxEvents(projectId, campaignId, {
       replied: result.replied || [],
       bounced: result.bounced || [],
+      bounceDetails: result.bounceDetails || [],
     });
     newReplies += counts.replied;
     newBounces += counts.bounced;
+    for (const email of result.replied || []) repliedEmails.add(String(email).toLowerCase());
+  }
+  // Copy what they wrote into the Master Inbox (read-only; a few addresses per command).
+  let inboxMessages = 0;
+  const pending = [...repliedEmails];
+  const perCall = provider === "outlook" ? 4 : 6;
+  while (pending.length) {
+    const batch = pending.splice(0, perCall);
+    const read = await readRepliesViaScript(sandbox.id, doc.profileDirectory, provider, batch, since).catch(
+      (error) => ({ ok: false as const, code: "READ_FAILED", message: String(error), replies: [], done: [] }),
+    );
+    if (!read.ok) {
+      console.warn(`[cloud-inbox] ${campaignId}: could not read replies (${read.code}): ${read.message || ""}`);
+      break;
+    }
+    inboxMessages += await saveCloudReplies({
+      projectId,
+      campaignId,
+      campaignObjectId: doc._id,
+      senderProfileId: doc.profileId,
+      senderEmail: sender,
+      replies: read.replies || [],
+    });
+    // Anything it ran out of time for goes back in the queue.
+    const done = new Set((read.done || []).map((e) => String(e).toLowerCase()));
+    const skipped = batch.filter((e) => !done.has(e));
+    if (skipped.length === batch.length) break;
+    pending.unshift(...skipped);
   }
   await patchCloudCampaignDoc(projectId, campaignId, { inboxCheckedAt: new Date() });
-  return { checked: emails.length, newReplies, newBounces };
+  return { checked: emails.length, newReplies, newBounces, inboxMessages };
 }
 
 /* ------------------------------------------------------------------ Follow-ups */

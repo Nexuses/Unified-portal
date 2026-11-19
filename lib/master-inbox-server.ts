@@ -36,6 +36,8 @@ export type InboxMessageDoc = {
   readAt?: Date;
   createdAt: Date;
   updatedAt: Date;
+  /** "cloud": read from a cloud campaign sender's own mailbox (lib/cloud-inbox-messages.ts). */
+  source?: "cloud";
 };
 
 export type InboxMessage = {
@@ -70,7 +72,7 @@ export type InboxThread = {
   latestAt: string;
   relatedCampaignId?: string;
   relatedBlastId?: string;
-  campaignType?: "drip" | "oneone" | "personalise";
+  campaignType?: "drip" | "oneone" | "personalise" | "cloud";
   campaignName?: string;
   relatedContactEmail?: string;
   senderId: string;
@@ -457,7 +459,8 @@ async function purgeNonCampaignInboxMessages(projectId: ObjectId) {
       projectId,
       _id: { $in: sendIds },
       status: "sent",
-      messageIdNorm: { $exists: true, $type: "string" },
+      // Cloud campaign sends have no SMTP Message-ID; their replies are read from the mailbox.
+      $or: [{ messageIdNorm: { $exists: true, $type: "string" } }, { source: "cloud" }],
     })
     .project({ _id: 1 })
     .toArray();
@@ -864,8 +867,24 @@ async function attachCampaignTypes(projectId: ObjectId, threads: InboxThread[]) 
       .toArray(),
   ]);
   const blastById = new Map(blasts.map((blast) => [blast._id.toString(), blast]));
+  // Cloud campaigns: the send's blastId is the cloud campaign's own _id.
+  const clouds =
+    blastIds.length > 0
+      ? await db
+          .collection("cloud_campaigns")
+          .find({ _id: { $in: blastIds }, projectId })
+          .project<{ _id: ObjectId; name?: string }>({ name: 1 })
+          .toArray()
+      : [];
+  const cloudById = new Map(clouds.map((cloud) => [cloud._id.toString(), cloud]));
 
   for (const thread of threads) {
+    const cloud = thread.relatedBlastId ? cloudById.get(thread.relatedBlastId) : undefined;
+    if (cloud) {
+      thread.campaignType = "cloud";
+      thread.campaignName = cloud.name || undefined;
+      continue;
+    }
     const blast = thread.relatedBlastId
       ? blastById.get(thread.relatedBlastId)
       : undefined;
@@ -1047,6 +1066,19 @@ function parseScheduledFor(value?: string | Date | null) {
   return date;
 }
 
+/** Cloud campaign threads have no SMTP sender: replies go out from the sender's own mailbox. */
+async function assertNotCloudThread(projectId: ObjectId, threadKey: string) {
+  const db = await getDb();
+  const cloud = await db
+    .collection<InboxMessageDoc>("inbox_messages")
+    .findOne({ projectId, threadKey, source: "cloud" }, { projection: { _id: 1 } });
+  if (cloud) {
+    throw new Error(
+      "This reply came to a cloud campaign sender. Reply from that sender's own Gmail or Outlook (open it on the cloud computer from the campaign).",
+    );
+  }
+}
+
 export async function replyToInboxThread(
   projectId: ObjectId,
   threadKey: string,
@@ -1054,6 +1086,7 @@ export async function replyToInboxThread(
 ) {
   const content = normalizeReplyContent(input);
   const scheduledFor = parseScheduledFor(input.scheduledFor ?? null);
+  await assertNotCloudThread(projectId, threadKey);
 
   // Schedule for later — worker sends when due.
   if (scheduledFor && scheduledFor.getTime() > Date.now() + 15_000) {

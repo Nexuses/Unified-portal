@@ -25,7 +25,8 @@ export type SenderCommand =
   | "find_sent"
   | "read_sheet"
   | "probe_outlook"
-  | "inbox_scan";
+  | "inbox_scan"
+  | "read_replies";
 
 export type SenderResult = {
   ok: boolean;
@@ -469,12 +470,42 @@ export async function scanInboxViaScript(
   provider: SenderProvider,
   emails: string[],
   since: string,
-): Promise<SenderResult & { replied?: string[]; bounced?: string[] }> {
+): Promise<SenderResult & { replied?: string[]; bounced?: string[]; bounceDetails?: { email: string; reason: string }[] }> {
   const toolkit = await ensureSenderToolkit(sandboxId);
   if (!toolkit.ok) return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail };
   const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl(provider));
   if (!chrome.ok) return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail };
   return runSenderScript(sandboxId, "inbox_scan", { port: chrome.port, provider, emails, since }, 88) as Promise<
-    SenderResult & { replied?: string[]; bounced?: string[] }
+    SenderResult & { replied?: string[]; bounced?: string[]; bounceDetails?: { email: string; reason: string }[] }
+  >;
+}
+
+export type CloudReplyMessage = {
+  fromEmail: string;
+  fromName: string;
+  /** As the mail app shows it (e.g. "Wed, Nov 19, 2026, 10:32 AM"); may be empty. */
+  date: string;
+  subject: string;
+  html: string;
+  text: string;
+};
+
+/**
+ * Read the newest reply from each address (quoted history removed). Read-only; a thread that was
+ * unread is marked unread again. `done` lists the addresses it got through in this call.
+ */
+export async function readRepliesViaScript(
+  sandboxId: string,
+  directoryName: string,
+  provider: SenderProvider,
+  emails: string[],
+  since: string,
+): Promise<SenderResult & { replies?: CloudReplyMessage[]; done?: string[] }> {
+  const toolkit = await ensureSenderToolkit(sandboxId);
+  if (!toolkit.ok) return { ok: false, code: "TOOLKIT_INSTALL_FAILED", message: toolkit.detail };
+  const chrome = await ensureSenderChrome(sandboxId, directoryName, senderInboxUrl(provider));
+  if (!chrome.ok) return { ok: false, code: "CHROME_START_FAILED", message: chrome.detail };
+  return runSenderScript(sandboxId, "read_replies", { port: chrome.port, provider, emails, since }, 88) as Promise<
+    SenderResult & { replies?: CloudReplyMessage[]; done?: string[] }
   >;
 }

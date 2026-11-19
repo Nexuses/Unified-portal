@@ -12,14 +12,9 @@ type Recipient = {
   company: string;
   subject: string;
   sentAt?: string;
-  openedAt?: string;
-  openCount: number;
-  clickedAt?: string;
-  clickCount: number;
   repliedAt?: string;
   bouncedAt?: string;
-  unsubscribedAt?: string;
-  botClicks: number;
+  bounceReason?: string;
 };
 
 type FollowupItem = {
@@ -36,17 +31,12 @@ type FollowupItem = {
 type Report = {
   totals: {
     sent: number;
-    opened: number;
-    clicked: number;
     replied: number;
     bounced: number;
-    unsubscribed: number;
-    botClicked: number;
     skipped: number;
     failed: number;
   };
   recipients: Recipient[];
-  tracking: { opens: boolean; clicks: boolean; unsubscribe: boolean };
   inboxCheckedAt?: string;
   followups?: { enabled: boolean; steps: number; items: FollowupItem[]; nextDueAt?: string };
 };
@@ -71,15 +61,13 @@ function followupText(items: FollowupItem[]) {
   return items.map((item) => followupChip(item).text).join("; ");
 }
 
-type Filter = "all" | "opened" | "clicked" | "replied" | "bounced" | "not_opened";
+type Filter = "all" | "replied" | "no_reply" | "bounced";
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "All" },
-  { key: "opened", label: "Opened" },
-  { key: "clicked", label: "Clicked" },
   { key: "replied", label: "Replied" },
+  { key: "no_reply", label: "No reply yet" },
   { key: "bounced", label: "Bounced" },
-  { key: "not_opened", label: "Not opened" },
 ];
 
 function pct(part: number, whole: number) {
@@ -106,16 +94,17 @@ type Props = {
   campaignName: string;
   sending: boolean;
   onCheckInbox: () => Promise<string>;
-  onTrackingChange: (patch: { trackOpens?: boolean; trackClicks?: boolean; unsubscribeFooter?: boolean }) => Promise<void>;
 };
 
-/** Report tab: what happened after sending (opens, clicks, replies, bounces). */
+/**
+ * Report tab: what happened after sending, as the sender's own mailbox shows it (replies,
+ * bounces). Cloud emails carry no open pixel or tracked links, so there are no open/click stats.
+ */
 export default function CloudCampaignReport({
   campaignId,
   campaignName,
   sending,
   onCheckInbox,
-  onTrackingChange,
 }: Props) {
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState("");
@@ -149,11 +138,9 @@ export default function CloudCampaignReport({
     const list = report?.recipients ?? [];
     const needle = search.trim().toLowerCase();
     return list.filter((r) => {
-      if (filter === "opened" && !r.openedAt) return false;
-      if (filter === "clicked" && !r.clickedAt) return false;
       if (filter === "replied" && !r.repliedAt) return false;
+      if (filter === "no_reply" && (r.repliedAt || r.bouncedAt)) return false;
       if (filter === "bounced" && !r.bouncedAt) return false;
-      if (filter === "not_opened" && (r.openedAt || r.bouncedAt)) return false;
       if (!needle) return true;
       return `${r.email} ${r.name} ${r.company} ${r.subject}`.toLowerCase().includes(needle);
     });
@@ -189,28 +176,36 @@ export default function CloudCampaignReport({
     }
   }
 
-  async function toggle(patch: { trackOpens?: boolean; trackClicks?: boolean; unsubscribeFooter?: boolean }) {
-    await onTrackingChange(patch);
-    await load();
-  }
-
-  function exportCsv() {
-    if (!report) return;
-    const header = ["Row", "Email", "Name", "Company", "Subject", "Sent", "Opened", "Opens", "Clicked", "Clicks", "Bot clicks", "Replied", "Bounced", "Unsubscribed", "Follow-ups"];
-    const byRow = new Map<number, FollowupItem[]>();
-    for (const item of report.followups?.items || []) byRow.set(item.row, [...(byRow.get(item.row) || []), item]);
-    const lines = report.recipients.map((r) =>
-      [r.row + 1, r.email, r.name, r.company, r.subject, r.sentAt, r.openedAt, r.openCount, r.clickedAt, r.clickCount, r.botClicks, r.repliedAt, r.bouncedAt, r.unsubscribedAt, followupText(byRow.get(r.row) || [])]
-        .map(csvCell)
-        .join(","),
-    );
+  function downloadCsv(header: string[], lines: string[], suffix: string) {
     const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${campaignName.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "campaign"}-report.csv`;
+    link.download = `${campaignName.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "campaign"}-${suffix}.csv`;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  function exportCsv() {
+    if (!report) return;
+    const header = ["Row", "Email", "Name", "Company", "Subject", "Sent", "Replied", "Bounced", "Bounce reason", "Follow-ups"];
+    const byRow = new Map<number, FollowupItem[]>();
+    for (const item of report.followups?.items || []) byRow.set(item.row, [...(byRow.get(item.row) || []), item]);
+    const lines = report.recipients.map((r) =>
+      [r.row + 1, r.email, r.name, r.company, r.subject, r.sentAt, r.repliedAt, r.bouncedAt, r.bounceReason, followupText(byRow.get(r.row) || [])]
+        .map(csvCell)
+        .join(","),
+    );
+    downloadCsv(header, lines, "report");
+  }
+
+  function exportBounces() {
+    if (!report) return;
+    const header = ["Row", "Email", "Name", "Company", "Sent", "Bounce found", "Reason"];
+    const lines = report.recipients
+      .filter((r) => r.bouncedAt)
+      .map((r) => [r.row + 1, r.email, r.name, r.company, r.sentAt, r.bouncedAt, r.bounceReason].map(csvCell).join(","));
+    downloadCsv(header, lines, "bounces");
   }
 
   if (error && !report) return <div className="cloud-notice">{error}</div>;
@@ -227,24 +222,15 @@ export default function CloudCampaignReport({
   }
   const fuCount = (status: FollowupItem["status"]) => fuItems.filter((item) => item.status === status).length;
   const showFollowups = Boolean(fu?.enabled || fuItems.length);
+  const bounces = report.recipients.filter((r) => r.bouncedAt);
   const stages: EngagementFunnelStage[] = [
     { key: "sent", label: "Sent", value: t.sent, onClick: () => setFilter("all") },
-    ...(report.tracking.opens ? [{ key: "opened", label: "Opened", value: t.opened, onClick: () => setFilter("opened") }] : []),
-    ...(report.tracking.clicks ? [{ key: "clicked", label: "Clicked", value: t.clicked, onClick: () => setFilter("clicked") }] : []),
+    { key: "delivered", label: "Delivered", value: Math.max(0, t.sent - t.bounced), onClick: () => setFilter("no_reply") },
     { key: "replied", label: "Replied", value: t.replied, onClick: () => setFilter("replied") },
   ];
 
-  const cards = [
+  const cards: { key: string; label: string; value: number; rate: string; hint?: string; bad?: boolean }[] = [
     { key: "sent", label: "Sent", value: t.sent, rate: "" },
-    { key: "opened", label: "Opened", value: report.tracking.opens ? t.opened : null, rate: pct(t.opened, t.sent), off: !report.tracking.opens },
-    {
-      key: "clicked",
-      label: "Clicked",
-      value: report.tracking.clicks ? t.clicked : null,
-      rate: pct(t.clicked, t.sent),
-      off: !report.tracking.clicks,
-      hint: t.botClicked ? `${t.botClicked} recipient(s) had link-scanner clicks; those aren't counted` : undefined,
-    },
     { key: "replied", label: "Replied", value: t.replied, rate: pct(t.replied, t.sent) },
     { key: "bounced", label: "Bounced", value: t.bounced, rate: pct(t.bounced, t.sent), bad: t.bounced > 0 },
     { key: "skipped", label: "Skipped", value: t.skipped, rate: "", hint: "Rows that couldn't be sent" },
@@ -268,11 +254,8 @@ export default function CloudCampaignReport({
         {cards.map((card) => (
           <div key={card.key} className={`cloud-report-card${card.bad ? " is-bad" : ""}`} title={card.hint}>
             <span>{card.label}</span>
-            <strong>{card.value === null ? "Off" : card.value}</strong>
-            {card.value !== null && card.rate ? <small>{card.rate}</small> : null}
-            {card.key === "clicked" && t.botClicked ? (
-              <em className="cloud-report-bot">{t.botClicked} bot filtered</em>
-            ) : null}
+            <strong>{card.value}</strong>
+            {card.rate ? <small>{card.rate}</small> : null}
           </div>
         ))}
       </div>
@@ -304,21 +287,56 @@ export default function CloudCampaignReport({
       </div>
       {message ? <p className="cloud-muted">{message}</p> : null}
 
-      <div className="cloud-report-tracking">
-        <strong>Tracking for new sends</strong>
-        <label>
-          <input type="checkbox" checked={report.tracking.opens} onChange={(e) => void toggle({ trackOpens: e.target.checked })} />
-          Opens <small>(invisible image)</small>
-        </label>
-        <label>
-          <input type="checkbox" checked={report.tracking.clicks} onChange={(e) => void toggle({ trackClicks: e.target.checked })} />
-          Clicks <small>(links go through a redirect)</small>
-        </label>
-        <label>
-          <input type="checkbox" checked={report.tracking.unsubscribe} onChange={(e) => void toggle({ unsubscribeFooter: e.target.checked })} />
-          Unsubscribe footer
-        </label>
-      </div>
+      <p className="cloud-report-note">
+        Emails go out exactly as written, with no open pixel, tracked links or unsubscribe footer, so
+        they read as a person&apos;s email. Replies and bounces come from the sender&apos;s own inbox, and
+        replies are copied to the Master Inbox.
+      </p>
+
+      {bounces.length ? (
+        <div className="cloud-bounce-report">
+          <div className="cloud-bounce-head">
+            <div>
+              <strong>Bounce report</strong>
+              <small>
+                {bounces.length} of {t.sent} email{t.sent === 1 ? "" : "s"} bounced ({pct(bounces.length, t.sent)}). Remove
+                these addresses before reusing the list.
+              </small>
+            </div>
+            <button type="button" className="btn-soft btn-sm" onClick={exportBounces}>
+              Export bounces
+            </button>
+          </div>
+          <div className="cloud-report-table-wrap">
+            <table className="cloud-report-table">
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Sent</th>
+                  <th>Bounce found</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bounces.map((r) => (
+                  <tr key={`bounce-${r.email}-${r.row}`}>
+                    <td>
+                      <strong>{r.name || r.email}</strong>
+                      <small>
+                        {r.name ? `${r.email} · ` : ""}row {r.row + 1}
+                        {r.company ? ` · ${r.company}` : ""}
+                      </small>
+                    </td>
+                    <td>{short(r.sentAt)}</td>
+                    <td>{short(r.bouncedAt)}</td>
+                    <td className="cloud-bounce-reason">{r.bounceReason || "Bounce notice found (no reason shown)"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       <div className="cloud-report-table-head">
         <div className="cloud-report-filters" role="tablist" aria-label="Filter recipients">
@@ -357,8 +375,6 @@ export default function CloudCampaignReport({
               <tr>
                 <th>Person</th>
                 <th>Sent</th>
-                <th>Opened</th>
-                <th>Clicked</th>
                 <th>Replied</th>
                 {showFollowups ? <th>Follow-ups</th> : null}
               </tr>
@@ -372,17 +388,13 @@ export default function CloudCampaignReport({
                       {r.name ? `${r.email} · ` : ""}row {r.row + 1}
                       {r.company ? ` · ${r.company}` : ""}
                     </small>
-                    {r.bouncedAt ? <em className="cloud-tag is-bad">Bounced</em> : null}
-                    {r.unsubscribedAt ? <em className="cloud-tag">Unsubscribed</em> : null}
-                    {r.botClicks ? (
-                      <em className="cloud-tag" title="A link scanner hit the hidden trap link or clicked every link at once">
-                        Bot clicks {r.botClicks}
+                    {r.bouncedAt ? (
+                      <em className="cloud-tag is-bad" title={r.bounceReason || undefined}>
+                        Bounced
                       </em>
                     ) : null}
                   </td>
                   <td>{short(r.sentAt)}</td>
-                  <td>{r.openedAt ? `${short(r.openedAt)}${r.openCount > 1 ? ` · ${r.openCount}×` : ""}` : "—"}</td>
-                  <td>{r.clickedAt ? `${short(r.clickedAt)}${r.clickCount > 1 ? ` · ${r.clickCount}×` : ""}` : "—"}</td>
                   <td>{r.repliedAt ? <span className="cloud-tag is-ok">Replied</span> : "—"}</td>
                   {showFollowups ? (
                     <td className="cloud-report-fu">
