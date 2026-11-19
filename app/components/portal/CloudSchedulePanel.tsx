@@ -27,6 +27,34 @@ const COMMON_ZONES = [
   "UTC",
 ];
 
+/** Shown first, by country, so Gulf/Middle East recipients don't have to be found among ~400 zones. */
+const MIDDLE_EAST_ZONES: [zone: string, country: string][] = [
+  ["Asia/Dubai", "UAE"],
+  ["Asia/Riyadh", "Saudi Arabia"],
+  ["Asia/Qatar", "Qatar"],
+  ["Asia/Kuwait", "Kuwait"],
+  ["Asia/Bahrain", "Bahrain"],
+  ["Asia/Muscat", "Oman"],
+  ["Asia/Baghdad", "Iraq"],
+  ["Asia/Amman", "Jordan"],
+  ["Asia/Beirut", "Lebanon"],
+  ["Asia/Jerusalem", "Israel"],
+  ["Africa/Cairo", "Egypt"],
+  ["Asia/Tehran", "Iran"],
+];
+
+/** "GMT+4" for a zone right now (handles DST). */
+function zoneOffset(zone: string) {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "shortOffset" })
+      .formatToParts(new Date())
+      .find((p) => p.type === "timeZoneName");
+    return part?.value || "";
+  } catch {
+    return "";
+  }
+}
+
 function allZones() {
   try {
     const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
@@ -215,11 +243,20 @@ export default function CloudSchedulePanel({
             touch();
           }}
         >
-          {zones.map((zone) => (
-            <option key={zone} value={zone}>
-              {zone.replace(/_/g, " ")}
-            </option>
-          ))}
+          <optgroup label="Middle East">
+            {MIDDLE_EAST_ZONES.map(([zone, country]) => (
+              <option key={`me-${zone}`} value={zone}>
+                {zone.endsWith(`/${country}`) ? country : `${country} · ${zone.split("/")[1]}`} ({zoneOffset(zone)})
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="All timezones">
+            {zones.map((zone) => (
+              <option key={zone} value={zone}>
+                {zone.replace(/_/g, " ")}
+              </option>
+            ))}
+          </optgroup>
         </select>
         <small className="cloud-when-help">Days, hours and the start time below are in this timezone.</small>
       </fieldset>
