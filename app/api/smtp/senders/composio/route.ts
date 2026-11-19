@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   ComposioConfigError,
+  composioCallbackOrigin,
   isComposioMailbox,
   startComposioSenderLink,
 } from "@/lib/composio-mail";
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
       projectId: session.projectId,
       portalUserId: session.id,
       provider,
-      origin: request.nextUrl.origin,
+      origin: composioCallbackOrigin(request),
     });
     return NextResponse.json(link);
   } catch (error) {

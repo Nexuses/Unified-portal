@@ -283,6 +283,7 @@ export default function PortalSmtpPage() {
   const [dailyLimit, setDailyLimit] = useState(GMAIL_DAILY_LIMIT_DEFAULT);
   const [saving, setSaving] = useState(false);
   const [connectingComposio, setConnectingComposio] = useState(false);
+  const [manualSmtpOpen, setManualSmtpOpen] = useState(false);
   const [editingSenderId, setEditingSenderId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
@@ -435,6 +436,7 @@ export default function PortalSmtpPage() {
     setForm(EMPTY_FORM);
     setNoInbox(false);
     setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
+    setManualSmtpOpen(false);
     setError("");
   }
 
@@ -453,6 +455,7 @@ export default function PortalSmtpPage() {
     setForm(buildInitialForm(provider));
     setNoInbox(false);
     setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
+    setManualSmtpOpen(false);
     setModalStep("form");
   }
 
@@ -462,6 +465,7 @@ export default function PortalSmtpPage() {
     setForm(EMPTY_FORM);
     setNoInbox(false);
     setDailyLimit(GMAIL_DAILY_LIMIT_DEFAULT);
+    setManualSmtpOpen(false);
   }
 
   function updateField(key: keyof SenderCredentials, value: string) {
@@ -835,9 +839,6 @@ export default function PortalSmtpPage() {
                         <div className="vs-email">
                           {formatSenderDisplayName(sender.fromEmail)}
                         </div>
-                        {sender.via === "composio" ? (
-                          <span className="vs-composio-tag">Composio</span>
-                        ) : null}
                       </div>
                       <span
                         className={`vs-verified ${verified ? "" : "pending"}`}
@@ -855,6 +856,9 @@ export default function PortalSmtpPage() {
                       onClick={(event) => event.stopPropagation()}
                       onKeyDown={(event) => event.stopPropagation()}
                     >
+                      {sender.via === "composio" ? (
+                        <span className="vs-composio-tag">Composio</span>
+                      ) : null}
                       <span
                         className={`vs-connection ${sender.connection?.status === "connected" ? "is-connected" : "is-disconnected"}`}
                       >
@@ -1107,6 +1111,14 @@ export default function PortalSmtpPage() {
                   <div className="smtp-form-stack">
                     {canConnectComposio ? (
                       <div className="smtp-composio-connect">
+                        <div className="smtp-composio-copy">
+                          <strong>
+                            {selectedProvider?.id === "outlook"
+                              ? "Sign in with Microsoft"
+                              : "Sign in with Google"}
+                          </strong>
+                          <p>Connect this mailbox through Composio.</p>
+                        </div>
                         <button
                           type="button"
                           className="btn-dark"
@@ -1119,20 +1131,29 @@ export default function PortalSmtpPage() {
                               ? "Connect Outlook"
                               : "Connect Gmail"}
                         </button>
-                        <p>
-                          Opens Google or Microsoft sign-in through Composio.
-                          The SMTP fields below stay available.
-                        </p>
                       </div>
                     ) : null}
-                    {canConnectComposio ? <div className="smtp-composio-or">or use SMTP</div> : null}
+                    {canConnectComposio ? (
+                      <button
+                        type="button"
+                        className={`smtp-manual-toggle${manualSmtpOpen ? " is-open" : ""}`}
+                        aria-expanded={manualSmtpOpen}
+                        onClick={() => setManualSmtpOpen((open) => !open)}
+                      >
+                        <span>Use SMTP manually</span>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                          <path d="m6 9 6 6 6-6" />
+                        </svg>
+                      </button>
+                    ) : null}
                     {editingComposio ? (
                       <div className="crm-field">
                         <label>Mailbox</label>
                         <input value={editingSender?.fromEmail ?? ""} readOnly />
                       </div>
-                    ) : (
-                      selectedProvider.fields.map((field) => (
+                    ) : !canConnectComposio || manualSmtpOpen ? (
+                      <>
+                      {selectedProvider.fields.map((field) => (
                       <div className="crm-field" key={field.key}>
                         <label htmlFor={field.key}>{field.label}</label>
                         <input
@@ -1157,8 +1178,7 @@ export default function PortalSmtpPage() {
                           }
                         />
                       </div>
-                    ))
-                    )}
+                      ))}
                     {selectedProvider.id === "gmail" ? (
                       <div className="crm-field">
                         <label htmlFor="smtp-daily-limit">Daily limit</label>
@@ -1215,6 +1235,8 @@ export default function PortalSmtpPage() {
                         <span className="drip-toggle-knob" />
                       </button>
                     </div>
+                      </>
+                    ) : null}
                   </div>
                 </form>
               ) : null}
@@ -1235,7 +1257,7 @@ export default function PortalSmtpPage() {
                   Cancel
                 </button>
               )}
-              {modalStep === "form" ? (
+              {modalStep === "form" && (!canConnectComposio || manualSmtpOpen) ? (
                 <button
                   type="submit"
                   form="smtp-sender-form"

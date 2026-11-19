@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
-import { completeComposioSenderLink } from "@/lib/composio-mail";
+import { completeComposioSenderLink, composioCallbackOrigin } from "@/lib/composio-mail";
 import { createProjectSender, getProjectSenders } from "@/lib/smtp-senders-server";
 import { GMAIL_DAILY_LIMIT_DEFAULT } from "@/lib/smtp-senders";
 import {
@@ -19,7 +19,7 @@ function smtpRedirect(origin: string, params: Record<string, string>) {
 }
 
 export async function GET(request: NextRequest) {
-  const origin = request.nextUrl.origin;
+  const origin = composioCallbackOrigin(request);
   const pending = request.nextUrl.searchParams.get("pending") ?? "";
 
   try {
