@@ -36,6 +36,8 @@ import {
   renameCloudProfile,
   runCloudCampaignAction,
   type CloudVpnInfo,
+  CLOUD_VPN_LOCATIONS,
+  cloudVpnLocationLabel,
   setCloudProfileSensitivityLabel,
   type CloudCampaign,
   type CloudChromeProfile,
@@ -382,14 +384,24 @@ export default function PortalCloudCampaignDetailPage({
     }
   }
 
-  async function toggleVpn(enabled: boolean) {
-    await withBusy(enabled ? `Connecting VPN (${vpn?.country || "India"})…` : "Turning VPN off…", async () => {
+  /** "" = Default (no VPN, Boat's own address); otherwise a CLOUD_VPN_LOCATIONS country. */
+  async function chooseVpnLocation(country: string) {
+    const label = cloudVpnLocationLabel(country);
+    await withBusy(country ? `Connecting through ${label}…` : "Switching back to the default location…", async () => {
       try {
-        const data = await runCloudCampaignAction(campaignId, enabled ? "vpn_enable" : "vpn_disable");
+        const data = await runCloudCampaignAction(
+          campaignId,
+          country ? "vpn_enable" : "vpn_disable",
+          country ? { country } : undefined,
+        );
         if (data.vpn) setVpn(data.vpn as CloudVpnInfo);
         if (data.campaign) setCampaign(data.campaign as CloudCampaign);
         if (typeof data.desktopUrl === "string") setDesktopUrl(data.desktopUrl);
-        setNotice(enabled ? "VPN connected. The computer now browses and sends from India." : "VPN is off.");
+        setNotice(
+          country
+            ? `Connected. Senders' Gmail and Outlook now see a ${label} address.`
+            : "Default location: senders use the cloud computer's own address.",
+        );
       } finally {
         // The setting may have changed even when connecting failed; show what is true now.
         const latest = await runCloudCampaignAction(campaignId, "vpn_status").catch(() => null);
@@ -1380,26 +1392,38 @@ export default function PortalCloudCampaignDetailPage({
                     )}
                   </div>
                   <div className="cloud-vpn-row">
-                    <label className="cloud-vpn-toggle">
-                      <input
-                        type="checkbox"
-                        checked={vpn?.enabled === true}
-                        disabled={Boolean(busy) || !vpn || (!vpn.configured && !vpn.enabled)}
-                        onChange={(event) => void toggleVpn(event.target.checked)}
-                      />
-                      <span>Connect through NordVPN ({vpn?.country || "India"})</span>
-                    </label>
+                    <div className="cloud-vpn-head">
+                      <strong>Sender location</strong>
+                      <span>What Gmail and Outlook see. Applies to every campaign in this project.</span>
+                    </div>
+                    <div className="cloud-vpn-choices" role="radiogroup" aria-label="Sender location">
+                      {[{ country: "", label: "Default" }, ...CLOUD_VPN_LOCATIONS].map((option) => {
+                        const selected = option.country ? vpn?.enabled === true && vpn.country === option.country : vpn?.enabled !== true;
+                        return (
+                          <label key={option.label} className={`cloud-vpn-choice${selected ? " is-on" : ""}`}>
+                            <input
+                              type="radio"
+                              name="cloud-vpn-location"
+                              checked={selected}
+                              disabled={Boolean(busy) || !vpn || (Boolean(option.country) && !vpn.configured)}
+                              onChange={() => void chooseVpnLocation(option.country)}
+                            />
+                            <span>{option.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
                     <p className="cloud-auth-hint">
                       {!vpn
                         ? "Checking VPN…"
                         : !vpn.configured && !vpn.enabled
-                          ? "NordVPN is not set up on the server yet (an admin needs to add NORDVPN_TOKEN)."
+                          ? "NordVPN is not set up on the server yet (an admin needs to add NORDVPN_TOKEN), so only Default is available."
                           : !vpn.enabled
-                            ? "Off. Applies to every campaign in this project, since they share this computer."
+                            ? "Default: the cloud computer's own address (Europe). Pick UAE or India for accounts that only allow sign-in from there."
                             : vpn.status?.connected
-                              ? `Connected · ${[vpn.status.city, vpn.status.country].filter(Boolean).join(", ")}${
+                              ? `Connected through NordVPN · ${[vpn.status.city, vpn.status.country].filter(Boolean).join(", ")}${
                                   vpn.status.ip ? ` · ${vpn.status.ip}` : ""
-                                }. Nothing runs on the computer unless this connection is up.`
+                                }. Nothing is sent unless this connection is up.`
                               : vpn.status?.error
                                 ? `Not connected: ${vpn.status.error}`
                                 : "On. Connects when the computer starts; nothing is sent until it does."}

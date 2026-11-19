@@ -58,6 +58,8 @@ type Params = { params: Promise<{ id: string }> };
 
 type ActionBody = {
   withDesktop?: boolean;
+  /** vpn_enable: "India" or "United Arab Emirates" (lib/cloud-campaigns CLOUD_VPN_LOCATIONS). */
+  country?: string;
   action?: string;
   sheetUrl?: string;
   profileId?: string;
@@ -110,7 +112,12 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     if (action === "vpn_enable") {
-      await setCloudVpnEnabled(projectId, true, session.email);
+      await setCloudVpnEnabled(
+        projectId,
+        true,
+        session.email,
+        typeof body?.country === "string" ? body.country : undefined,
+      );
       // Readying the computer installs, signs in and connects NordVPN (or explains why not).
       const result = await startCloudComputer(projectId, id).catch(async (error) => {
         return NextResponse.json(
