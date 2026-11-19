@@ -210,6 +210,8 @@ export type CloudCampaign = {
   profileDirectory?: string;
   signatureHtml?: string;
   signatureReady?: boolean;
+  /** The "When to send" step was saved (schedule + gap reviewed on purpose). */
+  scheduleReady?: boolean;
   customPrompt?: string;
   customPromptReady?: boolean;
   sheetUrl?: string;
@@ -369,6 +371,7 @@ export async function patchCloudCampaign(
       | "status"
       | "signatureHtml"
       | "signatureReady"
+      | "scheduleReady"
       | "customPrompt"
       | "customPromptReady"
       | "trackOpens"

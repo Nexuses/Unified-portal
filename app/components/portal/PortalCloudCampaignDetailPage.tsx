@@ -9,7 +9,7 @@ import CloudCampaignRunPanel from "@/app/components/portal/CloudCampaignRunPanel
 import CloudCampaignReport from "@/app/components/portal/CloudCampaignReport";
 import CloudSchedulePanel from "@/app/components/portal/CloudSchedulePanel";
 import CloudAttachmentsPanel from "@/app/components/portal/CloudAttachmentsPanel";
-import type { CloudSchedule } from "@/lib/cloud-schedule";
+import { describeSchedule, type CloudSchedule } from "@/lib/cloud-schedule";
 import CloudColumnMapPanel, {
   type CloudRowPreview,
 } from "@/app/components/portal/CloudColumnMapPanel";
@@ -52,7 +52,7 @@ import CloudFollowupsPanel, {
 import type { CloudEmailStyle, CloudFollowupSettings } from "@/lib/cloud-campaigns";
 import { useRouter } from "next/navigation";
 
-type StepId = "computer" | "sender" | "signature" | "sheet" | "style" | "followups" | "review";
+type StepId = "computer" | "sender" | "signature" | "sheet" | "style" | "followups" | "schedule" | "review";
 
 
 
@@ -100,6 +100,34 @@ function authModeFromAction(data: Record<string, unknown>): CloudAuthMode | null
   return null;
 }
 
+/**
+ * A signature copied from a Gmail/Outlook email arrives as a whole HTML page on the clipboard:
+ * keep just the copied part, without the app's comments, classes and meta tags.
+ */
+function signatureFromClipboard(html: string, text: string) {
+  if (!html.trim()) {
+    const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return escaped.trim() ? `<div>${escaped.trim().replace(/\r?\n/g, "<br>")}</div>` : "";
+  }
+  const fragment =
+    html.match(/<!--StartFragment-->([\s\S]*?)<!--EndFragment-->/i)?.[1] ??
+    html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] ??
+    html;
+  return cleanSignatureHtml(
+    fragment
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<\/?(html|head|body|meta|o:p)\b[^>]*>/gi, "")
+      .replace(/\s(class|id|data-[a-z-]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+      .trim(),
+  );
+}
+
+/** Images that only work inside the mail app (cid:, blob:, data: or local links) won't show in sent mail. */
+function signatureImageProblem(html: string) {
+  const sources = Array.from(html.matchAll(/<img\b[^>]*\ssrc\s*=\s*["']([^"']*)["']/gi)).map((m) => m[1]);
+  return sources.some((src) => !/^https:\/\//i.test(src.trim()));
+}
+
 function needsInteractiveLogin(data: Record<string, unknown>) {
   return (
     data.needsLogin === true ||
@@ -124,8 +152,7 @@ export default function PortalCloudCampaignDetailPage({
   const [vpn, setVpn] = useState<CloudVpnInfo | null>(null);
   const [sheetUrl, setSheetUrl] = useState("");
   const [signatureHtml, setSignatureHtml] = useState("");
-  const [signatureTab, setSignatureTab] = useState<"code" | "preview">("code");
-  const [gapMinutes, setGapMinutes] = useState(3);
+  const [signatureTab, setSignatureTab] = useState<"paste" | "code" | "preview">("paste");
   const [openStep, setOpenStep] = useState<StepId>("computer");
   const [newSenderProvider, setNewSenderProvider] = useState<CloudSenderProvider>("gmail");
   const [authMode, setAuthMode] = useState<CloudAuthMode | null>(null);
@@ -154,7 +181,6 @@ export default function PortalCloudCampaignDetailPage({
     setProfiles(nextProfiles);
     setSheetUrl(nextCampaign.sheetUrl || "");
     setSignatureHtml(nextCampaign.signatureHtml || "");
-    setGapMinutes(nextCampaign.gapMinutes ?? 3);
     return nextCampaign;
   }, [campaignId]);
 
@@ -209,6 +235,7 @@ export default function PortalCloudCampaignDetailPage({
         sheet: false,
         style: false,
         followups: false,
+        schedule: false,
         review: false,
       };
     }
@@ -231,6 +258,8 @@ export default function PortalCloudCampaignDetailPage({
         // Older campaigns without a saved mapping still count; new ones need the required columns.
         (!campaign.columnMap || (columnsMapped && (campaign.columnStats?.ready ?? 1) > 0)),
     );
+    // Campaigns that already sent count as scheduled (they predate this step).
+    const schedule = campaign.scheduleReady === true || (campaign.sentCount || 0) > 0;
     return {
       computer,
       sender,
@@ -239,13 +268,15 @@ export default function PortalCloudCampaignDetailPage({
       sheet,
       style: Boolean(campaign.emailStyle?.savedAt),
       followups: Boolean(campaign.followups?.savedAt),
+      schedule,
       review:
         computer &&
         senderVerified &&
         signature &&
         sheet &&
         Boolean(campaign.emailStyle?.savedAt) &&
-        Boolean(campaign.followups?.savedAt),
+        Boolean(campaign.followups?.savedAt) &&
+        schedule,
     };
   }, [campaign, profiles, selectedProfileEmail]);
 
@@ -385,7 +416,9 @@ export default function PortalCloudCampaignDetailPage({
           ? "A verification code is still required. Finish it on the full-screen computer, then confirm."
           : mode === "user_input"
             ? "Finish the phone / captcha step on the full-screen computer, then confirm."
-            : "Inbox still needs a sign-in. Use the full-screen computer, then confirm.",
+            : typeof data.report === "string" && data.report
+              ? data.report
+              : "Inbox still needs a sign-in. Use the full-screen computer, then confirm.",
       );
       return false;
     }
@@ -568,15 +601,17 @@ export default function PortalCloudCampaignDetailPage({
     });
   }
 
-  async function saveSchedule(schedule: CloudSchedule) {
-    await withBusy("Saving schedule…", async () => {
-      const next = await patchCloudCampaign(campaignId, { schedule });
+  async function saveSchedule(schedule: CloudSchedule, gapMinutes: number) {
+    await withBusy("Saving when to send…", async () => {
+      const wasReady = campaign?.scheduleReady === true;
+      const next = await patchCloudCampaign(campaignId, { schedule, gapMinutes, scheduleReady: true });
       setCampaign(next);
       setNotice(
         schedule.startAt
-          ? "Schedule saved. Click Schedule to queue it, or Start now to begin within the allowed days and hours."
-          : "Schedule saved. Emails only go out on the allowed days and hours.",
+          ? "Saved. Click Schedule at the top to queue it for the start time."
+          : "Saved. Emails only go out on the allowed days and hours.",
       );
+      if (!wasReady) setOpenStep("review");
     });
   }
 
@@ -599,14 +634,10 @@ export default function PortalCloudCampaignDetailPage({
   async function checkInboxNow(): Promise<string> {
     const data = await runCloudCampaignAction(campaignId, "check_inbox");
     if (data.campaign) setCampaign(data.campaign as CloudCampaign);
-    const inbox = (data.inbox || {}) as { checked?: number; newReplies?: number; newBounces?: number };
+    const inbox = (data.inbox || {}) as { checked?: number; newReplies?: number; newBounces?: number; inboxMessages?: number };
     const checked = inbox.checked ?? 0;
-    return `Checked ${checked} address${checked === 1 ? "" : "es"}: ${inbox.newReplies ?? 0} new repl${inbox.newReplies === 1 ? "y" : "ies"}, ${inbox.newBounces ?? 0} new bounce${inbox.newBounces === 1 ? "" : "s"}.`;
-  }
-
-  async function saveTracking(patch: { trackOpens?: boolean; trackClicks?: boolean; unsubscribeFooter?: boolean }) {
-    const next = await patchCloudCampaign(campaignId, patch);
-    setCampaign(next);
+    const copied = inbox.inboxMessages ?? 0;
+    return `Checked ${checked} address${checked === 1 ? "" : "es"}: ${inbox.newReplies ?? 0} new repl${inbox.newReplies === 1 ? "y" : "ies"}, ${inbox.newBounces ?? 0} new bounce${inbox.newBounces === 1 ? "" : "s"}${copied ? ` · ${copied} new message${copied === 1 ? "" : "s"} in the Master Inbox` : ""}.`;
   }
 
   async function saveColumnMap(map: CloudColumnMap) {
@@ -653,7 +684,7 @@ export default function PortalCloudCampaignDetailPage({
         : "Saved without follow-ups.",
     );
     void loadFollowupSummary();
-    setOpenStep("review");
+    setOpenStep("schedule");
   }
 
   async function previewFollowup(
@@ -884,20 +915,6 @@ export default function PortalCloudCampaignDetailPage({
     });
   }
 
-  async function saveGap() {
-    await withBusy("Saving gap…", async () => {
-      const clamped = Math.max(0, Math.min(120, Math.round(Number(gapMinutes)) || 0));
-      const next = await patchCloudCampaign(campaignId, { gapMinutes: clamped });
-      setCampaign(next);
-      setGapMinutes(next.gapMinutes);
-      setNotice(
-        next.gapMinutes === 0
-          ? "Gap saved: no wait between emails (short pause only)."
-          : `Gap saved: ${next.gapMinutes} minute${next.gapMinutes === 1 ? "" : "s"} between emails.`,
-      );
-    });
-  }
-
   async function startSending() {
     await withBusy("Starting send…", async () => {
       const data = await runCloudCampaignAction(campaignId, "start");
@@ -943,9 +960,6 @@ export default function PortalCloudCampaignDetailPage({
       if (data.campaign) {
         const next = data.campaign as CloudCampaign;
         setCampaign(next);
-        if (typeof next.gapMinutes === "number" && Number.isFinite(next.gapMinutes)) {
-          setGapMinutes(Math.max(0, Math.min(120, Math.round(next.gapMinutes))));
-        }
       }
       setNotice("Restarted from row 1. Sending…");
     });
@@ -992,6 +1006,7 @@ export default function PortalCloudCampaignDetailPage({
     stepsDone.sheet,
     stepsDone.style,
     stepsDone.followups,
+    stepsDone.schedule,
   ].filter(Boolean).length;
   // Steps unlock one at a time: each needs every earlier step fully done.
   const STEP_NAMES: Record<Exclude<StepId, "review">, string> = {
@@ -1001,6 +1016,7 @@ export default function PortalCloudCampaignDetailPage({
     sheet: "4 (People — list added and columns mapped)",
     style: "5 (Email style — save it, or click Use standard)",
     followups: "6 (Follow-ups — save them, on or off)",
+    schedule: "7 (When to send — save it)",
   };
   const stepComplete: Record<Exclude<StepId, "review">, boolean> = {
     computer: stepsDone.computer,
@@ -1009,8 +1025,9 @@ export default function PortalCloudCampaignDetailPage({
     sheet: stepsDone.sheet,
     style: stepsDone.style,
     followups: stepsDone.followups,
+    schedule: stepsDone.schedule,
   };
-  const STEP_ORDER: StepId[] = ["computer", "sender", "signature", "sheet", "style", "followups", "review"];
+  const STEP_ORDER: StepId[] = ["computer", "sender", "signature", "sheet", "style", "followups", "schedule", "review"];
   /** The first earlier step that isn't finished, or null when this step is open to use. */
   const blockingStep = (step: StepId) => {
     for (const earlier of STEP_ORDER.slice(0, STEP_ORDER.indexOf(step))) {
@@ -1046,7 +1063,9 @@ export default function PortalCloudCampaignDetailPage({
             ? "save the email style, or click Use standard (step 5)."
             : !stepsDone.followups
               ? "save the follow-ups step — on or off (step 6)."
-              : undefined;
+              : !stepsDone.schedule
+                ? "check and save When to send — start time, days, hours and gap (step 7)."
+                : undefined;
   const signaturePreview = cleanSignatureHtml(signatureHtml);
   const sheetHeaders = campaign.sheetHeaders ?? [];
 
@@ -1123,9 +1142,22 @@ export default function PortalCloudCampaignDetailPage({
               ? `${campaign.sheetSource === "csv" ? campaign.sheetFileName || "CSV" : "Google Sheet"} · ${campaign.sheetRowCount ?? 0} people`
               : "No people yet"
           }
-          gapMinutes={gapMinutes}
-          onGapChange={setGapMinutes}
-          onSaveGap={() => void saveGap()}
+          whenSummary={
+            stepsDone.schedule
+              ? `${describeSchedule(campaign.schedule || { timezone: "UTC", excludedDays: [] })} · ${
+                  campaign.gapMinutes === 0 ? "no gap" : `${campaign.gapMinutes} min between emails`
+                }`
+              : "Not set yet: check and save step 7 (When to send) before starting."
+          }
+          whenSaved={stepsDone.schedule}
+          onEditWhen={() => {
+            setView("setup");
+            goToStep("schedule");
+            window.setTimeout(
+              () => document.getElementById("cloud-step-schedule")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+              120,
+            );
+          }}
           onStart={() => void startSending()}
           onStop={() => void stopSending()}
           onResume={() => void resumeSending()}
@@ -1142,16 +1174,6 @@ export default function PortalCloudCampaignDetailPage({
           )}
           onSchedule={() => void scheduleSending()}
           onCancelSchedule={() => void cancelSchedule()}
-          scheduleSlot={
-            <CloudSchedulePanel
-              key={`${campaign.status}-${campaign.schedule?.timezone || ""}-${campaign.schedule?.startAt || ""}`}
-              schedule={campaign.schedule}
-              nextSendAt={campaign.nextSendAt}
-              status={campaign.status}
-              busy={Boolean(busy)}
-              onSave={saveSchedule}
-            />
-          }
         />
 
         {view === "report" ? (
@@ -1160,7 +1182,6 @@ export default function PortalCloudCampaignDetailPage({
             campaignName={campaign.name}
             sending={campaign.status === "sending"}
             onCheckInbox={checkInboxNow}
-            onTrackingChange={saveTracking}
           />
         ) : (
         <div className="drip-setup-card drip-setup-card-active">
@@ -1168,12 +1189,12 @@ export default function PortalCloudCampaignDetailPage({
             <div className="drip-setup-intro-copy">
               <strong>Set up this cloud campaign</strong>
               <span>
-                Seven steps, in order — each unlocks when the one before it is fully done. Recommended people columns:{" "}
+                Eight steps, in order — each unlocks when the one before it is fully done. Recommended people columns:{" "}
                 {CLOUD_SHEET_COLUMNS.join(", ")}.
               </span>
             </div>
             <div className="drip-setup-intro-meter" aria-hidden="true">
-              {[0, 1, 2, 3, 4, 5].map((index) => (
+              {[0, 1, 2, 3, 4, 5, 6].map((index) => (
                 <span key={index} className={index < requiredDone ? "done" : ""} />
               ))}
             </div>
@@ -1558,10 +1579,20 @@ export default function PortalCloudCampaignDetailPage({
               {openStep === "signature" && !blockingStep("signature") ? (
                 <div className="cloud-step-body">
                   <p>
-                    Paste signature HTML for this campaign. It is appended under each pitch when
-                    the computer sends. Leave empty and continue if you do not want a signature.
+                    This signature is added under every email the computer sends. The signature set
+                    inside Gmail or Outlook is <strong>not</strong> added automatically, so put it here.
+                    Leave it empty and continue if you don&apos;t want one.
                   </p>
                   <div className="pz-signature-tabs" role="tablist" aria-label="Signature editor">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={signatureTab === "paste"}
+                      className={signatureTab === "paste" ? "active" : ""}
+                      onClick={() => setSignatureTab("paste")}
+                    >
+                      Paste from email
+                    </button>
                     <button
                       type="button"
                       role="tab"
@@ -1581,7 +1612,46 @@ export default function PortalCloudCampaignDetailPage({
                       Preview
                     </button>
                   </div>
-                  {signatureTab === "code" ? (
+                  {signatureTab === "paste" ? (
+                    <div className="cloud-signature-paste">
+                      <ol>
+                        <li>In your own Gmail or Outlook, open a new email so your signature appears.</li>
+                        <li>Select the whole signature and copy it (Ctrl/Cmd + C).</li>
+                        <li>Click the box below and paste (Ctrl/Cmd + V).</li>
+                      </ol>
+                      <div
+                        className="cloud-signature-drop"
+                        contentEditable
+                        suppressContentEditableWarning
+                        role="textbox"
+                        aria-label="Paste your signature here"
+                        onPaste={(event) => {
+                          event.preventDefault();
+                          const html = signatureFromClipboard(
+                            event.clipboardData.getData("text/html"),
+                            event.clipboardData.getData("text/plain"),
+                          );
+                          if (!html) {
+                            setNotice("Nothing to paste: copy the signature from an email first.");
+                            return;
+                          }
+                          setSignatureHtml(html);
+                          setSignatureTab("preview");
+                          setNotice(
+                            signatureImageProblem(html)
+                              ? "Signature pasted. Its logo or images only work inside your mail app, so they won't show in sent emails. Use https:// image links in Code."
+                              : "Signature pasted. Check the preview, then save.",
+                          );
+                        }}
+                        onKeyDown={(event) => {
+                          // Paste only; typing here would be lost.
+                          if (!(event.metaKey || event.ctrlKey)) event.preventDefault();
+                        }}
+                      >
+                        {signaturePreview ? "Paste again to replace the current signature" : "Click here and paste your signature"}
+                      </div>
+                    </div>
+                  ) : signatureTab === "code" ? (
                     <textarea
                       className="pz-signature-input cloud-signature-input"
                       value={signatureHtml}
@@ -1598,7 +1668,7 @@ export default function PortalCloudCampaignDetailPage({
                       />
                     </div>
                   ) : (
-                    <p className="pz-signature-empty">Paste signature HTML in Code first.</p>
+                    <p className="pz-signature-empty">No signature yet. Paste one from an email, or write HTML in Code.</p>
                   )}
                   <div className="cloud-step-actions">
                     <button
@@ -1813,12 +1883,48 @@ export default function PortalCloudCampaignDetailPage({
               ) : null}
             </section>
             <section
+              id="cloud-step-schedule"
+              className={`cloud-step${openStep === "schedule" ? " open" : ""}${stepsDone.schedule && !blockingStep("schedule") ? " done" : ""}${
+                blockingStep("schedule") ? " locked" : ""
+              }`}
+            >
+              <button type="button" className="cloud-step-head" onClick={() => goToStep("schedule")}>
+                <span className="cloud-step-title">
+                  <i className="cloud-step-num" aria-hidden="true">{stepsDone.schedule && !blockingStep("schedule") ? "✓" : "7"}</i>When to send
+                </span>
+                <em>
+                  {lockedLabel("schedule") ||
+                    (stepsDone.schedule
+                      ? describeSchedule(campaign.schedule || { timezone: "UTC", excludedDays: [] })
+                      : "Check and save to continue")}
+                </em>
+              </button>
+              {openStep === "schedule" && !blockingStep("schedule") ? (
+                <div className="cloud-step-body">
+                  <p className="cloud-muted">
+                    Check every setting below, then save. Nothing is sent until you click Start (or Schedule) at
+                    the top of the page.
+                  </p>
+                  <CloudSchedulePanel
+                    key={`${campaign.status}-${campaign.schedule?.timezone || ""}-${campaign.schedule?.startAt || ""}-${campaign.gapMinutes}`}
+                    schedule={campaign.schedule}
+                    gapMinutes={campaign.gapMinutes ?? 3}
+                    nextSendAt={campaign.nextSendAt}
+                    status={campaign.status}
+                    busy={Boolean(busy)}
+                    saved={campaign.scheduleReady === true}
+                    onSave={saveSchedule}
+                  />
+                </div>
+              ) : null}
+            </section>
+            <section
               className={`cloud-step${openStep === "review" ? " open" : ""}${stepsDone.review && !blockingStep("review") ? " done" : ""}${
                 blockingStep("review") ? " locked" : ""
               }`}
             >
               <button type="button" className="cloud-step-head" onClick={() => goToStep("review")}>
-                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review && !blockingStep("review") ? "✓" : "7"}</i>Review &amp; start</span>
+                <span className="cloud-step-title"><i className="cloud-step-num" aria-hidden="true">{stepsDone.review && !blockingStep("review") ? "✓" : "8"}</i>Review &amp; start</span>
                 <em>
                   {lockedLabel("review") ||
                     (stepsDone.review

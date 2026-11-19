@@ -2,7 +2,6 @@ import { ObjectId } from "mongodb";
 import { NextRequest, NextResponse } from "next/server";
 import {
   pauseCloudSending,
-  prepareChromeProfileLogin,
   restartCloudSending,
   resumeCloudSending,
   sendNextCloudRow,
@@ -183,25 +182,30 @@ export async function POST(request: NextRequest, { params }: Params) {
         });
       }
 
-      const login = await prepareChromeProfileLogin(projectId, profileId, id);
-      const readyEmail =
-        !login.needsLogin && login.email?.includes("@") ? login.email : "";
-      const confirmedEmail = readyEmail || knownEmail || "";
-      if (confirmedEmail && !login.needsLogin) {
-        await markChromeProfileVerified(projectId, profileId, confirmedEmail);
-        await patchCloudCampaignDoc(projectId, id, {
-          profileGmail: confirmedEmail,
-        });
+      // Read the signed-in address straight from the sender's own Chrome (script, a few
+      // seconds). This used to ask the AI to look at the desktop, which took up to minutes.
+      const check = await checkScriptSender(projectId, id);
+      const signedIn = check.ok && check.status === "ready";
+      const confirmedEmail = signedIn && check.accountMatches !== false ? String(check.email || "").toLowerCase() : "";
+      if (confirmedEmail) {
+        await patchCloudCampaignDoc(projectId, id, { profileGmail: confirmedEmail });
         await maybeLearnSenderMemory(projectId, profile, confirmedEmail, session.email);
       }
+      const report = confirmedEmail
+        ? `Inbox confirmed for ${confirmedEmail}.`
+        : signedIn
+          ? `This Chrome is signed in as ${check.email}, not ${check.expectedEmail}. Sign out and sign in as ${check.expectedEmail}, then check again.`
+          : check.ok && check.status === "login_required"
+            ? "Not signed in yet. Finish signing in on the computer, then check again."
+            : `Couldn't check the inbox (${check.code || "error"}${check.message ? `: ${String(check.message).slice(0, 120)}` : ""}). Try again.`;
       const campaign = await getCloudCampaign(projectId, id);
       return NextResponse.json({
         campaign,
-        needsLogin: login.needsLogin === true,
-        needsOtp: login.needsOtp === true,
-        needsUserInput: login.needsUserInput === true,
-        report: login.report,
-        desktopUrl: login.desktopUrl,
+        needsLogin: !confirmedEmail,
+        needsOtp: false,
+        needsUserInput: false,
+        report,
+        desktopUrl: check.desktopUrl,
         profile: confirmedEmail ? { ...profile, gmail: confirmedEmail } : profile,
       });
     }
@@ -291,6 +295,14 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (action === "sender_read_sheet") {
       const result = await readSheetThroughSender(projectId, id, String(body?.sheetUrl ?? ""));
       return NextResponse.json({ sheet: result });
+    }
+
+    // A first start needs the "When to send" step saved, so nobody sends on settings they never saw.
+    if ((action === "schedule" || action === "start") && !existing.scheduleReady && (existing.sentCount || 0) === 0) {
+      return NextResponse.json(
+        { error: "Save the When to send step first (step 7): start time, days, hours and gap." },
+        { status: 400 },
+      );
     }
 
     if (action === "schedule") {

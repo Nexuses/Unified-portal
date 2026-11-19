@@ -135,11 +135,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         startAt,
       };
     }
-    for (const key of ["trackOpens", "trackClicks", "unsubscribeFooter"] as const) {
-      if (typeof body[key] === "boolean") patch[key] = body[key];
-    }
     if (typeof body.signatureHtml === "string") {
       patch.signatureHtml = cleanSignatureHtml(body.signatureHtml);
+    }
+    if (typeof body.scheduleReady === "boolean") {
+      patch.scheduleReady = body.scheduleReady;
     }
     if (body.signatureReady === true) {
       patch.signatureReady = true;

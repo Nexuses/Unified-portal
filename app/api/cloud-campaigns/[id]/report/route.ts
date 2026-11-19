@@ -7,7 +7,7 @@ import { isSessionError, requirePortalSession } from "@/lib/require-portal-sessi
 
 type Params = { params: Promise<{ id: string }> };
 
-/** Engagement report for one cloud campaign (sent / opened / clicked / replied / bounced). */
+/** Report for one cloud campaign: sent, replied, bounced (with reasons), follow-ups. */
 export async function GET(_request: NextRequest, { params }: Params) {
   try {
     const session = await requirePortalSession();
@@ -23,11 +23,6 @@ export async function GET(_request: NextRequest, { params }: Params) {
       report: {
         ...report,
         totals: { ...report.totals, skipped, failed: campaign.failedCount },
-        tracking: {
-          opens: campaign.trackOpens !== false,
-          clicks: campaign.trackClicks === true,
-          unsubscribe: campaign.unsubscribeFooter === true,
-        },
         inboxCheckedAt: campaign.inboxCheckedAt,
         followups: {
           enabled: campaign.followups?.enabled === true,

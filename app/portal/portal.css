@@ -4741,6 +4741,8 @@ select.filter{
 .inbox-chip-type.is-drip{background:#e0f2fe;color:#0369a1;}
 .inbox-chip-type.is-oneone{background:#fef3c7;color:#b45309;}
 .inbox-chip-type.is-personalise{background:#dcfce7;color:#0b996e;}
+.inbox-chip-type.is-cloud{background:#ede9fe;color:#6c3ce1;}
+.inbox-cloud-reply-note{margin:12px 16px 16px;padding:12px 14px;border-radius:12px;background:#f5f3ff;color:#4c1d95;font-size:13px;line-height:1.5;}
 .inbox-chip-reply{font-weight:700;}
 .inbox-chip-reply.is-compact{padding:2px 8px;font-size:11px;}
 .inbox-chip-reply.is-interested{background:#dcfce7;color:#15803d;}
@@ -12644,10 +12646,12 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-report-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 14px;border:1px solid #eef0f2;border-radius:12px;}
 .cloud-report-inbox strong{display:block;font-size:13.5px;color:#111827;}
 .cloud-report-inbox small{display:block;font-size:12px;color:#6b7280;margin-top:2px;}
-.cloud-report-tracking{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;font-size:13px;color:#374151;}
-.cloud-report-tracking strong{font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-right:4px;}
-.cloud-report-tracking label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;}
-.cloud-report-tracking small{color:#9ca3af;}
+.cloud-report-note{margin:0;font-size:12.5px;line-height:1.5;color:#6b7280;}
+.cloud-bounce-report{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid #fde2e2;border-radius:12px;background:#fffafa;}
+.cloud-bounce-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.cloud-bounce-head strong{display:block;font-size:14px;color:#991b1b;}
+.cloud-bounce-head small{display:block;margin-top:2px;font-size:12.5px;color:#6b7280;}
+.cloud-bounce-reason{max-width:420px;font-size:12.5px;line-height:1.45;color:#7f1d1d;}
 .cloud-report-table-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
 .cloud-report-filters{display:inline-flex;flex-wrap:wrap;gap:4px;}
 .cloud-report-filters button{border:1px solid #e5e7eb;background:#fff;border-radius:999px;padding:5px 12px;font:inherit;font-size:12.5px;font-weight:600;color:#4b5563;cursor:pointer;}
@@ -12669,6 +12673,29 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-run-when{display:flex;flex-direction:column;gap:10px;padding-top:14px;border-top:1px solid #f1f2f4;}
 .cloud-run-when > strong{font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;}
 .cloud-schedule{display:flex;flex-direction:column;gap:12px;}
+.cloud-run-when-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 14px;border:1px solid #eef0f2;border-radius:12px;background:#fafafa;}
+.cloud-run-when-summary strong{display:block;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;}
+.cloud-run-when-summary span{display:block;margin-top:2px;font-size:13.5px;color:#111827;}
+.cloud-run-when-summary.is-missing{border-color:#fcd34d;background:#fffbeb;}
+.cloud-run-when-summary.is-missing span{color:#92400e;font-weight:600;}
+.cloud-when{display:flex;flex-direction:column;gap:12px;}
+.cloud-when-block{margin:0;padding:14px;border:1px solid #eef0f2;border-radius:12px;display:flex;flex-direction:column;gap:10px;min-width:0;}
+.cloud-when-block legend{padding:0 6px;font-size:13.5px;font-weight:700;color:#111827;}
+.cloud-when-block select,.cloud-when-block input[type="datetime-local"],.cloud-when-block input[type="time"],.cloud-when-block input[type="number"]{height:38px;padding:0 10px;border:1px solid #e5e7eb;border-radius:10px;font:inherit;font-size:14px;background:#fff;max-width:100%;}
+.cloud-when-block input[type="number"]{width:90px;}
+.cloud-when-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;}
+.cloud-when-choice{display:flex;align-items:flex-start;gap:10px;padding:12px;border:1.5px solid #e5e7eb;border-radius:12px;cursor:pointer;background:#fff;}
+.cloud-when-choice.is-on{border-color:#6c3ce1;background:#f8f5ff;}
+.cloud-when-choice input{margin-top:3px;accent-color:#6c3ce1;}
+.cloud-when-choice strong{display:block;font-size:14px;color:#111827;}
+.cloud-when-choice small{display:block;margin-top:2px;font-size:12.5px;color:#6b7280;}
+.cloud-when-inline{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:13.5px;color:#374151;}
+.cloud-when-help{font-size:12.5px;color:#6b7280;}
+.cloud-when-foot{position:sticky;bottom:0;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 14px;border-radius:12px;background:#f3f4f6;}
+.cloud-when-foot strong{display:block;font-size:13.5px;color:#111827;}
+.cloud-when-foot small{display:block;margin-top:2px;font-size:12.5px;color:#4b5563;}
+.cloud-when-foot.is-dirty{background:#fef3c7;box-shadow:0 0 0 1.5px #f59e0b inset;}
+.cloud-when-foot.is-dirty strong{color:#92400e;}
 .cloud-schedule-row{display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:12px;}
 .cloud-schedule-label{font-size:12.5px;font-weight:600;color:#374151;}
 .cloud-schedule select{height:36px;padding:0 10px;border:1px solid #e5e7eb;border-radius:10px;font:inherit;font-size:13px;background:#fff;min-width:0;}
@@ -12801,3 +12828,9 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-sample-sheet small{color:var(--muted);line-height:1.45;}
 .cloud-sample-sheet .btn-sm{flex-shrink:0;}
 @media (max-width:640px){.cloud-sample-sheet{flex-direction:column;align-items:stretch;}}
+
+/* Cloud campaign signature: paste from an email */
+.cloud-signature-paste{display:flex;flex-direction:column;gap:10px;}
+.cloud-signature-paste ol{margin:0;padding-left:20px;font-size:13px;line-height:1.6;color:#374151;}
+.cloud-signature-drop{min-height:110px;display:flex;align-items:center;justify-content:center;padding:16px;border:2px dashed #c4b5fd;border-radius:12px;background:#faf8ff;color:#6c3ce1;font-size:14px;font-weight:600;text-align:center;cursor:text;outline:none;}
+.cloud-signature-drop:focus{border-color:#6c3ce1;background:#f3eeff;}

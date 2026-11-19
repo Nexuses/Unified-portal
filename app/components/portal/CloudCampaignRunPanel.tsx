@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { formatCloudStatus, type CloudCampaign } from "@/lib/cloud-campaigns";
 
 const LOG_PAGE_SIZE = 8;
@@ -14,9 +14,10 @@ type Props = {
   blockedReason?: string;
   senderLabel: string;
   peopleLabel: string;
-  gapMinutes: number;
-  onGapChange: (value: number) => void;
-  onSaveGap: () => void;
+  /** One line: start, days, hours, timezone and gap (set in the When to send step). */
+  whenSummary: string;
+  whenSaved: boolean;
+  onEditWhen: () => void;
   onStart: () => void;
   onStop: () => void;
   onResume: () => void;
@@ -25,8 +26,6 @@ type Props = {
   /** Undefined target = the sender's own address. */
   onSendTest: (to?: string) => void;
   canTest: boolean;
-  /** Schedule editor (timezone, days, window, start time). */
-  scheduleSlot?: ReactNode;
   /** A future start time is saved: offer Schedule instead of starting now. */
   canSchedule?: boolean;
   onSchedule?: () => void;
@@ -49,9 +48,9 @@ export default function CloudCampaignRunPanel({
   blockedReason,
   senderLabel,
   peopleLabel,
-  gapMinutes,
-  onGapChange,
-  onSaveGap,
+  whenSummary,
+  whenSaved,
+  onEditWhen,
   onStart,
   onStop,
   onResume,
@@ -59,7 +58,6 @@ export default function CloudCampaignRunPanel({
   onClearLog,
   onSendTest,
   canTest,
-  scheduleSlot,
   canSchedule,
   onSchedule,
   onCancelSchedule,
@@ -239,31 +237,17 @@ export default function CloudCampaignRunPanel({
         </p>
       ) : null}
 
-      {scheduleSlot ? (
-        <div className="cloud-run-when">
+      <div className={`cloud-run-when-summary${whenSaved ? "" : " is-missing"}`}>
+        <div>
           <strong>When to send</strong>
-          {scheduleSlot}
+          <span>{whenSummary}</span>
         </div>
-      ) : null}
+        <button type="button" className="btn-soft btn-sm" disabled={busy} onClick={onEditWhen}>
+          {whenSaved ? "Edit" : "Set it now"}
+        </button>
+      </div>
 
       <div className="cloud-run-controls">
-        <div className="cloud-run-control">
-          <label htmlFor="cloud-gap">Gap between emails</label>
-          <div className="cloud-run-inline">
-            <input
-              id="cloud-gap"
-              type="number"
-              min={0}
-              max={120}
-              value={gapMinutes}
-              onChange={(event) => onGapChange(Number(event.target.value) || 0)}
-            />
-            <span>min</span>
-            <button type="button" className="btn-soft btn-sm" disabled={busy} onClick={onSaveGap}>
-              Save
-            </button>
-          </div>
-        </div>
         <div className="cloud-run-control cloud-run-test">
           <label htmlFor="cloud-test-to">Send a test of row 1</label>
           <div className="cloud-run-inline">

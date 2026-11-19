@@ -25,6 +25,7 @@ export type CloudCampaignDoc = {
   profileDirectory?: string;
   signatureHtml?: string;
   signatureReady?: boolean;
+  scheduleReady?: boolean;
   customPrompt?: string;
   customPromptReady?: boolean;
   sheetUrl?: string;
@@ -185,6 +186,7 @@ function mapCampaign(doc: WithId<CloudCampaignDoc>): CloudCampaign {
     profileDirectory: doc.profileDirectory,
     signatureHtml: doc.signatureHtml || "",
     signatureReady: doc.signatureReady === true,
+    scheduleReady: doc.scheduleReady === true,
     customPrompt: doc.customPrompt || "",
     customPromptReady: doc.customPromptReady === true,
     sheetUrl: doc.sheetUrl,
