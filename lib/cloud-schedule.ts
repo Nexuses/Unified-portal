@@ -168,6 +168,50 @@ export function startOfNextLocalDay(date: Date, timezone: string) {
   return zonedLocalToUtc(local, tz) || new Date(date.getTime() + 24 * 60 * 60 * 1000);
 }
 
+/** When today's sending stops: the window's end, or local midnight when there is no window. */
+export function endOfSendingDay(now: Date, schedule: CloudSchedule) {
+  const tz = isValidTimezone(schedule.timezone) ? schedule.timezone : "UTC";
+  if (hasWindow(schedule)) {
+    const p = zonedParts(now, tz);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const end = zonedLocalToUtc(`${p.year}-${pad(p.month)}-${pad(p.day)}T${schedule.windowEnd}`, tz);
+    if (end) return end;
+  }
+  return startOfNextLocalDay(now, tz);
+}
+
+/**
+ * Shortest gap catch-up pacing may use: half the chosen gap, but not under a minute (and never
+ * longer than the chosen gap itself). Keeps a behind-schedule day from turning into a burst.
+ */
+export function catchUpGapMinutes(gapMinutes: number) {
+  const gap = Math.max(0, Number(gapMinutes) || 0);
+  return Math.min(gap, Math.max(1, gap * 0.5));
+}
+
+/**
+ * Gap before the next email when a daily target is set: the chosen gap, shortened (down to
+ * catchUpGapMinutes) only when today would otherwise end before reaching the target.
+ */
+export function pacedGapMinutes(input: {
+  gapMinutes: number;
+  schedule: CloudSchedule;
+  sentToday: number;
+  remainingRows: number;
+  now?: Date;
+}) {
+  const gap = Math.max(0, Number(input.gapMinutes) || 0);
+  const limit = normalizeDailyLimit(input.schedule.dailyLimit);
+  const left = limit ? Math.min(limit - input.sentToday, input.remainingRows) : 0;
+  if (!limit || left <= 0) return { gap, catchingUp: false };
+  const now = input.now || new Date();
+  const minutesLeft = (endOfSendingDay(now, input.schedule).getTime() - now.getTime()) / 60_000;
+  const needed = minutesLeft / left;
+  if (needed >= gap) return { gap, catchingUp: false };
+  const faster = Math.max(catchUpGapMinutes(gap), needed);
+  return { gap: faster, catchingUp: faster < gap };
+}
+
 export type CloudSendingDay = { day: string; weekday: number; count: number };
 
 /**
@@ -187,8 +231,10 @@ export function planSendingDays(input: {
   const { schedule } = input;
   const tz = isValidTimezone(schedule.timezone) ? schedule.timezone : "UTC";
   const limit = normalizeDailyLimit(schedule.dailyLimit);
-  // The worker waits at least 20 s between emails.
-  const gap = Math.max(1 / 3, Number(input.gapMinutes) || 0);
+  // The worker waits at least 20 s between emails, and with a daily target it may speed up to
+  // the catch-up gap, so that is the most a day can fit.
+  const chosen = Number(input.gapMinutes) || 0;
+  const gap = Math.max(1 / 3, normalizeDailyLimit(schedule.dailyLimit) ? catchUpGapMinutes(chosen) : chosen);
   const days: CloudSendingDay[] = [];
   let left = Math.max(0, Math.floor(input.remaining));
   let cursor = nextAllowedTime(input.from || new Date(), schedule);

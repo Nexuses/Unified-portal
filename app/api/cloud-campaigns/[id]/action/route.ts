@@ -25,6 +25,7 @@ import {
   dryRunCloudFollowup,
 } from "@/lib/cloud-boat-runner";
 import { learnBoatMemoryFromSender } from "@/lib/boat-memory";
+import { countSentToday, isSendAllowed, normalizeDailyLimit } from "@/lib/cloud-schedule";
 import { previewCloudFollowup, sendCloudFollowupNow } from "@/lib/cloud-followups";
 import {
   getChromeProfile,
@@ -439,6 +440,20 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     if (action === "tick") {
+      // Manual "send the next row": same rules as the worker (hours, days, daily limit).
+      const schedule = {
+        timezone: existing.schedule?.timezone || "UTC",
+        excludedDays: existing.schedule?.excludedDays || [],
+        windowStart: existing.schedule?.windowStart,
+        windowEnd: existing.schedule?.windowEnd,
+      };
+      if (!isSendAllowed(new Date(), schedule)) {
+        return NextResponse.json({ error: "Outside the sending days/hours in step 7." }, { status: 400 });
+      }
+      const dailyLimit = normalizeDailyLimit(existing.schedule?.dailyLimit);
+      if (dailyLimit && countSentToday(existing.sendLog || [], schedule.timezone) >= dailyLimit) {
+        return NextResponse.json({ error: `Today's limit of ${dailyLimit} is already reached.` }, { status: 400 });
+      }
       const result = await sendNextCloudRow(projectId, id);
       let desktopUrl = "";
       try {
