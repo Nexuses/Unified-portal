@@ -67,6 +67,7 @@ export type DeliverabilityReport = {
       label: string;
       zone: string;
       listed: boolean;
+      unchecked?: boolean;
       detail?: string;
     }>;
   };
@@ -297,11 +298,39 @@ export async function runDeliverabilityTest(
     replyTo: input.replyTo,
   });
 
+  return analyzeDeliverabilityMessage({ inbox, marker, afterIso, subject, html, timeoutMs: 60_000 });
+}
+
+/** The AgentMail test inbox, a unique subject marker, and the time to look for mail after. */
+export async function prepareDeliverabilityInbox() {
+  if (!isAgentMailConfigured()) {
+    throw new Error("AgentMail is not configured. Add AGENTMAIL_API_KEY to the server env.");
+  }
+  // Reuse one inbox — free AgentMail plans only allow a few inboxes.
+  const inbox = await getOrCreateDeliverabilityInbox();
+  return { inbox, marker: uniqueMarker(), afterIso: new Date(Date.now() - 5_000).toISOString() };
+}
+
+/**
+ * Wait for the test email (found by its subject marker) in the AgentMail inbox and score it:
+ * SpamAssassin, SPF/DKIM/DMARC, IP blacklists and content. Shared by SMTP campaigns (sent
+ * above) and cloud campaigns (sent from the sender's own Gmail/Outlook on the cloud computer).
+ */
+export async function analyzeDeliverabilityMessage(input: {
+  inbox: { inbox_id: string; email: string };
+  marker: string;
+  afterIso: string;
+  subject: string;
+  /** What was sent, used for content checks if the received copy has no HTML. */
+  html: string;
+  timeoutMs?: number;
+}): Promise<DeliverabilityReport> {
+  const { inbox, marker, afterIso, subject, html } = input;
   const listed = await waitForAgentMailMessage({
     inboxId: inbox.inbox_id,
     afterIso,
     subjectMarker: marker,
-    timeoutMs: 60_000,
+    timeoutMs: input.timeoutMs ?? 60_000,
     pollMs: 2_000,
   });
 

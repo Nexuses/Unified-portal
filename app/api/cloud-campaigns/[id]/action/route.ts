@@ -12,6 +12,7 @@ import {
   submitChromeProfileAuthCode,
   clearCloudSendLog,
   checkScriptSender,
+  cloudDeliverabilityTest,
   scheduleCloudSending,
   cancelCloudSchedule,
   checkCloudInbox,
@@ -98,6 +99,11 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (action === "sender_check") {
       const result = await checkScriptSender(projectId, id, { focus: body?.focus === true });
       return NextResponse.json({ sender: result, desktopUrl: result.desktopUrl });
+    }
+
+    if (action === "deliverability_test") {
+      const result = await cloudDeliverabilityTest(projectId, id);
+      return NextResponse.json({ report: result.report, desktopUrl: result.desktopUrl });
     }
 
     if (action === "sender_test_send" || action === "sender_dry_run") {

@@ -4,6 +4,8 @@ import { isIP } from "node:net";
 export type DnsblCheck = {
   zone: string;
   listed: boolean;
+  /** The list wouldn't answer (e.g. Spamhaus via a public resolver): neither clean nor listed. */
+  unchecked?: boolean;
   detail?: string;
 };
 
@@ -57,10 +59,23 @@ export async function checkIpDnsbls(ip: string): Promise<{
       const query = `${reversed}.${zone}`;
       try {
         const answers = await resolver.resolve4(query);
+        // A listing answers 127.0.0.x. Spamhaus answers 127.255.255.x when it won't answer the
+        // query at all (254: asked through a public resolver like 1.1.1.1/8.8.8.8; 255: too
+        // many queries), which is not a listing and must not cost points.
+        const listings = answers.filter((answer) => /^127\.0\.0\.\d{1,3}$/.test(answer));
+        if (!listings.length && answers.some((answer) => answer.startsWith("127.255.255."))) {
+          return {
+            zone,
+            label,
+            listed: false,
+            unchecked: true,
+            detail: `Couldn't check: ${label} doesn't answer lookups from public DNS resolvers (${answers.join(", ")}).`,
+          };
+        }
         return {
           zone,
           label,
-          listed: answers.length > 0,
+          listed: listings.length > 0,
           detail: answers.join(", "),
         };
       } catch (error) {

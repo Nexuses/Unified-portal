@@ -555,6 +555,7 @@ export async function runCloudCampaignAction(
   action:
     | "start_computer"
     | "computer_status"
+    | "deliverability_test"
     | "vpn_status"
     | "vpn_enable"
     | "vpn_disable"
