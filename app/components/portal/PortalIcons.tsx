@@ -146,7 +146,7 @@ export function IconIntegrations({ className }: IconProps) {
   );
 }
 
-export function IconGtmBot({ className }: IconProps) {
+export function IconBots({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
       <rect x="4" y="8" width="13" height="11" rx="3.2" />
@@ -324,8 +324,8 @@ export function getNavIcon(pageId: string) {
       return IconSuppression;
     case "integrations":
       return IconIntegrations;
-    case "gtm-bot":
-      return IconGtmBot;
+    case "bots":
+      return IconBots;
     default:
       return IconHome;
   }

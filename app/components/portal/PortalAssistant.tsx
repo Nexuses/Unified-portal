@@ -284,7 +284,7 @@ function downloadHtmlTableCsv(table: HTMLTableElement) {
   );
 }
 
-function AssistantMarkdownTable({ children }: { children: ReactNode }) {
+export function AssistantMarkdownTable({ children }: { children: ReactNode }) {
   const wrapRef = useRef<HTMLDivElement>(null);
 
   return (
@@ -491,7 +491,7 @@ function AssistantStatCards({ items }: { items: AssistantStat[] }) {
   );
 }
 
-function AssistantMarkdownBody({
+export function AssistantMarkdownBody({
   content,
   components,
 }: {
@@ -1103,6 +1103,18 @@ export default function PortalAssistant({
                   </svg>
                 </button>
               ) : null}
+              <Link
+                href="/portal/bots"
+                className="pa-head-btn"
+                onClick={() => setOpen(false)}
+                aria-label="All bots"
+                title="All bots: your team of AI bots"
+              >
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="16" rx="2.5" />
+                  <path d="M9 4v16" />
+                </svg>
+              </Link>
               <button
                 type="button"
                 className="pa-close"

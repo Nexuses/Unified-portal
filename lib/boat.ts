@@ -124,7 +124,8 @@ const BOAT_COMMAND_TIMEOUT_MS = 150_000;
 const GENERIC_BOAT_MESSAGE = /^(something went wrong|internal (server )?error)\.?$/i;
 const BOAT_RETRY_STATUS = new Set([502, 503, 504]);
 
-async function boatFetch(path: string, init?: RequestInit) {
+/** Authenticated Boat API call (retries reads; throws BoatError on failure). */
+export async function boatFetch(path: string, init?: RequestInit) {
   const key = process.env.BOAT_API_KEY?.trim();
   if (!key) {
     throw new BoatError(

@@ -31,6 +31,14 @@ type Provider = {
 };
 
 const MAX_TOOL_ROUNDS = 8;
+
+type ToolSpec = (typeof ASSISTANT_TOOLS)[number];
+
+/** Extra tools a caller (e.g. AI Bots) adds on top of the portal tools, with their own handler. */
+export type AssistantExtraTools = {
+  tools: ToolSpec[];
+  run: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+};
 const MAX_TOOL_RESULT_CHARS = 24_000;
 
 function systemPrompt(projectName: string, userName: string) {
@@ -109,7 +117,7 @@ type AnthropicBlock =
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; tool_use_id: string; content: string };
 
-async function completeWithClaude(provider: Provider, messages: ChatMessage[]) {
+async function completeWithClaude(provider: Provider, messages: ChatMessage[], tools: ToolSpec[]) {
   await guardApiCredit();
   const system = messages
     .filter((message) => message.role === "system")
@@ -176,7 +184,7 @@ async function completeWithClaude(provider: Provider, messages: ChatMessage[]) {
       max_tokens: 6000,
       ...(system ? { system } : {}),
       messages: converted,
-      tools: ASSISTANT_TOOLS.map((tool) => ({
+      tools: tools.map((tool) => ({
         name: tool.function.name,
         description: tool.function.description,
         input_schema: tool.function.parameters,
@@ -224,9 +232,9 @@ async function completeWithClaude(provider: Provider, messages: ChatMessage[]) {
   };
 }
 
-async function complete(provider: Provider, messages: ChatMessage[]) {
+async function complete(provider: Provider, messages: ChatMessage[], tools: ToolSpec[]) {
   if (provider.name === "claude") {
-    return completeWithClaude(provider, messages);
+    return completeWithClaude(provider, messages, tools);
   }
   await guardApiCredit();
   const response = await fetch(provider.url, {
@@ -238,7 +246,7 @@ async function complete(provider: Provider, messages: ChatMessage[]) {
     body: JSON.stringify({
       model: provider.model,
       messages,
-      tools: ASSISTANT_TOOLS,
+      tools,
       ...(provider.name === "openai"
         ? { reasoning_effort: "low", max_completion_tokens: 6000 }
         : { temperature: 0.3, max_tokens: 3000 }),
@@ -261,11 +269,18 @@ async function complete(provider: Provider, messages: ChatMessage[]) {
   return message;
 }
 
-async function converse(provider: Provider, context: AssistantToolContext, messages: ChatMessage[]) {
+async function converse(
+  provider: Provider,
+  context: AssistantToolContext,
+  messages: ChatMessage[],
+  extra?: AssistantExtraTools,
+) {
   const thread = [...messages];
+  const tools = extra ? [...ASSISTANT_TOOLS, ...extra.tools] : ASSISTANT_TOOLS;
+  const extraNames = new Set(extra?.tools.map((tool) => tool.function.name) ?? []);
   const cards: AssistantCard[] = [];
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
-    const message = await complete(provider, thread);
+    const message = await complete(provider, thread, tools);
     const calls = message.tool_calls ?? [];
     if (calls.length === 0 || round === MAX_TOOL_ROUNDS) {
       const content = String(message.content ?? "").trim();
@@ -284,10 +299,14 @@ async function converse(provider: Provider, context: AssistantToolContext, messa
         let output: unknown;
         try {
           const args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-          const result = await runAssistantTool(context, call.function.name, args);
-          output = result.output;
-          if (result.card) {
-            cards.push(result.card);
+          if (extra && extraNames.has(call.function.name)) {
+            output = await extra.run(call.function.name, args);
+          } else {
+            const result = await runAssistantTool(context, call.function.name, args);
+            output = result.output;
+            if (result.card) {
+              cards.push(result.card);
+            }
           }
         } catch (error) {
           output = { error: error instanceof Error ? error.message : "Lookup failed" };
@@ -309,6 +328,9 @@ export async function askPortalAssistant(input: {
   projectName: string;
   userName: string;
   history: AssistantMessage[];
+  /** A bot's name and personality, added after the portal rules. */
+  persona?: { name: string; instructions: string };
+  extraTools?: AssistantExtraTools;
 }) {
   const available = providers();
   if (available.length === 0) {
@@ -318,6 +340,18 @@ export async function askPortalAssistant(input: {
   }
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt(input.projectName, input.userName) },
+    ...(input.persona
+      ? [
+          {
+            role: "system" as const,
+            content: `In this chat you are "${input.persona.name}", one of the project's AI bots.${
+              input.persona.instructions.trim()
+                ? ` Your role and personality, set by the user:\n${input.persona.instructions.trim().slice(0, 4000)}`
+                : ""
+            }`,
+          },
+        ]
+      : []),
     ...input.history.slice(-12).map((item) => ({
       role: item.role,
       content: item.content.slice(0, 4000),
@@ -331,6 +365,7 @@ export async function askPortalAssistant(input: {
         provider,
         { projectId: input.projectId, projectName: input.projectName, userName: input.userName },
         messages,
+        input.extraTools,
       );
     } catch (error) {
       lastError = error;
