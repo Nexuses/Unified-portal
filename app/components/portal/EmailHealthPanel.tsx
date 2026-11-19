@@ -301,7 +301,9 @@ export default function EmailHealthPanel({
                         iconOnly
                         providerId={row.providerId}
                       />
-                    ) : null}
+                    ) : (
+                      <span className="email-health-provider-fallback">Sender removed</span>
+                    )}
                     <div className="email-health-compact-email">
                       {row.fromEmail}
                     </div>

@@ -528,19 +528,29 @@ a.sub-item{
 .smtp-no-inbox-label{font-size:14px;font-weight:650;color:#111827;}
 .smtp-no-inbox-hint{margin:4px 0 0;font-size:12.5px;line-height:1.45;color:#6b7280;}
 .smtp-composio-connect{
-  display:flex;flex-direction:column;align-items:flex-start;gap:8px;
-  padding:12px;border:1px solid #e5e7eb;border-radius:12px;background:#fafafa;
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:14px 14px 14px 16px;border:1px solid #e5e7eb;border-radius:14px;background:#fff;
 }
-.smtp-composio-connect p{margin:0;font-size:12.5px;line-height:1.45;color:#6b7280;}
-.smtp-composio-or{
-  display:flex;align-items:center;gap:10px;color:#9ca3af;font-size:12px;font-weight:600;
+.smtp-composio-copy{min-width:0;}
+.smtp-composio-copy strong{display:block;font-size:14px;font-weight:650;color:#111827;letter-spacing:-.01em;}
+.smtp-composio-connect p{margin:3px 0 0;font-size:12.5px;line-height:1.45;color:#6b7280;}
+.smtp-composio-connect .btn-dark{flex-shrink:0;white-space:nowrap;}
+.smtp-manual-toggle{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;
+  margin-top:4px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px;background:#fff;
+  font-family:inherit;font-size:14px;font-weight:650;color:#111827;cursor:pointer;text-align:left;
 }
-.smtp-composio-or::before,.smtp-composio-or::after{
-  content:"";flex:1;height:1px;background:#e5e7eb;
-}
+.smtp-manual-toggle svg{width:18px;height:18px;color:#6b7280;flex-shrink:0;transition:transform .15s;}
+.smtp-manual-toggle.is-open svg{transform:rotate(180deg);}
+.smtp-manual-toggle:hover{background:#f9fafb;}
 .vs-composio-tag{
-  font-size:11px;font-weight:650;letter-spacing:.02em;color:#4338ca;
-  background:#eef2ff;border-radius:999px;padding:2px 8px;
+  display:inline-flex;align-items:center;gap:7px;flex-shrink:0;
+  height:34px;padding:0 12px 0 10px;border-radius:999px;
+  border:1px solid #ddd6fe;background:#f5f3ff;color:#5b21b6;
+  font-size:13px;font-weight:500;letter-spacing:.01em;line-height:1;white-space:nowrap;
+}
+.vs-composio-tag::before{
+  content:"";width:7px;height:7px;border-radius:50%;background:#7c3aed;flex-shrink:0;
 }
 .smtp-provider-grid{
   display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;
@@ -1616,7 +1626,10 @@ a.camp-row:hover .camp-name{color:var(--purple);}
   width:22px;height:22px;border-radius:6px;
 }
 .email-health-provider-fallback{
-  font-size:13.5px;font-weight:650;color:var(--muted);white-space:nowrap;
+  display:inline-flex;align-items:center;flex-shrink:0;
+  height:28px;padding:0 10px;border-radius:999px;
+  border:1px solid #e5e7eb;background:#f3f4f6;color:#6b7280;
+  font-size:12px;font-weight:600;letter-spacing:.01em;line-height:1;white-space:nowrap;
 }
 .email-health-status{
   display:inline-flex;align-items:center;justify-content:center;justify-self:end;flex-shrink:0;

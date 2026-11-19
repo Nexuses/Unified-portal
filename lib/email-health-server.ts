@@ -124,7 +124,7 @@ export async function getProjectEmailHealth(
       id: `legacy:${email}`,
       fromEmail: email,
       fromName: stats.senderName?.trim() || email.split("@")[0] || email,
-      provider: "Campaign sender",
+      provider: "Sender removed",
       providerId: null,
       sent,
       opens,
