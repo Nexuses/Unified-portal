@@ -76,6 +76,7 @@ import {
   type SenderResult,
 } from "@/lib/cloud-sender";
 import { saveCloudReplies } from "@/lib/cloud-inbox-messages";
+import { analyzeDeliverabilityMessage, prepareDeliverabilityInbox } from "@/lib/deliverability-test";
 import {
   getBoatDesktopLock,
   markSenderChromeFresh,
@@ -1064,7 +1065,12 @@ const TRANSIENT_SENDER_CODES = new Set([
 export async function testScriptSend(
   projectId: ObjectId,
   campaignId: string,
-  options: { dryRun?: boolean; to?: string } = {},
+  options: {
+    dryRun?: boolean;
+    to?: string;
+    /** Deliverability check: send with the real subject plus this marker (no "[Test]" prefix). */
+    subjectMarker?: string;
+  } = {},
 ) {
   const doc = await getCloudCampaignDoc(projectId, campaignId);
   if (!doc) throw new Error("Campaign not found");
@@ -1092,7 +1098,9 @@ export async function testScriptSend(
       sensitivityLabel: profile?.sensitivityLabel,
       provider: resolveSenderProvider(doc.profileProvider),
       to: self,
-      subject: `[Test] ${fields.subject || "Cloud campaign test"}`,
+      subject: options.subjectMarker
+        ? `${fields.subject || "Cloud campaign test"} [${options.subjectMarker}]`
+        : `[Test] ${fields.subject || "Cloud campaign test"}`,
       html,
       plain,
       expectedEmail: sender,
@@ -1109,7 +1117,32 @@ export async function testScriptSend(
     await setChromeProfileSensitivity(projectId, doc.profileId, { labels: result.labels as string[] });
   }
   const desktopUrl = await openBoatDesktop(sandbox.id).catch(() => "");
-  return { ...result, to: self, desktopUrl: desktopUrl || undefined };
+  return { ...result, to: self, html, subject: fields.subject || "", desktopUrl: desktopUrl || undefined };
+}
+
+/**
+ * Deliverability check for a cloud campaign: send row 1's email (signature and attachments
+ * included) from the sender's own Gmail/Outlook to the AgentMail test inbox, then score what
+ * arrived (SpamAssassin, SPF/DKIM/DMARC, blacklists, content), like SMTP campaigns get.
+ */
+export async function cloudDeliverabilityTest(projectId: ObjectId, campaignId: string) {
+  const { inbox, marker, afterIso } = await prepareDeliverabilityInbox();
+  const sent = await testScriptSend(projectId, campaignId, { to: inbox.email, subjectMarker: marker });
+  if (!sent.ok) {
+    throw new Error(
+      `The test email didn't go out from the sender (${sent.code || "error"}${sent.message ? `: ${String(sent.message).slice(0, 160)}` : ""}).`,
+    );
+  }
+  // Webmail sends can take a little longer to arrive than SMTP.
+  const report = await analyzeDeliverabilityMessage({
+    inbox,
+    marker,
+    afterIso,
+    subject: `${sent.subject} [${marker}]`,
+    html: sent.html,
+    timeoutMs: 150_000,
+  });
+  return { report, desktopUrl: sent.desktopUrl };
 }
 
 export async function startCloudComputer(projectId: ObjectId, campaignId: string) {

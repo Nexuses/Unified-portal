@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { formatCloudCampaignStatus, type CloudCampaign } from "@/lib/cloud-campaigns";
 import { countSentToday, normalizeDailyLimit } from "@/lib/cloud-schedule";
 
@@ -22,6 +22,8 @@ type Props = {
   /** The computer is on: offer to watch it (opens or reconnects the live view). */
   liveAvailable?: boolean;
   onWatchLive?: () => void;
+  /** Deliverability check (shown under the test send). */
+  deliverabilitySlot?: ReactNode;
   onStart: () => void;
   onStop: () => void;
   onResume: () => void;
@@ -57,6 +59,7 @@ export default function CloudCampaignRunPanel({
   onEditWhen,
   liveAvailable,
   onWatchLive,
+  deliverabilitySlot,
   onStart,
   onStop,
   onResume,
@@ -306,6 +309,7 @@ export default function CloudCampaignRunPanel({
             <small className="cloud-run-help">Sign in the sender and add people to send a test.</small>
           ) : null}
         </div>
+        {deliverabilitySlot}
       </div>
 
       <div className="cloud-run-log">

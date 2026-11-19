@@ -8,6 +8,7 @@ import CloudBoatUsageCard from "@/app/components/portal/CloudBoatUsageCard";
 import CloudCampaignRunPanel from "@/app/components/portal/CloudCampaignRunPanel";
 import CloudCampaignReport from "@/app/components/portal/CloudCampaignReport";
 import CloudSchedulePanel from "@/app/components/portal/CloudSchedulePanel";
+import CloudDeliverabilityCheck from "@/app/components/portal/CloudDeliverabilityCheck";
 import CloudAttachmentsPanel from "@/app/components/portal/CloudAttachmentsPanel";
 import { countSentToday, describeSchedule, type CloudSchedule } from "@/lib/cloud-schedule";
 import CloudColumnMapPanel, {
@@ -1262,6 +1263,14 @@ export default function PortalCloudCampaignDetailPage({
               : "Not set yet: check and save step 7 (When to send) before starting."
           }
           whenSaved={stepsDone.schedule}
+          deliverabilitySlot={
+            <CloudDeliverabilityCheck
+              campaignId={campaignId}
+              canTest={stepsDone.senderVerified && stepsDone.sheet}
+              busy={Boolean(busy) || campaign.status === "sending"}
+              onDesktopUrl={(url) => setDesktopUrl((current) => current || url)}
+            />
+          }
           liveAvailable={computerPhase === "running"}
           onWatchLive={() => void showLiveView()}
           onEditWhen={() => {

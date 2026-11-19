@@ -13025,3 +13025,11 @@ a.an-kanban-card-name.is-link:hover{
 .cloud-when-plan li.is-more{color:#6b7280;}
 .cloud-when-plan small{font-size:12px;color:#6b7280;}
 .cloud-run-stats li.is-done strong{color:#0b996e;}
+
+/* Cloud campaign: deliverability check under the test send */
+.cloud-deliverability{display:flex;flex-direction:column;gap:12px;padding-top:12px;border-top:1px dashed #eef0f2;}
+.cloud-deliverability-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.cloud-deliverability-head strong{display:block;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;}
+.cloud-deliverability-head small{display:block;margin-top:2px;max-width:560px;font-size:12.5px;line-height:1.45;color:#6b7280;}
+.cloud-deliverability-head .btn-sm{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;}
+.cloud-deliverability-body{display:flex;flex-direction:column;gap:12px;}
