@@ -65,6 +65,15 @@ function buildEditForm(
   };
 }
 
+/** Prefer saved from-name; otherwise derive a display name from the mailbox. */
+function senderNameForEdit(sender: Pick<SmtpSender, "fromName" | "fromEmail">) {
+  const saved = sender.fromName?.trim();
+  if (saved) return saved;
+  const formatted = formatSenderDisplayName(sender.fromEmail);
+  const match = formatted.match(/^(.+?)\s*</);
+  return match?.[1]?.trim() || "";
+}
+
 function VerificationMark({ ok }: { ok: boolean }) {
   if (ok) {
     return (
@@ -417,7 +426,7 @@ export default function PortalSmtpPage() {
     setModalStep("form");
     setSelectedProvider(provider);
     setForm(buildEditForm(sender, provider));
-    setFromName(sender.fromName ?? "");
+    setFromName(senderNameForEdit(sender));
     setNoInbox(Boolean(sender.noInbox));
     setDailyLimit(
       sender.provider === "gmail"
@@ -540,7 +549,7 @@ export default function PortalSmtpPage() {
               : {
                   provider: selectedProvider.id,
                   ...form,
-                  fromName: fromName.trim() || undefined,
+                  fromName: fromName.trim(),
                   noInbox,
                   ...(selectedProvider.id === "gmail" ? { dailyLimit } : {}),
                 },
@@ -886,13 +895,6 @@ export default function PortalSmtpPage() {
                       >
                         {sender.connection?.status === "connected" ? "Connected" : "Disconnected"}
                       </span>
-                      <button
-                        type="button"
-                        className="vs-edit"
-                        onClick={() => openEditSender(sender)}
-                      >
-                        Edit
-                      </button>
                       <div className="vs-menu-wrap">
                         <button
                           type="button"
@@ -915,6 +917,26 @@ export default function PortalSmtpPage() {
                             className="vs-menu"
                             onClick={(event) => event.stopPropagation()}
                           >
+                            <button
+                              type="button"
+                              className="vs-menu-item"
+                              onClick={() => {
+                                setMenuOpenId(null);
+                                openEditSender(sender);
+                              }}
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                aria-hidden="true"
+                              >
+                                <path d="M12 20h9" />
+                                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                              </svg>
+                              Edit
+                            </button>
                             <button
                               type="button"
                               className="vs-menu-item"
@@ -1131,19 +1153,17 @@ export default function PortalSmtpPage() {
               ) : selectedProvider ? (
                 <form id="smtp-sender-form" onSubmit={handleSubmit}>
                   <div className="smtp-form-stack">
-                    {canConnectComposio || editingComposio ? (
-                      <div className="crm-field">
-                        <label htmlFor="smtp-from-name">Sender name</label>
-                        <input
-                          id="smtp-from-name"
-                          type="text"
-                          value={fromName}
-                          onChange={(event) => setFromName(event.target.value)}
-                          placeholder="Name shown on outbound emails"
-                          autoComplete="name"
-                        />
-                      </div>
-                    ) : null}
+                    <div className="crm-field">
+                      <label htmlFor="smtp-from-name">Sender name</label>
+                      <input
+                        id="smtp-from-name"
+                        type="text"
+                        value={fromName}
+                        onChange={(event) => setFromName(event.target.value)}
+                        placeholder="Name shown on outbound emails"
+                        autoComplete="name"
+                      />
+                    </div>
                     {canConnectComposio ? (
                       <div className="smtp-composio-connect">
                         <div className="smtp-composio-copy">

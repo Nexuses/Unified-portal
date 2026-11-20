@@ -410,13 +410,17 @@ export function parseSenderInput(
     }
   }
 
-  const fromName = String(body.fromName ?? "").trim();
+  const fromNameRaw = body.fromName;
+  const fromName =
+    fromNameRaw === undefined || fromNameRaw === null
+      ? undefined
+      : String(fromNameRaw).trim();
 
   return {
     data: {
       provider: providerId,
       fromEmail: values.fromEmail ?? "",
-      ...(fromName ? { fromName } : {}),
+      ...(fromName !== undefined ? { fromName } : {}),
       smtpHost: values.smtpHost,
       smtpUser: values.smtpUser,
       smtpPassword: values.smtpPassword,

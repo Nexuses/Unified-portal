@@ -355,10 +355,298 @@ async function executeComposioTool(
       arguments: args,
     }),
   });
-  if (body && typeof body === "object" && (body as { successful?: unknown }).successful === false) {
-    throw new Error(composioErrorMessage(body) || "Composio could not send the email.");
+  if (!body || typeof body !== "object") {
+    throw new Error("Composio tool returned an empty response.");
+  }
+  const record = body as { successful?: unknown };
+  if (record.successful === false) {
+    throw new Error(composioErrorMessage(body) || "Composio tool failed.");
+  }
+  // Soft failures sometimes omit `successful: false` and only set `error`.
+  if (record.successful !== true) {
+    const err = composioErrorMessage(body);
+    if (err) throw new Error(err);
   }
   return body;
+}
+
+export type ComposioInboxMessage = {
+  externalId: string;
+  messageId: string;
+  inReplyTo: string;
+  references: string[];
+  fromEmail: string;
+  fromName: string;
+  toEmail: string;
+  subject: string;
+  textBody: string;
+  htmlBody: string;
+  receivedAt: Date;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function collectMessageList(value: unknown, depth = 0): unknown[] {
+  if (depth > 6) return [];
+  if (Array.isArray(value)) return value;
+  const record = asRecord(value);
+  if (!record) return [];
+  for (const key of ["messages", "value", "items", "emails", "results", "data"]) {
+    if (key in record) {
+      const nested = collectMessageList(record[key], depth + 1);
+      if (nested.length > 0) return nested;
+    }
+  }
+  return [];
+}
+
+function headerMap(value: unknown): Record<string, string> {
+  const map: Record<string, string> = {};
+  const record = asRecord(value);
+  if (record?.headers && Array.isArray(record.headers)) {
+    for (const item of record.headers) {
+      const row = asRecord(item);
+      const name = String(row?.name ?? row?.Name ?? "").trim().toLowerCase();
+      const headerValue = String(row?.value ?? row?.Value ?? "").trim();
+      if (name && headerValue) map[name] = headerValue;
+    }
+  }
+  const payload = asRecord(record?.payload);
+  if (payload?.headers && Array.isArray(payload.headers)) {
+    for (const item of payload.headers) {
+      const row = asRecord(item);
+      const name = String(row?.name ?? "").trim().toLowerCase();
+      const headerValue = String(row?.value ?? "").trim();
+      if (name && headerValue) map[name] = headerValue;
+    }
+  }
+  return map;
+}
+
+function parseAddressField(raw: string): { email: string; name: string } {
+  const value = String(raw ?? "").trim();
+  const angled = value.match(/^(.*)<([^>]+)>\s*$/);
+  if (angled) {
+    return {
+      name: angled[1].replace(/^["']|["']$/g, "").trim(),
+      email: angled[2].trim().toLowerCase(),
+    };
+  }
+  if (isValidEmail(value)) {
+    return { email: value.toLowerCase(), name: "" };
+  }
+  return { email: value.toLowerCase(), name: "" };
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  try {
+    return Buffer.from(normalized + pad, "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function extractGmailBodies(payload: unknown): { text: string; html: string } {
+  let text = "";
+  let html = "";
+  const walk = (node: unknown) => {
+    const record = asRecord(node);
+    if (!record) return;
+    const mime = String(record.mimeType ?? "").toLowerCase();
+    const body = asRecord(record.body);
+    const data = typeof body?.data === "string" ? decodeBase64Url(body.data) : "";
+    if (mime === "text/plain" && data && !text) text = data;
+    if (mime === "text/html" && data && !html) html = data;
+    if (Array.isArray(record.parts)) {
+      for (const part of record.parts) walk(part);
+    }
+  };
+  walk(payload);
+  return { text: text.trim(), html: html.trim() };
+}
+
+function normalizeComposioMessage(raw: unknown): ComposioInboxMessage | null {
+  const record = asRecord(raw);
+  if (!record) return null;
+  const headers = headerMap(record);
+  const payload = asRecord(record.payload);
+  const gmailBodies = extractGmailBodies(payload ?? record);
+
+  const externalId = String(
+    record.id ?? record.messageId ?? record.message_id ?? headers["message-id"] ?? "",
+  ).trim();
+  const messageId =
+    String(headers["message-id"] ?? record.internetMessageId ?? record.messageId ?? externalId).trim() ||
+    externalId;
+  if (!externalId && !messageId) return null;
+
+  const fromEmailAddress = asRecord(asRecord(record.from)?.emailAddress);
+  const fromRaw =
+    headers.from ||
+    (fromEmailAddress
+      ? `${String(fromEmailAddress.name ?? "").trim()} <${String(fromEmailAddress.address ?? "").trim()}>`
+      : String(record.sender || record.from || ""));
+  const toRaw =
+    headers.to ||
+    String(
+      Array.isArray(record.toRecipients)
+        ? record.toRecipients
+            .map((item) => {
+              const address = asRecord(asRecord(item)?.emailAddress);
+              return address
+                ? `${String(address.name ?? "").trim()} <${String(address.address ?? "").trim()}>`
+                : "";
+            })
+            .filter(Boolean)
+            .join(", ")
+        : record.to || "",
+    );
+
+  const from = parseAddressField(fromRaw);
+  const to = parseAddressField(toRaw.split(",")[0] ?? "");
+  const subject = String(
+    headers.subject || record.subject || record.Subject || "(no subject)",
+  ).trim() || "(no subject)";
+  const inReplyTo = String(headers["in-reply-to"] ?? record.inReplyTo ?? "").trim();
+  const references = String(headers.references ?? "")
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  const textBody =
+    gmailBodies.text ||
+    String(record.bodyPreview ?? record.textPlain ?? record.text ?? "").trim();
+  const htmlBody =
+    gmailBodies.html ||
+    String(
+      (asRecord(record.body)?.content as string | undefined) ||
+        record.bodyHtml ||
+        record.htmlBody ||
+        "",
+    ).trim();
+
+  const receivedRaw =
+    headers.date ||
+    String(record.receivedDateTime ?? record.internalDate ?? record.date ?? "");
+  let receivedAt = new Date(receivedRaw);
+  if (!Number.isFinite(receivedAt.getTime()) && /^\d+$/.test(receivedRaw)) {
+    const n = Number(receivedRaw);
+    receivedAt = new Date(n < 1e12 ? n * 1000 : n);
+  }
+  if (!Number.isFinite(receivedAt.getTime())) {
+    receivedAt = new Date();
+  }
+
+  return {
+    externalId: externalId || messageId,
+    messageId,
+    inReplyTo,
+    references,
+    fromEmail: from.email,
+    fromName: from.name,
+    toEmail: to.email,
+    subject,
+    textBody,
+    htmlBody,
+    receivedAt,
+  };
+}
+
+/** Pull recent inbox messages through Composio (Gmail / Outlook OAuth senders). */
+export async function fetchComposioInboxMessages(
+  sender: {
+    provider: SmtpProviderId;
+    fromEmail: string;
+    composio?: SenderComposio;
+  },
+  options?: { sinceDays?: number; maxResults?: number },
+): Promise<ComposioInboxMessage[]> {
+  const composio = sender.composio;
+  if (!composio?.connectedAccountId || !isComposioMailbox(sender.provider)) {
+    throw new Error("This sender is not connected through Composio.");
+  }
+
+  const sinceDays = Math.min(30, Math.max(1, options?.sinceDays ?? 14));
+  const maxResults = Math.min(100, Math.max(1, options?.maxResults ?? 50));
+  const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+
+  if (sender.provider === "gmail") {
+    const y = since.getUTCFullYear();
+    const m = String(since.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(since.getUTCDate()).padStart(2, "0");
+    const result = await executeComposioTool("GMAIL_FETCH_EMAILS", composio, {
+      user_id: "me",
+      label_ids: ["INBOX"],
+      query: `after:${y}/${m}/${d}`,
+      max_results: maxResults,
+      verbose: true,
+      include_payload: true,
+    });
+    return collectMessageList(payloadData(result))
+      .map((item) => normalizeComposioMessage(item))
+      .filter((item): item is ComposioInboxMessage => Boolean(item));
+  }
+
+  const result = await executeComposioTool("OUTLOOK_LIST_MESSAGES", composio, {
+    user_id: "me",
+    folder: "inbox",
+    top: maxResults,
+    received_date_time_ge: since.toISOString(),
+    response_detail: "full",
+    orderby: ["receivedDateTime desc"],
+  });
+  return collectMessageList(payloadData(result))
+    .map((item) => normalizeComposioMessage(item))
+    .filter((item): item is ComposioInboxMessage => Boolean(item));
+}
+
+async function resolveOutlookSentInternetMessageId(
+  composio: SenderComposio,
+  input: { to: string; subject: string; sentAfter: Date },
+) {
+  try {
+    const result = await executeComposioTool("OUTLOOK_LIST_MESSAGES", composio, {
+      user_id: "me",
+      folder: "sentitems",
+      top: 8,
+      orderby: ["sentDateTime desc"],
+      select: ["subject", "toRecipients", "sentDateTime", "internetMessageId"],
+    });
+    const rows = collectMessageList(payloadData(result));
+    const wantTo = input.to.trim().toLowerCase();
+    const wantSubject = input.subject.trim().toLowerCase();
+    const floor = input.sentAfter.getTime() - 60_000;
+    for (const row of rows) {
+      const record = asRecord(row);
+      if (!record) continue;
+      const subject = String(record.subject ?? "")
+        .trim()
+        .toLowerCase();
+      if (subject !== wantSubject) continue;
+      const sentRaw = String(record.sentDateTime ?? "");
+      const sentAt = new Date(sentRaw);
+      if (Number.isFinite(sentAt.getTime()) && sentAt.getTime() < floor) continue;
+      const recipients = Array.isArray(record.toRecipients) ? record.toRecipients : [];
+      const hit = recipients.some((item) => {
+        const addr = asRecord(asRecord(item)?.emailAddress)?.address;
+        return String(addr ?? "")
+          .trim()
+          .toLowerCase() === wantTo;
+      });
+      if (!hit) continue;
+      const messageId = String(record.internetMessageId ?? "").trim();
+      if (messageId) return messageId.startsWith("<") ? messageId : `<${messageId}>`;
+    }
+  } catch {
+    /* Graph send still succeeded; portal can keep its local Message-ID. */
+  }
+  return "";
 }
 
 export async function sendComposioMail(
@@ -373,7 +661,7 @@ export async function sendComposioMail(
     html: string;
     cc?: string[];
   },
-) {
+): Promise<{ messageId?: string }> {
   const composio = sender.composio;
   if (!composio?.connectedAccountId || !isComposioMailbox(sender.provider)) {
     throw new Error("This sender is not connected through Composio.");
@@ -383,6 +671,7 @@ export async function sendComposioMail(
     throw new Error("Add a recipient before sending.");
   }
   const cc = (input.cc ?? []).map((email) => email.trim()).filter(Boolean);
+  const sentAfter = new Date();
 
   if (sender.provider === "gmail") {
     await executeComposioTool("GMAIL_SEND_EMAIL", composio, {
@@ -396,7 +685,7 @@ export async function sendComposioMail(
       user_id: "me",
       include_signature: false,
     });
-    return;
+    return {};
   }
 
   await executeComposioTool("OUTLOOK_SEND_EMAIL", composio, {
@@ -405,8 +694,16 @@ export async function sendComposioMail(
     subject: input.subject,
     body: input.html,
     is_html: true,
-    from_address: sender.fromEmail,
+    // Prefer the connected mailbox identity — send-as via from_address can
+    // still land in Sent Items while recipient MTAs reject the message.
     user_id: "me",
     save_to_sent_items: true,
   });
+
+  const messageId = await resolveOutlookSentInternetMessageId(composio, {
+    to: to[0],
+    subject: input.subject,
+    sentAfter,
+  });
+  return messageId ? { messageId } : {};
 }

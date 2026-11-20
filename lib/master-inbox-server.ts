@@ -1,9 +1,13 @@
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { ObjectId } from "mongodb";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { getDb } from "@/lib/mongodb";
-import type { SenderDoc } from "@/lib/smtp-senders";
+import {
+  fetchComposioInboxMessages,
+  type ComposioInboxMessage,
+} from "@/lib/composio-mail";
+import { isComposioSender, type SenderDoc } from "@/lib/smtp-senders";
 import type { CampaignSendDoc } from "@/lib/campaign-blasts-server";
 import {
   classifyInboxReply,
@@ -112,16 +116,49 @@ function isBounceOrDeliveryNotice(input: {
   if (
     from.includes("mailer-daemon") ||
     from.includes("mail-daemon") ||
+    from.includes("microsoftexchange") ||
     from.startsWith("postmaster@") ||
     from.startsWith("mailerdaemon@") ||
     name.includes("mailer-daemon") ||
-    name.includes("mail delivery subsystem")
+    name.includes("mail delivery subsystem") ||
+    name.includes("microsoft outlook")
   ) {
     return true;
   }
-  return /undeliverable|delivery status notification|returned mail|mail delivery failed|failure notice|delivery incomplete|delivery failure|could not be delivered|wasn't delivered|was not delivered|delivery notification|permanent failure/.test(
+  return /undeliverable|delivery status notification|returned mail|mail delivery failed|failure notice|delivery incomplete|delivery failure|could not be delivered|couldn't be delivered|wasn't delivered|was not delivered|delivery notification|permanent failure/.test(
     subject,
   );
+}
+
+/** Pull original recipient addresses out of bounce / NDR bodies. */
+function extractBouncedRecipientEmails(input: {
+  subject?: string;
+  textBody?: string;
+  htmlBody?: string;
+}) {
+  const html = String(input.htmlBody ?? "");
+  const plainHtml = html.replace(/<[^>]+>/g, " ");
+  const blob = `${input.subject ?? ""}\n${input.textBody ?? ""}\n${plainHtml}`
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ");
+  const found = new Set<string>();
+  const patterns = [
+    /your message to\s+<?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})>?/gi,
+    /message to\s+<?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})>?\s+couldn/gi,
+    /final-recipient:\s*rfc822;\s*<?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})>?/gi,
+    /original-recipient:\s*rfc822;\s*<?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})>?/gi,
+    /failed recipient[s]?:\s*<?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})>?/gi,
+    /undeliverable[^:]*:\s*.*?\b([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})\b/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of blob.matchAll(pattern)) {
+      const email = String(match[1] ?? "")
+        .trim()
+        .toLowerCase();
+      if (email.includes("@")) found.add(email);
+    }
+  }
+  return [...found];
 }
 
 /** Generate a stable Message-ID for outbound campaign mail (Gmail IMAP matching). */
@@ -307,7 +344,7 @@ function extractAddress(
 async function matchOutboundSend(
   projectId: ObjectId,
   referenceIds: string[],
-  options?: { fromEmail?: string },
+  options?: { fromEmail?: string; senderId?: ObjectId; recipientEmails?: string[] },
 ) {
   const normalized = referenceIds.map(normalizeMessageId).filter(Boolean);
   const db = await getDb();
@@ -326,6 +363,48 @@ async function matchOutboundSend(
       .toArray();
     if (byId[0]) {
       return byId[0];
+    }
+  }
+
+  // Bounce/NDR path: Graph/Outlook rewrite Message-ID, and the From is
+  // MicrosoftExchange — match the original recipient named in the NDR body.
+  // campaign_sends do not store senderId; scope via this mailbox's blasts.
+  const recipients = [
+    ...new Set(
+      (options?.recipientEmails ?? [])
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => email.includes("@")),
+    ),
+  ];
+  if (recipients.length > 0) {
+    const bounceQuery: Record<string, unknown> = {
+      projectId,
+      status: "sent",
+      email: recipients.length === 1 ? recipients[0] : { $in: recipients },
+      bouncedAt: { $exists: false },
+    };
+    if (options?.senderId) {
+      const blastIds = await db
+        .collection("campaign_blasts")
+        .find({
+          projectId,
+          senderId: {
+            $in: [options.senderId.toString(), options.senderId],
+          },
+        })
+        .project({ _id: 1 })
+        .toArray();
+      if (blastIds.length > 0) {
+        bounceQuery.blastId = { $in: blastIds.map((row) => row._id) };
+      }
+    }
+    const byRecipient = await sends
+      .find(bounceQuery)
+      .sort({ sentAt: -1, sequenceIndex: -1 })
+      .limit(1)
+      .toArray();
+    if (byRecipient[0]) {
+      return byRecipient[0];
     }
   }
 
@@ -488,11 +567,185 @@ function buildThreadKey(input: {
   return `msg:${normalizeMessageId(root) || normalizeMessageId(input.messageId)}`;
 }
 
+function composioExternalUid(externalId: string) {
+  const digest = createHash("sha1").update(externalId).digest();
+  return digest.readUInt32BE(0) || 1;
+}
+
+function senderSupportsInboxSync(sender: SenderDoc) {
+  if (sender.noInbox) return false;
+  if (isComposioSender(sender) && (sender.provider === "gmail" || sender.provider === "outlook")) {
+    return true;
+  }
+  return sender.provider === "gmail" && Boolean(sender.smtpPassword);
+}
+
+async function importComposioInboxMessage(
+  projectId: ObjectId,
+  sender: SenderDoc,
+  message: ComposioInboxMessage,
+): Promise<"imported" | "skipped"> {
+  const db = await getDb();
+  const imapUid = composioExternalUid(message.externalId || message.messageId);
+  const existing = await db.collection<InboxMessageDoc>("inbox_messages").findOne({
+    projectId,
+    senderId: sender._id,
+    imapUid,
+    mailbox: "INBOX",
+  });
+  if (existing) {
+    if (!existing.relatedSendId || !existing.relatedCampaignId) {
+      await db.collection<InboxMessageDoc>("inbox_messages").deleteOne({ _id: existing._id });
+    } else {
+      const relatedSend = await db.collection<CampaignSendDoc>("campaign_sends").findOne({
+        _id: existing.relatedSendId,
+      });
+      if (relatedSend) {
+        await stopLaterSequencesOnReply(relatedSend);
+      }
+      return "skipped";
+    }
+  }
+
+  const messageId = normalizeMessageId(message.messageId) || message.messageId;
+  if (!messageId) return "skipped";
+
+  const already = await db.collection<InboxMessageDoc>("inbox_messages").findOne({
+    projectId,
+    messageId,
+  });
+  if (already) return "skipped";
+
+  const inReplyTo = normalizeMessageId(message.inReplyTo);
+  const references = message.references.map((item) => normalizeMessageId(item)).filter(Boolean);
+  const isBounce = isBounceOrDeliveryNotice({
+    fromEmail: message.fromEmail,
+    fromName: message.fromName,
+    subject: message.subject,
+  });
+  const bounceRecipients = isBounce
+    ? extractBouncedRecipientEmails({
+        subject: message.subject,
+        textBody: message.textBody,
+        htmlBody: message.htmlBody,
+      })
+    : [];
+  const related = await matchOutboundSend(projectId, [inReplyTo, ...references], {
+    fromEmail: message.fromEmail,
+    senderId: sender._id,
+    recipientEmails: bounceRecipients,
+  });
+
+  if (isBounce) {
+    if (related?._id) {
+      await markSendBouncedFromInbox(related);
+    } else if (bounceRecipients.length > 0) {
+      const dbBounce = await getDb();
+      const blastIds = await dbBounce
+        .collection("campaign_blasts")
+        .find({
+          projectId,
+          senderId: { $in: [sender._id.toString(), sender._id] },
+        })
+        .project({ _id: 1 })
+        .toArray();
+      if (blastIds.length > 0) {
+        const matches = await dbBounce
+          .collection<CampaignSendDoc>("campaign_sends")
+          .find({
+            projectId,
+            blastId: { $in: blastIds.map((row) => row._id) },
+            status: "sent",
+            bouncedAt: { $exists: false },
+            email: { $in: bounceRecipients },
+          })
+          .sort({ sentAt: -1 })
+          .limit(20)
+          .toArray();
+        for (const send of matches) {
+          await markSendBouncedFromInbox(send);
+        }
+      }
+    }
+    return "skipped";
+  }
+  if (!related?._id) return "skipped";
+
+  await stopLaterSequencesOnReply(related);
+  const now = new Date();
+  const doc: InboxMessageDoc = {
+    _id: new ObjectId(),
+    projectId,
+    senderId: sender._id,
+    senderEmail: sender.fromEmail,
+    direction: "inbound",
+    fromEmail: message.fromEmail,
+    fromName: message.fromName,
+    toEmail: message.toEmail || sender.fromEmail,
+    subject: message.subject,
+    textBody: message.textBody,
+    htmlBody: message.htmlBody,
+    messageId,
+    inReplyTo: inReplyTo || undefined,
+    references,
+    threadKey: buildThreadKey({
+      inReplyTo,
+      references,
+      messageId,
+      relatedSendId: related._id,
+    }),
+    relatedSendId: related._id,
+    relatedBlastId: related.blastId,
+    relatedCampaignId: related.campaignId,
+    relatedContactEmail: related.email || message.fromEmail,
+    imapUid,
+    mailbox: "INBOX",
+    receivedAt: message.receivedAt,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await db.collection<InboxMessageDoc>("inbox_messages").insertOne(doc);
+  return "imported";
+}
+
+async function syncComposioSender(
+  projectId: ObjectId,
+  sender: SenderDoc,
+  options?: { sinceDays?: number },
+) {
+  const messages = await fetchComposioInboxMessages(sender, {
+    sinceDays: options?.sinceDays,
+    maxResults: 50,
+  });
+  let imported = 0;
+  let skipped = 0;
+  for (const message of messages) {
+    const result = await importComposioInboxMessage(projectId, sender, message);
+    if (result === "imported") imported += 1;
+    else skipped += 1;
+  }
+  const db = await getDb();
+  await db.collection("smtp_senders").updateOne(
+    { _id: sender._id },
+    { $set: { inboxSyncedAt: new Date(), updatedAt: new Date() } },
+  );
+  return { imported, skipped };
+}
+
 async function syncGmailSender(
   projectId: ObjectId,
   sender: SenderDoc,
   options?: { sinceDays?: number },
 ) {
+  if (isComposioSender(sender)) {
+    try {
+      return await syncComposioSender(projectId, sender, options);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Composio inbox sync failed";
+      return { imported: 0, skipped: 0, error: message };
+    }
+  }
+
   const user = sender.smtpUser || sender.fromEmail;
   const pass = sender.smtpPassword;
   if (!user || !pass) {
@@ -614,22 +867,60 @@ async function syncGmailSender(
         .map((item) => normalizeMessageId(item))
         .filter(Boolean);
 
-      const related = await matchOutboundSend(
-        projectId,
-        [inReplyTo, ...references],
-        { fromEmail: from.email },
-      );
-
+      const textBody = String(parsed.text ?? "");
+      const htmlBody = String(parsed.html ?? "");
       const isBounce = isBounceOrDeliveryNotice({
         fromEmail: from.email,
         fromName: from.name,
         subject,
       });
+      const bounceRecipients = isBounce
+        ? extractBouncedRecipientEmails({
+            subject,
+            textBody,
+            htmlBody,
+          })
+        : [];
+      const related = await matchOutboundSend(
+        projectId,
+        [inReplyTo, ...references],
+        {
+          fromEmail: from.email,
+          senderId: sender._id,
+          recipientEmails: bounceRecipients,
+        },
+      );
 
       // Bounce/DSN: count on campaign, remove from delivered, never show in Master Inbox
       if (isBounce) {
         if (related?._id) {
           await markSendBouncedFromInbox(related);
+        } else if (bounceRecipients.length > 0) {
+          const blastIds = await db
+            .collection("campaign_blasts")
+            .find({
+              projectId,
+              senderId: { $in: [sender._id.toString(), sender._id] },
+            })
+            .project({ _id: 1 })
+            .toArray();
+          if (blastIds.length > 0) {
+            const matches = await db
+              .collection<CampaignSendDoc>("campaign_sends")
+              .find({
+                projectId,
+                blastId: { $in: blastIds.map((row) => row._id) },
+                status: "sent",
+                bouncedAt: { $exists: false },
+                email: { $in: bounceRecipients },
+              })
+              .sort({ sentAt: -1 })
+              .limit(20)
+              .toArray();
+            for (const send of matches) {
+              await markSendBouncedFromInbox(send);
+            }
+          }
         }
         skipped += 1;
         continue;
@@ -702,25 +993,37 @@ async function syncGmailSender(
   }
 }
 
+function inboxSenderFilter(projectId: ObjectId): Record<string, unknown> {
+  return {
+    projectId,
+    noInbox: { $ne: true },
+    $or: [
+      { provider: "gmail" },
+      {
+        provider: "outlook",
+        "composio.connectedAccountId": { $exists: true, $nin: [null, ""] },
+      },
+    ],
+  };
+}
+
 export async function listGmailInboxAccounts(
   projectId: ObjectId,
 ): Promise<InboxAccount[]> {
   const db = await getDb();
   const senders = await db
     .collection<SenderDoc>("smtp_senders")
-    .find({
-      projectId,
-      provider: "gmail",
-      noInbox: { $ne: true },
-    })
+    .find(inboxSenderFilter(projectId))
     .sort({ fromEmail: 1 })
     .toArray();
 
-  return senders.map((sender) => ({
-    id: sender._id.toString(),
-    email: sender.fromEmail,
-    label: sender.fromEmail,
-  }));
+  return senders
+    .filter((sender) => senderSupportsInboxSync(sender))
+    .map((sender) => ({
+      id: sender._id.toString(),
+      email: sender.fromEmail,
+      label: sender.fromEmail,
+    }));
 }
 
 export async function syncProjectGmailInbox(
@@ -728,16 +1031,14 @@ export async function syncProjectGmailInbox(
   options?: { sinceDays?: number; senderId?: string },
 ) {
   const db = await getDb();
-  const filter: Record<string, unknown> = {
-    projectId,
-    provider: "gmail",
-    noInbox: { $ne: true },
-  };
+  const filter: Record<string, unknown> = inboxSenderFilter(projectId);
   if (options?.senderId && ObjectId.isValid(options.senderId)) {
     filter._id = new ObjectId(options.senderId);
   }
 
-  const senders = await db.collection<SenderDoc>("smtp_senders").find(filter).toArray();
+  const senders = (await db.collection<SenderDoc>("smtp_senders").find(filter).toArray()).filter(
+    (sender) => senderSupportsInboxSync(sender),
+  );
 
   if (senders.length === 0) {
     return {
@@ -746,8 +1047,8 @@ export async function syncProjectGmailInbox(
       skipped: 0,
       errors: [
         options?.senderId
-          ? "Selected Gmail inbox was not found or has no inbox access."
-          : "No Gmail senders with inbox access. Add a Gmail sender (not no-inbox).",
+          ? "Selected inbox was not found or has no inbox access."
+          : "No inbox-capable senders. Connect Gmail (app password) or Gmail/Outlook through Composio.",
       ],
     };
   }
@@ -763,12 +1064,12 @@ export async function syncProjectGmailInbox(
       const result = await syncGmailSender(projectId, sender, options);
       imported += result.imported;
       skipped += result.skipped;
-      if (result.error) {
+      if ("error" in result && result.error) {
         errors.push(`${sender.fromEmail}: ${result.error}`);
       }
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "IMAP sync failed";
+        error instanceof Error ? error.message : "Inbox sync failed";
       errors.push(`${sender.fromEmail}: ${message}`);
     }
   }
@@ -777,8 +1078,8 @@ export async function syncProjectGmailInbox(
 }
 
 /**
- * Resolve a Gmail inbox sender for reply sync.
- * Campaigns often send via SES (noInbox) while replies land in a same-address Gmail inbox.
+ * Resolve an inbox-capable sender for reply sync.
+ * Campaigns often send via SES (noInbox) while replies land in a same-address Gmail/Composio inbox.
  */
 async function resolveGmailInboxSender(
   projectId: ObjectId,
@@ -790,7 +1091,7 @@ async function resolveGmailInboxSender(
   const db = await getDb();
   const senders = db.collection<SenderDoc>("smtp_senders");
   const primary = await senders.findOne({ _id: new ObjectId(senderId), projectId });
-  if (primary?.provider === "gmail" && primary.noInbox !== true) {
+  if (primary && senderSupportsInboxSync(primary)) {
     return primary;
   }
   const fromEmail = String(primary?.fromEmail ?? "")
@@ -799,12 +1100,15 @@ async function resolveGmailInboxSender(
   if (!fromEmail) {
     return null;
   }
-  return senders.findOne({
-    projectId,
-    provider: "gmail",
-    noInbox: { $ne: true },
-    fromEmail,
-  });
+  const candidates = await senders
+    .find({
+      projectId,
+      fromEmail,
+      noInbox: { $ne: true },
+      provider: { $in: ["gmail", "outlook"] },
+    })
+    .toArray();
+  return candidates.find((sender) => senderSupportsInboxSync(sender)) ?? null;
 }
 
 /**

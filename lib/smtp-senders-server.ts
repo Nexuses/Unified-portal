@@ -646,13 +646,13 @@ async function deliverWithSender(
   }
 
   if (isComposioSender(sender)) {
-    await sendComposioMail(sender, {
+    const composioResult = await sendComposioMail(sender, {
       to: input.to,
       cc,
       subject,
       html,
     });
-    return { messageId };
+    return { messageId: composioResult.messageId || messageId };
   }
 
   if (sender.provider === "sendgrid" && sender.apiKey) {

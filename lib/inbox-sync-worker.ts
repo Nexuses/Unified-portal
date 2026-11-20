@@ -28,8 +28,14 @@ export function isInboxSyncWorkerEnabled() {
 async function projectIdsWithGmailInbox() {
   const db = await getDb();
   const ids = await db.collection("smtp_senders").distinct("projectId", {
-    provider: "gmail",
     noInbox: { $ne: true },
+    $or: [
+      { provider: "gmail" },
+      {
+        provider: "outlook",
+        "composio.connectedAccountId": { $exists: true, $nin: [null, ""] },
+      },
+    ],
   });
   const unique = new Map<string, ObjectId>();
   for (const id of ids) {
@@ -42,7 +48,7 @@ async function projectIdsWithGmailInbox() {
   return [...unique.values()];
 }
 
-/** Pull campaign replies into the Master Inbox for every project with a Gmail sender. */
+/** Pull campaign replies into the Master Inbox for every project with an inbox-capable sender. */
 export async function runInboxSyncTick() {
   const state = workerState();
   if (state.running) {
