@@ -771,7 +771,7 @@ export default function PortalMasterInboxPage() {
       });
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || "Failed to sync Gmail inbox");
+        throw new Error(data.error || "Failed to sync mailbox");
       }
       setThreads(Array.isArray(data.threads) ? data.threads : []);
       setInboxes(Array.isArray(data.inboxes) ? data.inboxes : []);
@@ -973,8 +973,8 @@ export default function PortalMasterInboxPage() {
   const selectedInboxLabel =
     selectedInboxId === "all"
       ? inboxes.length === 0
-        ? "No Gmail inboxes"
-        : `All Gmail inboxes (${inboxes.length})`
+        ? "No mailboxes"
+        : `All mailboxes (${inboxes.length})`
       : inboxes.find((inbox) => inbox.id === selectedInboxId)?.email ||
         "Selected inbox";
   const canSendReply = !sendingReply && !isEmptyReplyHtml(replyHtml);
@@ -990,7 +990,7 @@ export default function PortalMasterInboxPage() {
           <h2>Master Inbox</h2>
           <p className="desc">
             Only replies to campaigns you sent. If nobody has replied to a
-            campaign yet, this stays empty — regular Gmail mail is never shown.
+            campaign yet, this stays empty — regular mailbox mail is never shown.
           </p>
         </div>
         <div className="crm-actions inbox-toolbar">
@@ -1004,8 +1004,8 @@ export default function PortalMasterInboxPage() {
             >
               <option value="all">
                 {inboxes.length === 0
-                  ? "No Gmail inboxes"
-                  : `All Gmail inboxes (${inboxes.length})`}
+                  ? "No mailboxes"
+                  : `All mailboxes (${inboxes.length})`}
               </option>
               {inboxes.map((inbox) => (
                 <option key={inbox.id} value={inbox.id}>
@@ -1020,7 +1020,7 @@ export default function PortalMasterInboxPage() {
             disabled={syncing || inboxes.length === 0}
             onClick={() => void syncInbox()}
           >
-            {syncing ? "Syncing…" : "Sync Gmail"}
+            {syncing ? "Syncing…" : "Sync mailbox"}
           </button>
         </div>
       </div>
@@ -1041,8 +1041,8 @@ export default function PortalMasterInboxPage() {
           ) : threads.length === 0 ? (
             <div className="inbox-empty">
               No campaign replies for {selectedInboxLabel}. This is not your full
-              Gmail inbox — only replies to campaigns you ran appear here after
-              Sync Gmail.
+              mailbox — only replies to campaigns you ran appear here after Sync
+              mailbox.
             </div>
           ) : (
             threads.map((thread) => (
