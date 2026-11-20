@@ -217,7 +217,8 @@ if url:
 if needs_nav:
     seq[0] += 1
     call(sock, seq[0], "Page.navigate", {"url": url})
-    for _wait in range(12):
+    nav_tries = 20 if "/in/" in (url or "") else 12
+    for _wait in range(nav_tries):
         time.sleep(1)
         href = str(evaluate("location.href") or "")
         if "linkedin.com/messaging" in url:
@@ -229,6 +230,48 @@ if not quiet:
     close_extras()
 title = str(evaluate("document.title || ''") or "")
 href = str(evaluate("location.href") or "")
+profile_actions = []
+def read_profile_actions():
+    raw = evaluate(
+        "(() => {"
+        "const labels = [];"
+        "const seen = {};"
+        "const push = (value) => {"
+        "let text = '';"
+        "let gap = false;"
+        "const rawText = String(value || '');"
+        "for (let i = 0; i < rawText.length; i += 1) {"
+        "const code = rawText.charCodeAt(i);"
+        "const space = code === 9 || code === 10 || code === 13 || code === 32 || code === 160;"
+        "if (space) { gap = text.length > 0; continue; }"
+        "if (gap) text += ' ';"
+        "gap = false;"
+        "text += rawText.charAt(i);"
+        "}"
+        "text = text.trim();"
+        "if (!text || text.length > 64) return;"
+        "const key = text.toLowerCase();"
+        "if (seen[key]) return;"
+        "const hit = key === 'connect' || key.indexOf('to connect') >= 0 || key.indexOf('connect') === 0"
+        " || key === 'pending' || key.indexOf('pending') === 0 || key.indexOf('withdraw') >= 0"
+        " || key === 'message' || key.indexOf('message') === 0 || key === 'follow' || key.indexOf('follow') === 0"
+        " || key === 'more' || key.indexOf('more') === 0 || key.indexOf('remove connection') >= 0"
+        " || key.indexOf('personalize') >= 0 || key.indexOf('send profile') >= 0;"
+        "if (!hit) return;"
+        "seen[key] = 1;"
+        "labels.push(text);"
+        "};"
+        "Array.from(document.querySelectorAll('button, a, [role=\"button\"]')).forEach((node) => {"
+        "push(node.innerText || '');"
+        "push(node.getAttribute('aria-label') || '');"
+        "});"
+        "return labels.slice(0, 12).join('|');"
+        "})()"
+    )
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    return [part for part in text.split("|") if part]
 if expect and expect not in href:
     if re.search(r"sign in|join linkedin|authwall|login", title, re.I):
         print("TAB_LOGIN\\t%s" % href[:180])
@@ -243,7 +286,12 @@ else:
         if "/in/" in href and not quiet:
             evaluate("window.scrollTo(0,0)")
             evaluate("(() => { const h1 = document.querySelector('h1'); if (h1) h1.scrollIntoView({block:'start'}); return 'ok'; })()")
-            time.sleep(0.8)
+            for _wait in range(30):
+                profile_actions = read_profile_actions()
+                if profile_actions:
+                    break
+                time.sleep(0.5)
+            print("PROFILE_ACTIONS\\t%s" % ("|".join(profile_actions) if profile_actions else "none"))
         if marker == "nexuses-li-replies" and on_inbox(href):
             for _wait in range(8):
                 count = evaluate(
@@ -358,6 +406,7 @@ export type LinkedinTabFocus = {
   inbox: LinkedinInboxRow[];
   inboxRead: boolean;
   accepted: string[];
+  profileActions: string[];
 };
 
 /** Put one campaign, or the inbox, in front. Does not click, type, or send. */
@@ -377,7 +426,7 @@ export async function focusLinkedinTab(
     ...(quiet ? ["TAB_QUIET=1"] : []),
     `python3 -c ${shellQuote(LINKEDIN_TAB_PY)}`,
   ].join(" ");
-  const result = await runBoatCommand(sandboxId, command, 40).catch((error) => {
+  const result = await runBoatCommand(sandboxId, command, 55).catch((error) => {
     console.error("[linkedin] tab focus failed", error);
     return null;
   });
@@ -386,6 +435,7 @@ export async function focusLinkedinTab(
   let inbox: LinkedinInboxRow[] = [];
   let inboxRead = false;
   let accepted: string[] = [];
+  let profileActions: string[] = [];
   if (inboxLine) {
     inboxRead = true;
     try {
@@ -414,16 +464,27 @@ export async function focusLinkedinTab(
       accepted = [];
     }
   }
+  const actionsLine = result?.stdout.split("\n").find((item) => item.startsWith("PROFILE_ACTIONS\t")) || "";
+  if (actionsLine) {
+    const raw = actionsLine.slice("PROFILE_ACTIONS\t".length).trim();
+    if (raw && !/^none$/i.test(raw)) {
+      profileActions = raw
+        .split("|")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
   console.info(
     "[linkedin]",
     line.slice(0, 220) || "TAB_FAIL",
     inboxRead ? `inbox=${inbox.length}` : "",
     accepted.length ? `accepted=${accepted.length}` : "",
+    profileActions.length ? `actions=${profileActions.join("|")}` : "",
   );
   const sample = result?.stdout.split("\n").find((item) => item.startsWith("INBOX_SAMPLE\t")) || "";
   if (sample) console.info("[linkedin]", sample.slice(0, 500));
   const state = line.startsWith("TAB_READY") ? "ready" : line.startsWith("TAB_LOGIN") ? "login" : "failed";
-  return { state, inbox, inboxRead, accepted };
+  return { state, inbox, inboxRead, accepted, profileActions };
 }
 
 function tokenBudgetError(report: string) {
@@ -477,15 +538,24 @@ export function linkedinProfileTask(input: {
   kind: "connect" | "status" | "message" | "like";
   message?: { number: number; text: string };
   like: boolean;
+  headerActions?: string[];
 }) {
   const name = input.personName.trim() || "this person";
-  let job = `Look at ${name}'s profile and say whether a connection request is pending, you are already connected, Connect is still available, or the request was declined. Do not send a request and do not send a message.`;
+  const actionsHint = input.headerActions?.length
+    ? `The profile header controls already on screen look like: ${input.headerActions.join(", ")}.`
+    : "Wait until the profile header shows Connect, Follow, Message, Pending, or More before you click.";
+  let job = `Look at ${name}'s profile and say whether a connection request is pending, you are already connected, Connect is still available, or the request was declined. Do not send a request and do not send a message.
+${actionsHint}`;
   if (input.kind === "connect") {
     job = `Send ${name} one connection request, with no note.
-The Connect button is in the profile header, in the same row as Follow, Message, and More. Scroll until that row is on screen.
-If Connect is not in the row, open More. Connect is inside that menu. Use it, then send with no note.
-If the header already says Pending, or this person is already a 1st-degree connection, do not send another request.
-If LinkedIn will not allow another invitation, stop.`;
+${actionsHint}
+Scroll the top of the profile into view and wait if the header buttons are still loading.
+How to send:
+1. If Connect is visible in the header, click it, then Send with no note.
+2. If Follow or Message is the main button, open More (or …). Connect is usually inside that menu. Click Connect, then Send with no note.
+3. If the header already says Pending, or this person is already a 1st-degree connection, do not send another request.
+4. If LinkedIn will not allow another invitation, stop and report limited.
+Do not report failed until you have waited for the header buttons and opened More when Connect is hidden.`;
   } else if (input.kind === "message" && input.message) {
     const text = input.message.text.replace(/```/g, "'''").slice(0, 4000);
     job = `This is message ${input.message.number} for ${name}. Send it only if they have not already replied.

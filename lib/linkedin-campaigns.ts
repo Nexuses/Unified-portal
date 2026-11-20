@@ -116,10 +116,10 @@ export function linkedinBoardColumns(
   return columns;
 }
 
-/** Already-connected people skip the request and wait on Connected before message 1. */
+/** New people start in Prospect. They move to Sent only after a request goes out. */
 export function launchLinkedinStage(person: LinkedinPerson) {
   if (person.alreadyConnected) return "connected";
-  return "request_sent";
+  return "prospect";
 }
 
 export function parseLinkedinCsv(text: string): LinkedinCsvPreview {

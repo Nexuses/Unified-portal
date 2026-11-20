@@ -177,6 +177,10 @@ export default function PortalLinkedinBoardPage({ campaignId }: { campaignId: st
         <p className="li-board-sending">
           The campaign tab sends one person at a time, five minutes apart. The messaging and network tabs stay open and are only read.
         </p>
+      ) : campaign.contacts.some((contact) => contact.stage === "prospect") ? (
+        <p className="li-board-sending">
+          Prospects stay here until a connection request is sent. Then they move to Sent connection request, one at a time, five minutes apart.
+        </p>
       ) : campaign.contacts.some((contact) => contact.stage === "request_sent") ? (
         <p className="li-board-sending">
           Connection requests go out one at a time, five minutes apart, and stay here until the person accepts or rejects.

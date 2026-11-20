@@ -645,7 +645,24 @@ export async function captureLinkedinAccountPhoto(
 
 function personStage(person: PersonDoc) {
   if (person.stage) return person.stage;
-  return person.alreadyConnected ? "connected" : "request_sent";
+  return person.alreadyConnected ? "connected" : "prospect";
+}
+
+/** Still waiting to send the first connection request. */
+function awaitingConnect(person: PersonDoc) {
+  const stage = personStage(person);
+  return (
+    !person.connectionRequested &&
+    !person.inviteSent &&
+    (person.messagesSent || 0) === 0 &&
+    (stage === "prospect" || stage === "request_sent")
+  );
+}
+
+/** Keep unsent people on Prospect even if an older run parked them on Sent. */
+function boardStage(person: PersonDoc) {
+  if (awaitingConnect(person)) return "prospect";
+  return personStage(person);
 }
 
 function addDays(date: Date, days: number) {
@@ -737,11 +754,11 @@ function stageCounts(people: PersonDoc[]) {
   let messagesSent = 0;
   let replyCount = 0;
   for (const person of people) {
-    const stage = personStage(person);
+    const stage = boardStage(person);
     if (stage === "request_sent") requestCount += 1;
     if (stage === "connected" || stage.startsWith("message_")) connectedCount += 1;
     if (stage.startsWith("message_")) messageCount += 1;
-    if (person.inviteSent) requestsSent += 1;
+    if (person.inviteSent || person.connectionRequested) requestsSent += 1;
     messagesSent += person.messagesSent || 0;
     if (stage === "reply") replyCount += 1;
   }
@@ -787,7 +804,7 @@ function mapCampaign(doc: CampaignDoc): LinkedinCampaign {
 }
 
 function mapContact(person: PersonDoc, index: number): LinkedinContact {
-  const stage = personStage(person);
+  const stage = boardStage(person);
   const messageIndex = stage.startsWith("message_")
     ? Number(stage.slice("message_".length)) - 1
     : -1;
@@ -1240,9 +1257,11 @@ function pickCampaignAction(doc: CampaignDoc, now: Date, connectGapOpen: boolean
         consider({ priority: 0, kind: "message", doc, index, person, like: false, message });
       }
     }
-    const needsRequest =
-      stage === "request_sent" && !person.connectionRequested && (person.messagesSent || 0) === 0;
-    const lookFailed = person.statusNote === BUTTONS_HIDDEN_NOTE;
+    const needsRequest = awaitingConnect(person);
+    const lookFailed =
+      person.statusNote === BUTTONS_HIDDEN_NOTE ||
+      person.statusNote === "The connection request could not be sent. It will try again." ||
+      person.statusNote === "The profile could not be opened. It will try again.";
     if (needsRequest && (connectGapOpen || lookFailed) && !limitHold && (lookFailed || sinceLook >= CONNECTION_GAP_MS)) {
       consider({ priority: 1, kind: "connect", doc, index, person, like: false });
     }
@@ -1400,7 +1419,7 @@ function peopleAfterVisit(
       }
       return {
         ...person,
-        stage: "request_sent",
+        stage: "prospect",
         replyCheckedAt: now,
         statusNote: "The connection request could not be sent. It will try again.",
       };
@@ -1435,16 +1454,25 @@ function peopleAfterVisit(
       if ((person.messages[person.messagesSent || 0] || "").trim()) return accepted;
       return withoutNextAction(accepted, {});
     }
-    if (stage !== "request_sent") return person;
+    if (stage !== "request_sent" && stage !== "prospect") return person;
     if (person.connectionRequested || person.inviteSent) {
-      return { ...person, replyCheckedAt: now, statusNote: REQUEST_WAITING_NOTE };
+      return {
+        ...person,
+        stage: "request_sent",
+        replyCheckedAt: now,
+        statusNote: REQUEST_WAITING_NOTE,
+      };
     }
     return {
       ...person,
+      stage: "prospect",
       replyCheckedAt: now,
-      statusNote: state === "login"
-        ? "LinkedIn needs a sign-in before this profile can be checked."
-        : BUTTONS_HIDDEN_NOTE,
+      statusNote:
+        state === "login"
+          ? "LinkedIn needs a sign-in before this profile can be checked."
+          : state === "unknown" && !visit.requested
+            ? BUTTONS_HIDDEN_NOTE
+            : "The connection request could not be sent. It will try again.",
     };
   });
   people.forEach((person, index) => {
@@ -1635,11 +1663,7 @@ function firstConnectProfileUrl(doc: CampaignDoc) {
   for (const person of doc.people) {
     if (!person.linkedinUrl) continue;
     const stage = personStage(person);
-    const needsRequest =
-      stage === "request_sent" &&
-      !person.connectionRequested &&
-      (person.messagesSent || 0) === 0;
-    if (needsRequest) return person.linkedinUrl;
+    if (awaitingConnect(person)) return person.linkedinUrl;
   }
   return (
     doc.people.find((person) => person.linkedinUrl)?.linkedinUrl ||
@@ -1741,10 +1765,28 @@ async function runLinkedinProfileStep(
       messages,
       ...(action.kind === "connect" ? { sendConnect: true } : {}),
     };
-    let visit: ProfileVisit = { state: focus.state === "login" ? "login" : "unknown", sent: [], replied: null, requested: false };
+    let visit: ProfileVisit = {
+      state: focus.state === "login" ? "login" : "unknown",
+      sent: [],
+      replied: null,
+      requested: false,
+    };
     let limited = false;
     let sentRequest = false;
-    if (focus.state === "ready") {
+    const actionLabels = focus.profileActions.map((label) => label.toLowerCase());
+    const headerPending = actionLabels.some(
+      (label) => label.includes("pending") || label.includes("withdraw"),
+    );
+    const headerConnected = actionLabels.some(
+      (label) => label.includes("message") && !label.includes("pending"),
+    ) && actionLabels.some((label) => label.includes("remove connection") || label === "1st");
+    if (focus.state === "failed") {
+      visit = { state: "unknown", sent: [], replied: null, requested: false };
+    } else if (focus.state === "ready" && action.kind === "connect" && headerPending) {
+      visit = { state: "pending", sent: [], replied: null, requested: true };
+      sentRequest = true;
+      console.info("[linkedin] profile already pending", person.name, focus.profileActions.join("|"));
+    } else if (focus.state === "ready") {
       const result = await runLinkedinBoatTask(
         sandboxId,
         linkedinProfileTask({
@@ -1754,6 +1796,7 @@ async function runLinkedinProfileStep(
           kind: action.kind,
           message: action.message,
           like: action.like,
+          headerActions: focus.profileActions,
         }),
         PROFILE_WATCH_MS,
       );
@@ -1769,8 +1812,35 @@ async function runLinkedinProfileStep(
         visit.state !== "unknown" &&
         visit.state !== "login" &&
         (read.sentRequest || visit.state === "pending");
+      if (
+        action.kind === "connect" &&
+        !sentRequest &&
+        !limited &&
+        visit.state === "unknown" &&
+        !focus.profileActions.length
+      ) {
+        console.info("[linkedin] profile actions still hidden", person.name);
+      } else if (headerConnected && visit.state === "unknown") {
+        visit = { ...visit, state: "connected" };
+      }
     }
-    const people = peopleAfterVisit(doc, [target], new Map([[id, visit]]), now, limited);
+    const people = peopleAfterVisit(doc, [target], new Map([[id, visit]]), now, limited).map(
+      (entry, index) => {
+        const entryId = entry.id || `p${index + 1}`;
+        if (entryId !== id) return entry;
+        if (focus.state === "failed" && awaitingConnect(entry)) {
+          return {
+            ...entry,
+            stage: "prospect",
+            statusNote: "The profile could not be opened. It will try again.",
+          };
+        }
+        if (awaitingConnect(entry) && entry.stage === "request_sent") {
+          return { ...entry, stage: "prospect" };
+        }
+        return entry;
+      },
+    );
     const sent = await commitLinkedinPeople(doc, now, people, { limited, sentRequest });
     saved = true;
     return sent;
