@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { getSessionUser } from "@/lib/auth";
 import { EventSubmissionsBoard } from "@/components/event-submissions-board";
 import { normalizeEventFormat } from "@/lib/event-format";
-import { ensureEventRegistrationList } from "@/lib/event-registration-list";
+import { syncEventRegistrationListWithGoing } from "@/lib/event-registration-list";
 import { getEventById } from "@/lib/events";
 
 type EventSubmissionsPageProps = {
@@ -23,15 +23,13 @@ export default async function EventSubmissionsPage({ params }: EventSubmissionsP
   let registrationListId = String(event.registrationListId ?? "").trim();
   try {
     registrationListId =
-      (await ensureEventRegistrationList({
+      (await syncEventRegistrationListWithGoing({
         eventId: id,
         projectId: String(event.projectId ?? session?.projectId ?? ""),
-        eventName: event.eventName,
-        registrationListId,
         userId: session?.id,
       })) ?? registrationListId;
   } catch {
-    // Keep submissions usable if list ensure fails.
+    // Keep submissions usable if list sync fails.
   }
 
   return (

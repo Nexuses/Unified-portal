@@ -525,7 +525,7 @@ export function EventDetailLayout({
               href={`/portal/marketing/events/${event.id}/edit`}
               className="inline-flex h-9 items-center justify-center rounded-full border border-black/10 px-5 text-xs font-medium text-black hover:bg-black/5"
             >
-              className="btn-soft"
+              Edit
             </Link>
             <PublishButton
               publicId={event.publicId}

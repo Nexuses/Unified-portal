@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { recordCampaignClick, requestOrigin } from "@/lib/campaign-blasts-server";
+import { recordEventInviteClick } from "@/lib/event-invite-tracking";
 import { clientMetaFromHeaders } from "@/lib/engagement-client-meta";
 
 type RouteContext = {
@@ -26,6 +27,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       redirectTo,
       clientMetaFromHeaders(request.headers),
     ).catch(() => undefined);
+    await recordEventInviteClick(token, redirectTo).catch(() => undefined);
   }
 
   const fallback = `${requestOrigin(request.url, request.headers)}/`;

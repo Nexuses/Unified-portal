@@ -53,7 +53,7 @@ export default async function EditEventPage({ params }: EditEventPageProps) {
             </svg>
           </Link>
           <div>
-            <h2>{event.eventName}</h2>
+            <h2 title={event.eventName}>{event.eventName}</h2>
             <p>{eventFormatLabel(eventFormat)}</p>
           </div>
         </div>
@@ -79,6 +79,7 @@ export default async function EditEventPage({ params }: EditEventPageProps) {
           calendarInviteAgenda: event.calendarInviteAgenda ?? "",
           eventBanner: event.eventBanner,
           emailIncludeEventBanner: event.emailIncludeEventBanner !== false,
+          customTrackingEnabled: event.customTrackingEnabled === true,
           publicHeaderLogo: event.publicHeaderLogo ?? "",
           eventDate: toWallDateYmd(event.eventDate),
           oneToOneBookingEndDate: event.oneToOneBookingEndDate ?? "",

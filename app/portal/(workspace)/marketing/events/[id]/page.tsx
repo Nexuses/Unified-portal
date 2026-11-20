@@ -39,7 +39,7 @@ export default async function EventPage({ params }: EventPageProps) {
             </svg>
           </Link>
           <div>
-            <h2>{event.eventName}</h2>
+            <h2 title={event.eventName}>{event.eventName}</h2>
           </div>
         </div>
         <div className="crm-actions">

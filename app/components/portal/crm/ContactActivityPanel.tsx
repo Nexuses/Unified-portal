@@ -25,7 +25,7 @@ import {
   portalListRoute,
 } from "@/lib/portal-nav";
 
-export type ActivityFilter = "all" | "email" | "call" | "message";
+export type ActivityFilter = "all" | "email" | "event" | "call" | "message";
 
 const ACTIVITY_PAGE_SIZE = 10;
 
@@ -55,7 +55,7 @@ type UnifiedActivity =
       source: "history";
       id: string;
       at: string;
-      channel: "email" | "other";
+      channel: "email" | "event" | "other";
       event: ContactHistoryEvent;
     }
   | {
@@ -70,6 +70,7 @@ type UnifiedActivity =
 const FILTERS: { id: ActivityFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "email", label: "Email" },
+  { id: "event", label: "Events" },
   { id: "call", label: "Call" },
   { id: "message", label: "Message" },
 ];
@@ -145,7 +146,19 @@ function isCallKind(kind: string) {
 }
 
 function isCampaignEvent(type: ContactHistoryEvent["type"]) {
-  return type.startsWith("campaign_") || type.startsWith("event_");
+  return type.startsWith("campaign_");
+}
+
+function isEventHistory(type: ContactHistoryEvent["type"]) {
+  return type.startsWith("event_");
+}
+
+function historyChannel(
+  type: ContactHistoryEvent["type"],
+): "email" | "event" | "other" {
+  if (isCampaignEvent(type)) return "email";
+  if (isEventHistory(type)) return "event";
+  return "other";
 }
 
 function resolveHistorySendId(event: ContactHistoryEvent) {
@@ -172,6 +185,12 @@ function historyKindLabel(type: ContactHistoryEvent["type"]) {
       return "Unsubscribed";
     case "event_invited":
       return "Invited";
+    case "event_going":
+      return "Going";
+    case "event_waitlist":
+      return "Waitlist";
+    case "event_rejected":
+      return "Not going";
     case "event_bot_click":
       return "Bot click";
     case "company_associated":
@@ -198,6 +217,12 @@ function historyKindClass(type: ContactHistoryEvent["type"]) {
       return "is-unsubscribed";
     case "event_invited":
       return "is-sent";
+    case "event_going":
+      return "is-going";
+    case "event_waitlist":
+      return "is-waitlist";
+    case "event_rejected":
+      return "is-rejected";
     case "event_bot_click":
       return "is-clicked";
     case "company_associated":
@@ -372,7 +397,13 @@ function HistoryBody({
       </>
     );
   }
-  if (event.type === "event_invited" || event.type === "event_bot_click") {
+  if (
+    event.type === "event_invited" ||
+    event.type === "event_going" ||
+    event.type === "event_waitlist" ||
+    event.type === "event_rejected" ||
+    event.type === "event_bot_click"
+  ) {
     return <>{event.description}</>;
   }
   if (event.type === "campaign_clicked") {
@@ -414,7 +445,7 @@ function buildActivities(contact: ContactDetail): UnifiedActivity[] {
       source: "history" as const,
       id: event.id,
       at: event.at || "",
-      channel: isCampaignEvent(event.type) ? ("email" as const) : ("other" as const),
+      channel: historyChannel(event.type),
       event,
     }));
 
@@ -467,6 +498,11 @@ function filterActivities(
   if (filter === "email") {
     return items.filter(
       (item) => item.source === "history" && item.channel === "email",
+    );
+  }
+  if (filter === "event") {
+    return items.filter(
+      (item) => item.source === "history" && item.channel === "event",
     );
   }
   if (filter === "call") {
@@ -618,6 +654,7 @@ export default function ContactActivityPanel({
     return {
       all: base.length,
       email: filterActivities(base, "email").length,
+      event: filterActivities(base, "event").length,
       call: filterActivities(base, "call").length,
       message: filterActivities(base, "message").length,
     };
@@ -718,7 +755,7 @@ export default function ContactActivityPanel({
       <div className="cd-activity-head">
         <div>
           <h3>Activity</h3>
-          <p>Email engagement plus calls and messages you log.</p>
+          <p>Email and event engagement plus calls and messages you log.</p>
         </div>
         {readOnly ? null : (
           <button

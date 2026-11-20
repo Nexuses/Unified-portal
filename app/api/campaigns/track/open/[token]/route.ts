@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { recordCampaignOpen } from "@/lib/campaign-blasts-server";
+import { recordEventInviteOpen } from "@/lib/event-invite-tracking";
 import { clientMetaFromHeaders } from "@/lib/engagement-client-meta";
 
 const PIXEL = Buffer.from(
@@ -17,6 +18,7 @@ export async function GET(request: Request, context: RouteContext) {
     await recordCampaignOpen(token, clientMetaFromHeaders(request.headers)).catch(
       () => undefined,
     );
+    await recordEventInviteOpen(token).catch(() => undefined);
   }
 
   return new NextResponse(PIXEL, {

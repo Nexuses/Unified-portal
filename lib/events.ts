@@ -82,6 +82,11 @@ export type EventDocument = {
   emailBannerUrl?: string;
   /** When true (default), emails include the event banner image at the top. */
   emailIncludeEventBanner?: boolean;
+  /**
+   * When true, invite/reminder HTML uses the sender's custom tracking domain
+   * (open pixel + click wraps), same CTD stack as drip / 1-1 campaigns.
+   */
+  customTrackingEnabled?: boolean;
   /** Logo URL for the top-left of the public event page header. */
   publicHeaderLogo?: string;
   eventDate: string;

@@ -2414,7 +2414,7 @@ a.camp-row:hover .camp-name{color:var(--purple);}
 }
 .lists-index-table th.lists-client-cell,
 .lists-index-table td.lists-client-cell{
-  width:10%;
+  width:10%;padding-right:8px;
 }
 .lists-client-flag{
   border:1px solid #e5e7eb;background:#f3f4f6;color:#6b7280;
@@ -2426,7 +2426,7 @@ a.camp-row:hover .camp-name{color:var(--purple);}
 .lists-client-flag:disabled{opacity:.6;cursor:default;}
 .lists-index-table th.lists-date-cell,
 .lists-index-table td.lists-date-cell{
-  width:22%;
+  width:22%;padding-left:28px;white-space:nowrap;
 }
 .lists-index-table th.lists-actions-cell,
 .lists-index-table td.lists-actions-cell{
@@ -3625,6 +3625,9 @@ textarea.lr-input{resize:vertical;min-height:88px;}
 .lr-tl-type.is-opened{background:#ecfdf5;color:#047857;}
 .lr-tl-type.is-clicked{background:#eff6ff;color:#1d4ed8;}
 .lr-tl-type.is-unsubscribed{background:#fef2f2;color:#b91c1c;}
+.lr-tl-type.is-going{background:#ecfdf5;color:#047857;}
+.lr-tl-type.is-waitlist{background:#fff7ed;color:#c2410c;}
+.lr-tl-type.is-rejected{background:#fef2f2;color:#b91c1c;}
 .lr-tl-type.is-company{background:#fff7ed;color:#c2410c;}
 .lr-tl-type.is-list{background:#f1f5f9;color:#334155;}
 .lr-tl-type.is-import{background:#f5f3ff;color:#6d28d9;}
@@ -5546,9 +5549,12 @@ select.filter{
 .drip-detail-title-wrap{
   display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 auto;flex-wrap:nowrap;
 }
+.drip-detail-title-wrap > div{
+  min-width:0;flex:1 1 auto;overflow:hidden;
+}
 .drip-detail-title-wrap h2{
   margin:0;font-size:26px;font-weight:700;letter-spacing:-0.2px;color:#1a1a1a;
-  flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  display:block;max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .drip-back{
   width:34px;height:34px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
@@ -8138,10 +8144,12 @@ select.filter{
 .drip-report-event-at{font-size:13px;color:#9ca3af;}
 .drip-report-empty{color:#6b7280;font-size:14px;}
 .drip-report-people-head{
-  margin:8px 0 4px;align-items:flex-end;
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  margin:8px 0 12px;flex-wrap:wrap;
 }
 .drip-report-people-head .drip-report-audience-title{margin:0;}
 .drip-report-people-head .desc{margin:6px 0 0;font-size:14px;color:#6b7280;}
+.drip-report-people-head .drip-report-people-tools{margin-left:auto;}
 @media (max-width:900px){
   .drip-report-metrics{
     grid-template-columns:1fr;
@@ -13122,20 +13130,22 @@ a.an-kanban-card-name.is-link:hover{
 .event-portal-page .rounded-xl{
   border-radius:16px;border-color:#eef0f2;background:#fff;
 }
-.event-portal-page .drip-report-tabs-row .drip-tabs{margin:0;border-bottom:none;flex:1;background:transparent;}
+.event-portal-page .drip-report-tabs-row .drip-report-tabs{
+  margin:0;border-bottom:none;flex:1;background:transparent;
+}
 .event-portal-page .drip-shell{background:transparent;}
-.event-portal-page .drip-tabs{background:transparent;}
-.event-portal-page .drip-tab{white-space:nowrap;}
 .event-portal-page .drip-settings-row{margin:6px 0 10px;}
 .event-portal-page .data-table .btn-soft,
 .event-portal-page .data-table .btn-dark{padding:8px 14px;font-size:14px;}
 .event-portal-page .drip-create-copy{margin:8px 0 14px;}
-.event-portal-page .crm-page-head{align-items:center;flex-wrap:wrap;margin-bottom:18px;}
-.event-portal-page .drip-detail-title-wrap{flex:1 1 280px;min-width:0;}
-.event-portal-page .drip-detail-title-wrap > div{min-width:0;}
-.event-portal-page .drip-detail-title-wrap h2{display:block;}
+.event-portal-page .crm-page-head{align-items:center;flex-wrap:nowrap;margin-bottom:18px;min-width:0;}
+.event-portal-page .drip-detail-title-wrap{flex:1 1 0;min-width:0;max-width:100%;}
+.event-portal-page .drip-detail-title-wrap > div{min-width:0;flex:1 1 auto;overflow:hidden;}
+.event-portal-page .drip-detail-title-wrap h2{
+  display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
 .event-portal-page .crm-page-head p a{color:#1a1a1a;text-decoration:underline;text-underline-offset:2px;}
-.event-portal-page .crm-actions{margin-left:auto;}
+.event-portal-page .crm-actions{margin-left:auto;flex-shrink:0;}
 .event-portal-page .btn-soft:disabled{opacity:.45;cursor:not-allowed;}
 .event-portal-body{display:flex;flex-direction:column;gap:14px;width:100%;min-width:0;}
 .event-portal-body > .drip-shell{width:100%;min-width:0;}
@@ -13159,12 +13169,39 @@ a.an-kanban-card-name.is-link:hover{
 .event-analytics-chart-col{flex:1;width:100%;display:flex;align-items:flex-end;justify-content:center;}
 .event-analytics-chart-col > div{width:100%;max-width:22px;border-radius:6px 6px 2px 2px;background:var(--purple);}
 .event-analytics-chart span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:#9ca3af;}
-.event-portal-page table{width:100%;border-collapse:collapse;font-size:13.5px;}
-.event-portal-page th{
-  text-align:left;font-size:11px;letter-spacing:.04em;text-transform:uppercase;
-  color:#9ca3af;font-weight:700;padding:8px;border-bottom:1px solid #eef0f2;
+.event-portal-page .data-table-wrap{overflow-x:auto;max-width:100%;width:100%;}
+.event-portal-page .data-table.drip-report-table{
+  width:100%;
 }
-.event-portal-page td{padding:10px 8px;border-bottom:1px solid #f3f4f6;color:#374151;}
+.event-portal-page .data-table.drip-report-table td{
+  padding-top:9px;padding-bottom:9px;font-size:13.5px;
+}
+.event-portal-page .event-submissions-people-table{
+  table-layout:fixed;width:100%;
+}
+.event-portal-page .event-submissions-people-table th:nth-child(1),
+.event-portal-page .event-submissions-people-table td:nth-child(1){width:22%;}
+.event-portal-page .event-submissions-people-table th:nth-child(2),
+.event-portal-page .event-submissions-people-table td:nth-child(2){width:28%;}
+.event-portal-page .event-submissions-people-table th:nth-child(3),
+.event-portal-page .event-submissions-people-table td:nth-child(3){width:24%;}
+.event-portal-page .event-submissions-people-table th:nth-child(4),
+.event-portal-page .event-submissions-people-table td:nth-child(4){width:18%;}
+.event-portal-page .event-submissions-people-table th:nth-child(5),
+.event-portal-page .event-submissions-people-table td:nth-child(5){
+  width:56px;padding-left:8px;padding-right:14px;text-align:right;
+}
+.event-portal-page .event-submissions-people-table td:nth-child(1),
+.event-portal-page .event-submissions-people-table td:nth-child(2),
+.event-portal-page .event-submissions-people-table td:nth-child(3){
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.event-portal-page .event-submissions-actions{
+  display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;
+}
+.event-portal-page .event-invite-meta{
+  white-space:nowrap;font-size:12px;font-weight:500;color:#6b7280;
+}
 .event-portal-page .border-black\/10,
 .event-portal-page .border-black\/8,
 .event-portal-page .border-black\/6{border-color:#eef0f2;}

@@ -15,6 +15,7 @@ import {
 } from "@/lib/sanitize-invite-message-html";
 import { hiddenClickTrapHtml } from "@/lib/click-trap";
 import { sendPortalEventMail } from "@/lib/event-sender-mail";
+import { applyEventInviteCustomTracking } from "@/lib/event-invite-tracking";
 import { ensureSubmissionTrapToken, inviteClickTrapUrl } from "@/lib/invite-trap";
 import { eventPublicUrl } from "@/lib/event-public-url";
 import { isSharedSessionFormat } from "@/lib/event-format";
@@ -279,6 +280,7 @@ async function sendCalendarInviteMails(
     viewerTimeZone?: string | null;
     notifyOwner?: boolean;
     clickTrapUrl?: string;
+    submissionId?: string;
   } = {}
 ) {
   const fromName = resolveInviteSenderName(event);
@@ -342,6 +344,34 @@ async function sendCalendarInviteMails(
     ...organizer,
   });
 
+  const calendarEventId =
+    ("id" in event && typeof (event as { id?: string }).id === "string"
+      ? (event as { id?: string }).id
+      : "") ||
+    event._id?.toString() ||
+    "";
+  const calendarHtml = await applyEventInviteCustomTracking({
+    html:
+      buildCalendarInviteAnnouncementHtml({
+        brandName,
+        brandLogoUrl,
+        eventName: event.eventName,
+        eventDateYmd: effectiveDate,
+        displayDate,
+        displayTime,
+        platform: effectivePlatform,
+        assetBaseUrl: "cid",
+        agendaItems,
+        eyebrow: "Calendar invite",
+        introHtml: `Hi ${escapeHtml(recipient.name)}, here is your calendar invite. Open the attached .ics file to add it to your calendar.`,
+        viewEventUrl,
+        footerNote: "A calendar file (.ics) is attached to this email.",
+      }) + hiddenClickTrapHtml(options.clickTrapUrl ?? ""),
+    event,
+    eventId: calendarEventId,
+    submissionId: options.submissionId,
+  });
+
   await sendPortalEventMail(event, "calendar", {
     from: `"${fromName}" <${fromEmail}>`,
     ...(replyTo ? { replyTo } : {}),
@@ -362,21 +392,7 @@ async function sendCalendarInviteMails(
     ]
       .filter(Boolean)
       .join("\n"),
-    html: buildCalendarInviteAnnouncementHtml({
-      brandName,
-      brandLogoUrl,
-      eventName: event.eventName,
-      eventDateYmd: effectiveDate,
-      displayDate,
-      displayTime,
-      platform: effectivePlatform,
-      assetBaseUrl: "cid",
-      agendaItems,
-      eyebrow: "Calendar invite",
-      introHtml: `Hi ${escapeHtml(recipient.name)}, here is your calendar invite. Open the attached .ics file to add it to your calendar.`,
-      viewEventUrl,
-      footerNote: "A calendar file (.ics) is attached to this email.",
-    }) + hiddenClickTrapHtml(options.clickTrapUrl ?? ""),
+    html: calendarHtml,
     attachments: [
       {
         filename: icsFilename,
@@ -580,21 +596,26 @@ export async function sendSubmissionInviteEmail(
       ? await ensureSubmissionTrapToken(eventId, options.submissionId)
       : "";
   const clickTrapUrl = inviteClickTrapUrl(trapToken);
-  const guestHtml =
-    buildInviteAnnouncementHtml({
-      brandName,
-      brandLogoUrl,
-      eventName: event.eventName,
-      eventDateYmd: effectiveDate,
-      displayDate,
-      displayTime,
-      platform: effectivePlatform,
-      assetBaseUrl: "cid",
-      messageHtml: resolvedMessageHtml,
-      acceptInviteUrl: options.acceptInviteUrl,
-      viewEventUrl,
-      declineUrl: viewEventUrl,
-    }) + hiddenClickTrapHtml(clickTrapUrl);
+  const guestHtml = await applyEventInviteCustomTracking({
+    html:
+      buildInviteAnnouncementHtml({
+        brandName,
+        brandLogoUrl,
+        eventName: event.eventName,
+        eventDateYmd: effectiveDate,
+        displayDate,
+        displayTime,
+        platform: effectivePlatform,
+        assetBaseUrl: "cid",
+        messageHtml: resolvedMessageHtml,
+        acceptInviteUrl: options.acceptInviteUrl,
+        viewEventUrl,
+        declineUrl: viewEventUrl,
+      }) + hiddenClickTrapHtml(clickTrapUrl),
+    event,
+    eventId,
+    submissionId: options.submissionId,
+  });
 
   // Registration already includes the calendar invite. Do not also send the announcement.
   if (!(includeCalendarInvite && variant === "registration")) {
@@ -617,6 +638,7 @@ export async function sendSubmissionInviteEmail(
       viewerTimeZone: options.viewerTimeZone,
       notifyOwner: true,
       clickTrapUrl,
+      submissionId: options.submissionId,
     });
   }
 }

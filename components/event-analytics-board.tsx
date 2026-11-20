@@ -91,7 +91,7 @@ export function EventAnalyticsBoard({
             </svg>
           </Link>
           <div>
-            <h2>{eventName}</h2>
+            <h2 title={eventName}>{eventName}</h2>
             <p>
               Analytics for{" "}
               <a href={publicUrl} target="_blank" rel="noopener noreferrer">

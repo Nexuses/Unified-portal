@@ -1096,7 +1096,7 @@ export function EventSubmissionsBoard({
             </svg>
           </Link>
           <div>
-            <h2>{eventName}</h2>
+            <h2 title={eventName}>{eventName}</h2>
             <p>Submissions · {eventFormatLabel(activeEventFormat)}</p>
           </div>
         </div>
@@ -1432,119 +1432,131 @@ export function EventSubmissionsBoard({
         <div className="drip-shell">
           {isActiveWaitlisted ? (
             <>
-              <div className="drip-tabs">
-                {WAITLISTED_SUBMISSION_TABS.map((tab) => {
-                  const isActive = waitlistedSubmissionTab === tab.id;
-                  const count = waitlistedStageCounts[tab.id];
-                  return (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setWaitlistedSubmissionTab(tab.id)}
-                      className={`drip-tab${isActive ? " active" : ""}`}
-                    >
-                      {tab.label} ({count})
-                    </button>
-                  );
-                })}
+              <div className="drip-report-tabs-row">
+                <div className="drip-report-tabs">
+                  {WAITLISTED_SUBMISSION_TABS.map((tab) => {
+                    const isActive = waitlistedSubmissionTab === tab.id;
+                    const count = waitlistedStageCounts[tab.id];
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                          setWaitlistedSubmissionTab(tab.id);
+                          setSubmissionsPage(1);
+                        }}
+                        className={isActive ? "active" : ""}
+                      >
+                        {tab.label}
+                        <span className="drip-report-table-count">{count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {waitlistedSubmissionTab === "going" ? renderBotToggle() : null}
               </div>
 
               {waitlistedSubmissionTab === "invite_to" ? renderListImport() : null}
 
-              <div className="event-stage-copy-row">
-                <p className="drip-create-copy">
-                  {waitlistedSubmissionTab === "invite_to"
-                    ? "Send invites to move contacts into Invited."
-                    : waitlistedSubmissionTab === "invited"
-                      ? "Contacts who received an invite. Resend invite reminders from here."
-                      : waitlistedSubmissionTab === "waitlist"
-                        ? "Pending public registrations. Confirm a seat to send the confirmation email, or reject."
-                        : waitlistedSubmissionTab === "going"
-                          ? "Confirmed attendees (admin confirmed or invite accepted)."
-                          : "Registrants who were not selected for a seat."}
-                </p>
-                {waitlistedSubmissionTab === "going" ? renderBotToggle() : null}
-              </div>
+              <p className="drip-create-copy">
+                {waitlistedSubmissionTab === "invite_to"
+                  ? "Send invites to move contacts into Invited."
+                  : waitlistedSubmissionTab === "invited"
+                    ? "Contacts who received an invite. Resend invite reminders from here."
+                    : waitlistedSubmissionTab === "waitlist"
+                      ? "Pending public registrations. Confirm a seat to send the confirmation email, or reject."
+                      : waitlistedSubmissionTab === "going"
+                        ? "Confirmed attendees (admin confirmed or invite accepted)."
+                        : "Registrants who were not selected for a seat."}
+              </p>
             </>
           ) : isActiveWebinar ? (
             <>
-              <div className="drip-tabs">
-                {WEBINAR_SUBMISSION_TABS.map((tab) => {
-                  const isActive = webinarSubmissionTab === tab.id;
-                  const count = webinarStageCounts[tab.id];
-                  return (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setWebinarSubmissionTab(tab.id)}
-                      className={`drip-tab${isActive ? " active" : ""}`}
-                    >
-                      {tab.label} ({count})
-                    </button>
-                  );
-                })}
+              <div className="drip-report-tabs-row">
+                <div className="drip-report-tabs">
+                  {WEBINAR_SUBMISSION_TABS.map((tab) => {
+                    const isActive = webinarSubmissionTab === tab.id;
+                    const count = webinarStageCounts[tab.id];
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                          setWebinarSubmissionTab(tab.id);
+                          setSubmissionsPage(1);
+                        }}
+                        className={isActive ? "active" : ""}
+                      >
+                        {tab.label}
+                        <span className="drip-report-table-count">{count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {webinarSubmissionTab === "going" ? renderBotToggle() : null}
               </div>
 
               {webinarSubmissionTab === "invite_to" ? renderListImport() : null}
 
-              <div className="event-stage-copy-row">
-                <p className="drip-create-copy">
-                  {webinarSubmissionTab === "invite_to"
-                    ? "Send invites to move contacts into Invited."
-                    : webinarSubmissionTab === "invited"
-                      ? "Contacts who received an invite. Resend invite reminders from here."
-                      : "Registered attendees and contacts who accepted their invite."}
-                </p>
-                {webinarSubmissionTab === "going" ? renderBotToggle() : null}
-              </div>
+              <p className="drip-create-copy">
+                {webinarSubmissionTab === "invite_to"
+                  ? "Send invites to move contacts into Invited."
+                  : webinarSubmissionTab === "invited"
+                    ? "Contacts who received an invite. Resend invite reminders from here."
+                    : "Registered attendees and contacts who accepted their invite."}
+              </p>
             </>
           ) : (
-            <p className="mb-3 text-[11px] text-black/55">
+            <p className="drip-create-copy">
               Reminder settings apply only to the selected calendar tab.
             </p>
           )}
 
-          {((isActiveWebinar &&
-            (webinarSubmissionTab === "invite_to" || webinarSubmissionTab === "invited")) ||
-            (isActiveWaitlisted &&
-              (waitlistedSubmissionTab === "invite_to" ||
-                waitlistedSubmissionTab === "invited"))) &&
-          tableSubmissions.some((submission) => submission.source !== "csv") ? (
-            <div className="drip-toolbar">
-              <button
-                type="button"
-                className="btn-dark"
-                onClick={() => {
-                  const tab = isActiveWaitlisted ? waitlistedSubmissionTab : webinarSubmissionTab;
-                  if (tab === "invite_to" || tab === "invited") {
-                    openBulkInviteComposer(tab);
-                  }
-                }}
-                disabled={isDeletingAllInvites}
-              >
-                {(isActiveWaitlisted ? waitlistedSubmissionTab : webinarSubmissionTab) === "invite_to"
-                  ? "Invite all"
-                  : "Resend all"}
-              </button>
-              <button
-                type="button"
-                className="btn-soft"
-                onClick={() => void deleteAllInviteTabContacts()}
-                disabled={isDeletingAllInvites || deletingSubmissionId !== null}
-              >
-                <ButtonLoadingContent loading={isDeletingAllInvites} loadingText="Deleting...">
-                  Delete all
-                </ButtonLoadingContent>
-              </button>
-            </div>
-          ) : null}
+          <div className="drip-report-people-head">
+            <h3 className="drip-report-audience-title">People</h3>
+            {((isActiveWebinar &&
+              (webinarSubmissionTab === "invite_to" || webinarSubmissionTab === "invited")) ||
+              (isActiveWaitlisted &&
+                (waitlistedSubmissionTab === "invite_to" ||
+                  waitlistedSubmissionTab === "invited"))) &&
+            tableSubmissions.some((submission) => submission.source !== "csv") ? (
+              <div className="drip-report-people-tools">
+                <button
+                  type="button"
+                  className="btn-dark"
+                  onClick={() => {
+                    const tab = isActiveWaitlisted ? waitlistedSubmissionTab : webinarSubmissionTab;
+                    if (tab === "invite_to" || tab === "invited") {
+                      openBulkInviteComposer(tab);
+                    }
+                  }}
+                  disabled={isDeletingAllInvites}
+                >
+                  {(isActiveWaitlisted ? waitlistedSubmissionTab : webinarSubmissionTab) ===
+                  "invite_to"
+                    ? "Invite all"
+                    : "Resend all"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-soft"
+                  onClick={() => void deleteAllInviteTabContacts()}
+                  disabled={isDeletingAllInvites || deletingSubmissionId !== null}
+                >
+                  <ButtonLoadingContent loading={isDeletingAllInvites} loadingText="Deleting...">
+                    Delete all
+                  </ButtonLoadingContent>
+                </button>
+              </div>
+            ) : null}
+          </div>
           <div className="data-table-wrap">
-            <table className="data-table">
+            <table className="data-table drip-report-table event-submissions-people-table">
               <thead>
                 <tr>
                   <th>Name</th>
                   <th>Email</th>
-                  <th>{isActiveWaitlisted ? "Company" : "Company"}</th>
+                  <th>Company</th>
                   <th>
                     {isActiveWaitlisted
                       ? waitlistedSubmissionTab === "waitlist"
@@ -1559,23 +1571,36 @@ export function EventSubmissionsBoard({
                           : "Invite"
                         : "Invite"}
                   </th>
-                  <th />
+                  <th aria-label="Remove" />
                 </tr>
               </thead>
               <tbody>
             {pagedSubmissions.map((submission) => (
               <tr key={submission.id}>
-                <td>{submission.name}</td>
-                <td>{submission.email}</td>
-                <td>
+                <td data-label="Name">{submission.name}</td>
+                <td data-label="Email">{submission.email}</td>
+                <td data-label="Company">
                   {submission.companyName || "—"}
                   {isActiveWaitlisted && submission.phone ? (
-                    <div className="drip-status">{submission.phone}</div>
+                    <div className="event-invite-meta">{submission.phone}</div>
                   ) : null}
                 </td>
-                <td>
+                <td
+                  data-label={
+                    isActiveWaitlisted
+                      ? waitlistedSubmissionTab === "waitlist"
+                        ? "Actions"
+                        : waitlistedSubmissionTab === "invite_to" ||
+                            waitlistedSubmissionTab === "invited"
+                          ? "Invite"
+                          : "Status"
+                      : isActiveWebinar && webinarSubmissionTab === "going"
+                        ? "Status"
+                        : "Invite"
+                  }
+                >
                   {isActiveWaitlisted && waitlistedSubmissionTab === "waitlist" ? (
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <div className="event-submissions-actions">
                       <button
                         type="button"
                         onClick={() => void confirmWaitlistSeat(submission.id)}
@@ -1617,16 +1642,14 @@ export function EventSubmissionsBoard({
                       {submission.botClick ? <span className="event-bot-pill">Bot click</span> : null}
                     </span>
                   ) : isActiveWaitlisted && waitlistedSubmissionTab === "rejected" ? (
-                    <span className="text-[11px] font-medium leading-snug text-red-700">
-                      Rejected
-                    </span>
+                    <span className="drip-report-status">Rejected</span>
                   ) : isActiveWaitlisted &&
                     (waitlistedSubmissionTab === "invite_to" ||
                       waitlistedSubmissionTab === "invited") ? (
                     submission.source === "csv" ? (
                       <span className="drip-status">CSV upload</span>
                     ) : (
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <div className="event-submissions-actions">
                       <button
                         type="button"
                         onClick={() => openInviteComposer(submission.id)}
@@ -1645,7 +1668,7 @@ export function EventSubmissionsBoard({
                         </ButtonLoadingContent>
                       </button>
                       {submission.inviteSentAt ? (
-                        <span className="whitespace-nowrap text-[10px] text-black/45">
+                        <span className="event-invite-meta">
                           {formatInviteSentAt(submission.inviteSentAt)}
                         </span>
                       ) : null}
@@ -1661,7 +1684,7 @@ export function EventSubmissionsBoard({
                   ) : submission.source === "csv" ? (
                     <span className="drip-status">CSV upload</span>
                   ) : (
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <div className="event-submissions-actions">
                       <button
                         type="button"
                         onClick={() => openInviteComposer(submission.id)}
@@ -1680,14 +1703,14 @@ export function EventSubmissionsBoard({
                         </ButtonLoadingContent>
                       </button>
                       {submission.inviteSentAt ? (
-                        <span className="whitespace-nowrap text-[10px] text-black/45">
+                        <span className="event-invite-meta">
                           {formatInviteSentAt(submission.inviteSentAt)}
                         </span>
                       ) : null}
                     </div>
                   )}
                 </td>
-                <td>
+                <td data-label="Remove">
                   <button
                     type="button"
                     onClick={() => void removeSubmission(submission.id)}
@@ -1779,7 +1802,7 @@ export function EventSubmissionsBoard({
               <h3>Invite history</h3>
             </div>
             <div className="data-table-wrap">
-              <table className="data-table">
+              <table className="data-table drip-report-table">
                 <thead>
                   <tr>
                     <th>List</th>
@@ -1791,17 +1814,23 @@ export function EventSubmissionsBoard({
                 <tbody>
                   {inviteHistory.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="crm-empty">
+                      <td colSpan={4} className="drip-empty">
                         No invite batches yet.
                       </td>
                     </tr>
                   ) : (
                     inviteHistory.map((row) => (
                       <tr key={row.key}>
-                        <td>{row.name}</td>
-                        <td>{row.added}</td>
-                        <td>{row.sent}</td>
-                        <td>{row.clicks}</td>
+                        <td data-label="List">{row.name}</td>
+                        <td data-label="Added" className="drip-report-table-num">
+                          {row.added}
+                        </td>
+                        <td data-label="Sent" className="drip-report-table-num">
+                          {row.sent}
+                        </td>
+                        <td data-label="Bot clicks" className="drip-report-table-num">
+                          {row.clicks}
+                        </td>
                       </tr>
                     ))
                   )}

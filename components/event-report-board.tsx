@@ -237,7 +237,7 @@ export function EventReportBoard({ report, publicToken }: EventReportBoardProps)
         ) : null}
 
         <div className="drip-report-head-copy">
-          <h2>{report.eventName}</h2>
+          <h2 title={report.eventName}>{report.eventName}</h2>
           <div className="drip-report-meta">
             Event report
             {` · ${eventFormatLabel(report.eventFormat)}`}

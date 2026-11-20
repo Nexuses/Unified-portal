@@ -6,8 +6,7 @@ import { isSharedSessionFormat, isWaitlistedWebinarFormat, isWebinarFormat, norm
 import { resolveMeetingLink } from "@/lib/event-platform";
 import { getEventById, getEventByPublicId } from "@/lib/events";
 import {
-  addRegistrationContactToEventList,
-  ensureEventRegistrationList,
+  syncEventRegistrationListWithGoing,
 } from "@/lib/event-registration-list";
 import { sendAcceptedCalendarInviteEmail } from "@/lib/invite-email";
 import {
@@ -241,25 +240,12 @@ export async function createSubmissionFromPublicId(input: {
 
   const registrationEventId = String(event.id ?? event._id?.toString() ?? "");
   const registrationProjectId = String(event.projectId ?? "");
-  const registrationEventName = String(event.eventName ?? "");
-  let registrationListId = event.registrationListId;
 
-  async function syncRegistrationList(companyForList: string) {
+  async function syncRegistrationList() {
     try {
-      registrationListId =
-        (await ensureEventRegistrationList({
-          eventId: registrationEventId,
-          projectId: registrationProjectId,
-          eventName: registrationEventName,
-          registrationListId,
-        })) ?? registrationListId;
-      await addRegistrationContactToEventList({
+      await syncEventRegistrationListWithGoing({
+        eventId: registrationEventId,
         projectId: registrationProjectId,
-        registrationListId,
-        name: input.name,
-        email: input.email,
-        companyName: companyForList,
-        phone,
       });
     } catch {
       // Registration should still succeed if CRM sync fails.
@@ -292,7 +278,7 @@ export async function createSubmissionFromPublicId(input: {
             },
           }
         );
-        await syncRegistrationList(companyName);
+        await syncRegistrationList();
         return;
       }
       const nextCompany =
@@ -312,7 +298,7 @@ export async function createSubmissionFromPublicId(input: {
           },
         }
       );
-      await syncRegistrationList(nextCompany);
+      await syncRegistrationList();
       return;
     }
   } else {
@@ -383,7 +369,7 @@ export async function createSubmissionFromPublicId(input: {
           }
         : {}),
   });
-  await syncRegistrationList(companyName);
+  await syncRegistrationList();
 }
 
 export type BulkSubmissionImportResult = {
@@ -744,6 +730,10 @@ export async function acceptWebinarInviteFromCalendarRsvp(
         : {}),
     }
   );
+  await syncRegistrationListAfterGoingChange(
+    submission.eventId.toString(),
+    String(event?.projectId ?? ""),
+  );
   return true;
 }
 
@@ -817,6 +807,11 @@ export async function acceptWebinarInviteByPublicId(publicId: string, email: str
   } catch (error) {
     console.error("Accept invite: could not schedule calendar email", error);
   }
+
+  await syncRegistrationListAfterGoingChange(
+    String(event.id ?? eventObjectId.toString()),
+    String(event.projectId ?? ""),
+  );
 }
 
 function scheduleAcceptedCalendarInvite(
@@ -925,6 +920,22 @@ export async function acceptWebinarInviteBySubmissionId(publicId: string, submis
   } catch (error) {
     console.error("Accept invite: could not schedule calendar email", error);
   }
+
+  await syncRegistrationListAfterGoingChange(
+    String(event.id ?? eventObjectId.toString()),
+    String(event.projectId ?? ""),
+  );
+}
+
+async function syncRegistrationListAfterGoingChange(
+  eventId: string,
+  projectId: string,
+) {
+  try {
+    await syncEventRegistrationListWithGoing({ eventId, projectId });
+  } catch (error) {
+    console.error("Registration list sync failed:", error);
+  }
 }
 
 export async function markSubmissionAsGoing(eventId: string, submissionId: string) {
@@ -942,6 +953,14 @@ export async function markSubmissionAsGoing(eventId: string, submissionId: strin
     { $set: { inviteAcceptedAt: acceptedAt } },
     { returnDocument: "after" }
   );
+
+  if (result) {
+    const event = await getEventById(eventId);
+    await syncRegistrationListAfterGoingChange(
+      eventId,
+      String(event?.projectId ?? ""),
+    );
+  }
 
   return result;
 }
@@ -972,6 +991,13 @@ export async function confirmWaitlistSubmission(eventId: string, submissionId: s
     { returnDocument: "after" }
   );
 
+  if (result) {
+    await syncRegistrationListAfterGoingChange(
+      eventId,
+      String(event.projectId ?? ""),
+    );
+  }
+
   return result;
 }
 
@@ -1000,6 +1026,13 @@ export async function rejectWaitlistSubmission(eventId: string, submissionId: st
     },
     { returnDocument: "after" }
   );
+
+  if (result) {
+    await syncRegistrationListAfterGoingChange(
+      eventId,
+      String(event.projectId ?? ""),
+    );
+  }
 
   return result;
 }

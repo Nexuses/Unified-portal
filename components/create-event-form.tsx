@@ -70,6 +70,7 @@ export type CreateEventFormData = {
   calendarInviteAgenda: string;
   eventBanner: string;
   emailIncludeEventBanner: boolean;
+  customTrackingEnabled: boolean;
   publicHeaderLogo: string;
   eventDate: string;
   oneToOneBookingEndDate: string;
@@ -124,6 +125,7 @@ const emptyForm: CreateEventFormData = {
   calendarInviteAgenda: "",
   eventBanner: "",
   emailIncludeEventBanner: true,
+  customTrackingEnabled: false,
   publicHeaderLogo: "",
   eventDate: "",
   oneToOneBookingEndDate: "",
@@ -431,6 +433,7 @@ export function CreateEventForm({
           form.eventName
         ),
         emailIncludeEventBanner: form.emailIncludeEventBanner,
+        customTrackingEnabled: form.customTrackingEnabled === true,
       };
 
       const response = await fetch(mode === "edit" ? `/api/events/${eventId}` : "/api/events", {
@@ -661,6 +664,36 @@ export function CreateEventForm({
                 <p className="mt-1.5 text-xs text-black/45">
                   Invite and reminder emails send from this mailbox. Disconnected senders are not listed.
                 </p>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-black/8 bg-white px-3 py-2.5">
+                <div>
+                  <p className="text-xs font-medium text-black">Custom tracking (CTD)</p>
+                  <p className="mt-0.5 text-[11px] text-black/45">
+                    Wrap invite links and add an open pixel via this sender&apos;s tracking domain.
+                    Turn off to send plain links only.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={form.customTrackingEnabled}
+                  onClick={() =>
+                    setForm((prev) => ({
+                      ...prev,
+                      customTrackingEnabled: !prev.customTrackingEnabled,
+                    }))
+                  }
+                  className={`inline-flex h-7 w-12 shrink-0 items-center rounded-full p-1 transition ${
+                    form.customTrackingEnabled ? "bg-emerald-600" : "bg-black/20"
+                  }`}
+                >
+                  <span
+                    className={`h-5 w-5 rounded-full bg-white transition ${
+                      form.customTrackingEnabled ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
               </div>
 
               <label className="block">

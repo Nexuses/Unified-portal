@@ -64,6 +64,7 @@ export async function POST(request: Request) {
       eventBanner: String(body.eventBanner ?? ""),
       emailBannerUrl: String(body.emailBannerUrl ?? "").trim(),
       emailIncludeEventBanner: body.emailIncludeEventBanner !== false,
+      customTrackingEnabled: body.customTrackingEnabled === true,
       publicHeaderLogo: String(body.publicHeaderLogo ?? ""),
       eventDate: String(body.eventDate ?? ""),
       oneToOneBookingEndDate: String(body.oneToOneBookingEndDate ?? ""),

@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import { ObjectId } from "mongodb";
 import { PUBLIC_APP_ORIGIN } from "@/lib/campaign-tracking";
+import { syncEventRegistrationListWithGoing } from "@/lib/event-registration-list";
 import { getDb } from "@/lib/mongodb";
 
 type TrapSubmission = {
@@ -42,7 +43,7 @@ export async function markSubmissionBotClick(token: string) {
   const collection = await trapSubmissions();
   const existing = await collection.findOne(
     { trapToken: cleaned },
-    { projection: { _id: 1, botClick: 1 } },
+    { projection: { _id: 1, eventId: 1, botClick: 1 } },
   );
   if (!existing) return false;
   if (!existing.botClick) {
@@ -50,6 +51,13 @@ export async function markSubmissionBotClick(token: string) {
       { _id: existing._id },
       { $set: { botClick: true, botClickedAt: new Date() } },
     );
+    try {
+      await syncEventRegistrationListWithGoing({
+        eventId: existing.eventId.toString(),
+      });
+    } catch (error) {
+      console.error("Bot click: registration list sync failed", error);
+    }
   }
   return true;
 }

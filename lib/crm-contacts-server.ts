@@ -38,6 +38,14 @@ import {
   countDistinctCompaniesForList,
   ensureListMembershipIndexes,
 } from "@/lib/crm-list-stats";
+import {
+  isWaitlistedWebinarFormat,
+  isWebinarFormat,
+} from "@/lib/event-format";
+import {
+  getWaitlistedSubmissionStage,
+  getWebinarSubmissionStage,
+} from "@/lib/webinar-submission-stage";
 
 export async function getProjectContacts(projectId: ObjectId) {
   const db = await getDb();
@@ -946,18 +954,37 @@ async function getContactEventInviteActivity(
 
   const db = await getDb();
   const events = await db
-    .collection<{ _id: ObjectId; eventName?: string; projectId?: string }>("events")
+    .collection<{
+      _id: ObjectId;
+      eventName?: string;
+      eventFormat?: string;
+      projectId?: string;
+    }>("events")
     .find({ projectId: projectId.toString() })
-    .project({ eventName: 1 })
+    .project({ eventName: 1, eventFormat: 1 })
     .toArray();
   if (events.length === 0) return [];
 
-  const eventName = new Map(events.map((event) => [event._id.toString(), event.eventName || "Event"]));
+  const eventMeta = new Map(
+    events.map((event) => [
+      event._id.toString(),
+      {
+        name: event.eventName || "Event",
+        format: event.eventFormat,
+      },
+    ]),
+  );
   const submissions = await db
     .collection<{
       _id: ObjectId;
       eventId: ObjectId;
+      source?: string;
+      createdAt?: Date;
       inviteSentAt?: Date;
+      inviteAcceptedAt?: Date;
+      waitlistStatus?: string;
+      waitlistConfirmedAt?: Date;
+      waitlistRejectedAt?: Date;
       botClickedAt?: Date;
       botClick?: boolean;
       sourceListName?: string;
@@ -970,8 +997,33 @@ async function getContactEventInviteActivity(
 
   const history: ContactHistoryEvent[] = [];
   for (const submission of submissions) {
-    const name = eventName.get(submission.eventId.toString()) || "Event";
+    const meta = eventMeta.get(submission.eventId.toString());
+    const name = meta?.name || "Event";
     const listName = submission.sourceListName?.trim();
+    const inviteSentAtIso = submission.inviteSentAt
+      ? toIso(submission.inviteSentAt)
+      : null;
+    const inviteAcceptedAtIso = submission.inviteAcceptedAt
+      ? toIso(submission.inviteAcceptedAt)
+      : null;
+    const stageInput = {
+      source: submission.source,
+      inviteSentAt: inviteSentAtIso,
+      inviteAcceptedAt: inviteAcceptedAtIso,
+      waitlistStatus: submission.waitlistStatus,
+    };
+    const stage = isWaitlistedWebinarFormat(meta?.format)
+      ? getWaitlistedSubmissionStage(stageInput)
+      : isWebinarFormat(meta?.format)
+        ? getWebinarSubmissionStage(stageInput)
+        : inviteAcceptedAtIso
+          ? "going"
+          : inviteSentAtIso
+            ? "invited"
+            : submission.source === "csv" || submission.source === "list"
+              ? "invite_to"
+              : "going";
+
     if (submission.inviteSentAt) {
       history.push({
         id: `event-invited-${submission._id.toString()}`,
@@ -985,6 +1037,53 @@ async function getContactEventInviteActivity(
         campaignName: name,
       });
     }
+
+    if (stage === "going") {
+      const goingAt =
+        submission.inviteAcceptedAt ||
+        submission.waitlistConfirmedAt ||
+        submission.createdAt ||
+        submission.inviteSentAt;
+      if (goingAt) {
+        history.push({
+          id: `event-going-${submission._id.toString()}`,
+          type: "event_going",
+          title: "Going to an event",
+          description: `Marked Going for ${name}.`,
+          at: toIso(goingAt),
+          actor: "Event RSVP",
+          campaignName: name,
+        });
+      }
+    } else if (stage === "waitlist") {
+      const waitlistAt =
+        submission.createdAt || submission.inviteSentAt || new Date();
+      history.push({
+        id: `event-waitlist-${submission._id.toString()}`,
+        type: "event_waitlist",
+        title: "On the event waitlist",
+        description: `On the waitlist for ${name}.`,
+        at: toIso(waitlistAt),
+        actor: "Event RSVP",
+        campaignName: name,
+      });
+    } else if (stage === "rejected") {
+      const rejectedAt =
+        submission.waitlistRejectedAt ||
+        submission.createdAt ||
+        submission.inviteSentAt ||
+        new Date();
+      history.push({
+        id: `event-rejected-${submission._id.toString()}`,
+        type: "event_rejected",
+        title: "Not going to an event",
+        description: `Marked Not going for ${name}.`,
+        at: toIso(rejectedAt),
+        actor: "Event RSVP",
+        campaignName: name,
+      });
+    }
+
     if (submission.botClick && submission.botClickedAt) {
       history.push({
         id: `event-bot-click-${submission._id.toString()}`,
