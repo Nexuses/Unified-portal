@@ -17,28 +17,16 @@ import {
   fetchLinkedinVpn,
   openLinkedinSession,
   parseLinkedinCsv,
-  releaseLinkedinComputer,
   setLinkedinCampaignPaused,
   setLinkedinVpn,
   startLinkedinCampaign,
-  startLinkedinComputer,
   type LinkedinCampaign,
   type LinkedinComputerInfo,
-  type LinkedinComputerPhase,
   type LinkedinCsvPreview,
   type LinkedinSession,
   type LinkedinVpnInfo,
 } from "@/lib/linkedin-campaigns";
 import { PORTAL_ROUTES } from "@/lib/portal-nav";
-
-const COMPUTER_PHASE_LABEL: Record<LinkedinComputerPhase, string> = {
-  running: "On",
-  starting: "Starting…",
-  stopping: "Shutting down…",
-  stopped: "Off",
-  none: "Not started",
-  unknown: "Checking…",
-};
 
 const SAMPLE_CSV = [
   "First name,Last name,Company,LinkedIn account,Connected,Like recent post,Message 1,Message 2",
@@ -351,68 +339,6 @@ export default function PortalLinkedinPage() {
     return next;
   }
 
-  async function startComputer() {
-    setError("");
-    const wasRunning = computer?.phase === "running";
-    setBusy(
-      wasRunning
-        ? "Checking the computer and VPN…"
-        : vpn?.enabled
-          ? `Starting computer and connecting VPN (${vpn.country || "India"})…`
-          : "Starting computer…",
-    );
-    try {
-      const started = await startLinkedinComputer();
-      if (started.computer) setComputer(started.computer);
-      if (started.vpn) setVpn(started.vpn);
-      if (started.desktopUrl) openFloatingDesktop(started.desktopUrl);
-    } catch (startError) {
-      setError(startError instanceof Error ? startError.message : "Could not start the computer");
-      await refreshComputer(false).catch(() => null);
-      const latestVpn = await fetchLinkedinVpn().catch(() => null);
-      if (latestVpn) setVpn(latestVpn);
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function releaseComputer() {
-    setError("");
-    setBusy("Releasing the computer…");
-    try {
-      const released = await releaseLinkedinComputer();
-      if (released.computer) setComputer(released.computer);
-      setDesktopUrl("");
-      setDesktopLayout("floating");
-    } catch (releaseError) {
-      setError(
-        releaseError instanceof Error ? releaseError.message : "Could not release the computer",
-      );
-      await refreshComputer(false).catch(() => null);
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function showLiveView() {
-    setError("");
-    setBusy("Opening live view…");
-    try {
-      if (session?.connected) {
-        const opened = await openLinkedinSession();
-        openFloatingDesktop(opened.desktopUrl);
-        setSession(opened.session);
-      } else {
-        const next = await refreshComputer(true);
-        if (next.desktopUrl) openFloatingDesktop(next.desktopUrl);
-      }
-    } catch (viewError) {
-      setError(viewError instanceof Error ? viewError.message : "Could not open live view");
-    } finally {
-      setBusy("");
-    }
-  }
-
   async function openComputer() {
     setError("");
     setBusy(
@@ -588,85 +514,6 @@ export default function PortalLinkedinPage() {
             </p>
             {error ? <p className="crm-error">{error}</p> : null}
             <div className="li-auto-card li-auto-card-flat">
-              <div className="li-auto-card-head">
-                <h3>Computer</h3>
-                <span className="li-auto-pill">
-                  {computer
-                    ? `Computer ${COMPUTER_PHASE_LABEL[computer.phase].toLowerCase()}`
-                    : "Checking…"}
-                </span>
-              </div>
-              <p>
-                Starts or resumes this project&apos;s LinkedIn Boat desktop (separate from Cloud
-                Campaign). Machine billing runs only while the computer is on. Release it when you
-                are done to save cost.
-              </p>
-              <div
-                className={`cloud-computer-state is-${computer?.phase || "unknown"}`}
-                role="status"
-              >
-                <i aria-hidden="true" />
-                <span>
-                  <strong>
-                    {computer ? COMPUTER_PHASE_LABEL[computer.phase] : "Checking…"}
-                  </strong>
-                  {computer?.phase === "running"
-                    ? "The computer is on. Show the live view to see LinkedIn."
-                    : computer?.phase === "starting"
-                      ? "Boat is starting the computer. This usually takes under a minute."
-                      : computer?.phase === "stopping"
-                        ? "Boat is saving and switching it off. You can start it again once it's off."
-                        : computer?.phase === "stopped"
-                          ? "Off to save cost. Start it here before logging in or launching."
-                          : computer?.phase === "none"
-                            ? "No computer yet. Start it to create one for LinkedIn."
-                            : "Asking Boat what the computer is doing…"}
-                </span>
-              </div>
-              <div className="li-auto-actions">
-                {computer?.phase === "running" ? (
-                  <>
-                    <button
-                      type="button"
-                      className="btn-dark"
-                      disabled={Boolean(busy)}
-                      onClick={() => void showLiveView()}
-                    >
-                      {desktopUrl ? "Reconnect live view" : "Show live view"}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-soft"
-                      disabled={Boolean(busy)}
-                      title="Checks the computer and VPN again. Use it if something looks stuck."
-                      onClick={() => void startComputer()}
-                    >
-                      Re-check computer
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-soft"
-                      disabled={Boolean(busy)}
-                      onClick={() => void releaseComputer()}
-                    >
-                      Release computer
-                    </button>
-                  </>
-                ) : computer?.phase === "starting" || computer?.phase === "stopping" ? (
-                  <button type="button" className="btn-dark" disabled>
-                    {computer.phase === "starting" ? "Starting…" : "Shutting down…"}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn-dark"
-                    disabled={Boolean(busy)}
-                    onClick={() => void startComputer()}
-                  >
-                    Start computer
-                  </button>
-                )}
-              </div>
               <div className="cloud-vpn-row">
                 <label className="cloud-vpn-toggle">
                   <input
@@ -683,14 +530,14 @@ export default function PortalLinkedinPage() {
                     : !vpn.configured && !vpn.enabled
                       ? "NordVPN is not set up on the server yet (an admin needs to add NORDVPN_TOKEN)."
                       : !vpn.enabled
-                        ? "Off. Applies to every LinkedIn campaign in this project, since they share this computer."
+                        ? "Off. Applies to every LinkedIn campaign in this project."
                         : vpn.status?.connected
                           ? `Connected · ${[vpn.status.city, vpn.status.country].filter(Boolean).join(", ")}${
                               vpn.status.ip ? ` · ${vpn.status.ip}` : ""
-                            }. Nothing runs on the computer unless this connection is up.`
+                            }.`
                           : vpn.status?.error
                             ? `Not connected: ${vpn.status.error}`
-                            : "On. Connects when the computer starts; nothing is sent until it does."}
+                            : "On. Connects when the LinkedIn session starts."}
                 </p>
               </div>
             </div>
@@ -726,7 +573,7 @@ export default function PortalLinkedinPage() {
                     <h3>LinkedIn</h3>
                     <span className="li-auto-pill">Not connected</span>
                   </div>
-                  <p>Start the computer first, then log in. The same computer keeps that session.</p>
+                  <p>Log in once on the virtual machine. That LinkedIn stays connected for this project.</p>
                   <label className="li-auto-field">
                     Account name
                     <input
