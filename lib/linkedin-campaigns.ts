@@ -375,11 +375,11 @@ export async function disconnectLinkedinSession() {
   return data.session;
 }
 
-export async function captureLinkedinAccountPhoto() {
+export async function captureLinkedinAccountPhoto(options?: { force?: boolean }) {
   const response = await fetch("/api/linkedin/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "photo" }),
+    body: JSON.stringify({ action: "photo", force: options?.force === true }),
   });
   const data = (await response.json().catch(() => ({}))) as {
     session?: LinkedinSession;

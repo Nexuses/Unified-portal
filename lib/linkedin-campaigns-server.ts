@@ -369,6 +369,8 @@ export async function confirmLinkedinLogin(projectId: ObjectId, accountName: str
         connectedAt: now,
         updatedAt: now,
       },
+      // Drop any previous profile photo so we re-read the account that is signed in now.
+      $unset: { accountPhoto: "" },
       $setOnInsert: { projectId },
     },
     { upsert: true },
@@ -380,7 +382,10 @@ export async function disconnectLinkedinLogin(projectId: ObjectId) {
   const collection = await sessions();
   await collection.updateOne(
     { projectId },
-    { $set: { connected: false, updatedAt: new Date() }, $unset: { connectedAt: "" } },
+    {
+      $set: { connected: false, accountName: "", updatedAt: new Date() },
+      $unset: { connectedAt: "", accountPhoto: "" },
+    },
   );
   return getLinkedinSession(projectId);
 }
@@ -463,58 +468,55 @@ def call(sock, ident, method, params):
     raise TimeoutError(method)
 
 EXPR = """(async () => {
-  const collect = (root, out) => {
-    out.push(...root.querySelectorAll("img"));
-    for (const el of root.querySelectorAll("*")) {
-      if (el.shadowRoot) collect(el.shadowRoot, out);
-    }
-    return out;
-  };
-  const name = (window.__liAccountName || "").toLowerCase().trim();
-  const first = name.split(/\\s+/)[0] || "";
-  const labelOf = (el) => {
-    const bits = [el.alt, el.getAttribute("aria-label"), el.getAttribute("title")];
-    let parent = el.parentElement;
-    for (let i = 0; i < 5 && parent; i += 1) {
-      bits.push(parent.getAttribute("aria-label"), parent.getAttribute("title"));
-      parent = parent.parentElement;
-    }
-    return bits.filter(Boolean).join(" ").toLowerCase();
-  };
-  const srcOf = (el) => el.currentSrc || el.src || "";
-  const imgs = collect(document, []).filter((el) => /licdn\\.com|profile-displayphoto|profile-framedphoto/i.test(srcOf(el)));
-  const scored = imgs.map((el) => {
-    const box = el.getBoundingClientRect();
-    const src = srcOf(el);
-    const label = labelOf(el);
-    let score = 0;
-    if (/profile-displayphoto|profile-framedphoto|member-photo|me-photo/i.test(src + " " + (el.className || ""))) score += 5;
-    if (first && label.includes(first)) score += 8;
-    if (/(^| )me($| )|moi/.test(label)) score += 4;
-    if (box.width >= 20 && box.width <= 80 && box.top >= 0 && box.top < 72) score += 10;
-    if (box.width >= 48 && box.width <= 140 && box.top >= 0 && box.top < 280 && box.left < 360) score += 2;
-    return { el, score };
-  }).sort((a, b) => b.score - a.score);
-  const img = (scored[0] && scored[0].score > 0 ? scored[0].el : null);
-  const src = img && srcOf(img);
-  if (!src) return "";
-  try {
-    const response = await fetch(src, { credentials: "include" });
-    const blob = await response.blob();
-    const bitmap = await createImageBitmap(blob);
-    const size = 128;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d");
-    const scale = Math.max(size / bitmap.width, size / bitmap.height);
-    const width = bitmap.width * scale;
-    const height = bitmap.height * scale;
-    ctx.drawImage(bitmap, (size - width) / 2, (size - height) / 2, width, height);
-    return canvas.toDataURL("image/jpeg", 0.82);
-  } catch (error) {
-    return src;
+  const cleanName = (value) => String(value || "")
+    .replace(/\\s+/g, " ")
+    .replace(/^(view|open)\\s+/i, "")
+    .replace(/\\s+(profile|me|menu|photo)$/i, "")
+    .trim();
+  const meRoot =
+    document.querySelector(".global-nav__me") ||
+    document.querySelector('button.global-nav__primary-link-me-menu-trigger')?.closest("li, div") ||
+    document.querySelector('[data-control-name="nav.settings"]')?.closest("li, div") ||
+    null;
+  const meImg =
+    (meRoot && meRoot.querySelector("img.global-nav__me-photo, img.evi-image, img")) ||
+    document.querySelector("img.global-nav__me-photo") ||
+    null;
+  let name = "";
+  if (meRoot) {
+    const labeled = meRoot.querySelector("[aria-label], button[aria-label]");
+    name = cleanName(
+      (labeled && labeled.getAttribute("aria-label")) ||
+        meRoot.getAttribute("aria-label") ||
+        (meImg && (meImg.alt || meImg.getAttribute("aria-label"))) ||
+        "",
+    );
   }
+  if (!name && meImg) {
+    name = cleanName(meImg.alt || meImg.getAttribute("aria-label") || "");
+  }
+  const src = meImg ? (meImg.currentSrc || meImg.src || "") : "";
+  let photo = "";
+  if (src) {
+    try {
+      const response = await fetch(src, { credentials: "include" });
+      const blob = await response.blob();
+      const bitmap = await createImageBitmap(blob);
+      const size = 128;
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      const scale = Math.max(size / bitmap.width, size / bitmap.height);
+      const width = bitmap.width * scale;
+      const height = bitmap.height * scale;
+      ctx.drawImage(bitmap, (size - width) / 2, (size - height) / 2, width, height);
+      photo = canvas.toDataURL("image/jpeg", 0.82);
+    } catch (error) {
+      photo = src.startsWith("data:image/") ? src : "";
+    }
+  }
+  return { name, photo };
 })()"""
 
 def photo_from(value):
@@ -565,31 +567,45 @@ try:
         seq[0] += 1
         result = call(sock, seq[0], "Runtime.evaluate", {"expression": expression, "returnByValue": True, "awaitPromise": wait})
         return (((result.get("result") or {}).get("result") or {}).get("value"))
-    account = os.environ.get("ACCOUNT_NAME", "")
-    evaluate("window.__liAccountName = %s" % json.dumps(account))
-    found = ""
+    identity = None
     for _wait in range(4):
-        found = photo_from(evaluate(EXPR, True))
-        if found:
+        identity = evaluate(EXPR, True)
+        if isinstance(identity, dict) and (identity.get("photo") or identity.get("name")):
             break
         time.sleep(1)
     href = str(evaluate("location.href") or "")
     if "authwall" in href or "/login" in href:
-        found = ""
+        identity = None
+    name = ""
+    found = ""
+    if isinstance(identity, dict):
+        name = str(identity.get("name") or "").strip()[:80]
+        found = photo_from(identity.get("photo") or "")
     if not found:
         href = str(evaluate("location.href") or "")
-        sample = str(evaluate("(() => [...document.images].slice(0, 12).map((el) => { const box = el.getBoundingClientRect(); let host = (el.currentSrc || el.src || '').slice(0, 50); try { const url = new URL(el.currentSrc || el.src); host = url.hostname + url.pathname.slice(0, 36); } catch (e) {} return Math.round(box.top) + 'x' + Math.round(box.width) + ' ' + host; }).join(' | '))()") or "")
+        sample = str(evaluate("(() => { const me = document.querySelector('.global-nav__me img, img.global-nav__me-photo'); return me ? ((me.currentSrc || me.src || '').slice(0, 80) + ' | ' + (me.alt || '')) : 'no-me-img'; })()") or "")
         print("PHOTO_MISS\\t%s\\t%s" % (href.split("?")[0][:80], sample[:300]), flush=True)
+    if name:
+        print("NAME\\t" + name, flush=True)
     print("PHOTO\\t" + found, flush=True)
 except Exception as error:
     print("PHOTO_ERROR", type(error).__name__, flush=True)
 `.trim();
 
-/** Read the signed-in LinkedIn profile photo from the virtual machine and save it on the session. */
-export async function captureLinkedinAccountPhoto(projectId: ObjectId) {
+/**
+ * Read the signed-in LinkedIn "Me" name + photo from the virtual machine
+ * and overwrite the stored session profile so the UI matches the live login.
+ */
+export async function captureLinkedinAccountPhoto(
+  projectId: ObjectId,
+  options?: { force?: boolean },
+) {
   const collection = await sessions();
   const saved = await collection.findOne({ projectId });
-  if (!saved?.connected || saved.accountPhoto || !boatConfigured()) {
+  if (!saved?.connected || !boatConfigured()) {
+    return getLinkedinSession(projectId);
+  }
+  if (!options?.force && saved.accountPhoto && saved.accountName) {
     return getLinkedinSession(projectId);
   }
   const sandbox = await ensureLinkedinBoat(projectId);
@@ -605,13 +621,22 @@ export async function captureLinkedinAccountPhoto(projectId: ObjectId) {
   if (!(await chromeDebugOpen(sandbox.id))) return getLinkedinSession(projectId);
   const result = await runBoatCommand(
     sandbox.id,
-    `ACCOUNT_NAME=${shellQuote(saved.accountName || "")} python3 -c ${shellQuote(ACCOUNT_PHOTO_PY)}`,
+    `python3 -c ${shellQuote(ACCOUNT_PHOTO_PY)}`,
     40,
   );
-  const line = result.stdout.split("\n").find((item) => item.startsWith("PHOTO\t"));
-  const photo = line?.slice("PHOTO\t".length).trim() || "";
+  const photoLine = result.stdout.split("\n").find((item) => item.startsWith("PHOTO\t"));
+  const nameLine = result.stdout.split("\n").find((item) => item.startsWith("NAME\t"));
+  const photo = photoLine?.slice("PHOTO\t".length).trim() || "";
+  const liveName = nameLine?.slice("NAME\t".length).trim().slice(0, 80) || "";
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (liveName) {
+    patch.accountName = liveName;
+  }
   if (photo.startsWith("data:image/") && photo.length < 80000) {
-    await collection.updateOne({ projectId }, { $set: { accountPhoto: photo, updatedAt: new Date() } });
+    patch.accountPhoto = photo;
+  }
+  if (Object.keys(patch).length > 1) {
+    await collection.updateOne({ projectId }, { $set: patch });
   } else if (result.stdout.includes("PHOTO_ERROR") || result.stdout.includes("PHOTO_MISS")) {
     console.info("[linkedin] account photo", result.stdout.slice(0, 240));
   }

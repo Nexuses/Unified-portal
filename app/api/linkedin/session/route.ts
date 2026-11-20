@@ -49,6 +49,7 @@ export async function POST(request: NextRequest) {
       action?: string;
       accountName?: string;
       withDesktop?: boolean;
+      force?: boolean;
     } | null;
     if (body?.action === "computer_status") {
       return NextResponse.json({
@@ -88,7 +89,9 @@ export async function POST(request: NextRequest) {
       }
     }
     if (body?.action === "photo") {
-      const linkedin = await captureLinkedinAccountPhoto(projectId);
+      const linkedin = await captureLinkedinAccountPhoto(projectId, {
+        force: body.force === true,
+      });
       return NextResponse.json({ session: linkedin });
     }
     if (body?.action === "disconnect") {

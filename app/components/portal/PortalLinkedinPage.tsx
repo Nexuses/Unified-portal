@@ -197,17 +197,20 @@ export default function PortalLinkedinPage() {
   }, []);
 
   useEffect(() => {
-    if (!session?.connected || session.accountPhoto) return;
+    if (!session?.connected) return;
+    // Always re-read Me name/photo from the live LinkedIn login once per connect.
     let cancelled = false;
-    void captureLinkedinAccountPhoto()
+    void captureLinkedinAccountPhoto({ force: true })
       .then((next) => {
-        if (!cancelled && next.accountPhoto) setSession(next);
+        if (cancelled) return;
+        setSession(next);
+        if (next.accountName) setAccountName(next.accountName);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [session?.connected, session?.accountPhoto]);
+  }, [session?.connected]);
 
   useEffect(() => {
     if (!showCreate) return;
@@ -350,6 +353,13 @@ export default function PortalLinkedinPage() {
       const opened = await openLinkedinSession();
       openFloatingDesktop(opened.desktopUrl);
       setSession(opened.session);
+      if (opened.session.connected) {
+        const live = await captureLinkedinAccountPhoto({ force: true }).catch(() => null);
+        if (live) {
+          setSession(live);
+          if (live.accountName) setAccountName(live.accountName);
+        }
+      }
       const [latestVpn, latestComputer] = await Promise.all([
         fetchLinkedinVpn().catch(() => null),
         fetchLinkedinComputer(false).catch(() => null),
@@ -390,8 +400,11 @@ export default function PortalLinkedinPage() {
       const next = await confirmLinkedinSession(accountName);
       setSession(next);
       setDesktopUrl("");
-      const withPhoto = await captureLinkedinAccountPhoto().catch(() => null);
-      if (withPhoto?.accountPhoto) setSession(withPhoto);
+      const live = await captureLinkedinAccountPhoto({ force: true }).catch(() => null);
+      if (live) {
+        setSession(live);
+        if (live.accountName) setAccountName(live.accountName);
+      }
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Could not save the login");
     } finally {
@@ -405,6 +418,7 @@ export default function PortalLinkedinPage() {
     try {
       const next = await disconnectLinkedinSession();
       setSession(next);
+      setAccountName("");
       setDesktopUrl("");
     } catch (disconnectError) {
       setError(disconnectError instanceof Error ? disconnectError.message : "Could not disconnect LinkedIn");
