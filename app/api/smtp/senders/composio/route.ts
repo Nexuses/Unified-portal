@@ -10,6 +10,9 @@ import {
   requirePortalSession,
 } from "@/lib/require-portal-session";
 
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   try {
     const session = await requirePortalSession();
@@ -34,6 +37,12 @@ export async function POST(request: NextRequest) {
       origin: composioCallbackOrigin(request),
       ...(fromName ? { fromName } : {}),
     });
+    if (!link?.redirectUrl) {
+      return NextResponse.json(
+        { error: "Composio did not return a sign-in link. Try again." },
+        { status: 502 },
+      );
+    }
     return NextResponse.json(link);
   } catch (error) {
     const message =
