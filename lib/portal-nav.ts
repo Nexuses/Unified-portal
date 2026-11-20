@@ -13,7 +13,6 @@ export type PortalPageId =
   | "personalise"
   | "cloud"
   | "linkedin"
-  | "bots"
   | "edm"
   | "events"
   | "analytics"
@@ -68,7 +67,6 @@ export const PORTAL_ROUTES: Record<PortalPageId, string> = {
   personalise: "/portal/marketing/personalise",
   cloud: "/portal/marketing/cloud",
   linkedin: "/portal/marketing/linkedin",
-  bots: "/portal/bots",
   edm: "/portal/marketing/edm",
   events: "/portal/marketing/events",
   analytics: "/portal/analytics",
@@ -224,7 +222,6 @@ export function portalReturnPath(from: string | undefined, fallback: string) {
 
 export const PORTAL_NAV: PortalNavItem[] = [
   { type: "item", id: "dashboard", label: "Home", href: PORTAL_ROUTES.dashboard },
-  { type: "item", id: "bots", label: "AI Bots", href: PORTAL_ROUTES.bots },
   {
     type: "group",
     id: "crm",
@@ -336,7 +333,6 @@ export const PORTAL_PAGE_TITLES: Record<PortalPageId, string> = {
   automation: "Automation",
   "automation-history": "Automation history",
   linkedin: "LinkedIn Automation",
-  bots: "AI Bots",
   edm: "EDM generation",
   events: "Event Campaign",
   analytics: "Analytics",
@@ -379,7 +375,6 @@ export function getHighlightPageFromPathname(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/marketing/personalise")) return "personalise";
   if (pathname.startsWith("/portal/marketing/cloud")) return "cloud";
   if (pathname.startsWith("/portal/marketing/linkedin")) return "linkedin";
-  if (pathname.startsWith("/portal/bots")) return "bots";
   if (pathname.startsWith("/portal/marketing/edm")) return "edm";
   if (pathname.startsWith("/portal/marketing/events")) return "events";
   if (pathname.startsWith("/portal/marketing/automation-history")) {

@@ -20,6 +20,7 @@ import {
   waitForBoat,
 } from "@/lib/boat";
 import type { AssistantCard } from "@/lib/assistant";
+import { composioExtraTools, hasConnectedApps, mergeExtraTools } from "@/lib/composio-server";
 import {
   BOT_COLORS,
   BOT_ENGINES,
@@ -434,6 +435,8 @@ async function runPortalTurn(projectId: ObjectId, projectName: string, bot: BotD
   if (!history.length || history[history.length - 1].role !== "user") {
     throw new Error("Nothing to answer");
   }
+  const apps = await composioExtraTools(projectId).catch(() => null);
+  const extraTools = mergeExtraTools(bot.isChief ? chiefTools(projectId, projectName, bot) : null, apps);
   const answer = await runInApiCredit(projectId.toHexString(), "assistant", () =>
     askPortalAssistant({
       projectId,
@@ -441,7 +444,7 @@ async function runPortalTurn(projectId: ObjectId, projectName: string, bot: BotD
       userName: sender.name,
       history,
       persona: { name: bot.name, instructions: bot.instructions },
-      ...(bot.isChief ? { extraTools: chiefTools(projectId, projectName, bot) } : {}),
+      ...(extraTools ? { extraTools } : {}),
     }),
   );
   await finishReply(reply._id, bot, answer.content, answer.cards.length ? { cards: answer.cards } : {});
@@ -509,7 +512,7 @@ function chiefTools(projectId: ObjectId, projectName: string, chief: BotDoc): As
       }
       if (name === "create_bot") {
         const bot = await createBot(projectId, { ...args, ownComputer: false });
-        return { created: bot.name, engine: bot.engine, link: `/portal/bots?bot=${bot.id}` };
+        return { created: bot.name, engine: bot.engine, where: "It is now in the bot list on the left of the chat window." };
       }
       if (name === "message_bot") {
         const wanted = cleanText(args.bot, 40).toLowerCase();
@@ -520,7 +523,7 @@ function chiefTools(projectId: ObjectId, projectName: string, chief: BotDoc): As
           name: chief.name,
           source: "handoff",
         });
-        return { handedOffTo: target.name, link: `/portal/bots?bot=${target._id.toHexString()}` };
+        return { handedOffTo: target.name, where: `The reply shows in ${target.name}'s chat in the bot list.` };
       }
       return { error: "Unknown tool" };
     },
@@ -539,13 +542,16 @@ function outputsDir(bot: BotDoc) {
   return `/home/user/outputs/${bot._id.toHexString()}`;
 }
 
-function computerPreface(bot: BotDoc, projectName: string, toolsOn: boolean) {
+function computerPreface(bot: BotDoc, projectName: string, toolsOn: boolean, appsOn: boolean) {
   return [
     `You are "${bot.name}", an AI bot for the project "${projectName}" in the Nexuses portal. People talk to you in a chat app.`,
     bot.instructions.trim() ? `Your role and personality, set by the user:\n${bot.instructions.trim()}` : "",
     "How you work:",
     toolsOn
       ? "- The portal's data (contacts, lists, companies, campaigns, analytics, inbox replies, knowledge base, people search, web search) is in the MCP tools of the server named \"portal\". Use them for anything about this project instead of guessing."
+      : "",
+    toolsOn && appsOn
+      ? "- The project's connected apps (HubSpot, Apollo, Notion, Gmail and others) are reachable through the same \"portal\" server: call COMPOSIO_SEARCH_TOOLS first, then COMPOSIO_MULTI_EXECUTE_TOOL."
       : "",
     `- You run on a Linux computer with a browser and a desktop. Keep working files in ~/work/${bot._id.toHexString()}/.`,
     `- Save every file the user should get (CSV, XLSX, PDF, Markdown) in ${outputsDir(bot)}/ and mention each by file name. Those files are attached to your reply automatically.`,
@@ -579,7 +585,7 @@ async function startComputerTurn(
   const from = sender.source ? `${sender.name} (${sender.source === "routine" ? "scheduled task" : "hand-off"})` : sender.name;
   const prompt = sameConversation
     ? `Message from ${from}:\n${text}`
-    : `${computerPreface(bot, projectName, toolsOn)}\n\nMessage from ${from}:\n${text}`;
+    : `${computerPreface(bot, projectName, toolsOn, toolsOn && (await hasConnectedApps(projectId)))}\n\nMessage from ${from}:\n${text}`;
 
   const model = bot.model || harness.defaultModel;
   const queue = async (conversationId: string | null) =>

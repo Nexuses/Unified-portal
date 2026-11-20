@@ -4,6 +4,7 @@ import { projectForMcpToken } from "@/lib/ai-bots-server";
 import { runInApiCredit } from "@/lib/api-credits-server";
 import { ASSISTANT_TOOLS, runAssistantTool } from "@/lib/assistant-tools-server";
 import { getDb } from "@/lib/mongodb";
+import { composioExtraTools, runComposioTool } from "@/lib/composio-server";
 
 /**
  * The portal's read-only tools as an MCP server (streamable HTTP, JSON replies) for AI bots that run on a
@@ -47,18 +48,32 @@ async function handle(rpc: RpcRequest, projectId: ObjectId) {
     }
     case "ping":
       return result(rpc.id, {});
-    case "tools/list":
+    case "tools/list": {
+      // Connected apps (Composio) come through here too, so the Composio key never reaches a computer.
+      const apps = await composioExtraTools(projectId).catch(() => null);
       return result(rpc.id, {
-        tools: TOOLS.map((tool) => ({
+        tools: [...TOOLS, ...(apps?.tools ?? [])].map((tool) => ({
           name: tool.function.name,
           description: tool.function.description,
           inputSchema: tool.function.parameters,
         })),
       });
+    }
     case "tools/call": {
       const name = String(rpc.params?.name ?? "");
-      if (!TOOLS.some((tool) => tool.function.name === name)) return failure(rpc.id, -32602, `Unknown tool: ${name}`);
       const args = (rpc.params?.arguments && typeof rpc.params.arguments === "object" ? rpc.params.arguments : {}) as Record<string, unknown>;
+      if (name.startsWith("COMPOSIO_")) {
+        try {
+          const output = await runComposioTool(projectId, name, args);
+          return result(rpc.id, { content: [{ type: "text", text: JSON.stringify(output).slice(0, 60_000) }], isError: false });
+        } catch (error) {
+          return result(rpc.id, {
+            content: [{ type: "text", text: error instanceof Error ? error.message : "App tool failed" }],
+            isError: true,
+          });
+        }
+      }
+      if (!TOOLS.some((tool) => tool.function.name === name)) return failure(rpc.id, -32602, `Unknown tool: ${name}`);
       try {
         const output = await runInApiCredit(projectId.toHexString(), "assistant", async () =>
           runAssistantTool({ projectId, projectName: await projectName(projectId), userName: "AI bot" }, name, args),

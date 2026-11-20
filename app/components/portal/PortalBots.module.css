@@ -1,185 +1,243 @@
-/* AI Bots: a messaging app. Roster on the left, chat in the middle, a panel on the right. */
-.app {
-  --bubble-in: color-mix(in srgb, var(--ink) 6%, var(--card));
-  --bubble-out: var(--green);
-  --rail-bg: color-mix(in srgb, var(--ink) 2.5%, var(--card));
-  --hover: color-mix(in srgb, var(--ink) 5%, transparent);
-  --active: color-mix(in srgb, var(--ink) 8%, transparent);
-  display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) auto;
-  height: calc(100vh - 118px);
-  min-height: 560px;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  overflow: hidden;
-  background: var(--card);
-  color: var(--ink);
+/* AI Bots inside the floating chatbot: an avatar rail, the chat, and drawers over the chat. */
+.modalRail {
+  /* The chatbot window is always light, like the assistant inside it. */
+  --ink: #1a1a1a;
+  --muted: #6b7280;
+  --line: #e6e9ed;
+  --card: #ffffff;
+  --cream: #f6f4ef;
+  --purple: #6c3ce1;
+  --purple-soft: #efe9fc;
+  --bubble-in: color-mix(in srgb, var(--ink, #1a1a1a) 6%, var(--card, #fff));
+  --bubble-out: var(--green, #0b996e);
+  --rail-bg: color-mix(in srgb, var(--ink, #1a1a1a) 3%, var(--card, #fff));
+  --hover: color-mix(in srgb, var(--ink, #1a1a1a) 6%, transparent);
+  --active: color-mix(in srgb, var(--ink, #1a1a1a) 9%, transparent);
+  position: relative;
+  flex-direction: row !important;
+  width: min(900px, 100%) !important;
 }
 
-/* ---- Roster ---- */
-.rail {
+.modalRail:global(.has-computer) {
+  width: min(1180px, calc(100vw - 40px)) !important;
+}
+
+.rail2 {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 64px;
+  width: 64px;
   min-height: 0;
-  border-right: 1px solid var(--line);
+  padding: 12px 0;
+  border-right: 1px solid var(--line, #e6e9ed);
   background: var(--rail-bg);
 }
 
-.railHead {
+.railBots {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  padding: 16px 14px 10px 18px;
-}
-
-.railHead h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-}
-
-.search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 12px 8px;
-  padding: 0 12px;
-  height: 38px;
-  border-radius: 10px;
-  background: var(--hover);
-  color: var(--muted);
-}
-
-.search input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 14px;
-}
-
-.roster {
+  gap: 6px;
   flex: 1;
   min-height: 0;
+  width: 100%;
   overflow-y: auto;
-  padding: 2px 8px 8px;
+  scrollbar-width: none;
 }
 
-.rosterItem {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 10px;
+.railBtn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  padding: 0;
   border: 0;
-  border-radius: 12px;
+  border-radius: 14px;
   background: transparent;
-  color: inherit;
-  text-align: left;
+  color: var(--ink, #1a1a1a);
   cursor: pointer;
 }
 
-.rosterItem:hover {
+.railBtn:hover {
   background: var(--hover);
 }
 
-.rosterActive,
-.rosterActive:hover {
+.railOn,
+.railOn:hover {
   background: var(--active);
 }
 
-.rosterText {
+.railOn::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--green, #0b996e);
+}
+
+.railBtn :global(.pa-bot-img) {
+  width: 38px;
+  height: 38px;
+}
+
+.railSep {
+  width: 28px;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--line, #e6e9ed);
+}
+
+.railAdd {
+  border: 1px dashed var(--line, #e6e9ed);
+  color: var(--muted, #6b7280);
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  margin-top: 2px;
+}
+
+.railTool {
+  color: var(--muted, #6b7280);
+}
+
+.railFoot2 {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  flex: 1;
-  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line, #e6e9ed);
+  width: 100%;
 }
 
-.rosterTop,
-.rosterBottom {
+.railBusy {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--rail-bg);
+  border-radius: 50%;
+  background: var(--amber, #e0a339);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.railBadge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 2px solid var(--rail-bg);
+  border-radius: 999px;
+  background: var(--green, #0b996e);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+.chat2 {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--card, #fff);
+  color: var(--ink, #1a1a1a);
+}
+
+.drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100% - 64px));
+  border-left: 1px solid var(--line, #e6e9ed);
+  background: var(--card, #fff);
+  color: var(--ink, #1a1a1a);
+  box-shadow: -18px 0 40px rgba(17, 24, 39, 0.12);
+  animation: slideIn 0.18s ease;
+}
+
+.appList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.app2 {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-width: 0;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #e6e9ed);
+  border-radius: 12px;
 }
 
-.rosterTop strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.rosterTop time {
-  margin-left: auto;
-  flex: 0 0 auto;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.pinMark {
-  display: inline-flex;
-  color: var(--muted);
-}
-
-.previewText {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.app2 .primaryBtn,
+.app2 .secondaryBtn {
+  height: 32px;
+  padding: 0 12px;
   font-size: 13px;
-  color: var(--muted);
 }
 
-.unread {
+.appLogo {
   flex: 0 0 auto;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--green);
-  color: #fff;
-  font-size: 11.5px;
-  font-weight: 700;
-  line-height: 20px;
-  text-align: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  object-fit: contain;
+  background: var(--hover);
 }
 
-.railFoot {
+.appText {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 10px 8px 12px;
-  border-top: 1px solid var(--line);
+  flex: 1;
+  min-width: 0;
 }
 
-.footLink {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
+.appText strong {
   font-size: 14px;
-  text-decoration: none;
-  cursor: pointer;
 }
 
-.footLink:hover {
-  background: var(--hover);
+.appText span {
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fineprint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+@keyframes slideIn {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+@keyframes pulse {
+  50% { opacity: 0.45; }
 }
 
 .avatar {
@@ -278,9 +336,6 @@
   background: var(--hover);
 }
 
-.backBtn {
-  display: none;
-}
 
 .ghostPill,
 .pill {
@@ -646,14 +701,6 @@
 }
 
 /* ---- Side panel ---- */
-.panel {
-  display: flex;
-  flex-direction: column;
-  width: 360px;
-  min-height: 0;
-  border-left: 1px solid var(--line);
-  background: var(--rail-bg);
-}
 
 .panelHead {
   display: flex;
@@ -1046,7 +1093,7 @@ input:focus-visible + .switch {
 .overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 1800;
   display: grid;
   place-items: center;
   padding: 16px;
@@ -1154,64 +1201,6 @@ input:focus-visible + .switch {
   30% { transform: translateY(-3px); opacity: 1; }
 }
 
-@media (max-width: 1180px) {
-  .panel {
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    z-index: 15;
-    box-shadow: -18px 0 40px rgba(0, 0, 0, 0.12);
-  }
-
-  .app {
-    position: relative;
-  }
-}
-
-@media (max-width: 860px) {
-  .app {
-    grid-template-columns: 1fr;
-    height: calc(100vh - 96px);
-  }
-
-  .chat {
-    display: none;
-  }
-
-  .showChat .rail {
-    display: none;
-  }
-
-  .showChat .chat {
-    display: flex;
-  }
-
-  .backBtn {
-    display: inline-grid;
-  }
-
-  .ghostPill {
-    display: none;
-  }
-
-  .panel {
-    width: 100%;
-  }
-
-  .templates {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .dialogGrid {
-    grid-template-columns: 1fr;
-  }
-
-  .bubble {
-    max-width: 88%;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .typing i {
     animation: none;
@@ -1229,15 +1218,21 @@ input:focus-visible + .switch {
   font-size: 14.5px;
 }
 
-/* Narrow chat column: keep the bot's name readable. */
-@media (max-width: 1240px) {
-  .app {
-    grid-template-columns: 264px minmax(0, 1fr) auto;
-  }
 
-  .chatTitle {
-    flex: 1 1 auto;
-    min-width: 96px;
+/* The assistant's markdown styles draw their own card; inside a bubble it should be plain. */
+.bubbleIn :global(.pa-md) {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font-size: 14.5px;
+}
+
+@media (max-width: 720px) {
+  .modalRail {
+    width: 100% !important;
   }
 
   .ghostPill {
@@ -1250,5 +1245,17 @@ input:focus-visible + .switch {
 
   .engineTag {
     display: none;
+  }
+
+  .bubble {
+    max-width: 88%;
+  }
+
+  .templates {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dialogGrid {
+    grid-template-columns: 1fr;
   }
 }

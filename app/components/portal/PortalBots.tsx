@@ -1,8 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { Components } from "react-markdown";
 import PortalBoatCard from "@/app/components/portal/PortalBoatCard";
 import PortalPeopleSearchCard from "@/app/components/portal/PortalPeopleSearchCard";
@@ -16,8 +15,11 @@ import {
   botComputer,
   botFileUrl,
   clearBotChat,
+  connectApp,
   createBot,
   deleteBot,
+  disconnectApp,
+  fetchApps,
   deleteRoutine,
   fetchBotMessages,
   fetchBots,
@@ -33,10 +35,13 @@ import {
   type BotEngine,
   type BotMessage,
   type BotRoutine,
+  type ConnectedApp,
 } from "@/lib/ai-bots";
-import styles from "./PortalBotsPage.module.css";
+import styles from "./PortalBots.module.css";
 
-type Panel = "profile" | "computer" | "routines" | null;
+export { styles as botStyles };
+
+type Panel = "profile" | "computer" | "tasks" | null;
 
 const TEMPLATES: Array<{ name: string; emoji: string; engine: BotEngine; instructions: string }> = [
   {
@@ -69,7 +74,7 @@ const TEMPLATES: Array<{ name: string; emoji: string; engine: BotEngine; instruc
   },
 ];
 
-function Avatar({ bot, size = 40 }: { bot: Pick<Bot, "name" | "color" | "emoji">; size?: number }) {
+export function BotAvatar({ bot, size = 40 }: { bot: Pick<Bot, "name" | "color" | "emoji">; size?: number }) {
   return (
     <span
       className={styles.avatar}
@@ -118,7 +123,7 @@ function Typing() {
   );
 }
 
-function Icon({ name }: { name: "plus" | "search" | "computer" | "task" | "edit" | "chevron" | "close" | "send" | "file" | "pin" | "back" | "calendar" }) {
+export function BotIcon({ name }: { name: "plus" | "search" | "computer" | "task" | "edit" | "chevron" | "close" | "send" | "file" | "pin" | "back" | "calendar" | "apps" }) {
   const common = { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   switch (name) {
     case "plus":
@@ -145,6 +150,8 @@ function Icon({ name }: { name: "plus" | "search" | "computer" | "task" | "edit"
       return <svg {...common}><path d="m15 6-6 6 6 6" /></svg>;
     case "calendar":
       return <svg {...common}><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16" /></svg>;
+    case "apps":
+      return <svg {...common}><path d="M10 4h4v3a2 2 0 1 0 4 0V4h2v6h-3a2 2 0 1 0 0 4h3v6h-6v-3a2 2 0 1 0-4 0v3H4v-6h3a2 2 0 1 0 0-4H4V4z" /></svg>;
   }
 }
 
@@ -167,7 +174,7 @@ function ModelPicker({ bot, onPick, disabled }: { bot: Bot; onPick: (engine: Bot
       <button type="button" className={styles.pill} onClick={() => setOpen((value) => !value)} disabled={disabled} aria-expanded={open}>
         <span className={styles.engineTag}>{BOT_ENGINES[bot.engine].short}</span>
         {modelLabel(bot.engine, bot.model)}
-        <Icon name="chevron" />
+        <BotIcon name="chevron" />
       </button>
       {open ? (
         <div className={styles.menu} role="menu">
@@ -238,7 +245,7 @@ function ProfilePanel({
   return (
     <div className={styles.panelBody}>
       <div className={styles.profileHero}>
-        <Avatar bot={value} size={84} />
+        <BotAvatar bot={value} size={84} />
       </div>
 
       <label className={styles.field}>
@@ -351,7 +358,7 @@ function ComputerPanel({ bot, onDesktop }: { bot: Bot; onDesktop: (url: string) 
     <div className={styles.panelBody}>
       <div className={styles.computerCard}>
         <div className={styles.computerScreen}>
-          <Icon name="computer" />
+          <BotIcon name="computer" />
         </div>
         <div>
           <strong>{bot.ownComputer ? `${bot.name}’s computer` : "Project computer"}</strong>
@@ -399,7 +406,7 @@ function ComputerPanel({ bot, onDesktop }: { bot: Bot; onDesktop: (url: string) 
 
 const ZONE = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC";
 
-function RoutinesPanel({ bots, bot }: { bots: Bot[]; bot: Bot | null }) {
+export function RoutinesPanel({ bots, bot }: { bots: Bot[]; bot: Bot | null }) {
   const [routines, setRoutines] = useState<BotRoutine[] | null>(null);
   const [editing, setEditing] = useState<Partial<BotRoutine> | null>(null);
   const [error, setError] = useState("");
@@ -498,7 +505,7 @@ function RoutinesPanel({ bots, bot }: { bots: Bot[]; bot: Bot | null }) {
             className={styles.newRoutine}
             onClick={() => setEditing({ botId: bot?.id ?? bots[0]?.id, kind: "daily", time: "09:00", everyHours: 24, timezone: ZONE, enabled: true })}
           >
-            <Icon name="plus" /> New routine
+            <BotIcon name="plus" /> New routine
           </button>
           {routines === null ? <p className={styles.muted}>Loading…</p> : null}
           {routines !== null && !visible.length ? (
@@ -558,7 +565,7 @@ function RoutinesPanel({ bots, bot }: { bots: Bot[]; bot: Bot | null }) {
 
 /* ------------------------------------------------------------------ */
 
-function NewBotDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (draft: BotDraft) => Promise<void> }) {
+export function NewBotDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (draft: BotDraft) => Promise<void> }) {
   const [draft, setDraft] = useState<BotDraft>({ name: "", engine: "portal", color: BOT_COLORS[1], emoji: "", instructions: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -579,7 +586,7 @@ function NewBotDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (d
       <div className={styles.dialog}>
         <div className={styles.dialogHead}>
           <h2>New bot</h2>
-          <button type="button" className={styles.iconBtn} aria-label="Close" onClick={onClose}><Icon name="close" /></button>
+          <button type="button" className={styles.iconBtn} aria-label="Close" onClick={onClose}><BotIcon name="close" /></button>
         </div>
         <p className={styles.muted}>Start from a template or from scratch. You can change everything later.</p>
         <div className={styles.templates}>
@@ -629,108 +636,299 @@ function NewBotDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (d
 
 /* ------------------------------------------------------------------ */
 
-export default function PortalBotsPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const wanted = searchParams.get("bot");
+/* ------------------------------------------------------------------ */
+/* Pieces the floating chatbot is built from                           */
+/* ------------------------------------------------------------------ */
+
+/** The project's bots, refreshed while the chatbot is open. Late answers never overwrite newer ones. */
+export function useBots(active: boolean) {
   const [bots, setBots] = useState<Bot[] | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(wanted);
+  const [error, setError] = useState("");
+  const seq = useRef(0);
+
+  const reload = useCallback(() => {
+    const mine = ++seq.current;
+    return fetchBots().then(
+      (data) => {
+        if (mine === seq.current) {
+          setBots(data.bots);
+          setError("");
+        }
+      },
+      (err: unknown) => setError(err instanceof Error ? err.message : "Could not load bots"),
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    const first = window.setTimeout(() => void reload(), 0);
+    const timer = window.setInterval(() => void reload(), 15000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [active, reload]);
+
+  return { bots, setBots, reload, error };
+}
+
+/** MausBot's avatar-only roster: the assistant first, then the bots, then routines and apps. */
+export function BotsRail({
+  bots,
+  active,
+  assistant,
+  drawer,
+  onSelect,
+  onNew,
+  onDrawer,
+}: {
+  bots: Bot[] | null;
+  active: string;
+  assistant: ReactNode;
+  drawer: "routines" | "apps" | null;
+  onSelect: (id: string) => void;
+  onNew: () => void;
+  onDrawer: (drawer: "routines" | "apps") => void;
+}) {
+  return (
+    <nav className={styles.rail2} aria-label="Bots">
+      <button
+        type="button"
+        className={`${styles.railBtn} ${active === "assistant" ? styles.railOn : ""}`}
+        title="Portal assistant"
+        aria-label="Portal assistant"
+        aria-current={active === "assistant"}
+        onClick={() => onSelect("assistant")}
+      >
+        {assistant}
+      </button>
+      <span className={styles.railSep} aria-hidden="true" />
+      <div className={styles.railBots}>
+        {(bots ?? []).map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={`${styles.railBtn} ${active === item.id ? styles.railOn : ""}`}
+            title={`${item.name} · ${BOT_ENGINES[item.engine].label}`}
+            aria-label={item.unread ? `${item.name}, ${item.unread} unread` : item.name}
+            aria-current={active === item.id}
+            onClick={() => onSelect(item.id)}
+          >
+            <BotAvatar bot={item} size={38} />
+            {item.running ? <span className={styles.railBusy} aria-hidden="true" /> : null}
+            {item.unread > 0 && active !== item.id ? <span className={styles.railBadge}>{item.unread}</span> : null}
+          </button>
+        ))}
+        <button type="button" className={`${styles.railBtn} ${styles.railAdd}`} title="New bot" aria-label="New bot" onClick={onNew}>
+          <BotIcon name="plus" />
+        </button>
+      </div>
+      <div className={styles.railFoot2}>
+        <button
+          type="button"
+          className={`${styles.railBtn} ${styles.railTool} ${drawer === "routines" ? styles.railOn : ""}`}
+          title="Tasks & routines"
+          aria-label="Tasks & routines"
+          onClick={() => onDrawer("routines")}
+        >
+          <BotIcon name="calendar" />
+        </button>
+        <button
+          type="button"
+          className={`${styles.railBtn} ${styles.railTool} ${drawer === "apps" ? styles.railOn : ""}`}
+          title="Connected apps"
+          aria-label="Connected apps"
+          onClick={() => onDrawer("apps")}
+        >
+          <BotIcon name="apps" />
+        </button>
+      </div>
+    </nav>
+  );
+}
+
+/** A panel that slides over the right side of the chat window. */
+export function BotsDrawer({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  return (
+    <aside className={styles.drawer} aria-label={title}>
+      <div className={styles.panelHead}>
+        <h2>{title}</h2>
+        <button type="button" className={styles.iconBtn} aria-label="Close panel" onClick={onClose}>
+          <BotIcon name="close" />
+        </button>
+      </div>
+      {children}
+    </aside>
+  );
+}
+
+/** Connected apps (Composio): connect once, and every bot of the project can use the app. */
+export function AppsPanel() {
+  const [state, setState] = useState<{ configured: boolean; apps: ConnectedApp[] } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [confirm, confirmDialog] = useConfirmDialog();
+
+  const load = useCallback(
+    () =>
+      fetchApps().then(
+        (data) => {
+          setState(data);
+          setError("");
+        },
+        (err: unknown) => setError(err instanceof Error ? err.message : "Could not load apps"),
+      ),
+    [],
+  );
+
+  useEffect(() => {
+    const first = window.setTimeout(() => void load(), 0);
+    // Coming back from the sign-in tab: show the new connection.
+    const onFocus = () => void load();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.clearTimeout(first);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [load]);
+
+  async function connect(app: ConnectedApp) {
+    setBusy(app.slug);
+    setError("");
+    const tab = window.open("about:blank", "_blank");
+    try {
+      const { url } = await connectApp(app.slug);
+      if (tab) tab.location.assign(url);
+      else window.location.assign(url);
+    } catch (err) {
+      tab?.close();
+      setError(err instanceof Error ? err.message : "Could not start the sign-in");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function disconnect(app: ConnectedApp) {
+    if (!app.accountId) return;
+    if (!(await confirm(`Disconnect ${app.name}? Bots stop using it until it's connected again.`, { title: "Disconnect app", confirmLabel: "Disconnect", danger: true }))) return;
+    setBusy(app.slug);
+    try {
+      await disconnectApp(app.accountId);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not disconnect");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className={styles.panelBody}>
+      {confirmDialog}
+      <p className={styles.muted}>Connect an app once and every bot can use it: look up CRM records, add notes, read and draft email, update docs and sheets.</p>
+      {state === null && !error ? <p className={styles.muted}>Loading…</p> : null}
+      {state && !state.configured ? <p className={styles.muted}>Connected apps aren’t set up on this server yet.</p> : null}
+      <ul className={styles.appList}>
+        {state?.apps.map((app) => (
+          <li key={app.slug} className={styles.app2}>
+            {app.logo ? (
+              // Logos come from Composio's logo server, which next/image isn't configured for.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={app.logo} alt="" className={styles.appLogo} />
+            ) : (
+              <span className={styles.appLogo} />
+            )}
+            <span className={styles.appText}>
+              <strong>{app.name}</strong>
+              <span>{app.connected ? "Connected" : app.description}</span>
+            </span>
+            {app.connected ? (
+              <button type="button" className={styles.secondaryBtn} disabled={busy !== null} onClick={() => void disconnect(app)}>
+                {busy === app.slug ? "…" : "Disconnect"}
+              </button>
+            ) : (
+              <button type="button" className={styles.primaryBtn} disabled={busy !== null} onClick={() => void connect(app)}>
+                {busy === app.slug ? "Opening…" : "Connect"}
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {state?.configured ? <p className={styles.fineprint}>Sign-in happens on Composio’s page in a new tab. Come back here when it’s done.</p> : null}
+      {error ? <p className={styles.errorText}>{error}</p> : null}
+    </div>
+  );
+}
+
+/** One bot's chat: header, messages, message box, and its own drawers (profile, computer, tasks). */
+export function BotChat({
+  bot,
+  bots,
+  onBotsChange,
+  onSelect,
+  onDeleted,
+}: {
+  bot: Bot;
+  bots: Bot[];
+  onBotsChange: () => Promise<unknown>;
+  onSelect: (id: string) => void;
+  onDeleted: () => void;
+}) {
   // Messages and the bot they belong to: a slow answer for one bot must never show in another's chat.
   const [chat, setChat] = useState<{ botId: string; list: BotMessage[] } | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [panel, setPanel] = useState<Panel>(null);
-  /** Routines opened from a bot's Task button show and preselect that bot. */
-  const [routinesForBot, setRoutinesForBot] = useState(false);
-  const [search, setSearch] = useState("");
-  const [newOpen, setNewOpen] = useState(false);
   const [desktopUrl, setDesktopUrl] = useState("");
-  const [mobileChat, setMobileChat] = useState(Boolean(wanted));
   const [confirm, confirmDialog] = useConfirmDialog();
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const localId = useRef(0);
-  // Only the newest request of each kind may update the page; an older one can finish later.
-  const botsSeq = useRef(0);
   const chatSeq = useRef(0);
 
-  const bot = useMemo(() => bots?.find((item) => item.id === selectedId) ?? bots?.[0] ?? null, [bots, selectedId]);
-  const botId = bot?.id ?? null;
-  const messages = chat && chat.botId === botId ? chat.list : null;
+  const messages = chat && chat.botId === bot.id ? chat.list : null;
   const running = Boolean(messages?.some((message) => message.status === "running"));
 
-  const setMessages = useCallback(
-    (id: string, update: (current: BotMessage[]) => BotMessage[]) => {
-      chatSeq.current += 1;
-      setChat((current) => ({ botId: id, list: update(current?.botId === id ? current.list : []) }));
-    },
-    [],
-  );
-
-  const loadBots = useCallback(() => {
-    const seq = ++botsSeq.current;
-    return fetchBots().then(
-      (data) => {
-        if (seq === botsSeq.current) setBots(data.bots);
-      },
-      (err: unknown) => setError(err instanceof Error ? err.message : "Could not load bots"),
-    );
+  const setMessages = useCallback((id: string, update: (current: BotMessage[]) => BotMessage[]) => {
+    chatSeq.current += 1;
+    setChat((current) => ({ botId: id, list: update(current?.botId === id ? current.list : []) }));
   }, []);
 
-  const loadMessages = useCallback((id: string) => {
-    const seq = ++chatSeq.current;
+  const load = useCallback((id: string) => {
+    const mine = ++chatSeq.current;
     return fetchBotMessages(id).then(
       (data) => {
-        if (seq !== chatSeq.current) return;
-        setChat({ botId: id, list: data.messages });
-        setBots((current) => current?.map((item) => (item.id === id ? { ...item, unread: 0 } : item)) ?? current);
+        if (mine === chatSeq.current) setChat({ botId: id, list: data.messages });
       },
       (err: unknown) => setError(err instanceof Error ? err.message : "Could not load the chat"),
     );
   }, []);
 
   useEffect(() => {
-    const first = window.setTimeout(() => void loadBots(), 0);
-    const timer = window.setInterval(() => void loadBots(), 15000);
+    const first = window.setTimeout(() => void load(bot.id), 0);
+    const timer = window.setInterval(() => void load(bot.id), running ? 2500 : 15000);
     return () => {
       window.clearTimeout(first);
       window.clearInterval(timer);
     };
-  }, [loadBots]);
-
-  useEffect(() => {
-    if (!botId) return;
-    const first = window.setTimeout(() => void loadMessages(botId), 0);
-    const timer = window.setInterval(() => void loadMessages(botId), running ? 2500 : 15000);
-    return () => {
-      window.clearTimeout(first);
-      window.clearInterval(timer);
-    };
-  }, [botId, running, loadMessages]);
+  }, [bot.id, running, load]);
 
   useEffect(() => {
     const list = listRef.current;
     if (list) list.scrollTop = list.scrollHeight;
-  }, [messages, botId]);
+  }, [messages, bot.id]);
 
   useEffect(() => {
     const input = inputRef.current;
     if (input) {
       input.style.height = "auto";
-      input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+      input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
     }
   }, [draft]);
 
-  function select(id: string) {
-    if (id !== botId) setError("");
-    setSelectedId(id);
-    setMobileChat(true);
-    router.replace(`/portal/bots?bot=${id}`, { scroll: false });
-  }
-
   async function send(text = draft) {
-    if (!bot || !text.trim() || sending) return;
+    if (!text.trim() || sending) return;
     setSending(true);
     setError("");
     localId.current += 1;
@@ -747,7 +945,7 @@ export default function PortalBotsPage() {
     try {
       const data = await sendBotMessage(bot.id, text);
       setMessages(bot.id, () => data.messages);
-      void loadBots();
+      void onBotsChange();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send");
       setMessages(bot.id, (current) => current.filter((message) => message.id !== optimistic.id));
@@ -765,11 +963,10 @@ export default function PortalBotsPage() {
     }
   }
 
-  async function patchBot(draftValues: BotDraft) {
-    if (!bot) return;
+  async function patchBot(values: BotDraft) {
     try {
-      const { bot: saved } = await updateBot(bot.id, draftValues);
-      setBots((current) => current?.map((item) => (item.id === saved.id ? { ...item, ...saved, unread: item.unread, running: item.running } : item)) ?? current);
+      await updateBot(bot.id, values);
+      await onBotsChange();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save");
     }
@@ -781,291 +978,197 @@ export default function PortalBotsPage() {
     table: ({ children }) => <AssistantMarkdownTable>{children}</AssistantMarkdownTable>,
   };
 
-  const filtered = (bots ?? []).filter((item) => !search.trim() || item.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const onComputer = BOT_ENGINES[bot.engine].runsOnComputer;
 
   return (
-    <div className={`${styles.app} ${mobileChat ? styles.showChat : ""}`}>
+    <section className={styles.chat2} aria-label={`Chat with ${bot.name}`}>
       {confirmDialog}
-
-      {/* Roster */}
-      <aside className={styles.rail}>
-        <div className={styles.railHead}>
-          <h1>Bots</h1>
-          <button type="button" className={styles.iconBtn} aria-label="New bot" title="New bot" onClick={() => setNewOpen(true)}>
-            <Icon name="plus" />
+      <header className={styles.chatHead}>
+        <button type="button" className={styles.chatTitle} onClick={() => setPanel(panel === "profile" ? null : "profile")}>
+          <BotAvatar bot={bot} size={36} />
+          <span>
+            <strong>{bot.name}</strong>
+            <em>{running ? "working…" : onComputer ? (bot.ownComputer ? "own computer" : "project computer") : "portal data"}</em>
+          </span>
+          <span className={styles.editMark}><BotIcon name="edit" /></span>
+        </button>
+        <div className={styles.headActions}>
+          <button type="button" className={styles.ghostPill} aria-label={`Tasks for ${bot.name}`} onClick={() => setPanel(panel === "tasks" ? null : "tasks")}>
+            <BotIcon name="task" /> Task
           </button>
-        </div>
-        <label className={styles.search}>
-          <Icon name="search" />
-          <input value={search} placeholder="Search" onChange={(event) => setSearch(event.target.value)} />
-        </label>
-        <div className={styles.roster}>
-          {bots === null ? <p className={styles.muted}>Loading…</p> : null}
-          {filtered.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`${styles.rosterItem} ${item.id === botId ? styles.rosterActive : ""}`}
-              onClick={() => select(item.id)}
-            >
-              <Avatar bot={item} size={46} />
-              <span className={styles.rosterText}>
-                <span className={styles.rosterTop}>
-                  <strong>{item.name}</strong>
-                  {item.pinned && !item.isChief ? <span className={styles.pinMark}><Icon name="pin" /></span> : null}
-                  <time>{timeLabel(item.lastMessageAt)}</time>
-                </span>
-                <span className={styles.rosterBottom}>
-                  <span className={styles.previewText}>
-                    {item.running ? <><Typing /> working…</> : item.lastPreview || (item.isChief ? "Your team lead. Ask me anything." : BOT_ENGINES[item.engine].label)}
-                  </span>
-                  {item.unread > 0 && item.id !== botId ? <span className={styles.unread}>{item.unread}</span> : null}
-                </span>
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className={styles.railFoot}>
+          <ModelPicker bot={bot} onPick={(engine, model) => void patchBot({ engine, model })} disabled={running} />
           <button
             type="button"
-            className={styles.footLink}
-            onClick={() => {
-              setRoutinesForBot(false);
-              setPanel(panel === "routines" && !routinesForBot ? null : "routines");
-            }}
+            className={`${styles.iconBtn} ${panel === "computer" ? styles.iconOn : ""}`}
+            aria-label="Computer"
+            title="Computer"
+            onClick={() => setPanel(panel === "computer" ? null : "computer")}
           >
-            <Icon name="calendar" /> Tasks &amp; routines
+            <BotIcon name="computer" />
           </button>
-          <Link href="/portal/integrations" className={styles.footLink}>
-            <Icon name="computer" /> Connected apps
-          </Link>
         </div>
-      </aside>
+      </header>
 
-      {/* Chat */}
-      <section className={styles.chat}>
-        {bot ? (
-          <>
-            <header className={styles.chatHead}>
-              <button type="button" className={`${styles.iconBtn} ${styles.backBtn}`} aria-label="Back to bots" onClick={() => setMobileChat(false)}>
-                <Icon name="back" />
-              </button>
-              <button type="button" className={styles.chatTitle} onClick={() => setPanel(panel === "profile" ? null : "profile")}>
-                <Avatar bot={bot} size={34} />
-                <span>
-                  <strong>{bot.name}</strong>
-                  <em>{bot.running || running ? "working…" : BOT_ENGINES[bot.engine].runsOnComputer ? (bot.ownComputer ? "own computer" : "project computer") : "portal data"}</em>
-                </span>
-                <span className={styles.editMark}><Icon name="edit" /></span>
-              </button>
-              <div className={styles.headActions}>
-                <button
-                  type="button"
-                  className={styles.ghostPill}
-                  aria-label={`Tasks for ${bot.name}`}
-                  onClick={() => {
-                    setRoutinesForBot(true);
-                    setPanel("routines");
-                  }}
-                >
-                  <Icon name="task" /> Task
-                </button>
-                <ModelPicker bot={bot} onPick={(engine, model) => void patchBot({ engine, model })} disabled={running} />
-                <button
-                  type="button"
-                  className={`${styles.iconBtn} ${panel === "computer" ? styles.iconOn : ""}`}
-                  aria-label="Computer"
-                  title="Computer"
-                  onClick={() => setPanel(panel === "computer" ? null : "computer")}
-                >
-                  <Icon name="computer" />
-                </button>
-              </div>
-            </header>
-
-            <div className={styles.messages} ref={listRef}>
-              {messages === null ? <p className={styles.centerNote}>Loading…</p> : null}
-              {messages !== null && messages.length === 0 ? (
-                <div className={styles.intro}>
-                  <Avatar bot={bot} size={72} />
-                  <h2>Hey — I’m {bot.name}.</h2>
-                  <p>{bot.isChief ? "I run your bot team. Ask me about your portal, or ask me to set up a bot for a job." : bot.instructions.slice(0, 220) || BOT_ENGINES[bot.engine].blurb}</p>
-                  <div className={styles.suggestions}>
-                    {(bot.isChief
-                      ? ["How did my campaigns do this month?", "Make me a researcher bot for B2B SaaS in the UAE", "Who replied to our last campaign?"]
-                      : BOT_ENGINES[bot.engine].runsOnComputer
-                        ? ["Find 15 fintech companies in Dubai with their heads of growth, as a CSV", "Research our top competitor and summarise their pricing", "What can you do?"]
-                        : ["What can you do?", "Summarise our analytics this week", "Write 3 subject lines for our next campaign"]
-                    ).map((text) => (
-                      <button key={text} type="button" onClick={() => void send(text)}>{text}</button>
-                    ))}
+      <div className={styles.messages} ref={listRef}>
+        {messages === null ? <p className={styles.centerNote}>Loading…</p> : null}
+        {messages !== null && messages.length === 0 ? (
+          <div className={styles.intro}>
+            <BotAvatar bot={bot} size={64} />
+            <h2>Hey — I’m {bot.name}.</h2>
+            <p>
+              {bot.isChief
+                ? "I run your bot team. Ask me about your portal, or ask me to set up a bot for a job."
+                : bot.instructions.slice(0, 200) || BOT_ENGINES[bot.engine].blurb}
+            </p>
+            <div className={styles.suggestions}>
+              {(bot.isChief
+                ? ["How did my campaigns do this month?", "Make me a researcher bot for B2B SaaS in the UAE", "What can my bots do?"]
+                : onComputer
+                  ? ["Find 15 fintech companies in Dubai with their heads of growth, as a CSV", "Research our top competitor's pricing", "What can you do?"]
+                  : ["What can you do?", "Summarise our analytics this week", "Write 3 subject lines for our next campaign"]
+              ).map((text) => (
+                <button key={text} type="button" onClick={() => void send(text)}>{text}</button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {messages?.map((message, index) => {
+          const previous = messages[index - 1];
+          // A message still being sent has no time yet.
+          const newDay =
+            Boolean(message.createdAt) &&
+            (!previous || new Date(previous.createdAt).toDateString() !== new Date(message.createdAt).toDateString());
+          return (
+            <div key={message.id}>
+              {newDay ? <div className={styles.dayChip}>{dayLabel(message.createdAt)}</div> : null}
+              {message.role === "user" ? (
+                <div className={`${styles.row} ${message.source ? styles.rowIn : styles.rowOut}`}>
+                  <div className={`${styles.bubble} ${message.source ? styles.bubbleSystem : styles.bubbleOut}`}>
+                    {message.source ? (
+                      <span className={styles.sourceTag}>
+                        {message.source === "routine" ? `Scheduled · ${message.authorName}` : `From ${message.authorName}`}
+                      </span>
+                    ) : null}
+                    <p className={styles.plain}>{message.content}</p>
                   </div>
                 </div>
-              ) : null}
-              {messages?.map((message, index) => {
-                const previous = messages[index - 1];
-                // A message still being sent has no time yet.
-                const newDay =
-                  Boolean(message.createdAt) &&
-                  (!previous || new Date(previous.createdAt).toDateString() !== new Date(message.createdAt).toDateString());
-                return (
-                  <div key={message.id}>
-                    {newDay ? <div className={styles.dayChip}>{dayLabel(message.createdAt)}</div> : null}
-                    {message.role === "user" ? (
-                      <div className={`${styles.row} ${message.source ? styles.rowIn : styles.rowOut}`}>
-                        <div className={`${styles.bubble} ${message.source ? styles.bubbleSystem : styles.bubbleOut}`}>
-                          {message.source ? (
-                            <span className={styles.sourceTag}>
-                              {message.source === "routine" ? `Scheduled · ${message.authorName}` : `From ${message.authorName}`}
-                            </span>
-                          ) : null}
-                          <p className={styles.plain}>{message.content}</p>
-                        </div>
-                      </div>
+              ) : (
+                <div className={`${styles.row} ${styles.rowIn}`}>
+                  <BotAvatar bot={bot} size={28} />
+                  <div className={`${styles.bubble} ${styles.bubbleIn} ${message.status === "error" ? styles.bubbleError : ""}`}>
+                    {message.status === "running" ? (
+                      <span className={styles.working}>
+                        <Typing />
+                        {onComputer ? "Working on its computer — you can close this window." : "Thinking…"}
+                      </span>
+                    ) : message.status === "error" ? (
+                      <p className={styles.plain}>{message.error || "Something went wrong."}</p>
                     ) : (
-                      <div className={`${styles.row} ${styles.rowIn}`}>
-                        <Avatar bot={bot} size={30} />
-                        <div className={`${styles.bubble} ${styles.bubbleIn} ${message.status === "error" ? styles.bubbleError : ""}`}>
-                          {message.status === "running" ? (
-                            <span className={styles.working}>
-                              <Typing />
-                              {BOT_ENGINES[bot.engine].runsOnComputer ? "Working on its computer — you can leave this page." : "Thinking…"}
-                            </span>
-                          ) : message.status === "error" ? (
-                            <p className={styles.plain}>{message.error || "Something went wrong."}</p>
-                          ) : (
-                            <div className="pa-md">
-                              <AssistantMarkdownBody content={message.content} components={markdown} />
-                            </div>
-                          )}
-                          {message.cards?.map((card, cardIndex) =>
-                            card.kind === "pitch-research" ? (
-                              <PortalPitchResearchCard key={card.jobId} card={card} />
-                            ) : card.kind === "boat-desktop" ? (
-                              <PortalBoatCard key={card.sandboxId} card={card} onOpen={setDesktopUrl} />
-                            ) : (
-                              <PortalPeopleSearchCard key={cardIndex} card={card} onOpen={() => undefined} />
-                            ),
-                          )}
-                          {message.files?.length ? (
-                            <div className={styles.files}>
-                              {message.files.map((file) => (
-                                <a key={file.path} className={styles.fileChip} href={botFileUrl(bot.id, file.path)} download>
-                                  <Icon name="file" />
-                                  <span>{file.name}</span>
-                                  <em>{formatBytes(file.size)}</em>
-                                </a>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
+                      <div className="pa-md">
+                        <AssistantMarkdownBody content={message.content} components={markdown} />
                       </div>
                     )}
+                    {message.cards?.map((card, cardIndex) =>
+                      card.kind === "pitch-research" ? (
+                        <PortalPitchResearchCard key={card.jobId} card={card} />
+                      ) : card.kind === "boat-desktop" ? (
+                        <PortalBoatCard key={card.sandboxId} card={card} onOpen={setDesktopUrl} />
+                      ) : (
+                        <PortalPeopleSearchCard key={cardIndex} card={card} onOpen={() => undefined} />
+                      ),
+                    )}
+                    {message.files?.length ? (
+                      <div className={styles.files}>
+                        {message.files.map((file) => (
+                          <a key={file.path} className={styles.fileChip} href={botFileUrl(bot.id, file.path)} download>
+                            <BotIcon name="file" />
+                            <span>{file.name}</span>
+                            <em>{formatBytes(file.size)}</em>
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                );
-              })}
+                </div>
+              )}
             </div>
+          );
+        })}
+      </div>
 
-            <div className={styles.composerWrap}>
-              {error ? <p className={styles.composerError} role="alert">{error}</p> : null}
-              <div className={styles.composer}>
-                <textarea
-                  ref={inputRef}
-                  rows={1}
-                  value={draft}
-                  placeholder={running ? `${bot.name} is working…` : `Message ${bot.name}`}
-                  onChange={(event) => setDraft(event.target.value)}
-                  onKeyDown={onKey}
-                  disabled={sending}
-                />
-                <button type="button" className={styles.sendBtn} aria-label="Send" disabled={!draft.trim() || sending || running} onClick={() => void send()}>
-                  <Icon name="send" />
-                </button>
-              </div>
-            </div>
-          </>
-        ) : (
-          <p className={styles.centerNote}>{bots === null ? "Loading…" : "No bots yet."}</p>
-        )}
-      </section>
+      <div className={styles.composerWrap}>
+        {error ? <p className={styles.composerError} role="alert">{error}</p> : null}
+        <div className={styles.composer}>
+          <textarea
+            ref={inputRef}
+            rows={1}
+            value={draft}
+            placeholder={running ? `${bot.name} is working…` : `Message ${bot.name}`}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={onKey}
+            disabled={sending}
+          />
+          <button type="button" className={styles.sendBtn} aria-label="Send" disabled={!draft.trim() || sending || running} onClick={() => void send()}>
+            <BotIcon name="send" />
+          </button>
+        </div>
+      </div>
 
-      {/* Side panel */}
-      {panel && bot ? (
-        <aside className={styles.panel}>
-          <div className={styles.panelHead}>
-            <h2>
-              {panel === "profile"
-                ? "Bot profile"
-                : panel === "computer"
-                  ? "Computer"
-                  : routinesForBot
-                    ? `${bot.name}’s tasks`
-                    : "Tasks & routines"}
-            </h2>
-            <button type="button" className={styles.iconBtn} aria-label="Close panel" onClick={() => setPanel(null)}>
-              <Icon name="close" />
-            </button>
-          </div>
-          {panel === "profile" ? (
-            <ProfilePanel
-              key={bot.id}
-              bot={bot}
-              onSave={patchBot}
-              onDuplicate={async () => {
-                const { bot: copy } = await createBot({ duplicateOf: bot.id });
-                await loadBots();
-                select(copy.id);
-              }}
-              onClear={async () => {
-                if (await confirm(`Clear the chat with ${bot.name}? It also forgets the conversation.`, { title: "Clear chat", confirmLabel: "Clear" })) {
-                  await clearBotChat(bot.id).catch(() => undefined);
-                  setMessages(bot.id, () => []);
-                  void loadBots();
-                }
-              }}
-              onDelete={async () => {
-                if (await confirm(`Delete ${bot.name} and its chat? This can't be undone.`, { title: "Delete bot", confirmLabel: "Delete", danger: true })) {
-                  await deleteBot(bot.id).catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not delete"));
+      {panel === "profile" ? (
+        <BotsDrawer title="Bot profile" onClose={() => setPanel(null)}>
+          <ProfilePanel
+            key={bot.id}
+            bot={bot}
+            onSave={patchBot}
+            onDuplicate={async () => {
+              const { bot: copy } = await createBot({ duplicateOf: bot.id });
+              await onBotsChange();
+              setPanel(null);
+              onSelect(copy.id);
+            }}
+            onClear={async () => {
+              if (await confirm(`Clear the chat with ${bot.name}? It also forgets the conversation.`, { title: "Clear chat", confirmLabel: "Clear" })) {
+                await clearBotChat(bot.id).catch(() => undefined);
+                setMessages(bot.id, () => []);
+                void onBotsChange();
+              }
+            }}
+            onDelete={async () => {
+              if (await confirm(`Delete ${bot.name} and its chat? This can't be undone.`, { title: "Delete bot", confirmLabel: "Delete", danger: true })) {
+                try {
+                  await deleteBot(bot.id);
                   setPanel(null);
-                  setSelectedId(null);
-                  router.replace("/portal/bots", { scroll: false });
-                  await loadBots();
+                  onDeleted();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : "Could not delete");
                 }
-              }}
-            />
-          ) : panel === "computer" ? (
-            <ComputerPanel key={`${bot.id}-${bot.ownComputer}`} bot={bot} onDesktop={setDesktopUrl} />
-          ) : (
-            <RoutinesPanel key={routinesForBot ? bot.id : "all"} bots={bots ?? []} bot={routinesForBot ? bot : null} />
-          )}
-        </aside>
-      ) : null}
-
-      {newOpen ? (
-        <NewBotDialog
-          onClose={() => setNewOpen(false)}
-          onCreate={async (values) => {
-            const { bot: created } = await createBot(values);
-            setNewOpen(false);
-            await loadBots();
-            select(created.id);
-          }}
-        />
+              }
+            }}
+          />
+        </BotsDrawer>
+      ) : panel === "computer" ? (
+        <BotsDrawer title="Computer" onClose={() => setPanel(null)}>
+          <ComputerPanel key={`${bot.id}-${bot.ownComputer}`} bot={bot} onDesktop={setDesktopUrl} />
+        </BotsDrawer>
+      ) : panel === "tasks" ? (
+        <BotsDrawer title={`${bot.name}’s tasks`} onClose={() => setPanel(null)}>
+          <RoutinesPanel key={bot.id} bots={bots} bot={bot} />
+        </BotsDrawer>
       ) : null}
 
       {desktopUrl ? (
         <div className={styles.overlay} role="dialog" aria-modal="true" aria-label="Computer desktop">
           <div className={styles.desktop}>
             <div className={styles.dialogHead}>
-              <h2>{bot?.ownComputer ? `${bot.name}’s computer` : "Project computer"}</h2>
+              <h2>{bot.ownComputer ? `${bot.name}’s computer` : "Project computer"}</h2>
               <button type="button" className={styles.iconBtn} aria-label="Close desktop" onClick={() => setDesktopUrl("")}>
-                <Icon name="close" />
+                <BotIcon name="close" />
               </button>
             </div>
             <iframe src={desktopUrl} title="Computer desktop" allow="clipboard-read; clipboard-write" />
           </div>
         </div>
       ) : null}
-    </div>
+    </section>
   );
 }

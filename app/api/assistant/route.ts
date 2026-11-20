@@ -3,6 +3,7 @@ import { ObjectId } from "mongodb";
 import { isApiCreditLimitError } from "@/lib/api-credits";
 import { runInApiCredit } from "@/lib/api-credits-server";
 import { askPortalAssistant, type AssistantMessage } from "@/lib/assistant-server";
+import { composioExtraTools } from "@/lib/composio-server";
 import {
   isSessionError,
   requirePortalSession,
@@ -29,12 +30,16 @@ export async function POST(request: NextRequest) {
     if (history.length === 0 || history[history.length - 1].role !== "user") {
       return NextResponse.json({ error: "Ask a question first" }, { status: 400 });
     }
+    const projectId = new ObjectId(session.projectId);
+    // Apps the project connected (HubSpot, Apollo, Notion…) are tools here too.
+    const apps = await composioExtraTools(projectId).catch(() => null);
     return await runInApiCredit(session.projectId, "assistant", async () => {
       const { content: reply, cards } = await askPortalAssistant({
-        projectId: new ObjectId(session.projectId),
+        projectId,
         projectName: session.projectName,
         userName: session.fullName,
         history,
+        ...(apps ? { extraTools: apps } : {}),
       });
       return NextResponse.json({ reply, cards });
     });

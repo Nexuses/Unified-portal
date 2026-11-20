@@ -210,3 +210,26 @@ export async function runRoutineNow(id: string) {
     await fetch(`/api/bots/routines/${encodeURIComponent(id)}`, json({ runNow: true }, "PATCH")),
   );
 }
+
+/* ---- Connected apps (Composio) ---- */
+
+export type ConnectedApp = {
+  slug: string;
+  name: string;
+  logo: string;
+  description: string;
+  connected: boolean;
+  accountId: string | null;
+};
+
+export async function fetchApps() {
+  return readJson<{ configured: boolean; apps: ConnectedApp[] }>(await fetch("/api/bots/apps", { cache: "no-store" }));
+}
+
+export async function connectApp(toolkit: string) {
+  return readJson<{ url: string }>(await fetch("/api/bots/apps", json({ action: "connect", toolkit })));
+}
+
+export async function disconnectApp(accountId: string) {
+  return readJson<{ ok: true }>(await fetch("/api/bots/apps", json({ action: "disconnect", accountId })));
+}

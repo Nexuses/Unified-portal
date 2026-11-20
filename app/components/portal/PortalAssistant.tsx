@@ -22,6 +22,17 @@ import {
   type AssistantPitchResearchCard,
 } from "@/lib/pitch-research";
 import { useSpeechInput } from "@/lib/use-speech-input";
+import { createBot } from "@/lib/ai-bots";
+import {
+  AppsPanel,
+  BotChat,
+  BotsDrawer,
+  BotsRail,
+  NewBotDialog,
+  RoutinesPanel,
+  botStyles,
+  useBots,
+} from "@/app/components/portal/PortalBots";
 
 type UploadBucket = { name: string; region: string };
 
@@ -591,6 +602,12 @@ export default function PortalAssistant({
   const [uploading, setUploading] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState("");
   const [computerUrl, setComputerUrl] = useState("");
+  /** "assistant" or a bot id: which chat the window shows. */
+  const [view, setView] = useState("assistant");
+  const [drawer, setDrawer] = useState<"routines" | "apps" | null>(null);
+  const [newBotOpen, setNewBotOpen] = useState(false);
+  const { bots, reload: reloadBots } = useBots(open);
+  const activeBot = view === "assistant" ? null : bots?.find((item) => item.id === view) ?? null;
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1070,12 +1087,38 @@ export default function PortalAssistant({
       {open ? (
         <div className="pa-backdrop" onClick={() => setOpen(false)}>
           <div
-            className={`pa-modal${computerUrl ? " has-computer" : ""}`}
+            className={`pa-modal ${botStyles.modalRail}${computerUrl && !activeBot ? " has-computer" : ""}`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="pa-title"
             onClick={(event) => event.stopPropagation()}
           >
+            <BotsRail
+              bots={bots}
+              active={activeBot ? activeBot.id : "assistant"}
+              assistant={<BotIcon size={38} />}
+              drawer={drawer}
+              onSelect={(id) => {
+                setView(id);
+                setDrawer(null);
+              }}
+              onNew={() => setNewBotOpen(true)}
+              onDrawer={(next) => setDrawer(drawer === next ? null : next)}
+            />
+            {activeBot && bots ? (
+              <BotChat
+                key={activeBot.id}
+                bot={activeBot}
+                bots={bots}
+                onBotsChange={reloadBots}
+                onSelect={setView}
+                onDeleted={() => {
+                  setView("assistant");
+                  void reloadBots();
+                }}
+              />
+            ) : (
+            <>
             <div className="pa-chat">
             <header className="pa-head">
               <span className="pa-avatar">
@@ -1103,18 +1146,6 @@ export default function PortalAssistant({
                   </svg>
                 </button>
               ) : null}
-              <Link
-                href="/portal/bots"
-                className="pa-head-btn"
-                onClick={() => setOpen(false)}
-                aria-label="All bots"
-                title="All bots: your team of AI bots"
-              >
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="3" y="4" width="18" height="16" rx="2.5" />
-                  <path d="M9 4v16" />
-                </svg>
-              </Link>
               <button
                 type="button"
                 className="pa-close"
@@ -1438,6 +1469,28 @@ export default function PortalAssistant({
                   />
                 </div>
               </aside>
+            ) : null}
+            </>
+            )}
+            {drawer === "routines" ? (
+              <BotsDrawer title="Tasks & routines" onClose={() => setDrawer(null)}>
+                <RoutinesPanel bots={bots ?? []} bot={null} />
+              </BotsDrawer>
+            ) : drawer === "apps" ? (
+              <BotsDrawer title="Connected apps" onClose={() => setDrawer(null)}>
+                <AppsPanel />
+              </BotsDrawer>
+            ) : null}
+            {newBotOpen ? (
+              <NewBotDialog
+                onClose={() => setNewBotOpen(false)}
+                onCreate={async (values) => {
+                  const { bot: created } = await createBot(values);
+                  setNewBotOpen(false);
+                  await reloadBots();
+                  setView(created.id);
+                }}
+              />
             ) : null}
           </div>
         </div>
