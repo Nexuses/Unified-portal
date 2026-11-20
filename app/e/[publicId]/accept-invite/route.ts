@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidateEventPages } from "@/lib/revalidate-dashboard";
+import { eventPublicPath, resolvePublicOrigin } from "@/lib/event-public-url";
 import { getEventByPublicId } from "@/lib/events";
 import {
   acceptWebinarInviteByPublicId,
@@ -11,10 +12,9 @@ type RouteContext = {
 };
 
 function redirectToEvent(request: NextRequest, publicId: string, query?: "going=1" | "accept-error=1") {
-  const path = query
-    ? `/e/${encodeURIComponent(publicId)}?${query}`
-    : `/e/${encodeURIComponent(publicId)}`;
-  return NextResponse.redirect(new URL(path, request.nextUrl.origin));
+  const origin = resolvePublicOrigin(request);
+  const path = query ? `${eventPublicPath(publicId)}?${query}` : eventPublicPath(publicId);
+  return NextResponse.redirect(new URL(path, origin));
 }
 
 /**
