@@ -23,6 +23,7 @@ import {
 import { useSpeechInput } from "@/lib/use-speech-input";
 import { createBot } from "@/lib/ai-bots";
 import {
+  AccountsPanel,
   AppsPanel,
   BotChat,
   BotsDrawer,
@@ -601,7 +602,7 @@ export default function PortalAssistant({
   const [copiedUrl, setCopiedUrl] = useState("");
   /** "assistant" or a bot id: which chat the window shows. */
   const [view, setView] = useState("assistant");
-  const [drawer, setDrawer] = useState<"routines" | "apps" | null>(null);
+  const [drawer, setDrawer] = useState<"accounts" | "routines" | "apps" | null>(null);
   const [newBotOpen, setNewBotOpen] = useState(false);
   /** Bigger window, remembered in this browser. */
   const [expanded, setExpanded] = useState(() => {
@@ -1461,7 +1462,11 @@ export default function PortalAssistant({
             </div>
             </>
             )}
-            {drawer === "routines" ? (
+            {drawer === "accounts" ? (
+              <BotsDrawer title="AI accounts" onClose={() => setDrawer(null)}>
+                <AccountsPanel />
+              </BotsDrawer>
+            ) : drawer === "routines" ? (
               <BotsDrawer title="Tasks & routines" onClose={() => setDrawer(null)}>
                 <RoutinesPanel bots={bots ?? []} bot={null} />
               </BotsDrawer>

@@ -19,6 +19,8 @@ import {
   deleteBot,
   disconnectApp,
   fetchApps,
+  fetchLogins,
+  loginAction,
   deleteRoutine,
   fetchBotMessages,
   fetchBots,
@@ -34,6 +36,8 @@ import {
   type BotEngine,
   type BotMessage,
   type BotRoutine,
+  type AiLogin,
+  type AiLoginProvider,
   type ConnectedApp,
 } from "@/lib/ai-bots";
 import styles from "./PortalBots.module.css";
@@ -122,7 +126,7 @@ function Typing() {
   );
 }
 
-export function BotIcon({ name }: { name: "plus" | "search" | "computer" | "task" | "edit" | "chevron" | "close" | "send" | "file" | "pin" | "back" | "calendar" | "apps" | "expand" | "shrink" }) {
+export function BotIcon({ name }: { name: "plus" | "search" | "computer" | "task" | "edit" | "chevron" | "close" | "send" | "file" | "pin" | "back" | "calendar" | "apps" | "expand" | "shrink" | "key" | "copy" }) {
   const common = { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   switch (name) {
     case "plus":
@@ -153,6 +157,10 @@ export function BotIcon({ name }: { name: "plus" | "search" | "computer" | "task
       return <svg {...common}><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7" /></svg>;
     case "shrink":
       return <svg {...common}><path d="M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7" /></svg>;
+    case "key":
+      return <svg {...common}><circle cx="8" cy="15" r="4" /><path d="m10.8 12.2 8.7-8.7M16 7l3 3M14 9l2 2" /></svg>;
+    case "copy":
+      return <svg {...common} width={15} height={15}><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>;
     case "apps":
       return <svg {...common}><path d="M10 4h4v3a2 2 0 1 0 4 0V4h2v6h-3a2 2 0 1 0 0 4h3v6h-6v-3a2 2 0 1 0-4 0v3H4v-6h3a2 2 0 1 0 0-4H4V4z" /></svg>;
   }
@@ -690,11 +698,11 @@ export function BotsRail({
   bots: Bot[] | null;
   active: string;
   assistant: ReactNode;
-  drawer: "routines" | "apps" | null;
+  drawer: "accounts" | "routines" | "apps" | null;
   expanded: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
-  onDrawer: (drawer: "routines" | "apps") => void;
+  onDrawer: (drawer: "accounts" | "routines" | "apps") => void;
   onExpand: () => void;
 }) {
   return (
@@ -731,6 +739,15 @@ export function BotsRail({
         </button>
       </div>
       <div className={styles.railFoot2}>
+        <button
+          type="button"
+          className={`${styles.railBtn} ${styles.railTool} ${drawer === "accounts" ? styles.railOn : ""}`}
+          title="AI accounts (ChatGPT, SuperGrok)"
+          aria-label="AI accounts"
+          onClick={() => onDrawer("accounts")}
+        >
+          <BotIcon name="key" />
+        </button>
         <button
           type="button"
           className={`${styles.railBtn} ${styles.railTool} ${drawer === "routines" ? styles.railOn : ""}`}
@@ -872,6 +889,157 @@ export function AppsPanel() {
         ))}
       </ul>
       {state?.configured ? <p className={styles.fineprint}>Sign-in happens on Composio’s page in a new tab. Come back here when it’s done.</p> : null}
+      {error ? <p className={styles.errorText}>{error}</p> : null}
+    </div>
+  );
+}
+
+const LOGIN_MARK: Record<AiLoginProvider, { short: string; color: string }> = {
+  chatgpt: { short: "GPT", color: "#10a37f" },
+  grok: { short: "Grok", color: "#111111" },
+};
+
+/**
+ * AI plan sign-ins: ChatGPT and SuperGrok through their device-code sign-in on the project's computer.
+ * Bots on those brains then run on the plan instead of API credits.
+ */
+export function AccountsPanel() {
+  const [state, setState] = useState<{ configured: boolean; logins: AiLogin[] } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState("");
+  const [confirm, confirmDialog] = useConfirmDialog();
+  const waiting = Boolean(state?.logins.some((login) => login.state === "pending"));
+
+  const load = useCallback(
+    () =>
+      fetchLogins().then(
+        (data) => {
+          setState(data);
+          setError("");
+        },
+        (err: unknown) => setError(err instanceof Error ? err.message : "Could not load sign-ins"),
+      ),
+    [],
+  );
+
+  useEffect(() => {
+    const first = window.setTimeout(() => void load(), 0);
+    // While a code waits for approval, check often so "Connected" shows right after approving.
+    const timer = window.setInterval(() => void load(), waiting ? 3000 : 20000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [load, waiting]);
+
+  async function act(login: AiLogin, action: "connect" | "cancel" | "disconnect") {
+    if (
+      action === "disconnect" &&
+      !(await confirm(`Sign ${login.label} out of this project's computer? Bots on ${login.label} stop working until someone signs in again.`, {
+        title: `Disconnect ${login.label}`,
+        confirmLabel: "Disconnect",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
+    setBusy(`${login.provider}:${action}`);
+    setError("");
+    try {
+      const data = await loginAction(login.provider, action);
+      setState((current) => ({ configured: current?.configured ?? true, logins: data.logins }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign-in action failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function copy(code: string) {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(code);
+      window.setTimeout(() => setCopied(""), 1600);
+    } catch {
+      // Clipboard can be blocked; the code is on screen.
+    }
+  }
+
+  return (
+    <div className={styles.panelBody}>
+      {confirmDialog}
+      <p className={styles.muted}>
+        Sign in with an AI plan so bots run on the subscription instead of API credits. The sign-in stays on this project’s computer and every ChatGPT or Grok bot uses it. We never see your password.
+      </p>
+      {state === null && !error ? <p className={styles.muted}>Loading…</p> : null}
+      {state && !state.configured ? <p className={styles.muted}>Cloud computers aren’t set up on this server yet.</p> : null}
+      <ul className={styles.appList}>
+        {state?.logins.map((login) => {
+          const mark = LOGIN_MARK[login.provider];
+          const starting = busy === `${login.provider}:connect`;
+          return (
+            <li key={login.provider} className={styles.account}>
+              <div className={styles.accountHead}>
+                <span className={styles.accountMark} style={{ background: mark.color }}>{mark.short}</span>
+                <span className={styles.appText}>
+                  <strong>{login.label} plan</strong>
+                  <span>{login.plan}</span>
+                </span>
+                {login.state === "connected" ? (
+                  <span className={styles.connectedPill}>Connected</span>
+                ) : login.state === "pending" ? (
+                  <span className={styles.waitingPill}>Waiting</span>
+                ) : null}
+              </div>
+
+              {login.state === "pending" && login.code && login.url ? (
+                <div className={styles.codeBox}>
+                  <span className={styles.codeStep}>1. Open the sign-in page and sign in to {login.label}</span>
+                  <a className={styles.primaryBtn} href={login.url} target="_blank" rel="noopener noreferrer">
+                    Open {login.provider === "grok" ? "accounts.x.ai" : "openai.com"} sign-in
+                  </a>
+                  <span className={styles.codeStep}>2. Enter this code there</span>
+                  <button type="button" className={styles.code} onClick={() => void copy(login.code!)} title="Copy code">
+                    <span>{login.code}</span>
+                    <BotIcon name="copy" />
+                    {copied === login.code ? <em>Copied</em> : null}
+                  </button>
+                  <span className={styles.working}>
+                    <Typing /> Waiting for you to approve…
+                  </span>
+                  <button type="button" className={styles.linkBtn} disabled={busy !== null} onClick={() => void act(login, "cancel")}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div className={styles.accountActions}>
+                  {login.state === "connected" ? (
+                    <>
+                      <span className={styles.muted}>Bots on {login.label} use this plan.</span>
+                      <button type="button" className={styles.secondaryBtn} disabled={busy !== null} onClick={() => void act(login, "disconnect")}>
+                        {busy === `${login.provider}:disconnect` ? "…" : "Disconnect"}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {login.state === "error" && login.error ? <span className={styles.errorText}>{login.error}</span> : null}
+                      <button type="button" className={styles.primaryBtn} disabled={busy !== null || !state.configured} onClick={() => void act(login, "connect")}>
+                        {starting ? "Starting the computer…" : `Connect ${login.label}`}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {state?.configured ? (
+        <p className={styles.fineprint}>
+          The first sign-in can take up to a minute while the project’s computer starts. The code works for 15 minutes.
+        </p>
+      ) : null}
       {error ? <p className={styles.errorText}>{error}</p> : null}
     </div>
   );
