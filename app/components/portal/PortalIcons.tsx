@@ -146,18 +146,6 @@ export function IconIntegrations({ className }: IconProps) {
   );
 }
 
-export function IconGtmBot({ className }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" {...stroke}>
-      <rect x="4" y="8" width="13" height="11" rx="3.2" />
-      <circle cx="8.3" cy="13.3" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="12.7" cy="13.3" r="1.1" fill="currentColor" stroke="none" />
-      <path d="M10.5 8V5.6" />
-      <path d="M18.6 3.2l.55 1.45 1.45.55-1.45.55-.55 1.45-.55-1.45-1.45-.55 1.45-.55z" fill="currentColor" strokeWidth="1" />
-    </svg>
-  );
-}
-
 export function IconProjectAssistant({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" {...stroke}>
@@ -324,8 +312,6 @@ export function getNavIcon(pageId: string) {
       return IconSuppression;
     case "integrations":
       return IconIntegrations;
-    case "gtm-bot":
-      return IconGtmBot;
     default:
       return IconHome;
   }

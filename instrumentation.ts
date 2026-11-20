@@ -29,4 +29,7 @@ export async function register() {
 
   const { startEventInviteWorker } = await import("./lib/event-invite-worker");
   startEventInviteWorker();
+
+  const { startBotWorker } = await import("./lib/ai-bots-routines-server");
+  startBotWorker();
 }

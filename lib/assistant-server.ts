@@ -31,6 +31,14 @@ type Provider = {
 };
 
 const MAX_TOOL_ROUNDS = 8;
+
+type ToolSpec = (typeof ASSISTANT_TOOLS)[number];
+
+/** Extra tools a caller (e.g. AI Bots) adds on top of the portal tools, with their own handler. */
+export type AssistantExtraTools = {
+  tools: ToolSpec[];
+  run: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+};
 const MAX_TOOL_RESULT_CHARS = 24_000;
 
 function systemPrompt(projectName: string, userName: string) {
@@ -52,7 +60,7 @@ Rules:
 - Opens and clicks are different. Use filter "opens" for people who opened and "clicks" for people who clicked. If an earlier table shows 9 opens and 12 clicks, those are not the same list. If the user already named a campaign, or only one campaign matches the count they gave, use that campaign. Do not ask them to pick again.
 - If a tool result says truncated, show the rows you have, say the total, and link the page. Do not present a partial table as the full list, and do not add the CSV marker for a truncated result.
 - For date questions ("this month", "last week") work out exact YYYY-MM-DD dates from today.
-- You can only read portal data. If the user asks you to send, pause, delete, create, or edit campaigns, contacts, or lists, explain the steps briefly and link the page where they can do it. The exception is this project's LinkedIn computer: you may start it, stop it, run commands on it, and open pages in its browser when the user asks.
+- You can only read portal data. If the user asks you to send, pause, delete, create, or edit campaigns, contacts, or lists, explain the steps briefly and link the page where they can do it.
 - Answer in clean GitHub Markdown:
   - Start with the direct answer in one or two sentences.
   - For section titles use "### Title" headings, never a bare line of text or a bold line ending in a colon.
@@ -65,7 +73,6 @@ Rules:
 - People/lead data requests ("find CTOs in Saudi Arabia", "get me HR managers at banks in Dubai"): call search_people with structured filters. Put roles in jobTitles (add managementLevels only when the user names a seniority), places in locations, sectors in industries, and specific named companies only in companyNames. If it returns 0, try once more with broader filters (fewer titles, the country instead of a city, or lookup_filter_values for exact spellings). The chat shows the result as a card with the filters, match count, sample people and an Open in Enrich button, so your reply must be only one or two plain sentences: the match count and what was searched, then that they can open it in Enrich to review, remove unsubscribed/existing contacts and save to a list. No headings, lists or tables, and do not repeat the filters or sample people. Only set filters the user asked for.
 - Web search: you can search the live web with web_search. Use it for anything not in the portal's data, such as a company's website, what a company does, recent news, a person's role, competitors, market or industry facts. Never say you cannot browse the web. Answer briefly from the result and end with a "Sources:" line of up to 3 Markdown links from the tool's sources, separated by " · ". If the search finds nothing reliable, say so.
 - Custom pitch research ("research these companies", "create pitches for my company list", "find the right people at these accounts and write a pitch"): the portal researches each company with Grok, finds the right decision makers, writes a tailored pitch per person using the project's Knowledge Base, checks people against the Data Portal and returns everything with sources and an Excel export. If the user typed the company names in the chat, call start_pitch_research with those names and what they want to pitch (as focus), then reply in one or two plain sentences. If they have a list or file of companies (or did not name any), reply with one short sentence asking them to upload the list (CSV, Excel or text, one company per row or a Company column, up to 25 companies) and mention they can say what to pitch, and put ${PITCH_RESEARCH_MARKER} alone on the last line. The chat turns that marker into an Upload company list button. Never use the marker otherwise. Only use pitch research when the user wants pitches, outreach or decision makers for a set of companies; for a simple question about one company (website, what they do, news) use web_search instead. If research cannot start because no research key is set, say an admin needs to add it.
-- LinkedIn computer: each project has one Boat cloud desktop. You cannot see its screen or click it. boat_do can: it is an agent on that computer with the mouse, keyboard, and browser. When the user asks to open a sheet, read it, compose, or send email from that computer, call boat_do immediately with their request. Do not ask them to confirm columns, a subject, or which Gmail account first if they already told you to do the task or the sheet is open. Use boat_check if boat_do is still running or they ask for progress. Use boat_run only for a shell command, boat_open_url to open one page, boat_desktop to show the screen, boat_start to turn the computer on, and boat_stop when they are done. If the saved disk was deleted, boat_start creates a new blank desktop by itself. Say that the old login is gone and they should open the card and sign in again. Do not tell them an admin must restore a snapshot or recreate the desktop. The chat shows an Open computer card. Reply in one or two sentences from the tool result. Never paste a desktop URL. Do not claim an email was sent unless the tool report says it was. If Boat is not configured, say an admin needs to add BOAT_API_KEY. If the desktop agent is not connected, say to connect Claude or Codex on the Boat Agents page.
 - Link portal pages and campaigns with Markdown links using the paths from tool results, e.g. [Campaign name](/portal/marketing/campaigns/123).
 - Keep answers short and practical. No filler.`;
 }
@@ -109,7 +116,7 @@ type AnthropicBlock =
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; tool_use_id: string; content: string };
 
-async function completeWithClaude(provider: Provider, messages: ChatMessage[]) {
+async function completeWithClaude(provider: Provider, messages: ChatMessage[], tools: ToolSpec[]) {
   await guardApiCredit();
   const system = messages
     .filter((message) => message.role === "system")
@@ -176,7 +183,7 @@ async function completeWithClaude(provider: Provider, messages: ChatMessage[]) {
       max_tokens: 6000,
       ...(system ? { system } : {}),
       messages: converted,
-      tools: ASSISTANT_TOOLS.map((tool) => ({
+      tools: tools.map((tool) => ({
         name: tool.function.name,
         description: tool.function.description,
         input_schema: tool.function.parameters,
@@ -224,9 +231,9 @@ async function completeWithClaude(provider: Provider, messages: ChatMessage[]) {
   };
 }
 
-async function complete(provider: Provider, messages: ChatMessage[]) {
+async function complete(provider: Provider, messages: ChatMessage[], tools: ToolSpec[]) {
   if (provider.name === "claude") {
-    return completeWithClaude(provider, messages);
+    return completeWithClaude(provider, messages, tools);
   }
   await guardApiCredit();
   const response = await fetch(provider.url, {
@@ -238,7 +245,7 @@ async function complete(provider: Provider, messages: ChatMessage[]) {
     body: JSON.stringify({
       model: provider.model,
       messages,
-      tools: ASSISTANT_TOOLS,
+      tools,
       ...(provider.name === "openai"
         ? { reasoning_effort: "low", max_completion_tokens: 6000 }
         : { temperature: 0.3, max_tokens: 3000 }),
@@ -261,11 +268,18 @@ async function complete(provider: Provider, messages: ChatMessage[]) {
   return message;
 }
 
-async function converse(provider: Provider, context: AssistantToolContext, messages: ChatMessage[]) {
+async function converse(
+  provider: Provider,
+  context: AssistantToolContext,
+  messages: ChatMessage[],
+  extra?: AssistantExtraTools,
+) {
   const thread = [...messages];
+  const tools = extra ? [...ASSISTANT_TOOLS, ...extra.tools] : ASSISTANT_TOOLS;
+  const extraNames = new Set(extra?.tools.map((tool) => tool.function.name) ?? []);
   const cards: AssistantCard[] = [];
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
-    const message = await complete(provider, thread);
+    const message = await complete(provider, thread, tools);
     const calls = message.tool_calls ?? [];
     if (calls.length === 0 || round === MAX_TOOL_ROUNDS) {
       const content = String(message.content ?? "").trim();
@@ -284,10 +298,14 @@ async function converse(provider: Provider, context: AssistantToolContext, messa
         let output: unknown;
         try {
           const args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-          const result = await runAssistantTool(context, call.function.name, args);
-          output = result.output;
-          if (result.card) {
-            cards.push(result.card);
+          if (extra && extraNames.has(call.function.name)) {
+            output = await extra.run(call.function.name, args);
+          } else {
+            const result = await runAssistantTool(context, call.function.name, args);
+            output = result.output;
+            if (result.card) {
+              cards.push(result.card);
+            }
           }
         } catch (error) {
           output = { error: error instanceof Error ? error.message : "Lookup failed" };
@@ -309,6 +327,9 @@ export async function askPortalAssistant(input: {
   projectName: string;
   userName: string;
   history: AssistantMessage[];
+  /** A bot's name and personality, added after the portal rules. */
+  persona?: { name: string; instructions: string };
+  extraTools?: AssistantExtraTools;
 }) {
   const available = providers();
   if (available.length === 0) {
@@ -318,6 +339,18 @@ export async function askPortalAssistant(input: {
   }
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt(input.projectName, input.userName) },
+    ...(input.persona
+      ? [
+          {
+            role: "system" as const,
+            content: `In this chat you are "${input.persona.name}", one of the project's AI bots.${
+              input.persona.instructions.trim()
+                ? ` Your role and personality, set by the user:\n${input.persona.instructions.trim().slice(0, 4000)}`
+                : ""
+            }`,
+          },
+        ]
+      : []),
     ...input.history.slice(-12).map((item) => ({
       role: item.role,
       content: item.content.slice(0, 4000),
@@ -331,6 +364,7 @@ export async function askPortalAssistant(input: {
         provider,
         { projectId: input.projectId, projectName: input.projectName, userName: input.userName },
         messages,
+        input.extraTools,
       );
     } catch (error) {
       lastError = error;

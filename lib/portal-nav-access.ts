@@ -130,7 +130,6 @@ function getHighlightPageFromPathnameForAccess(pathname: string): PortalPageId {
   if (pathname.startsWith("/portal/marketing/personalise")) return "personalise";
   if (pathname.startsWith("/portal/marketing/cloud")) return "cloud";
   if (pathname.startsWith("/portal/marketing/linkedin")) return "linkedin";
-  if (pathname.startsWith("/portal/gtm-bot")) return "gtm-bot";
   if (pathname.startsWith("/portal/marketing/edm")) return "edm";
   if (pathname.startsWith("/portal/marketing/events")) return "events";
   if (pathname.startsWith("/portal/marketing/automation-history")) {

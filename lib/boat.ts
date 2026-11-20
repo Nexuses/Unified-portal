@@ -124,7 +124,8 @@ const BOAT_COMMAND_TIMEOUT_MS = 150_000;
 const GENERIC_BOAT_MESSAGE = /^(something went wrong|internal (server )?error)\.?$/i;
 const BOAT_RETRY_STATUS = new Set([502, 503, 504]);
 
-async function boatFetch(path: string, init?: RequestInit) {
+/** Authenticated Boat API call (retries reads; throws BoatError on failure). */
+export async function boatFetch(path: string, init?: RequestInit) {
   const key = process.env.BOAT_API_KEY?.trim();
   if (!key) {
     throw new BoatError(
@@ -766,26 +767,6 @@ export async function stopLinkedinBoat(projectId: ObjectId) {
   return stopSandboxIfRunning(saved.linkedinSandboxId);
 }
 
-export async function projectBoatStatus(projectId: ObjectId) {
-  if (!boatConfigured()) {
-    return { configured: false as const, sandbox: null };
-  }
-  const collection = await boatLinks();
-  const saved = await collection.findOne({ projectId });
-  if (!saved?.sandboxId) {
-    return { configured: true as const, sandbox: null };
-  }
-  try {
-    const sandbox = await getBoatSandbox(saved.sandboxId);
-    return { configured: true as const, sandbox };
-  } catch (error) {
-    if (error instanceof BoatError && error.status === 404) {
-      return { configured: true as const, sandbox: null };
-    }
-    throw error;
-  }
-}
-
 function clip(value: string, max = 6000) {
   if (value.length <= max) return value;
   return `${value.slice(0, max)}\n…truncated`;
@@ -1079,18 +1060,6 @@ export async function runBoatDesktopTask(
   return { ...current, report, timedOut, interrupted, activity };
 }
 
-export async function rememberBoatTask(
-  projectId: ObjectId,
-  promptId: string,
-  conversationId: string | null,
-) {
-  const collection = await boatLinks();
-  await collection.updateOne(
-    { projectId },
-    { $set: { promptId, conversationId, updatedAt: new Date() } },
-  );
-}
-
 export async function refreshBoatTask(
   sandboxId: string,
   promptId: string,
@@ -1102,17 +1071,6 @@ export async function refreshBoatTask(
     current.conversationId || conversationId,
   ).catch(() => "");
   return { ...current, report };
-}
-
-export async function savedBoatTask(projectId: ObjectId) {
-  const collection = await boatLinks();
-  const saved = await collection.findOne({ projectId });
-  if (!saved?.sandboxId || !saved.promptId) return null;
-  return {
-    sandboxId: saved.sandboxId,
-    promptId: saved.promptId,
-    conversationId: saved.conversationId ?? null,
-  };
 }
 
 export async function openBoatDesktop(sandboxId: string) {
