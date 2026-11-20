@@ -762,8 +762,18 @@ export async function acceptWebinarInviteByPublicId(publicId: string, email: str
   }
 
   const collection = await submissionsCollection();
+  const eventObjectId =
+    event._id instanceof ObjectId
+      ? event._id
+      : ObjectId.isValid(event.id)
+        ? new ObjectId(event.id)
+        : null;
+  if (!eventObjectId) {
+    throw new Error("Event not found.");
+  }
+
   const submission = await collection.findOne({
-    eventId: event._id,
+    eventId: eventObjectId,
     $or: [
       { emailNormalized: normalizedEmail },
       {
@@ -778,9 +788,6 @@ export async function acceptWebinarInviteByPublicId(publicId: string, email: str
   if (!submission) {
     throw new Error("Invite not found.");
   }
-  if (!submission.inviteSentAt) {
-    throw new Error("Invite has not been sent yet.");
-  }
   if (submission.inviteAcceptedAt) {
     return;
   }
@@ -791,6 +798,7 @@ export async function acceptWebinarInviteByPublicId(publicId: string, email: str
     {
       $set: {
         inviteAcceptedAt: acceptedAt,
+        ...(submission.inviteSentAt ? {} : { inviteSentAt: acceptedAt }),
         ...(isWaitlistedWebinarFormat(event.eventFormat)
           ? {
               waitlistStatus: "confirmed",
@@ -804,7 +812,11 @@ export async function acceptWebinarInviteByPublicId(publicId: string, email: str
     }
   );
 
-  scheduleAcceptedCalendarInvite(event, submission);
+  try {
+    scheduleAcceptedCalendarInvite(event, submission);
+  } catch (error) {
+    console.error("Accept invite: could not schedule calendar email", error);
+  }
 }
 
 function scheduleAcceptedCalendarInvite(
@@ -864,27 +876,37 @@ export async function acceptWebinarInviteBySubmissionId(publicId: string, submis
   }
 
   const collection = await submissionsCollection();
+  const eventObjectId =
+    event._id instanceof ObjectId
+      ? event._id
+      : ObjectId.isValid(event.id)
+        ? new ObjectId(event.id)
+        : null;
+  if (!eventObjectId) {
+    throw new Error("Event not found.");
+  }
+
   const submission = await collection.findOne({
     _id: new ObjectId(submissionId),
-    eventId: event._id,
+    eventId: eventObjectId,
   });
 
   if (!submission) {
     throw new Error("Invite not found.");
-  }
-  if (!submission.inviteSentAt) {
-    throw new Error("Invite has not been sent yet.");
   }
   if (submission.inviteAcceptedAt) {
     return;
   }
 
   const acceptedAt = new Date();
+  // A valid accept link means the guest received the invite — record sent if missing
+  // (covers email-before-mark races and older rows).
   await collection.updateOne(
     { _id: submission._id },
     {
       $set: {
         inviteAcceptedAt: acceptedAt,
+        ...(submission.inviteSentAt ? {} : { inviteSentAt: acceptedAt }),
         ...(isWaitlistedWebinarFormat(event.eventFormat)
           ? {
               waitlistStatus: "confirmed",
@@ -898,7 +920,11 @@ export async function acceptWebinarInviteBySubmissionId(publicId: string, submis
     }
   );
 
-  scheduleAcceptedCalendarInvite(event, submission);
+  try {
+    scheduleAcceptedCalendarInvite(event, submission);
+  } catch (error) {
+    console.error("Accept invite: could not schedule calendar email", error);
+  }
 }
 
 export async function markSubmissionAsGoing(eventId: string, submissionId: string) {
