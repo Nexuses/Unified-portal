@@ -22,6 +22,15 @@ import {
 import type { AssistantCard } from "@/lib/assistant";
 import { composioExtraTools, hasConnectedApps, mergeExtraTools } from "@/lib/composio-server";
 import {
+  agentSignedIn,
+  copySignIn,
+  ensureAgentSetup,
+  readAgentRun,
+  startAgentRun,
+  stopAgentRun,
+  type AgentEngine,
+} from "@/lib/ai-agent-runner";
+import {
   BOT_COLORS,
   BOT_ENGINES,
   type Bot,
@@ -75,7 +84,10 @@ type MessageDoc = {
   error?: string;
   engine?: BotEngine;
   sandboxId?: string;
+  /** Boat's own agent (Claude): the queued prompt. */
   promptId?: string;
+  /** The provider's own agent on the computer (ChatGPT, Grok): the run folder id. */
+  runId?: string;
   conversationId?: string | null;
   startedAt?: Date;
   createdAt: Date;
@@ -534,7 +546,7 @@ function chiefTools(projectId: ObjectId, projectName: string, chief: BotDoc): As
 
 const HARNESS: Record<Exclude<BotEngine, "portal">, { provider: string; defaultModel?: string }> = {
   chatgpt: { provider: "codex" },
-  grok: { provider: "opencode", defaultModel: "grok-4.7" },
+  grok: { provider: "opencode" },
   claude: { provider: "claude" },
 };
 
@@ -553,7 +565,7 @@ function computerPreface(bot: BotDoc, projectName: string, toolsOn: boolean, app
     toolsOn && appsOn
       ? "- The project's connected apps (HubSpot, Apollo, Notion, Gmail and others) are reachable through the same \"portal\" server: call COMPOSIO_SEARCH_TOOLS first, then COMPOSIO_MULTI_EXECUTE_TOOL."
       : "",
-    `- You run on a Linux computer with a browser and a desktop. Keep working files in ~/work/${bot._id.toHexString()}/.`,
+    `- You run on a Linux computer with a browser and a desktop. Use the "computer" tools to see and use the desktop and browser. Keep working files in ~/work/${bot._id.toHexString()}/.`,
     `- Save every file the user should get (CSV, XLSX, PDF, Markdown) in ${outputsDir(bot)}/ and mention each by file name. Those files are attached to your reply automatically.`,
     "- Reply in short GitHub Markdown. Never paste secrets or keys.",
   ]
@@ -586,6 +598,11 @@ async function startComputerTurn(
   const prompt = sameConversation
     ? `Message from ${from}:\n${text}`
     : `${computerPreface(bot, projectName, toolsOn, toolsOn && (await hasConnectedApps(projectId)))}\n\nMessage from ${from}:\n${text}`;
+
+  if (bot.engine === "chatgpt" || bot.engine === "grok") {
+    await startOwnAgentTurn(projectId, bot, reply, sandbox.id, prompt, sameConversation ? bot.conversationId ?? null : null);
+    return;
+  }
 
   const model = bot.model || harness.defaultModel;
   const queue = async (conversationId: string | null) =>
@@ -632,6 +649,92 @@ async function startComputerTurn(
   );
 }
 
+function notSignedIn(engine: AgentEngine) {
+  const label = BOT_ENGINES[engine].label;
+  return new Error(`${label} isn't connected for this project. Open AI accounts (the key button in the chatbot) and connect your ${label} plan.`);
+}
+
+/**
+ * ChatGPT and Grok bots run with the provider's own agent (Codex, Grok Build) on the computer, on the plan
+ * sign-in kept there. A bot with its own computer gets that sign-in copied from the project computer.
+ */
+async function startOwnAgentTurn(
+  projectId: ObjectId,
+  bot: BotDoc,
+  reply: MessageDoc,
+  sandboxId: string,
+  prompt: string,
+  sessionId: string | null,
+) {
+  const engine = bot.engine as AgentEngine;
+  if (!(await agentSignedIn(sandboxId, engine))) {
+    if (bot.ownComputer) {
+      const home = await ensureProjectBoat(projectId);
+      const ready = isBoatRunning(home.state) ? home : await waitForBoat(home.id, 45, 120_000);
+      if (isBoatRunning(ready.state)) await copySignIn(ready.id, sandboxId, engine);
+    }
+    if (!(await agentSignedIn(sandboxId, engine))) throw notSignedIn(engine);
+  }
+  await ensureAgentSetup(sandboxId, null);
+  const run = await startAgentRun({
+    sandboxId,
+    engine,
+    cwd: `/home/user/work/${bot._id.toHexString()}`,
+    prompt,
+    model: bot.model || undefined,
+    sessionId,
+  });
+  const conversationId = run.sessionId ?? sessionId;
+  const { messages, bots } = await botCollections();
+  await messages.updateOne(
+    { _id: reply._id },
+    { $set: { sandboxId, runId: run.runId, conversationId, updatedAt: new Date() } },
+  );
+  await bots.updateOne(
+    { _id: bot._id },
+    { $set: { conversationId, conversationSandboxId: sandboxId, conversationEngine: bot.engine } },
+  );
+}
+
+/** Finishes a ChatGPT or Grok turn that ran with the provider's own agent. */
+async function refreshOwnAgentTurn(projectId: ObjectId, message: MessageDoc, bot: BotDoc) {
+  const engine = (message.engine ?? bot.engine) as AgentEngine;
+  const sandboxId = message.sandboxId!;
+  const result = await readAgentRun(sandboxId, engine, message.runId!);
+  if (!result.done) {
+    if (message.startedAt && Date.now() - message.startedAt.getTime() > RUN_TIMEOUT_MS) {
+      await stopAgentRun(sandboxId, message.runId!);
+      await finishWithError(message._id, bot, new Error("The task ran for over two hours and was stopped."));
+    } else if (!bot.ownComputer) {
+      await stampBoatActivity(projectId).catch(() => undefined);
+    }
+    return;
+  }
+  // Codex reports its session id when the turn ends: keep it so the next message continues this chat.
+  if (result.sessionId) {
+    const { bots } = await botCollections();
+    await bots.updateOne(
+      { _id: bot._id, conversationSandboxId: sandboxId },
+      { $set: { conversationId: result.sessionId } },
+    );
+  }
+  const files = await listNewFiles(sandboxId, bot, message.startedAt ?? message.createdAt).catch(() => []);
+  if (!result.ok) {
+    const detail = `${result.error} ${result.answer}`;
+    if (/not (logged|signed) in|log ?in again|unauthori[sz]ed|\b401\b|token (has )?expired|refresh token|sign in/i.test(detail)) {
+      await finishWithError(message._id, bot, new Error(`${BOT_ENGINES[engine].label}'s sign-in has expired. Reconnect it in AI accounts (the key button), then send the message again.`));
+    } else if (/usage limit|rate limit|quota|too many requests|\b429\b/i.test(detail)) {
+      await finishWithError(message._id, bot, new Error(`The ${BOT_ENGINES[engine].label} plan hit its usage limit. Try again later, or switch this bot's model.`));
+    } else {
+      await finishWithError(message._id, bot, new Error(result.error.trim().split("\n").slice(-3).join(" ").slice(0, 400) || "The agent stopped without an answer."));
+    }
+    return;
+  }
+  await finishReply(message._id, bot, result.answer || (files.length ? "Done. The files are attached." : "Done."), {
+    ...(files.length ? { files } : {}),
+  });
+}
+
 type BoatEvent = { type?: string; conversationId?: string; data?: Record<string, unknown> };
 
 /** Reads the agent's final answer, or its error, from the conversation's events. */
@@ -673,12 +776,28 @@ async function listNewFiles(sandboxId: string, bot: BotDoc, since: Date): Promis
 export async function refreshRunning(projectId: ObjectId, botId?: ObjectId) {
   const { messages, bots } = await botCollections();
   const running = await messages
-    .find({ projectId, status: "running", ...(botId ? { botId } : {}), promptId: { $exists: true } })
+    .find({
+      projectId,
+      status: "running",
+      ...(botId ? { botId } : {}),
+      $or: [{ promptId: { $exists: true } }, { runId: { $exists: true } }],
+    })
     .limit(10)
     .toArray();
   for (const message of running) {
     const bot = await bots.findOne({ _id: message.botId });
-    if (!bot || !message.sandboxId || !message.promptId) continue;
+    if (!bot || !message.sandboxId) continue;
+    if (message.runId) {
+      await refreshOwnAgentTurn(projectId, message, bot).catch(async (error) => {
+        if (error instanceof BoatError && (error.status === 404 || error.status === 410)) {
+          await finishWithError(message._id, bot, new Error("The computer lost this task. Send it again."));
+        } else {
+          console.warn("[bots] refresh failed:", error instanceof Error ? error.message : error);
+        }
+      });
+      continue;
+    }
+    if (!message.promptId) continue;
     try {
       const data = (await boatFetch(
         `/sandboxes/${encodeURIComponent(message.sandboxId)}/prompts/${encodeURIComponent(message.promptId)}`,
@@ -850,6 +969,7 @@ async function ensurePortalTools(projectId: ObjectId, sandboxId: string) {
       'export PATH="$HOME/.local/bin:$PATH"',
       "codex mcp remove portal >/dev/null 2>&1; codex mcp add portal --url " + quoted + " >/dev/null 2>&1 || true",
       "claude mcp remove --scope user portal >/dev/null 2>&1; claude mcp add --scope user --transport http portal " + quoted + " >/dev/null 2>&1 || true",
+      'export PATH="$HOME/.grok/bin:$PATH"; command -v grok >/dev/null && grok mcp add portal ' + quoted + " -t http -s user >/dev/null 2>&1 || true",
       // OpenCode keeps MCP servers in its JSON config.
       `node -e 'const f=process.env.HOME+"/.config/opencode/opencode.json";const fs=require("fs");let c={};try{c=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}c.mcp=c.mcp||{};c.mcp.portal={type:"remote",url:process.argv[1],enabled:true};fs.mkdirSync(require("path").dirname(f),{recursive:true});fs.writeFileSync(f,JSON.stringify(c,null,2))' ${quoted}`,
       "echo REGISTERED",

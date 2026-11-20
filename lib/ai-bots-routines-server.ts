@@ -221,7 +221,10 @@ export async function tickBotWorker() {
   }
 
   const { messages } = await botCollections();
-  const projects = await messages.distinct("projectId", { status: "running", promptId: { $exists: true } });
+  const projects = await messages.distinct("projectId", {
+    status: "running",
+    $or: [{ promptId: { $exists: true } }, { runId: { $exists: true } }],
+  });
   for (const projectId of projects.slice(0, 20)) {
     await refreshRunning(projectId as ObjectId).catch(() => undefined);
   }

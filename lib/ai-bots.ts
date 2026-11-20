@@ -20,19 +20,19 @@ export const BOT_ENGINES: Record<BotEngine, { label: string; short: string; runs
     label: "ChatGPT",
     short: "GP",
     runsOnComputer: true,
-    blurb: "Codex on the bot's computer, on the company ChatGPT plan.",
+    blurb: "Codex runs on the bot's computer, on the ChatGPT plan connected in AI accounts.",
   },
   grok: {
     label: "Grok",
     short: "GR",
     runsOnComputer: true,
-    blurb: "Grok on the bot's computer, on the company SuperGrok plan.",
+    blurb: "Grok Build runs on the bot's computer, on the SuperGrok plan connected in AI accounts.",
   },
   claude: {
     label: "Claude",
     short: "CL",
     runsOnComputer: true,
-    blurb: "Claude Code on the bot's computer, on the company Claude plan.",
+    blurb: "Claude Code on the bot's computer, through the company's Boat account.",
   },
 };
 
@@ -40,9 +40,9 @@ export const BOT_ENGINES: Record<BotEngine, { label: string; short: string; runs
 export const BOT_MODELS: BotModelOption[] = [
   { engine: "portal", model: "", label: "Portal AI", note: "Default" },
   { engine: "chatgpt", model: "", label: "ChatGPT", note: "Default model" },
-  { engine: "grok", model: "grok-4.7", label: "Grok 4.7", note: "Newest" },
+  { engine: "grok", model: "", label: "Grok", note: "Default model" },
   { engine: "grok", model: "grok-4.6", label: "Grok 4.6", note: "" },
-  { engine: "grok", model: "grok-build-0.1", label: "Grok Build", note: "Coding" },
+  { engine: "grok", model: "grok-4.5", label: "Grok 4.5", note: "" },
   { engine: "claude", model: "", label: "Claude", note: "Default model" },
 ];
 
