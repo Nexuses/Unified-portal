@@ -1,11 +1,14 @@
 import { interruptBoatAgent, runBoatCommand, runBoatDesktopTask, shellQuote } from "@/lib/boat";
 
-/** Messaging inbox. This tab stays open and is the only place replies are read. */
+/** Messaging inbox tab — replies only. */
 export const LINKEDIN_MESSAGING_URL = "https://www.linkedin.com/messaging/";
-/** Notification list. This tab stays open and is where an accept shows up. */
+/** Notifications tab — connection accepts / network watch. */
 export const LINKEDIN_NETWORK_URL = "https://www.linkedin.com/notifications/";
+/** window.name marker for the replies tab. */
 export const LINKEDIN_REPLIES_TAB = "nexuses-li-replies";
+/** window.name marker for the network/accepts tab. */
 export const LINKEDIN_NETWORK_TAB = "nexuses-li-network";
+/** Campaign profile tabs use campaignTabMarker(id) for connection requests and messages. */
 
 export function campaignTabMarker(campaignId: string) {
   const clean = campaignId.replace(/[^a-zA-Z0-9]/g, "") || "campaign";

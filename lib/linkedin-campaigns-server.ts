@@ -974,6 +974,23 @@ export async function startLinkedinCampaign(
   if (!doc) throw new Error("Campaign was not saved.");
 
   const opened = await openLinkedinComputer(projectId).catch(() => null);
+  const sandbox = await linkedinComputer(projectId).catch(() => null);
+  if (sandbox && isBoatRunning(sandbox.state) && !sandbox.replacedDeletedDisk) {
+    for (
+      let attempt = 0;
+      attempt < 12 && !(await chromeDebugOpen(sandbox.id));
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    await prepareLinkedinWorkspaceTabs(
+      sandbox.id,
+      [{ doc, sandboxId: sandbox.id }],
+      { frontCampaign: true, navigateCampaign: true },
+    ).catch((error) => {
+      console.error("[linkedin] could not open workspace tabs", error);
+    });
+  }
   return { campaign: mapCampaign(doc), desktopUrl: opened?.desktopUrl };
 }
 
@@ -1606,11 +1623,82 @@ async function commitLinkedinPeople(
 
 async function ensureLinkedinChrome(sandboxId: string) {
   if (await chromeDebugOpen(sandboxId)) return true;
-  await openLinkedinChrome(sandboxId, LINKEDIN_MESSAGING_URL, true);
+  // Bootstrap on Feed so the three workspace tabs can be created cleanly next.
+  await openLinkedinChrome(sandboxId, "https://www.linkedin.com/feed/", true);
   for (let attempt = 0; attempt < 10 && !(await chromeDebugOpen(sandboxId)); attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   return chromeDebugOpen(sandboxId);
+}
+
+function firstConnectProfileUrl(doc: CampaignDoc) {
+  for (const person of doc.people) {
+    if (!person.linkedinUrl) continue;
+    const stage = personStage(person);
+    const needsRequest =
+      stage === "request_sent" &&
+      !person.connectionRequested &&
+      (person.messagesSent || 0) === 0;
+    if (needsRequest) return person.linkedinUrl;
+  }
+  return (
+    doc.people.find((person) => person.linkedinUrl)?.linkedinUrl ||
+    "https://www.linkedin.com/mynetwork/"
+  );
+}
+
+/**
+ * Keep three LinkedIn tabs open for automation:
+ * 1) messaging (replies), 2) notifications (network accepts),
+ * 3) this campaign's profile tab (connection requests / messages).
+ */
+async function prepareLinkedinWorkspaceTabs(
+  sandboxId: string,
+  items: ReadyCampaign[],
+  options?: { frontCampaign?: boolean; navigateCampaign?: boolean },
+) {
+  if (!items.length) return false;
+  if (!(await ensureLinkedinChrome(sandboxId))) return false;
+  const keep = linkedinKeepTabs(items);
+  const primary = items[0].doc;
+  const connectUrl = firstConnectProfileUrl(primary);
+  const campaignMarker = campaignTabMarker(primary._id.toString());
+  const shouldNavigate = options?.navigateCampaign !== false;
+  const connectExpect = shouldNavigate
+    ? connectUrl.includes("/in/")
+      ? linkedinProfileSlug(connectUrl) || "/in/"
+      : "linkedin.com"
+    : "";
+
+  await focusLinkedinTab(
+    sandboxId,
+    LINKEDIN_REPLIES_TAB,
+    LINKEDIN_MESSAGING_URL,
+    "linkedin.com/messaging",
+    keep,
+    true,
+  );
+  await focusLinkedinTab(
+    sandboxId,
+    LINKEDIN_NETWORK_TAB,
+    LINKEDIN_NETWORK_URL,
+    "linkedin.com/notifications",
+    keep,
+    true,
+  );
+  await focusLinkedinTab(
+    sandboxId,
+    campaignMarker,
+    shouldNavigate ? connectUrl : "",
+    connectExpect,
+    keep,
+    true,
+  );
+  if (options?.frontCampaign) {
+    // Bring the connect tab forward and drop stray Chrome tabs.
+    await focusLinkedinTab(sandboxId, campaignMarker, "", "", keep, false);
+  }
+  return true;
 }
 
 async function clearBoatLock(doc: CampaignDoc) {
@@ -1809,7 +1897,14 @@ async function runProjectLinkedinStep(items: ReadyCampaign[], now: Date) {
   const readReplies = repliesDue(ordered, session, now);
   const readAccepts = acceptsDue(ordered, session, now);
   if (!best && !readReplies && !readAccepts) return 0;
-  if (!(await ensureLinkedinChrome(sandboxId))) return 0;
+  if (
+    !(await prepareLinkedinWorkspaceTabs(sandboxId, ordered, {
+      frontCampaign: false,
+      navigateCampaign: false,
+    }))
+  ) {
+    return 0;
+  }
   const keep = linkedinKeepTabs(ordered);
   const accountName = session.accountName || "";
   if (readReplies) {
