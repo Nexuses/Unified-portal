@@ -17,7 +17,11 @@ import {
   type AnalyticsPreset,
 } from "@/lib/analytics";
 import { formatMetric } from "@/lib/drip-campaigns";
-import { portalCampaignRoute, publicCampaignReportPath } from "@/lib/portal-nav";
+import {
+  portalCampaignRoute,
+  publicCampaignReportPath,
+  publicEventReportPath,
+} from "@/lib/portal-nav";
 
 type ShareBotMode = "show" | "hide" | "toggle";
 
@@ -71,7 +75,10 @@ function formatSentAt(value?: string) {
   });
 }
 
-function kindLabel(kind: "drip" | "oneone", personalise?: boolean) {
+function kindLabel(kind: "drip" | "oneone" | "event", personalise?: boolean) {
+  if (kind === "event") {
+    return "Event";
+  }
   if (personalise) {
     return "Personalise";
   }
@@ -196,24 +203,32 @@ export function AnalyticsDashboardView({
   botToggle?: boolean;
 }) {
   const totals = dashboard.totals;
-  /** Public share filters omit unselected kinds from byKind; portal keeps all three. */
+  /** Public share filters omit unselected kinds from byKind; portal keeps all. */
   const kindsFiltered =
     dashboard.byKind.drip == null ||
     dashboard.byKind.oneone == null ||
-    dashboard.byKind.personalise == null;
+    dashboard.byKind.personalise == null ||
+    dashboard.byKind.event == null;
   const showDrip = dashboard.byKind.drip != null;
   const showOneOne = dashboard.byKind.oneone != null;
   const showPersonalise =
     dashboard.byKind.personalise != null &&
     (kindsFiltered || (totals.personaliseCampaigns ?? 0) > 0);
+  const showEvent =
+    dashboard.byKind.event != null &&
+    (kindsFiltered || (totals.eventCampaigns ?? 0) > 0);
   const kindCardCount =
-    Number(showDrip) + Number(showOneOne) + Number(showPersonalise);
+    Number(showDrip) +
+    Number(showOneOne) +
+    Number(showPersonalise) +
+    Number(showEvent);
   const campaignKindParts = [
     showDrip ? `${formatInt(totals.dripCampaigns)} drip` : null,
     showOneOne ? `${formatInt(totals.oneOneCampaigns)} 1-1` : null,
     showPersonalise
       ? `${formatInt(totals.personaliseCampaigns ?? 0)} personalise`
       : null,
+    showEvent ? `${formatInt(totals.eventCampaigns ?? 0)} event` : null,
   ].filter(Boolean);
   const attempted = totals.delivered + totals.failed;
   const metrics = [
@@ -286,7 +301,15 @@ export function AnalyticsDashboardView({
 
       {kindCardCount > 0 ? (
         <div
-          className={`an-kind-row${kindCardCount >= 3 ? " has-three" : kindCardCount === 1 ? " has-one" : ""}`}
+          className={`an-kind-row${
+            kindCardCount >= 4
+              ? " has-four"
+              : kindCardCount === 3
+                ? " has-three"
+                : kindCardCount === 1
+                  ? " has-one"
+                  : ""
+          }`}
         >
           {showDrip && dashboard.byKind.drip ? (
             <KindStats title="Drip campaigns" stats={dashboard.byKind.drip} />
@@ -299,6 +322,9 @@ export function AnalyticsDashboardView({
               title="Personalise campaigns"
               stats={dashboard.byKind.personalise}
             />
+          ) : null}
+          {showEvent && dashboard.byKind.event ? (
+            <KindStats title="Event campaigns" stats={dashboard.byKind.event} />
           ) : null}
         </div>
       ) : null}
@@ -346,12 +372,16 @@ export function AnalyticsDashboardView({
                 {dashboard.campaigns.map((campaign) => {
                   const publicHref =
                     variant === "public" && campaign.shareToken
-                      ? publicCampaignReportPath(campaign.shareToken, {
-                          analyticsToken,
-                          ...(botToggle || hideBotClicks
-                            ? { hideBotClicks }
-                            : {}),
-                        })
+                      ? campaign.kind === "event"
+                        ? publicEventReportPath(campaign.shareToken, {
+                            ...(hideBotClicks ? { hideBotClicks: true } : {}),
+                          })
+                        : publicCampaignReportPath(campaign.shareToken, {
+                            analyticsToken,
+                            ...(botToggle || hideBotClicks
+                              ? { hideBotClicks }
+                              : {}),
+                          })
                       : "";
                   const name =
                     variant === "portal" ? (
@@ -382,7 +412,13 @@ export function AnalyticsDashboardView({
                       </td>
                       <td data-label="Type">
                         <span
-                          className={`an-kind-tag ${campaign.personalise ? "personalise" : campaign.kind}`}
+                          className={`an-kind-tag ${
+                            campaign.kind === "event"
+                              ? "event"
+                              : campaign.personalise
+                                ? "personalise"
+                                : campaign.kind
+                          }`}
                         >
                           {kindLabel(campaign.kind, campaign.personalise)}
                         </span>
@@ -551,10 +587,11 @@ export function PortalAnalyticsPage() {
     if (
       !shareIncludeKinds.drip &&
       !shareIncludeKinds.oneone &&
-      !shareIncludeKinds.personalise
+      !shareIncludeKinds.personalise &&
+      !shareIncludeKinds.event
     ) {
       setSharePromptError(
-        "Select at least one campaign type (Drip, 1-1, or Personalise).",
+        "Select at least one campaign type (Drip, 1-1, Personalise, or Event).",
       );
       return;
     }
@@ -658,6 +695,7 @@ export function PortalAnalyticsPage() {
                     { key: "drip", label: "Drip" },
                     { key: "oneone", label: "1-1" },
                     { key: "personalise", label: "Personalise" },
+                    { key: "event", label: "Event" },
                   ] as const
                 ).map((item) => {
                   const checked = shareIncludeKinds[item.key];

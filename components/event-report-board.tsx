@@ -43,28 +43,63 @@ export function EventReportBoard({ report, publicToken }: EventReportBoardProps)
   const [exportError, setExportError] = useState("");
   const isPublic = Boolean(publicToken);
 
+  const scopedPeople = useMemo(() => {
+    if (showBotClicks) {
+      return report.people;
+    }
+    return report.people.filter((person) => !person.botClick);
+  }, [report.people, showBotClicks]);
+
+  const scopedMetrics = useMemo(() => {
+    let inviteTo = 0;
+    let invited = 0;
+    let going = 0;
+    let waitlist = 0;
+    let rejected = 0;
+    let botClicks = 0;
+    let registrations = 0;
+    for (const person of scopedPeople) {
+      if (person.status === "Invite to") inviteTo += 1;
+      else if (person.status === "Invited") invited += 1;
+      else if (person.status === "Going") going += 1;
+      else if (person.status === "Waitlist") waitlist += 1;
+      else if (person.status === "Rejected") rejected += 1;
+      if (person.botClick) botClicks += 1;
+      if (person.source === "Registration") registrations += 1;
+    }
+    return {
+      pageViews: report.metrics.pageViews,
+      uniqueVisitors: report.metrics.uniqueVisitors,
+      conversionRate: report.metrics.conversionRate,
+      totalPeople: scopedPeople.length,
+      inviteTo,
+      invited,
+      going,
+      waitlist,
+      rejected,
+      botClicks: showBotClicks ? botClicks : 0,
+      registrations,
+    };
+  }, [scopedPeople, showBotClicks, report.metrics]);
+
   const filterTabs = useMemo(() => {
     const tabs: Array<{ id: PeopleFilter; label: string; count: number }> = [
-      { id: "all", label: "All", count: report.metrics.totalPeople },
-      { id: "invite_to", label: "Invite to", count: report.metrics.inviteTo },
-      { id: "invited", label: "Invited", count: report.metrics.invited },
-      { id: "going", label: "Going", count: report.metrics.going },
+      { id: "all", label: "All", count: scopedMetrics.totalPeople },
+      { id: "invite_to", label: "Invite to", count: scopedMetrics.inviteTo },
+      { id: "invited", label: "Invited", count: scopedMetrics.invited },
+      { id: "going", label: "Going", count: scopedMetrics.going },
     ];
-    if (report.metrics.waitlist > 0) {
-      tabs.push({ id: "waitlist", label: "Waitlist", count: report.metrics.waitlist });
+    if (scopedMetrics.waitlist > 0 || report.metrics.waitlist > 0) {
+      tabs.push({ id: "waitlist", label: "Waitlist", count: scopedMetrics.waitlist });
     }
-    if (report.metrics.rejected > 0) {
-      tabs.push({ id: "rejected", label: "Rejected", count: report.metrics.rejected });
+    if (scopedMetrics.rejected > 0 || report.metrics.rejected > 0) {
+      tabs.push({ id: "rejected", label: "Rejected", count: scopedMetrics.rejected });
     }
     return tabs;
-  }, [report.metrics]);
+  }, [scopedMetrics, report.metrics.waitlist, report.metrics.rejected]);
 
   const visiblePeople = useMemo(() => {
-    let rows = report.people;
-    if (!showBotClicks) {
-      rows = rows.filter((person) => !person.botClick);
-    }
-    if (peopleFilter === "all") return rows;
+    if (peopleFilter === "all") return scopedPeople;
     const wanted =
       peopleFilter === "invite_to"
         ? "Invite to"
@@ -75,8 +110,8 @@ export function EventReportBoard({ report, publicToken }: EventReportBoardProps)
             : peopleFilter === "waitlist"
               ? "Waitlist"
               : "Rejected";
-    return rows.filter((person) => person.status === wanted);
-  }, [report.people, showBotClicks, peopleFilter]);
+    return scopedPeople.filter((person) => person.status === wanted);
+  }, [scopedPeople, peopleFilter]);
 
   const totalPages = Math.max(1, Math.ceil(visiblePeople.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -91,39 +126,39 @@ export function EventReportBoard({ report, publicToken }: EventReportBoardProps)
   const metricCards = [
     {
       label: "Page views",
-      value: report.metrics.pageViews,
+      value: scopedMetrics.pageViews,
       rateLabel: "Unique visitors",
-      rate: report.metrics.uniqueVisitors.toLocaleString(),
+      rate: scopedMetrics.uniqueVisitors.toLocaleString(),
     },
     {
       label: "People",
-      value: report.metrics.totalPeople,
+      value: scopedMetrics.totalPeople,
       rateLabel: "Registrations",
-      rate: report.metrics.registrations.toLocaleString(),
+      rate: scopedMetrics.registrations.toLocaleString(),
     },
     {
       label: "Invited",
-      value: report.metrics.invited,
+      value: scopedMetrics.invited,
       rateLabel: "Invite rate",
       rate:
-        report.metrics.totalPeople > 0
-          ? `${Math.round((report.metrics.invited / report.metrics.totalPeople) * 1000) / 10}%`
+        scopedMetrics.totalPeople > 0
+          ? `${Math.round((scopedMetrics.invited / scopedMetrics.totalPeople) * 1000) / 10}%`
           : "0%",
     },
     {
       label: "Going",
-      value: report.metrics.going,
+      value: scopedMetrics.going,
       rateLabel: "Going rate",
       rate:
-        report.metrics.totalPeople > 0
-          ? `${Math.round((report.metrics.going / report.metrics.totalPeople) * 1000) / 10}%`
+        scopedMetrics.totalPeople > 0
+          ? `${Math.round((scopedMetrics.going / scopedMetrics.totalPeople) * 1000) / 10}%`
           : "0%",
     },
     {
       label: "Conversion",
-      value: `${report.metrics.conversionRate}%`,
+      value: `${scopedMetrics.conversionRate}%`,
       rateLabel: "Bot clicks",
-      rate: report.metrics.botClicks.toLocaleString(),
+      rate: scopedMetrics.botClicks.toLocaleString(),
     },
   ];
 
@@ -290,8 +325,8 @@ export function EventReportBoard({ report, publicToken }: EventReportBoardProps)
           }}
           title={
             showBotClicks
-              ? "Bot clicks shown with tags"
-              : "Bot clicks hidden from the people list"
+              ? "Bot clicks included in metrics and the people list"
+              : "Bot clicks hidden from metrics and the people list"
           }
         >
           <span className="drip-report-table-switch" aria-hidden="true" />

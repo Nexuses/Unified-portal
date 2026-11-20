@@ -9,7 +9,7 @@ export type AnalyticsCampaignRow = {
   id: string;
   campaignId: string;
   name: string;
-  kind: "drip" | "oneone";
+  kind: "drip" | "oneone" | "event";
   personalise?: boolean;
   sentAt?: string;
   delivered: number;
@@ -36,6 +36,7 @@ export type AnalyticsDashboard = {
     dripCampaigns: number;
     oneOneCampaigns: number;
     personaliseCampaigns?: number;
+    eventCampaigns?: number;
     contactsAdded: number;
     automationsCreated: number;
   };
@@ -49,6 +50,7 @@ export type AnalyticsDashboard = {
     drip?: AnalyticsKindStats;
     oneone?: AnalyticsKindStats;
     personalise?: AnalyticsKindStats;
+    event?: AnalyticsKindStats;
   };
   daily: AnalyticsDailyPoint[];
   campaigns: AnalyticsCampaignRow[];
@@ -67,12 +69,14 @@ export type AnalyticsIncludeKinds = {
   drip: boolean;
   oneone: boolean;
   personalise: boolean;
+  event: boolean;
 };
 
 export const DEFAULT_ANALYTICS_INCLUDE_KINDS: AnalyticsIncludeKinds = {
   drip: true,
   oneone: true,
   personalise: true,
+  event: true,
 };
 
 export function normalizeAnalyticsIncludeKinds(
@@ -82,6 +86,7 @@ export function normalizeAnalyticsIncludeKinds(
     drip: input?.drip !== false,
     oneone: input?.oneone !== false,
     personalise: input?.personalise !== false,
+    event: input?.event !== false,
   };
 }
 
@@ -89,6 +94,9 @@ export function campaignMatchesIncludeKinds(
   campaign: Pick<AnalyticsCampaignRow, "kind" | "personalise">,
   kinds: AnalyticsIncludeKinds,
 ) {
+  if (campaign.kind === "event") {
+    return kinds.event;
+  }
   if (campaign.personalise) {
     return kinds.personalise;
   }
@@ -108,7 +116,7 @@ export function filterAnalyticsDashboardByKinds(
   kindsInput?: Partial<AnalyticsIncludeKinds> | null,
 ): AnalyticsDashboard {
   const kinds = normalizeAnalyticsIncludeKinds(kindsInput);
-  if (kinds.drip && kinds.oneone && kinds.personalise) {
+  if (kinds.drip && kinds.oneone && kinds.personalise && kinds.event) {
     return dashboard;
   }
 
@@ -125,18 +133,27 @@ export function filterAnalyticsDashboardByKinds(
   if (kinds.personalise) {
     byKind.personalise = dashboard.byKind.personalise ?? emptyKindStats();
   }
+  if (kinds.event) {
+    byKind.event = dashboard.byKind.event ?? emptyKindStats();
+  }
   const drip = byKind.drip ?? emptyKindStats();
   const oneone = byKind.oneone ?? emptyKindStats();
   const personalise = byKind.personalise ?? emptyKindStats();
-  const delivered = drip.delivered + oneone.delivered + personalise.delivered;
-  const opens = drip.opens + oneone.opens + personalise.opens;
-  const clicks = drip.clicks + oneone.clicks + personalise.clicks;
+  const event = byKind.event ?? emptyKindStats();
+  const delivered =
+    drip.delivered + oneone.delivered + personalise.delivered + event.delivered;
+  const opens = drip.opens + oneone.opens + personalise.opens + event.opens;
+  const clicks = drip.clicks + oneone.clicks + personalise.clicks + event.clicks;
   const unsubscribed =
-    drip.unsubscribed + oneone.unsubscribed + personalise.unsubscribed;
+    drip.unsubscribed +
+    oneone.unsubscribed +
+    personalise.unsubscribed +
+    event.unsubscribed;
   const dripCampaigns = campaigns.filter((item) => item.kind === "drip").length;
   const personaliseCampaigns = campaigns.filter((item) => item.personalise).length;
   const oneOneCampaigns =
     campaigns.filter((item) => item.kind === "oneone").length - personaliseCampaigns;
+  const eventCampaigns = campaigns.filter((item) => item.kind === "event").length;
 
   return {
     ...dashboard,
@@ -150,6 +167,7 @@ export function filterAnalyticsDashboardByKinds(
       dripCampaigns,
       oneOneCampaigns,
       personaliseCampaigns,
+      eventCampaigns,
     },
     rates: {
       openRate: delivered ? opens / delivered : 0,

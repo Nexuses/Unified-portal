@@ -366,8 +366,8 @@ export function EventSubmissionsBoard({
         onClick={() => setShowBotClicks((value) => !value)}
         title={
           showBotClicks
-            ? "Bot clicks shown with tags in Going"
-            : "Bot clicks hidden in Going"
+            ? "Bot clicks included in Going count and list"
+            : "Bot clicks hidden from Going count and list"
         }
       >
         <span className="drip-report-table-switch" aria-hidden="true" />
@@ -916,18 +916,31 @@ export function EventSubmissionsBoard({
   const isActiveSharedSession = isSharedSessionFormat(activeEventFormat);
   const webinarStageCounts = WEBINAR_SUBMISSION_TABS.reduce(
     (counts, tab) => {
-      counts[tab.id] = submissions.filter(
-        (submission) => getWebinarSubmissionStage(submission) === tab.id
-      ).length;
+      counts[tab.id] = submissions.filter((submission) => {
+        if (getWebinarSubmissionStage(submission) !== tab.id) {
+          return false;
+        }
+        // Match Going table: hide honeypot hits when "Show bot clicks" is off.
+        if (!showBotClicks && tab.id === "going" && submission.botClick) {
+          return false;
+        }
+        return true;
+      }).length;
       return counts;
     },
     { invite_to: 0, invited: 0, going: 0 } as Record<WebinarSubmissionStage, number>
   );
   const waitlistedStageCounts = WAITLISTED_SUBMISSION_TABS.reduce(
     (counts, tab) => {
-      counts[tab.id] = submissions.filter(
-        (submission) => getWaitlistedSubmissionStage(submission) === tab.id
-      ).length;
+      counts[tab.id] = submissions.filter((submission) => {
+        if (getWaitlistedSubmissionStage(submission) !== tab.id) {
+          return false;
+        }
+        if (!showBotClicks && tab.id === "going" && submission.botClick) {
+          return false;
+        }
+        return true;
+      }).length;
       return counts;
     },
     { waitlist: 0, going: 0, rejected: 0, invite_to: 0, invited: 0 } as Record<
@@ -1599,7 +1612,7 @@ export function EventSubmissionsBoard({
                   ) : isActiveWaitlisted && waitlistedSubmissionTab === "going" ? (
                     <span className="event-going-status">
                       <span className="sub-badge">
-                        {submission.inviteAcceptedAt ? "Reconfirmed" : "Seat confirmed"}
+                        {submission.inviteAcceptedAt ? "Confirmed" : "Seat confirmed"}
                       </span>
                       {submission.botClick ? <span className="event-bot-pill">Bot click</span> : null}
                     </span>
@@ -1641,7 +1654,7 @@ export function EventSubmissionsBoard({
                   ) : isActiveWebinar && webinarSubmissionTab === "going" ? (
                     <span className="event-going-status">
                       <span className="sub-badge">
-                        {submission.inviteAcceptedAt ? "Reconfirmed" : "Registered"}
+                        {submission.inviteAcceptedAt ? "Confirmed" : "Registered"}
                       </span>
                       {submission.botClick ? <span className="event-bot-pill">Bot click</span> : null}
                     </span>

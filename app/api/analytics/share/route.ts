@@ -26,6 +26,7 @@ export async function POST(request: NextRequest) {
             drip?: boolean;
             oneone?: boolean;
             personalise?: boolean;
+            event?: boolean;
           };
         }
       | null;

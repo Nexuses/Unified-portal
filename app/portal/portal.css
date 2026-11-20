@@ -9069,6 +9069,7 @@ select.filter{
 }
 .an-kind-row.has-one{grid-template-columns:1fr;}
 .an-kind-row.has-three{grid-template-columns:repeat(3,1fr);}
+.an-kind-row.has-four{grid-template-columns:repeat(2,minmax(0,1fr));}
 .an-kind-card{
   border:1px solid #e5e7eb;border-radius:12px;background:#fff;padding:16px 18px;
 }
@@ -9163,6 +9164,7 @@ select.filter{
 .an-kind-tag.drip{background:#eef2ff;color:#3730a3;}
 .an-kind-tag.oneone{background:#e8f6ee;color:#067647;}
 .an-kind-tag.personalise{background:#fff4e5;color:#b54708;}
+.an-kind-tag.event{background:#ecfeff;color:#0e7490;}
 .an-view-tabs{margin:4px 0 8px;}
 .an-kanban-page{
   max-width:none;margin:0;flex:1;min-height:0;display:flex;flex-direction:column;
@@ -9656,7 +9658,7 @@ a.an-kanban-card-name.is-link:hover{
   width:10px;height:10px;border-radius:999px;display:inline-block;flex:0 0 auto;
 }
 @media (max-width:900px){
-  .an-stat-grid,.an-kind-row,.an-kind-row.has-three{grid-template-columns:1fr;}
+  .an-stat-grid,.an-kind-row,.an-kind-row.has-three,.an-kind-row.has-four{grid-template-columns:1fr;}
   .an-kind-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
   .an-page-head{flex-direction:column;align-items:stretch;}
 }
@@ -13069,10 +13071,14 @@ a.an-kanban-card-name.is-link:hover{
 .event-people-card > div[class*="grid"]{padding-left:16px;padding-right:16px;}
 .event-people-card > div[class*="border-b"]:first-child,
 .event-bot-toggle + div{background:#fafafa !important;}
-.event-going-status{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.event-going-status{
+  display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap;white-space:nowrap;
+  max-width:100%;
+}
 .event-bot-pill{
   display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:999px;
   background:#f5f3ff;border:1px solid #ddd6fe;color:#5b21b6;font-size:11px;font-weight:700;
+  flex-shrink:0;
 }
 .event-invite-history{
   width:100%;margin-top:36px;padding-top:8px;

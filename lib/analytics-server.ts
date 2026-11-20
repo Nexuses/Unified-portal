@@ -24,6 +24,7 @@ import { sendHasHumanClick } from "@/lib/bot-click";
 import type { ContactDoc } from "@/lib/crm";
 import type { AutomationDoc } from "@/lib/automations-server";
 import { ensureCampaignShareTokens } from "@/lib/drip-campaigns-server";
+import { ensureEventShareToken, type EventDocument } from "@/lib/events";
 
 export type AnalyticsShareDoc = {
   _id: ObjectId;
@@ -76,8 +77,8 @@ function dashboardCacheKey(
   withShareTokens: boolean,
   hideBotClicks: boolean,
 ) {
-  // v3: unique-contact counts; hideBot=1 matches campaign report default.
-  return `${projectId.toString()}|v3|${fromInput}|${toInput}|${withShareTokens ? "1" : "0"}|hideBot=${hideBotClicks ? "1" : "0"}`;
+  // v4: includes event invite campaigns alongside drip / 1-1 / personalise.
+  return `${projectId.toString()}|v4|${fromInput}|${toInput}|${withShareTokens ? "1" : "0"}|hideBot=${hideBotClicks ? "1" : "0"}`;
 }
 
 /** Match portal campaign report default (Show bot opens/clicks off). */
@@ -373,6 +374,7 @@ export async function getAnalyticsDashboard(
     dripCampaigns: 0,
     oneOneCampaigns: 0,
     personaliseCampaigns: 0,
+    eventCampaigns: 0,
     contactsAdded,
     automationsCreated,
   };
@@ -383,7 +385,12 @@ export async function getAnalyticsDashboard(
     totals.unsubscribed = totalRow.unsubscribed;
   }
 
-  const byKind = { drip: emptyKind(), oneone: emptyKind(), personalise: emptyKind() };
+  const byKind = {
+    drip: emptyKind(),
+    oneone: emptyKind(),
+    personalise: emptyKind(),
+    event: emptyKind(),
+  };
   const dailyMap = new Map<string, AnalyticsDailyPoint>();
   for (const day of eachDay(from, to)) {
     dailyMap.set(day, { date: day, delivered: 0, opens: 0, clicks: 0 });
@@ -439,20 +446,155 @@ export async function getAnalyticsDashboard(
     }
   }
 
+  // Event invite campaigns (separate from campaign_blasts / campaign_sends).
+  const projectKey = projectId.toString();
+  const projectEvents = await db
+    .collection<EventDocument>("events")
+    .find(
+      { projectId: projectKey },
+      { projection: { eventName: 1, shareToken: 1 } },
+    )
+    .toArray();
+  if (projectEvents.length > 0) {
+    const eventIds = projectEvents
+      .map((event) => event._id)
+      .filter((id): id is ObjectId => Boolean(id));
+    const eventMap = new Map(
+      projectEvents
+        .filter((event) => event._id)
+        .map((event) => [event._id!.toString(), event]),
+    );
+    type InviteRow = {
+      eventId: ObjectId;
+      email?: string;
+      emailNormalized?: string;
+      inviteSentAt?: Date;
+    };
+    const inviteDocs =
+      eventIds.length > 0
+        ? ((await db
+            .collection("event_submissions")
+            .find({
+              eventId: { $in: eventIds },
+              inviteSentAt: { $gte: from, $lte: to },
+            })
+            .project({
+              eventId: 1,
+              email: 1,
+              emailNormalized: 1,
+              inviteSentAt: 1,
+            })
+            .toArray()) as InviteRow[])
+        : [];
+
+    const eventBuckets = new Map<string, UniqueBucket>();
+    for (const doc of inviteDocs) {
+      const email = String(doc.emailNormalized ?? doc.email ?? "")
+        .trim()
+        .toLowerCase();
+      if (!email || !doc.eventId || !doc.inviteSentAt) {
+        continue;
+      }
+      const sentAt =
+        doc.inviteSentAt instanceof Date
+          ? doc.inviteSentAt
+          : new Date(doc.inviteSentAt);
+      if (Number.isNaN(sentAt.getTime())) {
+        continue;
+      }
+      const eventKey = doc.eventId.toString();
+      let bucket = eventBuckets.get(eventKey);
+      if (!bucket) {
+        bucket = emptyUniqueBucket();
+        eventBuckets.set(eventKey, bucket);
+      }
+      bucket.delivered.add(email);
+      if (!bucket.sentAt || sentAt > bucket.sentAt) {
+        bucket.sentAt = sentAt;
+      }
+
+      const day = utcDayKey(sentAt);
+      let daily = dailyBuckets.get(day);
+      if (!daily) {
+        daily = emptyUniqueBucket();
+        dailyBuckets.set(day, daily);
+      }
+      daily.delivered.add(email);
+      totalsBucket.delivered.add(email);
+    }
+
+    for (const [eventKey, bucket] of eventBuckets) {
+      const event = eventMap.get(eventKey);
+      const delivered = bucket.delivered.size;
+      if (!delivered) {
+        continue;
+      }
+      byKind.event.delivered += delivered;
+      const sentAt = bucket.sentAt?.toISOString();
+      campaignMap.set(`event:${eventKey}`, {
+        id: eventKey,
+        campaignId: eventKey,
+        name: event?.eventName?.trim() || `Event ${eventKey.slice(-6)}`,
+        kind: "event",
+        sentAt,
+        delivered,
+        opens: 0,
+        clicks: 0,
+        unsubscribed: 0,
+        ...(event?.shareToken ? { shareToken: event.shareToken } : {}),
+      });
+    }
+
+    // Refresh daily delivered with event invite sends (opens/clicks stay blast-only).
+    for (const [day, row] of dailyBuckets) {
+      const existing = dailyMap.get(day);
+      if (existing) {
+        existing.delivered = row.delivered.size;
+      } else {
+        dailyMap.set(day, {
+          date: day,
+          delivered: row.delivered.size,
+          opens: 0,
+          clicks: 0,
+        });
+      }
+    }
+    totals.delivered = totalsBucket.delivered.size;
+  }
+
   const campaigns = [...campaignMap.values()].sort((a, b) => b.delivered - a.delivered);
   totals.campaigns = campaigns.length;
   totals.dripCampaigns = campaigns.filter((item) => item.kind === "drip").length;
   totals.personaliseCampaigns = campaigns.filter((item) => item.personalise).length;
   totals.oneOneCampaigns =
     campaigns.filter((item) => item.kind === "oneone").length - totals.personaliseCampaigns;
+  totals.eventCampaigns = campaigns.filter((item) => item.kind === "event").length;
 
   if (withShareTokens && campaigns.length > 0) {
-    const tokens = await ensureCampaignShareTokens(
-      projectId,
-      campaigns.map((item) => ({ campaignId: item.campaignId, kind: item.kind })),
-    );
+    const emailCampaigns = campaigns.filter((item) => item.kind !== "event");
+    if (emailCampaigns.length > 0) {
+      const tokens = await ensureCampaignShareTokens(
+        projectId,
+        emailCampaigns.map((item) => ({
+          campaignId: item.campaignId,
+          kind: item.kind as "drip" | "oneone",
+        })),
+      );
+      for (const campaign of emailCampaigns) {
+        campaign.shareToken = tokens.get(`${campaign.kind}:${campaign.campaignId}`);
+      }
+    }
     for (const campaign of campaigns) {
-      campaign.shareToken = tokens.get(`${campaign.kind}:${campaign.campaignId}`);
+      if (campaign.kind !== "event") {
+        continue;
+      }
+      if (campaign.shareToken) {
+        continue;
+      }
+      const token = await ensureEventShareToken(campaign.campaignId, projectKey);
+      if (token) {
+        campaign.shareToken = token;
+      }
     }
   }
 

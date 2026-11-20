@@ -88,6 +88,9 @@ export const PORTAL_CAMPAIGN_EDIT_ROUTE = "/portal/marketing/campaigns/edit";
 
 export function portalCampaignRoute(id: string, kind?: string, tags?: string[]) {
   const campaignId = encodeURIComponent(id);
+  if (kind === "event") {
+    return `/portal/marketing/events/${campaignId}/report`;
+  }
   if (tags?.includes("personalise")) {
     return `${PORTAL_ROUTES.personalise}/${campaignId}`;
   }
