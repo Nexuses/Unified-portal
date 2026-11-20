@@ -179,7 +179,7 @@ export default function PortalLinkedinBoardPage({ campaignId }: { campaignId: st
         </p>
       ) : campaign.contacts.some((contact) => contact.stage === "prospect") ? (
         <p className="li-board-sending">
-          Prospects stay here until a connection request is sent. Then they move to Sent connection request, one at a time, five minutes apart.
+          Prospects stay here until a connection request is sent. Then they move to Sent connection request.
         </p>
       ) : campaign.contacts.some((contact) => contact.stage === "request_sent") ? (
         <p className="li-board-sending">

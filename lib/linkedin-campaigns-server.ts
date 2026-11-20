@@ -14,6 +14,7 @@ import {
 } from "@/lib/boat";
 import {
   campaignTabMarker,
+  clickLinkedinConnect,
   ensureLinkedinWorkspaceTabs,
   focusLinkedinTab,
   LINKEDIN_MESSAGING_URL,
@@ -1268,7 +1269,10 @@ function pickCampaignAction(doc: CampaignDoc, now: Date, connectGapOpen: boolean
       person.statusNote === BUTTONS_HIDDEN_NOTE ||
       person.statusNote === "The connection request could not be sent. It will try again." ||
       person.statusNote === "The profile could not be opened. It will try again.";
-    if (needsRequest && (connectGapOpen || lookFailed) && !limitHold && (lookFailed || sinceLook >= CONNECTION_GAP_MS)) {
+    // Failed profile opens need a short cool-down so we do not hammer CDP every tick.
+    const openFailCool = person.statusNote === "The profile could not be opened. It will try again.";
+    const lookReady = openFailCool ? sinceLook >= 45_000 : lookFailed || sinceLook >= CONNECTION_GAP_MS;
+    if (needsRequest && (connectGapOpen || lookFailed) && !limitHold && lookReady) {
       consider({ priority: 1, kind: "connect", doc, index, person, like: false });
     }
   });
@@ -1684,28 +1688,35 @@ function firstConnectProfileUrl(doc: CampaignDoc) {
 async function prepareLinkedinWorkspaceTabs(
   sandboxId: string,
   items: ReadyCampaign[],
-  options?: { frontCampaign?: boolean; navigateCampaign?: boolean },
+  options?: {
+    frontCampaign?: boolean;
+    navigateCampaign?: boolean;
+    profileUrl?: string;
+    campaignId?: string;
+  },
 ) {
   if (!items.length) return false;
   if (!(await ensureLinkedinChrome(sandboxId))) return false;
-  const primary = items[0].doc;
-  const connectUrl = firstConnectProfileUrl(primary);
+  const primary =
+    (options?.campaignId
+      ? items.find((item) => item.doc._id.toString() === options.campaignId)?.doc
+      : null) || items[0].doc;
+  const connectUrl = options?.profileUrl || firstConnectProfileUrl(primary);
   const campaignMarker = campaignTabMarker(primary._id.toString());
+  const shouldNavigate = options?.navigateCampaign !== false;
   const ok = await ensureLinkedinWorkspaceTabs(sandboxId, {
     campaignMarker,
-    campaignUrl: connectUrl,
+    campaignUrl: shouldNavigate ? connectUrl : connectUrl,
     frontCampaign: options?.frontCampaign === true,
-    navigateCampaign: options?.navigateCampaign !== false,
+    // Always pass the profile URL. The workspace script keeps about:blank from sticking.
+    navigateCampaign: shouldNavigate || Boolean(connectUrl.includes("/in/")),
   });
   if (!ok) {
     // Fallback: older one-tab-at-a-time path if the atomic workspace script fails.
     const keep = linkedinKeepTabs(items);
-    const shouldNavigate = options?.navigateCampaign !== false;
-    const connectExpect = shouldNavigate
-      ? connectUrl.includes("/in/")
-        ? linkedinProfileSlug(connectUrl) || "/in/"
-        : "linkedin.com"
-      : "";
+    const connectExpect = connectUrl.includes("/in/")
+      ? linkedinProfileSlug(connectUrl) || "/in/"
+      : "linkedin.com";
     await focusLinkedinTab(
       sandboxId,
       LINKEDIN_REPLIES_TAB,
@@ -1725,7 +1736,7 @@ async function prepareLinkedinWorkspaceTabs(
     await focusLinkedinTab(
       sandboxId,
       campaignMarker,
-      shouldNavigate ? connectUrl : "",
+      connectUrl,
       connectExpect,
       keep,
       true,
@@ -1761,13 +1772,14 @@ async function runLinkedinProfileStep(
     { $set: { activePromptId: "boat", activePromptAt: now, updatedAt: now } },
   );
   try {
-    const slug = linkedinProfileSlug(person.linkedinUrl);
     const focus = await focusLinkedinTab(
       sandboxId,
       campaignTabMarker(doc._id.toString()),
       person.linkedinUrl,
-      slug || "/in/",
+      // Match any profile path — LinkedIn can rewrite the slug or add locale params.
+      "/in/",
       keep,
+      false,
     );
     const messages = action.message ? [action.message] : [];
     const target: BoatTarget = {
@@ -1798,6 +1810,29 @@ async function runLinkedinProfileStep(
       visit = { state: "pending", sent: [], replied: null, requested: true };
       sentRequest = true;
       console.info("[linkedin] profile already pending", person.name, focus.profileActions.join("|"));
+    } else if (focus.state === "ready" && action.kind === "connect") {
+      const hasConnect = actionLabels.some(
+        (label) => label === "connect" || label.includes("to connect"),
+      );
+      const clicked = await clickLinkedinConnect(
+        sandboxId,
+        campaignTabMarker(doc._id.toString()),
+        person.name,
+      );
+      if (clicked.status === "pending") {
+        visit = { state: "pending", sent: [], replied: null, requested: true };
+        sentRequest = true;
+      } else if (clicked.status === "connected") {
+        visit = { state: "connected", sent: [], replied: null, requested: true };
+      } else {
+        visit = { state: "unknown", sent: [], replied: null, requested: false };
+        console.info(
+          "[linkedin] connect click missed",
+          person.name,
+          hasConnect ? "had-connect" : "no-connect",
+          focus.profileActions.join("|"),
+        );
+      }
     } else if (focus.state === "ready") {
       const result = await runLinkedinBoatTask(
         sandboxId,
@@ -1824,15 +1859,7 @@ async function runLinkedinProfileStep(
         visit.state !== "unknown" &&
         visit.state !== "login" &&
         (read.sentRequest || visit.state === "pending");
-      if (
-        action.kind === "connect" &&
-        !sentRequest &&
-        !limited &&
-        visit.state === "unknown" &&
-        !focus.profileActions.length
-      ) {
-        console.info("[linkedin] profile actions still hidden", person.name);
-      } else if (headerConnected && visit.state === "unknown") {
+      if (headerConnected && visit.state === "unknown") {
         visit = { ...visit, state: "connected" };
       }
     }
@@ -1887,7 +1914,8 @@ async function runLinkedinWatchStep(
     { $set: { activePromptId: "boat", activePromptAt: now, updatedAt: now } },
   );
   try {
-    const focus = await focusLinkedinTab(sandboxId, watch.marker, watch.url, watch.expect, keep, true);
+    // Bring the watch tab forward so LinkedIn finishes loading the inbox/notifications page.
+    const focus = await focusLinkedinTab(sandboxId, watch.marker, watch.url, watch.expect, keep, false);
     if (focus.state === "login") {
       await db.collection<SessionDoc>("linkedin_sessions").updateOne(
         { projectId: session.projectId },
@@ -1903,9 +1931,19 @@ async function runLinkedinWatchStep(
       saved = true;
       return 0;
     }
+    // Always stamp the watch time — a failed read must not block forever.
+    await db.collection<SessionDoc>("linkedin_sessions").updateOne(
+      { projectId: session.projectId },
+      { $set: { [watch.stamp]: now, updatedAt: now } },
+    );
     let accepted: string[] = [];
     let replies: { name: string; text: string }[] = [];
-    if (focus.state === "ready" && watch.stamp === "repliesCheckedAt") {
+    if (focus.state !== "ready") {
+      console.info(`[linkedin] ${watch.label} tab not ready (${focus.state})`);
+      saved = true;
+      return 0;
+    }
+    if (watch.stamp === "repliesCheckedAt") {
       const people = items.flatMap((item) => item.doc.people);
       replies = inboxReplies(focus.inbox, people);
       console.info(
@@ -1916,17 +1954,9 @@ async function runLinkedinWatchStep(
           .slice(0, 500) || "no conversations",
       );
       if (replies.length) console.info("[linkedin] replies found", replies.map((reply) => reply.name).join(", "));
-      await db.collection<SessionDoc>("linkedin_sessions").updateOne(
-        { projectId: session.projectId },
-        { $set: { repliesCheckedAt: now, updatedAt: now } },
-      );
-    } else if (focus.state === "ready") {
+    } else {
       accepted = focus.accepted;
       if (accepted.length) console.info("[linkedin] accepts found", accepted.join(", "));
-      await db.collection<SessionDoc>("linkedin_sessions").updateOne(
-        { projectId: session.projectId },
-        { $set: { [watch.stamp]: now, updatedAt: now } },
-      );
     }
     let sent = 0;
     const accountName = session.accountName || "";
@@ -1981,14 +2011,24 @@ async function runProjectLinkedinStep(items: ReadyCampaign[], now: Date) {
   if (!best && !readReplies && !readAccepts) return 0;
   if (
     !(await prepareLinkedinWorkspaceTabs(sandboxId, ordered, {
-      frontCampaign: false,
-      navigateCampaign: false,
+      frontCampaign: Boolean(best),
+      navigateCampaign: Boolean(best),
+      profileUrl: best?.person.linkedinUrl,
+      campaignId: best?.doc._id.toString(),
     }))
   ) {
     return 0;
   }
   const keep = linkedinKeepTabs(ordered);
   const accountName = session.accountName || "";
+  // Connection requests and messages come first. Reply/accept watches must not starve them.
+  if (best) {
+    await fillLinkedinChrome(sandboxId);
+    console.info(
+      `[linkedin] ${best.doc.name}: ${best.kind} ${best.person.name} in ${campaignTabMarker(best.doc._id.toString())}`,
+    );
+    return runLinkedinProfileStep(best, sandboxId, now, keep);
+  }
   if (readReplies) {
     console.info("[linkedin] reading the messaging tab for replies");
     return runLinkedinWatchStep(ordered, session, sandboxId, now, {
@@ -2003,23 +2043,23 @@ async function runProjectLinkedinStep(items: ReadyCampaign[], now: Date) {
       stamp: "repliesCheckedAt",
     });
   }
-  if (readAccepts && best?.kind !== "message") {
+  if (readAccepts) {
+    const waiting = ordered.flatMap((item) =>
+      item.doc.people
+        .filter((person) => personStage(person) === "request_sent" && person.connectionRequested)
+        .map((person) => person.name),
+    );
     console.info("[linkedin] reading the network tab for accepts");
     return runLinkedinWatchStep(ordered, session, sandboxId, now, {
       marker: LINKEDIN_NETWORK_TAB,
       url: LINKEDIN_NETWORK_URL,
       expect: "linkedin.com/notifications",
-      task: linkedinNetworkTask(accountName, []),
+      task: linkedinNetworkTask(accountName, waiting),
       label: "network",
       stamp: "acceptsCheckedAt",
     });
   }
-  if (!best) return 0;
-  await fillLinkedinChrome(sandboxId);
-  console.info(
-    `[linkedin] ${best.doc.name}: ${best.kind} ${best.person.name} in ${campaignTabMarker(best.doc._id.toString())}`,
-  );
-  return runLinkedinProfileStep(best, sandboxId, now, keep);
+  return 0;
 }
 
 async function runLinkedinFollowUps(now = new Date()) {

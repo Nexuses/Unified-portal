@@ -286,7 +286,7 @@ def read_profile_actions():
         "seen[key] = 1;"
         "labels.push(text);"
         "};"
-        "Array.from(document.querySelectorAll('button, a, [role=\"button\"]')).forEach((node) => {"
+        "Array.from(document.querySelectorAll('button, a')).forEach((node) => {"
         "push(node.innerText || '');"
         "push(node.getAttribute('aria-label') || '');"
         "});"
@@ -508,6 +508,12 @@ export async function focusLinkedinTab(
   );
   const sample = result?.stdout.split("\n").find((item) => item.startsWith("INBOX_SAMPLE\t")) || "";
   if (sample) console.info("[linkedin]", sample.slice(0, 500));
+  if (!line && result?.stdout) {
+    console.info("[linkedin] tab stdout", result.stdout.replace(/\s+/g, " ").slice(0, 400));
+  }
+  if (!line && result?.stderr) {
+    console.info("[linkedin] tab stderr", result.stderr.replace(/\s+/g, " ").slice(0, 400));
+  }
   const state = line.startsWith("TAB_READY") ? "ready" : line.startsWith("TAB_LOGIN") ? "login" : "failed";
   return { state, inbox, inboxRead, accepted, profileActions };
 }
@@ -706,18 +712,21 @@ replies_id, replies_href, replies_sock, _ = ensure(
 network_id, network_href, network_sock, _ = ensure(
     network_marker, network_url, "linkedin.com/notifications", "network", network_url
 )
-campaign_target = campaign_url if navigate_campaign and campaign_url else ""
-campaign_expect = ""
-if campaign_target and "/in/" in campaign_target:
-    campaign_expect = campaign_target.rstrip("/").split("/")[-1] or "/in/"
-elif campaign_target:
-    campaign_expect = "linkedin.com"
+# Always open a real LinkedIn page for the campaign tab — never leave about:blank.
+campaign_target = campaign_url if campaign_url else "https://www.linkedin.com/feed/"
+if not navigate_campaign and campaign_url and "/in/" in campaign_url:
+    campaign_target = campaign_url
+campaign_expect = "/in/" if "/in/" in campaign_target else "linkedin.com"
+if "/in/" in campaign_target:
+    slug = campaign_target.rstrip("/").split("/")[-1]
+    if slug:
+        campaign_expect = slug
 campaign_id, campaign_href, campaign_sock, campaign_seq = ensure(
     campaign_marker,
     campaign_target,
     campaign_expect,
     "campaign",
-    campaign_target or "https://www.linkedin.com/feed/",
+    campaign_target,
 )
 
 keep_ids = {replies_id, network_id, campaign_id}
@@ -759,6 +768,250 @@ if front:
 print("WORKSPACE\\treplies=%s\\tnetwork=%s\\tcampaign=%s" % (replies_href[:120], network_href[:120], campaign_href[:120]))
 print("WORKSPACE_OK\\t3")
 `.trim();
+
+const LINKEDIN_CONNECT_CLICK_PY = `
+import json, os, socket, base64, time, urllib.request
+
+marker = os.environ.get("TAB_MARKER") or ""
+person = (os.environ.get("TAB_PERSON") or "").strip().lower()
+
+class Reader:
+    def __init__(self, sock, rest=b""):
+        self.sock = sock
+        self.rest = rest
+    def recvn(self, size):
+        buf = self.rest
+        while len(buf) < size:
+            chunk = self.sock.recv(max(4096, size - len(buf)))
+            if not chunk:
+                raise RuntimeError("closed")
+            buf += chunk
+        self.rest = buf[size:]
+        return buf[:size]
+    def sendall(self, data):
+        self.sock.sendall(data)
+
+def ws_connect(ws_url):
+    rest = ws_url.split("://", 1)[1]
+    hostport, path = rest.split("/", 1)
+    host, port = hostport.split(":")
+    sock = socket.create_connection((host, int(port)), 15)
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = "GET /%s HTTP/1.1\\r\\nHost: %s\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Key: %s\\r\\nSec-WebSocket-Version: 13\\r\\n\\r\\n" % (path, hostport, key)
+    sock.sendall(req.encode())
+    buf = b""
+    while b"\\r\\n\\r\\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise RuntimeError("closed")
+        buf += chunk
+    _header, _, leftover = buf.partition(b"\\r\\n\\r\\n")
+    return Reader(sock, leftover)
+
+def send(reader, payload):
+    data = json.dumps(payload).encode()
+    mask = os.urandom(4)
+    header = bytearray([0x81])
+    size = len(data)
+    if size < 126:
+        header.append(0x80 | size)
+    else:
+        header.append(0xFE)
+        header.extend(size.to_bytes(2, "big"))
+    header.extend(mask)
+    reader.sendall(bytes(header) + bytes(byte ^ mask[index % 4] for index, byte in enumerate(data)))
+
+def recv_text(reader):
+    parts = []
+    while True:
+        header = reader.recvn(2)
+        opcode = header[0] & 15
+        length = header[1] & 127
+        if length == 126:
+            length = int.from_bytes(reader.recvn(2), "big")
+        elif length == 127:
+            length = int.from_bytes(reader.recvn(8), "big")
+        data = reader.recvn(length)
+        if opcode == 8:
+            raise RuntimeError("closed")
+        if opcode == 9:
+            continue
+        if opcode in (0, 1):
+            parts.append(data)
+            if header[0] & 128:
+                return b"".join(parts).decode("utf-8", "replace")
+
+def call(sock, ident, method, params):
+    send(sock, {"id": ident, "method": method, "params": params})
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        message = json.loads(recv_text(sock))
+        if message.get("id") == ident:
+            return message
+    raise TimeoutError(method)
+
+def page_targets():
+    with urllib.request.urlopen("http://127.0.0.1:9222/json/list", timeout=5) as response:
+        return [item for item in json.load(response) if item.get("type") == "page"]
+
+def window_name(item):
+    try:
+        probe = ws_connect(item["webSocketDebuggerUrl"])
+        result = call(probe, 1, "Runtime.evaluate", {"expression": "window.name", "returnByValue": True})
+        return (((result.get("result") or {}).get("result") or {}).get("value")) or ""
+    except Exception:
+        return ""
+
+pages = page_targets()
+page = None
+for item in pages:
+    name = window_name(item)
+    href = item.get("url") or ""
+    if marker and name == marker:
+        page = item
+        break
+    if page is None and "/in/" in href:
+        page = item
+if page is None:
+    print("CONNECT_FAIL\\tno-tab")
+    raise SystemExit(0)
+
+sock = ws_connect(page["webSocketDebuggerUrl"])
+seq = [10]
+
+def evaluate(expression):
+    seq[0] += 1
+    result = call(sock, seq[0], "Runtime.evaluate", {"expression": expression, "returnByValue": True, "awaitPromise": True})
+    return (((result.get("result") or {}).get("result") or {}).get("value"))
+
+evaluate("window.scrollTo(0,0)")
+time.sleep(0.4)
+
+script = """
+(() => {
+  const tidy = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+  const nodes = Array.from(document.querySelectorAll('button, a'));
+  const labelOf = (node) => tidy(node.innerText || node.getAttribute('aria-label') || '');
+  const lower = (node) => labelOf(node).toLowerCase();
+  const visible = (node) => {
+    const rect = node.getBoundingClientRect();
+    return rect.width > 2 && rect.height > 2 && rect.bottom > 0 && rect.top < (window.innerHeight || 800);
+  };
+  const pending = nodes.find((node) => {
+    const text = lower(node);
+    return visible(node) && (text === 'pending' || text.indexOf('pending') === 0 || text.indexOf('withdraw') >= 0);
+  });
+  if (pending) return JSON.stringify({ status: 'pending' });
+  const connected = nodes.find((node) => {
+    const text = lower(node);
+    return visible(node) && (text.indexOf('remove connection') >= 0 || text === 'message' || text.indexOf('message ') === 0);
+  });
+  const degree = tidy(document.body && document.body.innerText || '').toLowerCase();
+  if (connected && degree.indexOf('1st') >= 0 && degree.indexOf('connect') < 0) {
+    return JSON.stringify({ status: 'connected' });
+  }
+  let connect = nodes.find((node) => {
+    const text = lower(node);
+    return visible(node) && (text === 'connect' || text.indexOf('to connect') >= 0);
+  });
+  if (!connect) {
+    const more = nodes.find((node) => {
+      const text = lower(node);
+      return visible(node) && (text === 'more' || text.indexOf('more') === 0);
+    });
+    if (more) {
+      more.click();
+      return JSON.stringify({ status: 'opened-more' });
+    }
+    return JSON.stringify({ status: 'no-connect' });
+  }
+  connect.click();
+  return JSON.stringify({ status: 'clicked-connect' });
+})()
+"""
+
+raw = evaluate(script)
+try:
+    first = json.loads(raw or "{}")
+except Exception:
+    first = {"status": "bad"}
+status = first.get("status") or "bad"
+if status == "opened-more":
+    time.sleep(0.8)
+    raw = evaluate(script)
+    try:
+        first = json.loads(raw or "{}")
+    except Exception:
+        first = {"status": "bad"}
+    status = first.get("status") or "bad"
+
+if status in ("pending", "connected"):
+    print("CONNECT_OK\\t%s" % status)
+    raise SystemExit(0)
+if status == "no-connect":
+    print("CONNECT_FAIL\\tno-connect")
+    raise SystemExit(0)
+if status != "clicked-connect":
+    print("CONNECT_FAIL\\t%s" % status)
+    raise SystemExit(0)
+
+time.sleep(1.0)
+send_script = """
+(() => {
+  const tidy = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+  const nodes = Array.from(document.querySelectorAll('button, a'));
+  const send = nodes.find((node) => {
+    const text = tidy(node.innerText || node.getAttribute('aria-label') || '').toLowerCase();
+    const rect = node.getBoundingClientRect();
+    if (!(rect.width > 2 && rect.height > 2)) return false;
+    return text === 'send' || text === 'send now' || text.indexOf('send without') >= 0 || text === 'done';
+  });
+  if (!send) return 'no-send';
+  send.click();
+  return 'sent';
+})()
+"""
+sent = str(evaluate(send_script) or "")
+time.sleep(1.2)
+check = str(evaluate("""
+(() => {
+  const nodes = Array.from(document.querySelectorAll('button, a'));
+  const hit = nodes.some((node) => {
+    const text = String(node.innerText || node.getAttribute('aria-label') || '').toLowerCase();
+    return text === 'pending' || text.indexOf('pending') === 0 || text.indexOf('withdraw') >= 0;
+  });
+  return hit ? 'pending' : 'unknown';
+})()
+""") or "unknown")
+if sent == "sent" or check == "pending":
+    print("CONNECT_OK\\tpending")
+else:
+    print("CONNECT_FAIL\\t%s" % (sent or check))
+`.trim();
+
+/** Click Connect (+ Send with no note) on the front profile tab via CDP. */
+export async function clickLinkedinConnect(sandboxId: string, marker: string, personName: string) {
+  const command = [
+    `TAB_MARKER=${shellQuote(marker)}`,
+    `TAB_PERSON=${shellQuote(personName)}`,
+    `python3 -c ${shellQuote(LINKEDIN_CONNECT_CLICK_PY)}`,
+  ].join(" ");
+  const result = await runBoatCommand(sandboxId, command, 40).catch((error) => {
+    console.error("[linkedin] connect click failed", error);
+    return null;
+  });
+  const line =
+    result?.stdout.split("\n").find((item) => item.startsWith("CONNECT_")) ||
+    "";
+  console.info("[linkedin] connect-click", line.slice(0, 200) || "CONNECT_FAIL");
+  if (line.startsWith("CONNECT_OK\tpending")) {
+    return { status: "pending" as const, sentRequest: true };
+  }
+  if (line.startsWith("CONNECT_OK\tconnected")) {
+    return { status: "connected" as const, sentRequest: false };
+  }
+  return { status: "failed" as const, sentRequest: false };
+}
 
 /** Open/repair the three LinkedIn workspace tabs in one CDP pass. */
 export async function ensureLinkedinWorkspaceTabs(
