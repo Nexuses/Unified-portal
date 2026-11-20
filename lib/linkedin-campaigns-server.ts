@@ -14,6 +14,7 @@ import {
 } from "@/lib/boat";
 import {
   campaignTabMarker,
+  ensureLinkedinWorkspaceTabs,
   focusLinkedinTab,
   LINKEDIN_MESSAGING_URL,
   LINKEDIN_NETWORK_TAB,
@@ -990,25 +991,30 @@ export async function startLinkedinCampaign(
   });
   if (!doc) throw new Error("Campaign was not saved.");
 
-  const opened = await openLinkedinComputer(projectId).catch(() => null);
+  // Do not restart Chrome here — that wipes the three workspace tabs.
   const sandbox = await linkedinComputer(projectId).catch(() => null);
+  let desktopUrl: string | undefined;
   if (sandbox && isBoatRunning(sandbox.state) && !sandbox.replacedDeletedDisk) {
-    for (
-      let attempt = 0;
-      attempt < 12 && !(await chromeDebugOpen(sandbox.id));
-      attempt += 1
-    ) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    await prepareLinkedinWorkspaceTabs(
-      sandbox.id,
-      [{ doc, sandboxId: sandbox.id }],
-      { frontCampaign: true, navigateCampaign: true },
-    ).catch((error) => {
-      console.error("[linkedin] could not open workspace tabs", error);
+    await ensureCloudVpn(projectId, sandbox.id).catch((error) => {
+      console.warn(
+        "[linkedin] VPN not ready at campaign start",
+        error instanceof Error ? error.message : error,
+      );
     });
+    if (!(await ensureLinkedinChrome(sandbox.id))) {
+      console.error("[linkedin] Chrome did not open for workspace tabs");
+    } else {
+      await prepareLinkedinWorkspaceTabs(
+        sandbox.id,
+        [{ doc, sandboxId: sandbox.id }],
+        { frontCampaign: true, navigateCampaign: true },
+      ).catch((error) => {
+        console.error("[linkedin] could not open workspace tabs", error);
+      });
+    }
+    desktopUrl = await openBoatDesktop(sandbox.id).catch(() => undefined);
   }
-  return { campaign: mapCampaign(doc), desktopUrl: opened?.desktopUrl };
+  return { campaign: mapCampaign(doc), desktopUrl };
 }
 
 function markConnected(
@@ -1662,7 +1668,6 @@ async function ensureLinkedinChrome(sandboxId: string) {
 function firstConnectProfileUrl(doc: CampaignDoc) {
   for (const person of doc.people) {
     if (!person.linkedinUrl) continue;
-    const stage = personStage(person);
     if (awaitingConnect(person)) return person.linkedinUrl;
   }
   return (
@@ -1683,44 +1688,51 @@ async function prepareLinkedinWorkspaceTabs(
 ) {
   if (!items.length) return false;
   if (!(await ensureLinkedinChrome(sandboxId))) return false;
-  const keep = linkedinKeepTabs(items);
   const primary = items[0].doc;
   const connectUrl = firstConnectProfileUrl(primary);
   const campaignMarker = campaignTabMarker(primary._id.toString());
-  const shouldNavigate = options?.navigateCampaign !== false;
-  const connectExpect = shouldNavigate
-    ? connectUrl.includes("/in/")
-      ? linkedinProfileSlug(connectUrl) || "/in/"
-      : "linkedin.com"
-    : "";
-
-  await focusLinkedinTab(
-    sandboxId,
-    LINKEDIN_REPLIES_TAB,
-    LINKEDIN_MESSAGING_URL,
-    "linkedin.com/messaging",
-    keep,
-    true,
-  );
-  await focusLinkedinTab(
-    sandboxId,
-    LINKEDIN_NETWORK_TAB,
-    LINKEDIN_NETWORK_URL,
-    "linkedin.com/notifications",
-    keep,
-    true,
-  );
-  await focusLinkedinTab(
-    sandboxId,
+  const ok = await ensureLinkedinWorkspaceTabs(sandboxId, {
     campaignMarker,
-    shouldNavigate ? connectUrl : "",
-    connectExpect,
-    keep,
-    true,
-  );
-  if (options?.frontCampaign) {
-    // Bring the connect tab forward and drop stray Chrome tabs.
-    await focusLinkedinTab(sandboxId, campaignMarker, "", "", keep, false);
+    campaignUrl: connectUrl,
+    frontCampaign: options?.frontCampaign === true,
+    navigateCampaign: options?.navigateCampaign !== false,
+  });
+  if (!ok) {
+    // Fallback: older one-tab-at-a-time path if the atomic workspace script fails.
+    const keep = linkedinKeepTabs(items);
+    const shouldNavigate = options?.navigateCampaign !== false;
+    const connectExpect = shouldNavigate
+      ? connectUrl.includes("/in/")
+        ? linkedinProfileSlug(connectUrl) || "/in/"
+        : "linkedin.com"
+      : "";
+    await focusLinkedinTab(
+      sandboxId,
+      LINKEDIN_REPLIES_TAB,
+      LINKEDIN_MESSAGING_URL,
+      "linkedin.com/messaging",
+      keep,
+      true,
+    );
+    await focusLinkedinTab(
+      sandboxId,
+      LINKEDIN_NETWORK_TAB,
+      LINKEDIN_NETWORK_URL,
+      "linkedin.com/notifications",
+      keep,
+      true,
+    );
+    await focusLinkedinTab(
+      sandboxId,
+      campaignMarker,
+      shouldNavigate ? connectUrl : "",
+      connectExpect,
+      keep,
+      true,
+    );
+    if (options?.frontCampaign) {
+      await focusLinkedinTab(sandboxId, campaignMarker, "", "", keep, false);
+    }
   }
   return true;
 }

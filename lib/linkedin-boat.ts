@@ -163,20 +163,27 @@ if page is None:
     if page is None:
         raise RuntimeError("no-tab")
 sock = ws_connect(page["webSocketDebuggerUrl"])
-call(sock, 2, "Runtime.evaluate", {"expression": "window.name = %s" % json.dumps(marker), "returnByValue": True})
+call(sock, 2, "Page.enable", {})
+# LinkedIn navigations can wipe window.name — stamp it on every new document too.
+call(sock, 3, "Page.addScriptToEvaluateOnNewDocument", {"source": "window.name = %s;" % json.dumps(marker)})
+call(sock, 4, "Runtime.evaluate", {"expression": "window.name = %s" % json.dumps(marker), "returnByValue": True})
 if not quiet:
     try:
         browser = browser_socket()
-        call(browser, 3, "Target.activateTarget", {"targetId": page.get("id")})
+        call(browser, 5, "Target.activateTarget", {"targetId": page.get("id")})
     except Exception:
         pass
-    call(sock, 4, "Page.bringToFront", {})
-call(sock, 5, "Page.enable", {})
+    call(sock, 6, "Page.bringToFront", {})
 seq = [10]
 def evaluate(expression):
     seq[0] += 1
     result = call(sock, seq[0], "Runtime.evaluate", {"expression": expression, "returnByValue": True})
     return (((result.get("result") or {}).get("result") or {}).get("value"))
+def stamp_name():
+    try:
+        evaluate("window.name = %s" % json.dumps(marker))
+    except Exception:
+        pass
 def close_extras():
     try:
         browser = browser_socket()
@@ -193,7 +200,22 @@ def close_extras():
                 break
         if not name:
             name = window_name(item)
-        if name in keep:
+        href = item.get("url") or ""
+        # Never kill workspace tabs — LinkedIn often clears window.name on navigate.
+        if name in keep or name.startswith("nexuses-li-"):
+            continue
+        if "linkedin.com/messaging" in href or "linkedin.com/notifications" in href:
+            continue
+        if "/in/" in href:
+            continue
+        junk = (
+            href.startswith("about:")
+            or href.startswith("chrome:")
+            or href.startswith("chrome-error:")
+            or "linkedin.com/feed" in href
+            or not href
+        )
+        if not junk and "linkedin.com" in href:
             continue
         try:
             call(browser, 80, "Target.closeTarget", {"targetId": item.get("id")})
@@ -226,6 +248,9 @@ if needs_nav:
                 break
         elif (expect and expect in href) or (not expect and url.split("?")[0] in href):
             break
+    stamp_name()
+else:
+    stamp_name()
 if not quiet:
     close_extras()
 title = str(evaluate("document.title || ''") or "")
@@ -485,6 +510,288 @@ export async function focusLinkedinTab(
   if (sample) console.info("[linkedin]", sample.slice(0, 500));
   const state = line.startsWith("TAB_READY") ? "ready" : line.startsWith("TAB_LOGIN") ? "login" : "failed";
   return { state, inbox, inboxRead, accepted, profileActions };
+}
+
+const LINKEDIN_WORKSPACE_PY = `
+import json, os, socket, base64, time, urllib.request
+
+replies_marker = os.environ.get("TAB_REPLIES") or "nexuses-li-replies"
+network_marker = os.environ.get("TAB_NETWORK") or "nexuses-li-network"
+campaign_marker = os.environ.get("TAB_CAMPAIGN") or "nexuses-li-campaign"
+replies_url = os.environ.get("TAB_REPLIES_URL") or "https://www.linkedin.com/messaging/"
+network_url = os.environ.get("TAB_NETWORK_URL") or "https://www.linkedin.com/notifications/"
+campaign_url = os.environ.get("TAB_CAMPAIGN_URL") or ""
+front = os.environ.get("TAB_FRONT") == "1"
+navigate_campaign = os.environ.get("TAB_NAV_CAMPAIGN") != "0"
+
+class Reader:
+    def __init__(self, sock, rest=b""):
+        self.sock = sock
+        self.rest = rest
+    def recvn(self, size):
+        buf = self.rest
+        while len(buf) < size:
+            chunk = self.sock.recv(max(4096, size - len(buf)))
+            if not chunk:
+                raise RuntimeError("closed")
+            buf += chunk
+        self.rest = buf[size:]
+        return buf[:size]
+    def sendall(self, data):
+        self.sock.sendall(data)
+
+def ws_connect(ws_url):
+    rest = ws_url.split("://", 1)[1]
+    hostport, path = rest.split("/", 1)
+    host, port = hostport.split(":")
+    sock = socket.create_connection((host, int(port)), 15)
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = "GET /%s HTTP/1.1\\r\\nHost: %s\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Key: %s\\r\\nSec-WebSocket-Version: 13\\r\\n\\r\\n" % (path, hostport, key)
+    sock.sendall(req.encode())
+    buf = b""
+    while b"\\r\\n\\r\\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise RuntimeError("closed")
+        buf += chunk
+    _header, _, leftover = buf.partition(b"\\r\\n\\r\\n")
+    return Reader(sock, leftover)
+
+def send(reader, payload):
+    data = json.dumps(payload).encode()
+    mask = os.urandom(4)
+    header = bytearray([0x81])
+    size = len(data)
+    if size < 126:
+        header.append(0x80 | size)
+    else:
+        header.append(0xFE)
+        header.extend(size.to_bytes(2, "big"))
+    header.extend(mask)
+    reader.sendall(bytes(header) + bytes(byte ^ mask[index % 4] for index, byte in enumerate(data)))
+
+def recv_text(reader):
+    parts = []
+    while True:
+        header = reader.recvn(2)
+        opcode = header[0] & 15
+        length = header[1] & 127
+        if length == 126:
+            length = int.from_bytes(reader.recvn(2), "big")
+        elif length == 127:
+            length = int.from_bytes(reader.recvn(8), "big")
+        data = reader.recvn(length)
+        if opcode == 8:
+            raise RuntimeError("closed")
+        if opcode == 9:
+            continue
+        if opcode in (0, 1):
+            parts.append(data)
+            if header[0] & 128:
+                return b"".join(parts).decode("utf-8", "replace")
+
+def call(sock, ident, method, params):
+    send(sock, {"id": ident, "method": method, "params": params})
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        message = json.loads(recv_text(sock))
+        if message.get("id") == ident:
+            return message
+    raise TimeoutError(method)
+
+def page_targets():
+    with urllib.request.urlopen("http://127.0.0.1:9222/json/list", timeout=5) as response:
+        return [item for item in json.load(response) if item.get("type") == "page"]
+
+def browser_socket():
+    with urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=5) as response:
+        return ws_connect(json.load(response)["webSocketDebuggerUrl"])
+
+def window_name(item):
+    try:
+        probe = ws_connect(item["webSocketDebuggerUrl"])
+        result = call(probe, 1, "Runtime.evaluate", {"expression": "window.name", "returnByValue": True})
+        return (((result.get("result") or {}).get("result") or {}).get("value")) or ""
+    except Exception:
+        return ""
+
+def open_page(item):
+    sock = ws_connect(item["webSocketDebuggerUrl"])
+    return sock, item
+
+def create_page(url):
+    browser = browser_socket()
+    created = call(browser, 1, "Target.createTarget", {"url": url or "about:blank"})
+    target_id = (created.get("result") or {}).get("targetId")
+    for _wait in range(20):
+        time.sleep(0.25)
+        found = next((item for item in page_targets() if item.get("id") == target_id), None)
+        if found:
+            return open_page(found)
+    raise RuntimeError("no-tab")
+
+def stamp(sock, marker):
+    call(sock, 2, "Page.enable", {})
+    call(sock, 3, "Page.addScriptToEvaluateOnNewDocument", {"source": "window.name = %s;" % json.dumps(marker)})
+    call(sock, 4, "Runtime.evaluate", {"expression": "window.name = %s" % json.dumps(marker), "returnByValue": True})
+
+def evaluate(sock, expression, seq):
+    seq[0] += 1
+    result = call(sock, seq[0], "Runtime.evaluate", {"expression": expression, "returnByValue": True})
+    return (((result.get("result") or {}).get("result") or {}).get("value"))
+
+def navigate(sock, url, expect, seq):
+    if not url:
+        return str(evaluate(sock, "location.href", seq) or "")
+    href = str(evaluate(sock, "location.href", seq) or "")
+    need = False
+    if "linkedin.com/messaging" in url:
+        need = "linkedin.com/messaging" not in href or "/messaging/thread" in href or "/messaging/compose" in href
+    elif expect:
+        need = expect not in href
+    else:
+        need = url.split("?")[0] not in href
+    if need:
+        seq[0] += 1
+        call(sock, seq[0], "Page.navigate", {"url": url})
+        for _wait in range(18):
+            time.sleep(1)
+            href = str(evaluate(sock, "location.href", seq) or "")
+            if "linkedin.com/messaging" in url:
+                if "linkedin.com/messaging" in href and "/messaging/thread" not in href and "/messaging/compose" not in href:
+                    break
+            elif expect and expect in href:
+                break
+            elif not expect and url.split("?")[0] in href:
+                break
+    return href
+
+def find_tab(marker, url_hint):
+    pages = page_targets()
+    named = []
+    for item in pages:
+        copied = dict(item)
+        copied["_name"] = window_name(item)
+        named.append(copied)
+    hit = next((item for item in named if item.get("_name") == marker), None)
+    if hit:
+        return hit
+    for item in named:
+        name = item.get("_name") or ""
+        href = item.get("url") or ""
+        if name.startswith("nexuses-li-") and name != marker:
+            continue
+        if url_hint == "messaging" and "linkedin.com/messaging" in href:
+            return item
+        if url_hint == "network" and "linkedin.com/notifications" in href:
+            return item
+        # Campaign tabs are marker-only so we never steal a random /in/ profile tab.
+    return None
+
+def ensure(marker, url, expect, url_hint, allow_create_url):
+    seq = [20]
+    page = find_tab(marker, url_hint)
+    if page is None:
+        sock, page = create_page(allow_create_url or url or "about:blank")
+    else:
+        sock, page = open_page(page)
+    stamp(sock, marker)
+    href = navigate(sock, url, expect, seq)
+    stamp(sock, marker)
+    return page.get("id"), href, sock, seq
+
+replies_id, replies_href, replies_sock, _ = ensure(
+    replies_marker, replies_url, "linkedin.com/messaging", "messaging", replies_url
+)
+network_id, network_href, network_sock, _ = ensure(
+    network_marker, network_url, "linkedin.com/notifications", "network", network_url
+)
+campaign_target = campaign_url if navigate_campaign and campaign_url else ""
+campaign_expect = ""
+if campaign_target and "/in/" in campaign_target:
+    campaign_expect = campaign_target.rstrip("/").split("/")[-1] or "/in/"
+elif campaign_target:
+    campaign_expect = "linkedin.com"
+campaign_id, campaign_href, campaign_sock, campaign_seq = ensure(
+    campaign_marker,
+    campaign_target,
+    campaign_expect,
+    "campaign",
+    campaign_target or "https://www.linkedin.com/feed/",
+)
+
+keep_ids = {replies_id, network_id, campaign_id}
+try:
+    browser = browser_socket()
+    for item in page_targets():
+        if item.get("id") in keep_ids:
+            continue
+        href = item.get("url") or ""
+        name = window_name(item)
+        if name.startswith("nexuses-li-"):
+            continue
+        if "linkedin.com/messaging" in href or "linkedin.com/notifications" in href:
+            continue
+        junk = (
+            href.startswith("about:")
+            or href.startswith("chrome:")
+            or href.startswith("chrome-error:")
+            or "linkedin.com/feed" in href
+            or not href
+        )
+        if junk:
+            try:
+                call(browser, 90, "Target.closeTarget", {"targetId": item.get("id")})
+            except Exception:
+                pass
+except Exception:
+    pass
+
+if front:
+    try:
+        browser = browser_socket()
+        call(browser, 91, "Target.activateTarget", {"targetId": campaign_id})
+        call(campaign_sock, campaign_seq[0] + 1, "Page.bringToFront", {})
+        stamp(campaign_sock, campaign_marker)
+    except Exception:
+        pass
+
+print("WORKSPACE\\treplies=%s\\tnetwork=%s\\tcampaign=%s" % (replies_href[:120], network_href[:120], campaign_href[:120]))
+print("WORKSPACE_OK\\t3")
+`.trim();
+
+/** Open/repair the three LinkedIn workspace tabs in one CDP pass. */
+export async function ensureLinkedinWorkspaceTabs(
+  sandboxId: string,
+  input: {
+    campaignMarker: string;
+    campaignUrl: string;
+    frontCampaign?: boolean;
+    navigateCampaign?: boolean;
+  },
+) {
+  const command = [
+    `TAB_REPLIES=${shellQuote(LINKEDIN_REPLIES_TAB)}`,
+    `TAB_NETWORK=${shellQuote(LINKEDIN_NETWORK_TAB)}`,
+    `TAB_CAMPAIGN=${shellQuote(input.campaignMarker)}`,
+    `TAB_REPLIES_URL=${shellQuote(LINKEDIN_MESSAGING_URL)}`,
+    `TAB_NETWORK_URL=${shellQuote(LINKEDIN_NETWORK_URL)}`,
+    `TAB_CAMPAIGN_URL=${shellQuote(input.campaignUrl || "")}`,
+    ...(input.frontCampaign ? ["TAB_FRONT=1"] : []),
+    ...(input.navigateCampaign === false ? ["TAB_NAV_CAMPAIGN=0"] : []),
+    `python3 -c ${shellQuote(LINKEDIN_WORKSPACE_PY)}`,
+  ].join(" ");
+  const result = await runBoatCommand(sandboxId, command, 90).catch((error) => {
+    console.error("[linkedin] workspace tabs failed", error);
+    return null;
+  });
+  const line =
+    result?.stdout.split("\n").find((item) => item.startsWith("WORKSPACE\t")) ||
+    result?.stdout.split("\n").find((item) => item.startsWith("WORKSPACE_OK")) ||
+    "";
+  const ok = Boolean(result?.stdout.includes("WORKSPACE_OK"));
+  console.info("[linkedin] workspace", line.slice(0, 300) || (ok ? "ok" : "failed"));
+  return ok;
 }
 
 function tokenBudgetError(report: string) {
