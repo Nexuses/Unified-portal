@@ -22,6 +22,7 @@ import {
   type SmtpProviderDefinition,
   type SmtpSender,
 } from "@/lib/smtp-senders";
+import { readApiJson } from "@/lib/read-api-json";
 import { SmtpProviderBadge, SmtpProviderLogo } from "@/app/components/portal/SmtpProviderBadge";
 
 type ModalStep = "provider" | "form";
@@ -339,7 +340,7 @@ export default function PortalSmtpPage() {
     setError("");
     try {
       const response = await fetch("/api/smtp/senders");
-      const data = await response.json();
+      const data = await readApiJson<SmtpSender[] & { error?: string }>(response);
       if (!response.ok) {
         throw new Error(data.error || "Failed to load senders");
       }
@@ -496,7 +497,7 @@ export default function PortalSmtpPage() {
           fromName: fromName.trim() || undefined,
         }),
       });
-      const data = await response.json();
+      const data = await readApiJson<{ redirectUrl?: string; error?: string }>(response);
       if (!response.ok || !data.redirectUrl) {
         throw new Error(data.error || "Could not start the Composio sign-in.");
       }
@@ -547,7 +548,7 @@ export default function PortalSmtpPage() {
         },
       );
 
-      const data = await response.json();
+      const data = await readApiJson<SmtpSender & { error?: string }>(response);
       if (!response.ok) {
         throw new Error(
           data.error ||
@@ -604,7 +605,7 @@ export default function PortalSmtpPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dailyLimit: dailyLimitValue }),
       });
-      const data = await response.json();
+      const data = await readApiJson<SmtpSender & { error?: string }>(response);
       if (!response.ok) {
         throw new Error(data.error || "Failed to update daily limit");
       }
@@ -632,7 +633,7 @@ export default function PortalSmtpPage() {
       const response = await fetch(`/api/smtp/senders/${sender.id}`, {
         method: "DELETE",
       });
-      const data = await response.json();
+      const data = await readApiJson<{ error?: string }>(response);
       if (!response.ok) {
         throw new Error(data.error || "Failed to delete sender");
       }
@@ -677,7 +678,7 @@ export default function PortalSmtpPage() {
       const response = await fetch(`/api/smtp/senders/${senderId}/verify`, {
         method: "POST",
       });
-      const data = await response.json();
+      const data = await readApiJson<SmtpSender & { error?: string }>(response);
       if (!response.ok) {
         throw new Error(data.error || "Failed to verify sender");
       }
@@ -722,7 +723,11 @@ export default function PortalSmtpPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trackingDomain: trackingDomainDraft }),
       });
-      const data = await response.json();
+      const data = await readApiJson<{
+        sender: SmtpSender;
+        records?: TrackingDnsRecord[];
+        error?: string;
+      }>(response);
       if (!response.ok) {
         throw new Error(data.error || "Failed to save tracking domain");
       }
@@ -750,7 +755,11 @@ export default function PortalSmtpPage() {
         `/api/smtp/senders/${trackingSender.id}/tracking/verify`,
         { method: "POST" },
       );
-      const data = await response.json();
+      const data = await readApiJson<{
+        sender: SmtpSender;
+        records?: TrackingDnsRecord[];
+        error?: string;
+      }>(response);
       if (!response.ok) {
         throw new Error(data.error || "Failed to verify tracking domain");
       }

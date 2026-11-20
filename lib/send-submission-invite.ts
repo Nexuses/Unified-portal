@@ -20,6 +20,10 @@ export async function sendSubmissionInviteForEvent(
     ? submission.calendarInviteUid ?? buildCalendarInviteUid(event.publicId, submissionId)
     : undefined;
 
+  // Mark sent before the email so Accept works even if the guest clicks immediately
+  // (or if the mailer succeeds but a later DB write would have failed).
+  const updated = await markSubmissionInviteSent(event.id, submissionId, calendarInviteUid);
+
   await sendSubmissionInviteEmail(
     event,
     {
@@ -54,7 +58,6 @@ export async function sendSubmissionInviteForEvent(
         }
   );
 
-  const updated = await markSubmissionInviteSent(event.id, submissionId, calendarInviteUid);
   return {
     inviteSentAt: updated?.inviteSentAt?.toISOString() ?? new Date().toISOString(),
   };
