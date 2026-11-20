@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { Components } from "react-markdown";
-import PortalBoatCard from "@/app/components/portal/PortalBoatCard";
 import PortalPeopleSearchCard from "@/app/components/portal/PortalPeopleSearchCard";
 import PortalPitchResearchCard from "@/app/components/portal/PortalPitchResearchCard";
 import { AssistantMarkdownBody, AssistantMarkdownTable } from "@/app/components/portal/PortalAssistant";
@@ -123,7 +122,7 @@ function Typing() {
   );
 }
 
-export function BotIcon({ name }: { name: "plus" | "search" | "computer" | "task" | "edit" | "chevron" | "close" | "send" | "file" | "pin" | "back" | "calendar" | "apps" }) {
+export function BotIcon({ name }: { name: "plus" | "search" | "computer" | "task" | "edit" | "chevron" | "close" | "send" | "file" | "pin" | "back" | "calendar" | "apps" | "expand" | "shrink" }) {
   const common = { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   switch (name) {
     case "plus":
@@ -150,6 +149,10 @@ export function BotIcon({ name }: { name: "plus" | "search" | "computer" | "task
       return <svg {...common}><path d="m15 6-6 6 6 6" /></svg>;
     case "calendar":
       return <svg {...common}><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16" /></svg>;
+    case "expand":
+      return <svg {...common}><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7" /></svg>;
+    case "shrink":
+      return <svg {...common}><path d="M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7" /></svg>;
     case "apps":
       return <svg {...common}><path d="M10 4h4v3a2 2 0 1 0 4 0V4h2v6h-3a2 2 0 1 0 0 4h3v6h-6v-3a2 2 0 1 0-4 0v3H4v-6h3a2 2 0 1 0 0-4H4V4z" /></svg>;
   }
@@ -678,17 +681,21 @@ export function BotsRail({
   active,
   assistant,
   drawer,
+  expanded,
   onSelect,
   onNew,
   onDrawer,
+  onExpand,
 }: {
   bots: Bot[] | null;
   active: string;
   assistant: ReactNode;
   drawer: "routines" | "apps" | null;
+  expanded: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDrawer: (drawer: "routines" | "apps") => void;
+  onExpand: () => void;
 }) {
   return (
     <nav className={styles.rail2} aria-label="Bots">
@@ -741,6 +748,16 @@ export function BotsRail({
           onClick={() => onDrawer("apps")}
         >
           <BotIcon name="apps" />
+        </button>
+        <button
+          type="button"
+          className={`${styles.railBtn} ${styles.railTool}`}
+          title={expanded ? "Smaller window" : "Bigger window"}
+          aria-label={expanded ? "Make the window smaller" : "Make the window bigger"}
+          aria-pressed={expanded}
+          onClick={onExpand}
+        >
+          <BotIcon name={expanded ? "shrink" : "expand"} />
         </button>
       </div>
     </nav>
@@ -1071,8 +1088,6 @@ export function BotChat({
                     {message.cards?.map((card, cardIndex) =>
                       card.kind === "pitch-research" ? (
                         <PortalPitchResearchCard key={card.jobId} card={card} />
-                      ) : card.kind === "boat-desktop" ? (
-                        <PortalBoatCard key={card.sandboxId} card={card} onOpen={setDesktopUrl} />
                       ) : (
                         <PortalPeopleSearchCard key={cardIndex} card={card} onOpen={() => undefined} />
                       ),

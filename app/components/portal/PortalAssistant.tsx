@@ -12,7 +12,6 @@ import {
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import PortalBoatCard from "@/app/components/portal/PortalBoatCard";
 import PortalPeopleSearchCard from "@/app/components/portal/PortalPeopleSearchCard";
 import PortalPitchResearchCard from "@/app/components/portal/PortalPitchResearchCard";
 import { CSV_MARKER, UPLOAD_MARKER, type AssistantCard } from "@/lib/assistant";
@@ -60,7 +59,6 @@ function formatBytes(bytes: number) {
 }
 
 const SUGGESTIONS = [
-  "Open the LinkedIn computer",
   "Give me an overview of this project",
   "Find directors at construction companies in Saudi Arabia",
   "Research my company list and write custom pitches",
@@ -601,11 +599,29 @@ export default function PortalAssistant({
   const [pendingPrompt, setPendingPrompt] = useState("");
   const [uploading, setUploading] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState("");
-  const [computerUrl, setComputerUrl] = useState("");
   /** "assistant" or a bot id: which chat the window shows. */
   const [view, setView] = useState("assistant");
   const [drawer, setDrawer] = useState<"routines" | "apps" | null>(null);
   const [newBotOpen, setNewBotOpen] = useState(false);
+  /** Bigger window, remembered in this browser. */
+  const [expanded, setExpanded] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem("pa-window-expanded") === "1";
+    } catch {
+      return false;
+    }
+  });
+  function toggleExpanded() {
+    setExpanded((value) => {
+      try {
+        localStorage.setItem("pa-window-expanded", value ? "0" : "1");
+      } catch {
+        // Storage can be blocked; the toggle still works for this visit.
+      }
+      return !value;
+    });
+  }
   const { bots, reload: reloadBots } = useBots(open);
   const activeBot = view === "assistant" ? null : bots?.find((item) => item.id === view) ?? null;
   const listRef = useRef<HTMLDivElement>(null);
@@ -1087,7 +1103,7 @@ export default function PortalAssistant({
       {open ? (
         <div className="pa-backdrop" onClick={() => setOpen(false)}>
           <div
-            className={`pa-modal ${botStyles.modalRail}${computerUrl && !activeBot ? " has-computer" : ""}`}
+            className={`pa-modal ${botStyles.modalRail}${expanded ? ` ${botStyles.modalWide}` : ""}`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="pa-title"
@@ -1098,6 +1114,8 @@ export default function PortalAssistant({
               active={activeBot ? activeBot.id : "assistant"}
               assistant={<BotIcon size={38} />}
               drawer={drawer}
+              expanded={expanded}
+              onExpand={toggleExpanded}
               onSelect={(id) => {
                 setView(id);
                 setDrawer(null);
@@ -1204,12 +1222,6 @@ export default function PortalAssistant({
                         {message.cards?.map((card, cardIndex) =>
                           card.kind === "pitch-research" ? (
                             <PortalPitchResearchCard key={card.jobId} card={card} />
-                          ) : card.kind === "boat-desktop" ? (
-                            <PortalBoatCard
-                              key={card.sandboxId}
-                              card={card}
-                              onOpen={setComputerUrl}
-                            />
                           ) : (
                             <PortalPeopleSearchCard
                               key={cardIndex}
@@ -1447,29 +1459,6 @@ export default function PortalAssistant({
             {speech.error ? <p className="pa-mic-error">{speech.error}</p> : null}
             <p className="pa-hint">Enter to send · Shift + Enter for a new line · Answers use live project data</p>
             </div>
-            {computerUrl ? (
-              <aside className="pa-desktop" aria-label="LinkedIn computer">
-                <header className="pa-desktop-bar">
-                  <strong>Computer</strong>
-                  <div className="pa-desktop-actions">
-                    <a href={computerUrl} target="_blank" rel="noopener noreferrer">
-                      New tab
-                    </a>
-                    <button type="button" onClick={() => setComputerUrl("")} aria-label="Close computer">
-                      ×
-                    </button>
-                  </div>
-                </header>
-                <div className="pa-desktop-stage">
-                  <iframe
-                    className="pa-desktop-frame"
-                    src={computerUrl}
-                    title="LinkedIn computer"
-                    allow="clipboard-read; clipboard-write; fullscreen; autoplay"
-                  />
-                </div>
-              </aside>
-            ) : null}
             </>
             )}
             {drawer === "routines" ? (

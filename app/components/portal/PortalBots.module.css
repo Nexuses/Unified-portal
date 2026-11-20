@@ -15,11 +15,15 @@
   --active: color-mix(in srgb, var(--ink, #1a1a1a) 9%, transparent);
   position: relative;
   flex-direction: row !important;
-  width: min(900px, 100%) !important;
+  width: min(1040px, calc(100vw - 48px)) !important;
+  height: min(88vh, 860px) !important;
+  transition: width 0.2s ease, height 0.2s ease;
 }
 
-.modalRail:global(.has-computer) {
-  width: min(1180px, calc(100vw - 40px)) !important;
+/* "Bigger window": nearly the whole screen. */
+.modalWide {
+  width: min(1600px, calc(100vw - 48px)) !important;
+  height: calc(100vh - 48px) !important;
 }
 
 .rail2 {
@@ -1231,8 +1235,10 @@ input:focus-visible + .switch {
 }
 
 @media (max-width: 720px) {
-  .modalRail {
+  .modalRail,
+  .modalWide {
     width: 100% !important;
+    height: 100% !important;
   }
 
   .ghostPill {
