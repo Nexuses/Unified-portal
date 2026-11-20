@@ -12506,6 +12506,7 @@ a.an-kanban-card-name.is-link:hover{
   height:40px;border:1px solid #e5e7eb;border-radius:10px;padding:0 12px;font:inherit;font-weight:500;background:#fff;
 }
 .li-auto-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}
+.li-auto-vpn-below-login{margin-top:12px;}
 .li-auto-hint{margin:8px 0 0;color:#6b7280;font-size:13px;}
 .li-auto-detect{display:flex;flex-direction:column;gap:4px;margin-top:14px;padding:12px;border-radius:12px;background:#f8fafc;}
 .li-auto-detect strong{font-size:14px;}

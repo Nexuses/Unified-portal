@@ -513,34 +513,6 @@ export default function PortalLinkedinPage() {
               Sign in once on the virtual machine. That LinkedIn stays connected. Upload the CSV, set the waits, then launch.
             </p>
             {error ? <p className="crm-error">{error}</p> : null}
-            <div className="li-auto-card li-auto-card-flat">
-              <div className="cloud-vpn-row">
-                <label className="cloud-vpn-toggle">
-                  <input
-                    type="checkbox"
-                    checked={vpn?.enabled === true}
-                    disabled={Boolean(busy) || !vpn || (!vpn.configured && !vpn.enabled)}
-                    onChange={(event) => void toggleVpn(event.target.checked)}
-                  />
-                  <span>Connect through NordVPN ({vpn?.country || "India"})</span>
-                </label>
-                <p className="li-auto-hint">
-                  {!vpn
-                    ? "Checking VPN…"
-                    : !vpn.configured && !vpn.enabled
-                      ? "NordVPN is not set up on the server yet (an admin needs to add NORDVPN_TOKEN)."
-                      : !vpn.enabled
-                        ? "Off. Applies to every LinkedIn campaign in this project."
-                        : vpn.status?.connected
-                          ? `Connected · ${[vpn.status.city, vpn.status.country].filter(Boolean).join(", ")}${
-                              vpn.status.ip ? ` · ${vpn.status.ip}` : ""
-                            }.`
-                          : vpn.status?.error
-                            ? `Not connected: ${vpn.status.error}`
-                            : "On. Connects when the LinkedIn session starts."}
-                </p>
-              </div>
-            </div>
 
             <div className="li-auto-card li-auto-card-flat">
               {session?.connected ? (
@@ -598,6 +570,32 @@ export default function PortalLinkedinPage() {
                     Keep this LinkedIn connected
                   </button>
                 ) : null}
+              </div>
+              <div className="cloud-vpn-row li-auto-vpn-below-login">
+                <label className="cloud-vpn-toggle">
+                  <input
+                    type="checkbox"
+                    checked={vpn?.enabled === true}
+                    disabled={Boolean(busy) || !vpn || (!vpn.configured && !vpn.enabled)}
+                    onChange={(event) => void toggleVpn(event.target.checked)}
+                  />
+                  <span>Connect through NordVPN ({vpn?.country || "India"})</span>
+                </label>
+                <p className="li-auto-hint">
+                  {!vpn
+                    ? "Checking VPN…"
+                    : !vpn.configured && !vpn.enabled
+                      ? "NordVPN is not set up on the server yet (an admin needs to add NORDVPN_TOKEN)."
+                      : !vpn.enabled
+                        ? "Off. Applies to every LinkedIn campaign in this project."
+                        : vpn.status?.connected
+                          ? `Connected · ${[vpn.status.city, vpn.status.country].filter(Boolean).join(", ")}${
+                              vpn.status.ip ? ` · ${vpn.status.ip}` : ""
+                            }.`
+                          : vpn.status?.error
+                            ? `Not connected: ${vpn.status.error}`
+                            : "On. Connects when the LinkedIn session starts."}
+                </p>
               </div>
             </div>
 
