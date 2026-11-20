@@ -233,3 +233,28 @@ export async function connectApp(toolkit: string) {
 export async function disconnectApp(accountId: string) {
   return readJson<{ ok: true }>(await fetch("/api/bots/apps", json({ action: "disconnect", accountId })));
 }
+
+/* ---- AI subscription sign-ins (ChatGPT plan, SuperGrok plan) ---- */
+
+export type AiLoginProvider = "chatgpt" | "grok";
+
+export type AiLogin = {
+  provider: AiLoginProvider;
+  label: string;
+  plan: string;
+  state: "none" | "pending" | "connected" | "error";
+  /** While pending: where to approve, and the code to enter there. */
+  url?: string;
+  code?: string;
+  expiresAt?: string;
+  connectedAt?: string;
+  error?: string;
+};
+
+export async function fetchLogins() {
+  return readJson<{ configured: boolean; logins: AiLogin[] }>(await fetch("/api/bots/logins", { cache: "no-store" }));
+}
+
+export async function loginAction(provider: AiLoginProvider, action: "connect" | "cancel" | "disconnect") {
+  return readJson<{ logins: AiLogin[] }>(await fetch("/api/bots/logins", json({ action, provider })));
+}
