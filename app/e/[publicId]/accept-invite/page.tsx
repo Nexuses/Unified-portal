@@ -1,12 +1,10 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ConfirmGoingClient } from "@/components/confirm-going-client";
-import { PublicHeaderClock } from "@/components/public-header-clock";
-import { resolveEmailBannerUrl } from "@/lib/email-banner";
+import { revalidateEventPages } from "@/lib/revalidate-dashboard";
 import { getEventByPublicId } from "@/lib/events";
-import { formatEventEmailDateTime } from "@/lib/public-event-time";
-import { resolvePublicHeaderLogo } from "@/lib/public-header-logo";
-import { getSubmissionByIdForEvent } from "@/lib/submissions";
+import {
+  acceptWebinarInviteByPublicId,
+  acceptWebinarInviteBySubmissionId,
+} from "@/lib/submissions";
 
 type AcceptInvitePageProps = {
   params: Promise<{ publicId: string }>;
@@ -15,6 +13,10 @@ type AcceptInvitePageProps = {
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Email "Accept invite" lands here. Confirm attendance immediately and send the
+ * guest to the public event page with the thank-you modal — no second Accept step.
+ */
 export default async function AcceptInvitePage({ params, searchParams }: AcceptInvitePageProps) {
   const { publicId } = await params;
   const query = await searchParams;
@@ -30,47 +32,19 @@ export default async function AcceptInvitePage({ params, searchParams }: AcceptI
     notFound();
   }
 
-  const submission = sid ? await getSubmissionByIdForEvent(event.id, sid) : null;
-  const eventDate = submission?.calendarEventDate ?? event.eventDate;
-  const eventTimeStart = submission?.calendarEventTimeStart ?? event.eventTimeStart;
-  const eventTimeEnd = submission?.calendarEventTimeEnd ?? event.eventTimeEnd;
-  const platform = submission?.calendarPlatform ?? event.platform;
-  const { displayDate, displayTime } = formatEventEmailDateTime(
-    eventDate,
-    eventTimeStart,
-    eventTimeEnd,
-    submission?.viewerTimeZone ?? null
-  );
-  const bannerUrl = resolveEmailBannerUrl(event);
+  let accepted = false;
+  try {
+    if (sid) {
+      await acceptWebinarInviteBySubmissionId(publicId, sid);
+    } else {
+      const decodedEmail = decodeURIComponent(email.replace(/ /g, "+"));
+      await acceptWebinarInviteByPublicId(publicId, decodedEmail);
+    }
+    revalidateEventPages({ publicId });
+    accepted = true;
+  } catch {
+    accepted = false;
+  }
 
-  return (
-    <div className="min-h-screen bg-[#f3f4f6]">
-      <header className="bg-[#f3f4f6]">
-        <div className="flex w-full items-center justify-between px-3 py-3 max-md:py-2.5 md:px-4">
-          <Link href="/" className="inline-flex items-center">
-            <img
-              src={resolvePublicHeaderLogo(event.publicHeaderLogo)}
-              alt={event.eventName || "Event"}
-              className="h-7 w-auto max-w-[240px] object-contain object-left"
-            />
-          </Link>
-          <PublicHeaderClock />
-        </div>
-      </header>
-
-      <main className="mx-auto flex min-h-[calc(100vh-72px)] max-w-[1000px] items-center justify-center px-4 py-10">
-        <ConfirmGoingClient
-          publicId={publicId}
-          eventName={event.eventName}
-          sid={sid}
-          email={email}
-          bannerUrl={bannerUrl}
-          eventDateYmd={eventDate}
-          displayDate={displayDate}
-          displayTime={displayTime}
-          platform={platform}
-        />
-      </main>
-    </div>
-  );
+  redirect(accepted ? `/e/${publicId}?going=1` : `/e/${publicId}?accept-error=1`);
 }

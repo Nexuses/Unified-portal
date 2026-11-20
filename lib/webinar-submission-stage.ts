@@ -15,7 +15,8 @@ export function getWebinarSubmissionStage(
   if (submission.inviteSentAt) {
     return "invited";
   }
-  if (submission.source === "csv") {
+  // CRM list imports and CSV uploads wait here until an invite is sent.
+  if (submission.source === "csv" || submission.source === "list") {
     return "invite_to";
   }
   return "going";
@@ -62,7 +63,8 @@ export function getWaitlistedSubmissionStage(
   if (submission.inviteSentAt) {
     return "invited";
   }
-  if (submission.source === "csv") {
+  // CRM list imports and CSV uploads wait here until an invite is sent.
+  if (submission.source === "csv" || submission.source === "list") {
     return "invite_to";
   }
   return "waitlist";
